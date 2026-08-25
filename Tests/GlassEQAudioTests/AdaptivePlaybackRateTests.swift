@@ -344,59 +344,6 @@ struct AdaptivePlaybackRateTests {
     }
 
     @Test
-    func resettingPlaybackBufferCalibrationRemovesOnlyTheSelectedDevice() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)
-        let url = directory.appendingPathComponent("LearnedPlaybackBuffers.json")
-        defer {
-            try? FileManager.default.removeItem(at: directory)
-        }
-
-        try PersistedPlaybackBufferCalibrationStore.recordStable(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            frameSize: 1_024,
-            targetFrames: 2_048,
-            at: url
-        )
-        try PersistedPlaybackBufferCalibrationStore.recordStable(
-            outputUID: "scarlett",
-            sampleRate: 44_100,
-            frameSize: 512,
-            targetFrames: 1_024,
-            at: url
-        )
-        try PersistedPlaybackBufferCalibrationStore.recordStable(
-            outputUID: "airpods",
-            sampleRate: 48_000,
-            frameSize: 128,
-            targetFrames: 256,
-            at: url
-        )
-
-        try PersistedPlaybackBufferCalibrationStore.removeCalibrations(
-            outputUID: "scarlett",
-            at: url
-        )
-
-        #expect(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ) == nil)
-        #expect(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 44_100,
-            from: url
-        ) == nil)
-        #expect(PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
-            outputUID: "airpods",
-            sampleRate: 48_000,
-            from: url
-        ) == 128)
-    }
-
-    @Test
     func playbackBufferCalibrationPersistsProbeFailureAndStableResult() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)

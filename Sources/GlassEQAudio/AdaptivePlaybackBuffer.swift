@@ -207,10 +207,6 @@ struct PlaybackBufferAdaptationEvidence: Sendable {
         underruns.reset()
     }
 
-    mutating func resetUnderrunEpisodes() {
-        underruns.reset()
-    }
-
     mutating func observe(
         instabilityGeneration: UInt64,
         reason: PlaybackBufferInstabilityReason,
@@ -385,18 +381,6 @@ enum PersistedPlaybackBufferCalibrationStore {
             tapSampleRate: tapSampleRate,
             from: url
         )?.preferredFrameSize
-    }
-
-    static func removeCalibrations(outputUID: String, at url: URL) throws {
-        guard !outputUID.isEmpty else {
-            return
-        }
-        let calibrations = load(from: url)
-        let retainedCalibrations = calibrations.filter { $0.outputUID != outputUID }
-        guard retainedCalibrations.count != calibrations.count else {
-            return
-        }
-        try write(retainedCalibrations, to: url)
     }
 
     static func beginProbe(

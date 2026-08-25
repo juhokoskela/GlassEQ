@@ -1349,24 +1349,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
         }
 
-        private func contiguousInterleavedInputBuffer(
-            _ buffers: UnsafeMutableAudioBufferListPointer,
-            frameCount: Int,
-            channelCount: Int
-        ) -> UnsafeBufferPointer<Float>? {
-            guard buffers.count == 1,
-                  frameCount > 0,
-                  Int(buffers[0].mNumberChannels) == channelCount,
-                  let data = buffers[0].mData?.assumingMemoryBound(to: Float.self) else {
-                return nil
-            }
-            let sampleCount = frameCount * channelCount
-            guard sampleCount <= Int(buffers[0].mDataByteSize) / MemoryLayout<Float>.stride else {
-                return nil
-            }
-            return UnsafeBufferPointer(start: data, count: sampleCount)
-        }
-
         private func sample(
             from buffers: UnsafeMutableAudioBufferListPointer,
             frame: Int,
@@ -1958,57 +1940,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     public func resetDiagnostics() {
         let runtime = control.withLock { $0.runtime }
         runtime?.resetMetrics()
-    }
-
-    public func resetPlaybackBufferCalibration(forOutputUID outputUID: String) throws {
-        guard !outputUID.isEmpty else {
-            return
-        }
-        pausePlaybackBufferAdaptation()
-        defer {
-            updatePlaybackBufferAdaptationTimer()
-        }
-        try PersistedPlaybackBufferCalibrationStore.removeCalibrations(
-            outputUID: outputUID,
-            at: playbackBufferCalibrationStoreURL
-        )
-        let activeOutputAndProfile = control.withLock {
-            state -> (AudioOutputDevice, EQProfile, OutputRebuildExpectation)? in
-            if state.playbackBufferCalibrationProbe?.outputUID == outputUID {
-                state.playbackBufferCalibrationProbe = nil
-            }
-            state.playbackBufferStableSince = nil
-            state.playbackBufferAdaptationEvidence.resetUnderrunEpisodes()
-            state.playbackBufferInstabilityPersistenceGate.reset(outputUID: outputUID)
-            state.failedPlaybackFrameSizeDecayCandidates = Set(
-                state.failedPlaybackFrameSizeDecayCandidates.filter { $0.outputUID != outputUID }
-            )
-            guard let output = state.activeOutput,
-                  output.uid == outputUID,
-                  let profile = state.activeProfile else {
-                return nil
-            }
-            guard let runtime = state.runtime else {
-                return nil
-            }
-            return (
-                output,
-                profile,
-                OutputRebuildExpectation(
-                    generation: state.outputRebuildGeneration,
-                    runtime: runtime,
-                    profileRevision: state.profileRevision
-                )
-            )
-        }
-        if let (activeOutput, activeProfile, expectation) = activeOutputAndProfile {
-            let freshOutput = try CoreAudioDeviceQuery.outputDevice(id: activeOutput.id)
-            try start(
-                output: freshOutput,
-                profile: activeProfile,
-                expectation: expectation
-            )
-        }
     }
 
     public func setPlaybackBufferRenegotiationHandler(
@@ -2723,14 +2654,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     static func decodedPlaybackChannelPair(_ encoded: UInt64) -> (left: Int, right: Int) {
         (Int(encoded >> 32), Int(encoded & 0xFFFF_FFFF))
-    }
-
-    static func performAfterRuntimeChannelValidation<T>(
-        for output: AudioOutputDevice,
-        _ operation: () throws -> T
-    ) throws -> T {
-        _ = try supportedRuntimeChannelCount(for: output)
-        return try operation()
     }
 
     static func monoDownmix(
