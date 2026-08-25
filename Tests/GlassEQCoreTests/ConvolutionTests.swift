@@ -46,6 +46,53 @@ struct ConvolutionTests {
     }
 
     @Test
+    func curveCompilerUsesIdentityAboveRouteCeilingRegardlessOfPointOrder() throws {
+        let sortedPoints = [
+            EQMagnitudePoint(frequency: 20, gainDB: 0),
+            EQMagnitudePoint(frequency: 7_200, gainDB: 0),
+            EQMagnitudePoint(frequency: 7_300, gainDB: 12)
+        ]
+        let sortedImpulse = try MinimumPhaseFIRCompiler.compile(
+            points: sortedPoints,
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_200
+        )
+        let unsortedImpulse = try MinimumPhaseFIRCompiler.compile(
+            points: [sortedPoints[2], sortedPoints[0], sortedPoints[1]],
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_200
+        )
+
+        #expect(sortedImpulse == unsortedImpulse)
+        #expect(abs(sortedImpulse[0] - 1) < 0.000_01)
+        #expect(sortedImpulse.dropFirst().allSatisfy { abs($0) < 0.000_01 })
+    }
+
+    @Test
+    func curveCompilerKeepsGainAtExactRouteCeiling() throws {
+        let impulse = try MinimumPhaseFIRCompiler.compile(
+            points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_000, gainDB: 6),
+                EQMagnitudePoint(frequency: 7_125, gainDB: 12)
+            ],
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_000
+        )
+
+        #expect(abs(magnitudeDB(
+            impulse: impulse,
+            frequency: 7_000,
+            sampleRate: 16_000
+        ) - 6) < 0.05)
+        #expect(abs(magnitudeDB(
+            impulse: impulse,
+            frequency: 7_125,
+            sampleRate: 16_000
+        )) < 0.05)
+    }
+
+    @Test
     func curveEndpointsClampToFirstAndLastGain() {
         let points = [
             EQMagnitudePoint(frequency: 20, gainDB: 6),

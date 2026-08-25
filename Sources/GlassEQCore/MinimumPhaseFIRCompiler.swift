@@ -16,7 +16,8 @@ public enum MinimumPhaseFIRCompiler {
 
     public static func compile(
         points: [EQMagnitudePoint],
-        sampleRate: Double
+        sampleRate: Double,
+        maximumUsableFrequency: Double? = nil
     ) throws -> [Float] {
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw MinimumPhaseFIRCompilerError.invalidSampleRate
@@ -31,10 +32,15 @@ public enum MinimumPhaseFIRCompiler {
 
         for bin in 0...halfCount {
             let frequency = Double(bin) * nyquist / Double(halfCount)
-            let gainDB = interpolatedGainDB(
-                frequency: frequency,
-                points: sortedPoints
-            )
+            let gainDB = if let maximumUsableFrequency,
+                            frequency > maximumUsableFrequency {
+                0.0
+            } else {
+                interpolatedGainDB(
+                    frequency: frequency,
+                    points: sortedPoints
+                )
+            }
             let logAmplitude = gainDB * log(10) / 20
             logMagnitudeReal[bin] = logAmplitude
             if bin > 0, bin < halfCount {

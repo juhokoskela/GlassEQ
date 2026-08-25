@@ -238,7 +238,8 @@ public struct EQRenderConfiguration: Sendable {
                     kernel = try PreparedConvolutionKernel(
                         impulseResponse: MinimumPhaseFIRCompiler.compile(
                             points: curve.points,
-                            sampleRate: configuration.sampleRate
+                            sampleRate: configuration.sampleRate,
+                            maximumUsableFrequency: configuration.maximumUsableFrequency
                         )
                     )
                 case .impulseResponse(let impulse):

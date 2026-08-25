@@ -287,6 +287,65 @@ struct EQCoreTests {
     }
 
     @Test
+    func convolutionRuntimeUsesIdentityAboveRouteCeiling() throws {
+        let sampleRate = 16_000.0
+        let profile = EQProfile(
+            name: "Route-limited curve",
+            mode: .convolution,
+            filters: [],
+            convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_200, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_300, gainDB: 12)
+            ]))
+        )
+        let renderConfiguration = try EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: sampleRate,
+            channelCount: 1
+        )
+        var processor = EQProcessor(renderConfiguration: renderConfiguration)
+        var impulse = [Float](repeating: 0, count: MinimumPhaseFIRCompiler.tapCount)
+        impulse[0] = 1
+
+        processor.processInterleaved(&impulse, channelCount: 1)
+
+        #expect(renderConfiguration.configuration.maximumUsableFrequency == 7_200)
+        #expect(abs(impulseMagnitudeDB(
+            samples: impulse,
+            frequency: 7_300,
+            sampleRate: sampleRate
+        )) < 0.05)
+    }
+
+    @Test
+    func routeCeilingDoesNotAlterImportedImpulseResponse() throws {
+        let samples: [Float] = [0.5, -0.25, 0.125, -0.0625]
+        let profile = EQProfile(
+            name: "Imported impulse",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 16_000,
+                samples: samples
+            ))
+        )
+        let renderConfiguration = try EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: 16_000,
+            channelCount: 1,
+            maximumUsableFrequency: 4_000
+        )
+        var processor = EQProcessor(renderConfiguration: renderConfiguration)
+        var impulse = [Float](repeating: 0, count: 16)
+        impulse[0] = 1
+
+        processor.processInterleaved(&impulse, channelCount: 1)
+
+        #expect(Array(impulse.prefix(samples.count)) == samples)
+    }
+
+    @Test
     func bypassLeavesSamplesUntouched() {
         var profile = EQProfile(
             name: "Bypass",
