@@ -1224,38 +1224,6 @@ final class GlassEQAppModel {
         }
     }
 
-    func createGraphic10Profile() {
-        do {
-            try createProfile(kind: .graphic10)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
-    func createGraphic31Profile() {
-        do {
-            try createProfile(kind: .graphic31)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
-    func createParametricProfile() {
-        do {
-            try createProfile(kind: .parametric)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
-    func createConvolutionProfile() {
-        do {
-            try createProfile(kind: .convolution)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
     func duplicateSelectedProfile() {
         do {
             try duplicateProfile(id: selectedProfileID)
