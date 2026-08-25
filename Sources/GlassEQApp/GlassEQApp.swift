@@ -1955,10 +1955,12 @@ final class GlassEQAppModel {
         guard let fixedBufferRecovery else {
             return
         }
-        engine.setPreferredAggregateBufferFrameSize(
-            fixedBufferRecovery.preferredFrameSize
-        )
+        let preferredFrameSize = fixedBufferRecovery.preferredFrameSize
         self.fixedBufferRecovery = nil
+        let engine = engine
+        engineWorkExecutor.enqueue(priority: .userInitiated) {
+            engine.setPreferredAggregateBufferFrameSize(preferredFrameSize)
+        }
     }
 
     private func synchronizeActiveProfileProcessing(rollback: ProfileRollback? = nil) {
@@ -2011,7 +2013,6 @@ final class GlassEQAppModel {
 
     private func disableActiveProfileProcessing(updateMetrics: Bool) {
         clearProgrammeComparisonSession()
-        clearFixedBufferRecoveryAndRestorePreference()
         let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
@@ -3329,8 +3330,10 @@ final class GlassEQAppModel {
     }
 
     private func invalidatePendingEngineStart() {
-        clearFixedBufferRecoveryAndRestorePreference()
         engineStartGeneration += 1
+        engineStartTask?.cancel()
+        engineStartTask = nil
+        clearFixedBufferRecoveryAndRestorePreference()
         renderWatchdogTask?.cancel()
         renderWatchdogTask = nil
         renderWatchdog.pause()
@@ -3340,8 +3343,6 @@ final class GlassEQAppModel {
         headsetAggregatePromotionTask = nil
         coldStartupAggregatePromotionTask?.cancel()
         coldStartupAggregatePromotionTask = nil
-        engineStartTask?.cancel()
-        engineStartTask = nil
         pendingEngineStartOutput = nil
         activeAggregateRoute = nil
         pendingAggregateBufferIncrease = nil
@@ -3398,7 +3399,6 @@ final class GlassEQAppModel {
         scheduleEngineStop(updateMetrics: false)
         previewReturnProfile = nil
         clearProgrammeComparisonSession()
-        clearFixedBufferRecoveryAndRestorePreference()
         lifecycleState = .sleeping
         isRunning = false
         statusMessage = localized("Paused for system sleep")

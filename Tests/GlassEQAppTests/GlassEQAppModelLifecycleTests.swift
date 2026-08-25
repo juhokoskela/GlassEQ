@@ -644,6 +644,69 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func stopDuringPendingFixedRecoveryRestoresConfiguredRungAfterEngineWork() async throws {
+        let output = makeOutput(uid: "fixed-pending-stop", name: "Fixed Pending Stop")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let notifier = FakeAggregateBufferNotifier()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateBufferNotifier: notifier
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        try model.setAggregateBufferMode(.frames16)
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 16
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
+        }
+
+        try? await Task.sleep(for: .milliseconds(50))
+        var metrics = engine.metrics
+        metrics.renderDeadlineMisses = 3
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.startCalls[2].aggregateBufferFrameSize == 16
+                && notifier.calls.last?.kind == .fixedRebuild
+        }
+
+        try? await Task.sleep(for: .milliseconds(300))
+        engine.blockPreferredAggregateBufferFrameSizeWrite(32)
+        metrics = engine.metrics
+        metrics.renderDeadlineMisses = 6
+        engine.metrics = metrics
+        try? await Task.sleep(for: .milliseconds(350))
+        #expect(engine.waitUntilPreferredAggregateBufferFrameSizeWriteIsBlocked(
+            32,
+            timeout: .now() + 1
+        ))
+
+        model.stop()
+        engine.unblockPreferredAggregateBufferFrameSizeWrite(32)
+        await waitUntil {
+            model.lifecycleState == .stopped && engine.stopCallCount >= 1
+        }
+
+        model.retryAudioEngine()
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.last?.aggregateBufferFrameSize == 16
+        }
+
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 16)
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames16)
+    }
+
+    @Test
     func automaticAggregateBufferIgnoresInterruptionsBeforeRouteSettles() async {
         let output = makeOutput(uid: "settling-aggregate", name: "Settling Aggregate")
         let engine = FakeAudioEngine()
@@ -4460,6 +4523,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _startDelaySeconds: TimeInterval = 0
     private var _startDelaySecondsByUID: [String: TimeInterval] = [:]
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
+    private var _preferredFrameSizeBlockers: [UInt32: FakeStartBlocker] = [:]
     private var _updateBlockersByProfileID: [UUID: FakeStartBlocker] = [:]
     private var _startCalls: [StartCall] = []
     private var _updateCalls: [EQProfile] = []
@@ -4657,6 +4721,28 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         blocker?.unblock()
     }
 
+    func blockPreferredAggregateBufferFrameSizeWrite(_ frameSize: UInt32) {
+        withLock {
+            _preferredFrameSizeBlockers[frameSize] = FakeStartBlocker()
+        }
+    }
+
+    func waitUntilPreferredAggregateBufferFrameSizeWriteIsBlocked(
+        _ frameSize: UInt32,
+        timeout: DispatchTime
+    ) -> Bool {
+        withLock {
+            _preferredFrameSizeBlockers[frameSize]
+        }?.waitUntilEntered(timeout: timeout) ?? false
+    }
+
+    func unblockPreferredAggregateBufferFrameSizeWrite(_ frameSize: UInt32) {
+        let blocker = withLock {
+            _preferredFrameSizeBlockers.removeValue(forKey: frameSize)
+        }
+        blocker?.unblock()
+    }
+
     func blockUpdate(for profileID: UUID) {
         withLock {
             _updateBlockersByProfileID[profileID] = FakeStartBlocker()
@@ -4775,6 +4861,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     }
 
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32) {
+        let blocker = withLock {
+            _preferredFrameSizeBlockers[frameSize]
+        }
+        blocker?.waitUntilUnblocked()
         withLock {
             _preferredAggregateBufferFrameSize = frameSize
         }
