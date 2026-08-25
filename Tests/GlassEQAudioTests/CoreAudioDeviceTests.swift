@@ -1555,17 +1555,6 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func renderConfigurationTopologyRejectsFormatChanges() {
-        let profile = EQProfile.flatGraphic10
-        let active = EQRenderConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2)
-        let sampleRateChange = EQRenderConfiguration(profile: profile, sampleRate: 44_100, channelCount: 2)
-        let channelCountChange = EQRenderConfiguration(profile: profile, sampleRate: 48_000, channelCount: 1)
-
-        #expect(!sampleRateChange.hasRealtimeCompatibleTopology(with: active))
-        #expect(!channelCountChange.hasRealtimeCompatibleTopology(with: active))
-    }
-
-    @Test
     func metadataValidationRejectsInvalidRangesAndSizes() throws {
         expectInvalidMetadata {
             _ = try CoreAudioDeviceQuery.validatedBufferFrameSizeRange(

@@ -77,7 +77,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func outputRouteCeilingDisablesFilterWithoutChangingDSPRateOrTopology() {
+    func outputRouteCeilingDisablesFilterWithoutChangingDSPRateOrFilterCount() {
         let profile = EQProfile(
             name: "Low-rate route",
             mode: .parametric,
@@ -99,7 +99,7 @@ struct EQCoreTests {
         #expect(lowRateRoute.configuration.sampleRate == 48_000)
         #expect(lowRateRoute.configuration.maximumUsableFrequency == 7_200)
         #expect(lowRateRoute.configuration.coefficients == [.identity])
-        #expect(lowRateRoute.hasRealtimeCompatibleTopology(with: fullRate))
+        #expect(lowRateRoute.configuration.coefficients.count == fullRate.configuration.coefficients.count)
     }
 
     @Test
@@ -893,7 +893,7 @@ struct EQCoreTests {
         }
 
         #expect(result.completedTransition)
-        #expect(transition.activeConfiguration.coefficients.count == 2)
+        #expect(!transition.isTransitioning)
     }
 
     @Test
@@ -937,7 +937,17 @@ struct EQCoreTests {
         #expect(abs(samples[0] - 0.5) < 0.000_001)
         #expect(abs(samples[3] - 0.25) < 0.000_001)
         #expect(result.completedTransition)
-        #expect(transition.activeConfiguration.isBypassed)
+
+        var steadyState = [Float](repeating: 0.25, count: 4)
+        let steadyStateResult = steadyState.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        #expect(steadyState == [0.25, 0.25, 0.25, 0.25])
+        #expect(!steadyStateResult.completedTransition)
     }
 
     @Test

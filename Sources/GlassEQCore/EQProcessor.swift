@@ -195,13 +195,6 @@ public struct EQRenderConfiguration: Sendable {
         self.preparationSucceeded = !configuration.usesConvolution
     }
 
-    public func hasRealtimeCompatibleTopology(with other: EQRenderConfiguration) -> Bool {
-        configuration.sampleRate == other.configuration.sampleRate
-            && configuration.channelCount == other.configuration.channelCount
-            && configuration.usesConvolution == other.configuration.usesConvolution
-            && channelFilterCounts == other.channelFilterCounts
-    }
-
     public var isNumericallySafe: Bool {
         preparationSucceeded
             && configuration.sampleRate.isFinite
@@ -575,18 +568,6 @@ public struct EQProcessor: Sendable {
 
     public mutating func processNonInterleaved(_ channels: inout [[Float]]) {
         guard !configuration.isBypassed else {
-            return
-        }
-
-        if configuration.usesConvolution {
-            for channelIndex in channels.indices {
-                for sampleIndex in channels[channelIndex].indices {
-                    channels[channelIndex][sampleIndex] = processSample(
-                        channels[channelIndex][sampleIndex],
-                        channel: channelIndex
-                    )
-                }
-            }
             return
         }
 
