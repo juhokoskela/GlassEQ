@@ -288,11 +288,11 @@ final class SettingsCoordinator: NSObject {
     #endif
 
     private func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        if let response = try await fileImportPickerResponse(for: command) {
-            return response
-        }
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
+        }
+        if let response = try await fileImportPickerResponse(for: command, model: model) {
+            return response
         }
         return try await model.performSettingsCommand(command)
     }
@@ -1153,25 +1153,33 @@ private final class InProcessSettingsClient: SettingsCommanding {
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        if let response = try await fileImportPickerResponse(for: command) {
-            return response
-        }
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
+        }
+        if let response = try await fileImportPickerResponse(for: command, model: model) {
+            return response
         }
         return try await model.performSettingsCommand(command)
     }
 }
 
 @MainActor
-private func fileImportPickerResponse(
-    for command: SettingsCommand
+func fileImportPickerResponse(
+    for command: SettingsCommand,
+    model: GlassEQAppModel,
+    picker: @MainActor (SettingsFileImportMode, Double) async throws -> SettingsFileImportSelectionDTO? = { mode, expectedSampleRate in
+        try await SettingsFileImportPicker.choose(
+            mode: mode,
+            expectedSampleRate: expectedSampleRate
+        )
+    }
 ) async throws -> SettingsCommandResponse? {
     guard case let .chooseImportFiles(mode, expectedSampleRate) = command else {
         return nil
     }
-    return SettingsCommandResponse(fileImportSelection: try await SettingsFileImportPicker.choose(
-        mode: mode,
-        expectedSampleRate: expectedSampleRate
-    ))
+    try model.beginSettingsCommand()
+    defer {
+        model.finishSettingsCommand()
+    }
+    return SettingsCommandResponse(fileImportSelection: try await picker(mode, expectedSampleRate))
 }

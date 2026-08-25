@@ -3074,6 +3074,58 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsFilePickerIsRejectedAfterShutdownBegins() async {
+        let model = makeModel()
+        await model.stopAcceptingSettingsCommandsAndWait()
+        var pickerCallCount = 0
+
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await fileImportPickerResponse(
+                for: .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
+                model: model,
+                picker: { _, _ in
+                    pickerCallCount += 1
+                    return nil
+                }
+            )
+        }
+
+        #expect(pickerCallCount == 0)
+        model.resumeSettingsCommandsAfterCancelledQuit()
+    }
+
+    @Test
+    func shutdownWaitsForInFlightSettingsFilePicker() async throws {
+        let model = makeModel()
+        let picker = BlockingSettingsFileImportPicker()
+
+        let pickerTask = Task { @MainActor in
+            try await fileImportPickerResponse(
+                for: .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
+                model: model,
+                picker: picker.choose(mode:expectedSampleRate:)
+            )
+        }
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        var shutdownFinished = false
+        let shutdownTask = Task { @MainActor in
+            await model.stopAcceptingSettingsCommandsAndWait()
+            shutdownFinished = true
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(!shutdownFinished)
+
+        picker.complete(with: nil)
+        _ = try await pickerTask.value
+        await shutdownTask.value
+        #expect(shutdownFinished)
+        model.resumeSettingsCommandsAfterCancelledQuit()
+    }
+
+    @Test
     func settingsLaunchValidationFailureTerminatesPartiallyStartedHelper() async throws {
         let model = makeModel()
         let launcher = SleepingSettingsHelperLauncher()
@@ -3682,6 +3734,28 @@ private final class BlockingProfileImportOperation: @unchecked Sendable {
             return continuation
         }
         continuation?.resume(returning: result)
+    }
+}
+
+@MainActor
+private final class BlockingSettingsFileImportPicker {
+    private(set) var hasEntered = false
+    private var continuation: CheckedContinuation<SettingsFileImportSelectionDTO?, Never>?
+
+    func choose(
+        mode: SettingsFileImportMode,
+        expectedSampleRate: Double
+    ) async -> SettingsFileImportSelectionDTO? {
+        hasEntered = true
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func complete(with selection: SettingsFileImportSelectionDTO?) {
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(returning: selection)
     }
 }
 
