@@ -740,6 +740,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ) throws -> Void
         var waitBeforeRetry: () -> Void
         var stopSeparateClockBackend: () -> Void = {}
+        var stopCombinedResources: () -> Void = {}
     }
 
     final class AggregateCallbackFrameExpectation: @unchecked Sendable {
@@ -2354,7 +2355,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     ) throws {
         try topologyOperation.withLock { _ in
             traceDiagnostic { "diagnostic compatibility restore begin output=\(output.id)" }
-            try restoreSeparateClockBackend(
+            try restoreSeparateClockBackendOrStop(
                 afterRejectedPromotion: (output, profile),
                 preserveOutputBuffer: true
             )
@@ -2572,27 +2573,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 )
             },
             restoreSeparateClockOutput: {
-                do {
-                    try restoreSeparateClockBackend(
-                        afterRejectedPromotion: (output, profile),
-                        preserveOutputBuffer: preserveStagingOutputBuffer,
-                        testBoundary: testBoundary
-                    )
-                } catch {
-                    let restorationError = error
-                    if let testBoundary {
-                        testBoundary.stopSeparateClockBackend()
-                    } else {
-                        separateClockBackend.stop()
-                    }
-                    promotedHeadsetRoute.withLock { $0 = nil }
-                    deferredColdStartupRoute.withLock { $0 = nil }
-                    activeBackend.withLock { $0 = .combinedAggregate }
-                    traceDiagnostic {
-                        "combined handoff restoration failed error=\(restorationError)"
-                    }
-                    throw restorationError
-                }
+                try restoreSeparateClockBackendOrStop(
+                    afterRejectedPromotion: (output, profile),
+                    preserveOutputBuffer: preserveStagingOutputBuffer,
+                    testBoundary: testBoundary
+                )
             },
             waitBeforeRetry: {
                 if let testBoundary {
@@ -3314,13 +3299,64 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let metrics = snapshotMetrics()
         guard metrics.pairedTimestampDiscontinuities == 0,
               case .running(let output) = state else {
-            try restoreSeparateClockBackend(afterRejectedPromotion: context)
-            return .aggregateUnstable
+            return try rejectHeadsetAggregatePromotion(context)
         }
         promotedHeadsetRoute.withLock {
             $0 = Self.promotedHeadsetRoute(for: output)
         }
         return .promoted(output)
+    }
+
+    private func rejectHeadsetAggregatePromotion(
+        _ context: (output: AudioOutputDevice, profile: EQProfile),
+        testBoundary: CombinedStartupTestBoundary? = nil
+    ) throws -> HeadsetAggregatePromotionResult {
+        try restoreSeparateClockBackendOrStop(
+            afterRejectedPromotion: context,
+            testBoundary: testBoundary
+        )
+        return .aggregateUnstable
+    }
+
+    func rejectHeadsetAggregatePromotionForTesting(
+        output: AudioOutputDevice,
+        profile: EQProfile,
+        boundary: CombinedStartupTestBoundary
+    ) throws -> HeadsetAggregatePromotionResult {
+        try rejectHeadsetAggregatePromotion(
+            (output, profile),
+            testBoundary: boundary
+        )
+    }
+
+    private func restoreSeparateClockBackendOrStop(
+        afterRejectedPromotion context: (output: AudioOutputDevice, profile: EQProfile),
+        preserveOutputBuffer: Bool = false,
+        testBoundary: CombinedStartupTestBoundary? = nil
+    ) throws {
+        do {
+            try restoreSeparateClockBackend(
+                afterRejectedPromotion: context,
+                preserveOutputBuffer: preserveOutputBuffer,
+                testBoundary: testBoundary
+            )
+        } catch {
+            let restorationError = error
+            if let testBoundary {
+                testBoundary.stopSeparateClockBackend()
+                testBoundary.stopCombinedResources()
+            } else {
+                separateClockBackend.stop()
+                stopCombinedResourcesSerialized(restoringDirectPlayback: true)
+            }
+            promotedHeadsetRoute.withLock { $0 = nil }
+            deferredColdStartupRoute.withLock { $0 = nil }
+            activeBackend.withLock { $0 = .combinedAggregate }
+            traceDiagnostic {
+                "compatibility restoration failed error=\(restorationError)"
+            }
+            throw restorationError
+        }
     }
 
     private func restoreSeparateClockBackend(

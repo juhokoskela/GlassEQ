@@ -468,6 +468,7 @@ struct CoreAudioDeviceTests {
     func combinedHandoffRestorationFailurePreservesStartupError() {
         var events: [String] = []
         var compatibilityTapIsActive = true
+        var combinedGraphIsActive = true
         let output = output(
             id: 93,
             uid: "restoration-failure-output",
@@ -511,6 +512,10 @@ struct CoreAudioDeviceTests {
                     stopSeparateClockBackend: {
                         events.append("stop")
                         compatibilityTapIsActive = false
+                    },
+                    stopCombinedResources: {
+                        events.append("stop combined")
+                        combinedGraphIsActive = false
                     }
                 )
             )
@@ -523,7 +528,62 @@ struct CoreAudioDeviceTests {
         }
 
         #expect(!compatibilityTapIsActive)
-        #expect(events == ["attempt 16", "restore", "stop", "escape"])
+        #expect(!combinedGraphIsActive)
+        #expect(events == [
+            "attempt 16", "restore", "stop", "stop combined", "escape",
+        ])
+    }
+
+    @Test
+    func rejectedHeadsetPromotionStopsBothGraphsWhenRestorationFails() {
+        var events: [String] = []
+        let output = output(
+            id: 94,
+            uid: "rejected-promotion-output",
+            channelCount: 2,
+            sampleRate: 24_000,
+            bufferFrameSize: 480,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+        let profile = EQProfile(
+            name: "Rejected promotion",
+            mode: .parametric,
+            filters: []
+        )
+        let engine = SystemTapAudioEngine(
+            restorationStoreURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("rejected-promotion-\(UUID()).json")
+        )
+
+        do {
+            _ = try engine.rejectHeadsetAggregatePromotionForTesting(
+                output: output,
+                profile: profile,
+                boundary: .init(
+                    attempt: { _ in },
+                    restoreSeparateClockBackend: { _, _, _ in
+                        events.append("restore")
+                        throw HandoffRestorationTestError()
+                    },
+                    waitBeforeRetry: {},
+                    stopSeparateClockBackend: {
+                        events.append("stop compatibility")
+                    },
+                    stopCombinedResources: {
+                        events.append("stop combined")
+                    }
+                )
+            )
+            Issue.record("Expected rejected-promotion restoration to fail")
+        } catch is HandoffRestorationTestError {
+            events.append("escape")
+        } catch {
+            Issue.record("Expected the restoration error, got \(error)")
+        }
+
+        #expect(events == [
+            "restore", "stop compatibility", "stop combined", "escape",
+        ])
     }
 
     @Test
