@@ -639,6 +639,31 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func linkedImpulseResponseIsEncodedOnce() throws {
+        let source = ImpulseResponseSource(
+            sampleRate: 48_000,
+            samples: [1, 0.25, -0.125]
+        )
+        let profile = EQProfile(
+            name: "Linked IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(source)
+        )
+        let store = ProfileStore(profiles: [profile], fallbackProfileID: profile.id)
+
+        let data = try ProfilePersistence.encode(store)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let profiles = try #require(json["profiles"] as? [[String: Any]])
+        let encodedProfile = try #require(profiles.first)
+
+        #expect(encodedProfile["convolution"] != nil)
+        #expect(encodedProfile["leftConvolution"] == nil)
+        #expect(encodedProfile["rightConvolution"] == nil)
+        #expect(try ProfilePersistence.decode(data) == store)
+    }
+
+    @Test
     func decodeRejectsOversizedImportedImpulseResponse() throws {
         var profile = EQProfile.flatConvolution
         profile.convolution = .impulseResponse(ImpulseResponseSource(

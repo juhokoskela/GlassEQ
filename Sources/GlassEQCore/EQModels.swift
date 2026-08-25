@@ -228,8 +228,12 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         try container.encode(rightPreampDB, forKey: .rightPreampDB)
         try container.encode(rightFilters, forKey: .rightFilters)
         try container.encodeIfPresent(convolution, forKey: .convolution)
-        try container.encodeIfPresent(leftConvolution, forKey: .leftConvolution)
-        try container.encodeIfPresent(rightConvolution, forKey: .rightConvolution)
+        if leftConvolution != convolution {
+            try container.encodeIfPresent(leftConvolution, forKey: .leftConvolution)
+        }
+        if rightConvolution != convolution {
+            try container.encodeIfPresent(rightConvolution, forKey: .rightConvolution)
+        }
         try container.encode(isBypassed, forKey: .isBypassed)
     }
 
