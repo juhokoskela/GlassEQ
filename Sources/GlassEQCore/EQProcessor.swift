@@ -550,31 +550,6 @@ public struct EQProcessor: Sendable {
         return saturatedSamples
     }
 
-    public mutating func processNonInterleaved(_ channels: inout [[Float]]) {
-        guard !configuration.isBypassed else {
-            return
-        }
-
-        withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
-            for channelIndex in channels.indices {
-                guard channelIndex < channelStartBuffer.count else {
-                    continue
-                }
-                for sampleIndex in channels[channelIndex].indices {
-                    channels[channelIndex][sampleIndex] = Self.processSampleWithDiagnosticsUnchecked(
-                        channels[channelIndex][sampleIndex],
-                        channel: channelIndex,
-                        states: stateBuffer,
-                        coefficients: coefficientBuffer,
-                        channelStarts: channelStartBuffer,
-                        channelFilterCounts: channelFilterCountBuffer,
-                        preampLinearGains: preampLinearGainBuffer
-                    ).sample
-                }
-            }
-        }
-    }
-
     public mutating func processSample(_ input: Float, channel: Int) -> Float {
         processSampleWithDiagnostics(input, channel: channel).sample
     }

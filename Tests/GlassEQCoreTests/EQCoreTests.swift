@@ -626,7 +626,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func processorPassesThroughOutOfRangeChannels() {
+    func processorPassesThroughOutOfRangeChannel() {
         let profile = EQProfile(
             name: "Gain",
             mode: .parametric,
@@ -634,18 +634,9 @@ struct EQCoreTests {
             filters: []
         )
         var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var channels: [[Float]] = [
-            [0.1, 0.2],
-            [0.1, 0.2],
-            [0.1, 0.2]
-        ]
 
-        processor.processNonInterleaved(&channels)
         let outOfRange = processor.processSampleWithDiagnostics(0.25, channel: 4)
 
-        #expect(channels[0][0] > 0.1)
-        #expect(channels[1][0] > 0.1)
-        #expect(channels[2] == [0.1, 0.2])
         #expect(outOfRange.sample == 0.25)
         #expect(!outOfRange.saturated)
     }
