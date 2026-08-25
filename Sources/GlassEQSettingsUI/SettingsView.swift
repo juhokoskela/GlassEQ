@@ -1876,21 +1876,34 @@ private struct HeadroomRow: View {
 
     var body: some View {
         let needsHeadroom = recommendedPreampDB < activePreamp - 0.1
+        let adjustedProfile = profileApplyingRecommendedHeadroom(
+            profile,
+            recommendedPreampDB: recommendedPreampDB
+        )
+        let status = if !needsHeadroom {
+            localized("OK")
+        } else if adjustedProfile == nil {
+            localized("Required headroom exceeds the profile limit")
+        } else {
+            localized("Recommend \(localizedDecibels(recommendedPreampDB))")
+        }
         HStack {
             Text(localized("Headroom"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(width: 88, alignment: .leading)
-            Text(needsHeadroom ? localized("Recommend \(localizedDecibels(recommendedPreampDB))") : localized("OK"))
+            Text(status)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(needsHeadroom ? Color.orange : Color.secondary)
                 .accessibilityLabel(Text(localized("Headroom")))
-                .accessibilityValue(Text(needsHeadroom ? localized("Recommend \(localizedDecibels(recommendedPreampDB))") : localized("OK")))
+                .accessibilityValue(Text(status))
             Spacer()
             Button(localized("Apply")) {
-                apply(recommendedPreampDB)
+                if let adjustedProfile {
+                    profile = adjustedProfile
+                }
             }
-            .disabled(!needsHeadroom)
+            .disabled(!needsHeadroom || adjustedProfile == nil)
             .controlSize(.large)
             .accessibilityHint(Text(localized("Applies the recommended preamp to avoid clipping")))
         }
@@ -1905,15 +1918,36 @@ private struct HeadroomRow: View {
         }
     }
 
-    private func apply(_ value: Double) {
-        switch profile.channelMode {
-        case .linked:
-            profile.preampDB = value
-        case .stereo:
-            profile.leftPreampDB = min(profile.leftPreampDB, value)
-            profile.rightPreampDB = min(profile.rightPreampDB, value)
+}
+
+func profileApplyingRecommendedHeadroom(
+    _ profile: EQProfile,
+    recommendedPreampDB: Double
+) -> EQProfile? {
+    let activePreamp = switch profile.channelMode {
+    case .linked:
+        profile.preampDB
+    case .stereo:
+        max(profile.leftPreampDB, profile.rightPreampDB)
+    }
+    let attenuation = max(activePreamp - recommendedPreampDB, 0)
+    var adjusted = profile
+
+    switch adjusted.channelMode {
+    case .linked:
+        adjusted.preampDB -= attenuation
+        guard ProfilePersistence.preampRange.contains(adjusted.preampDB) else {
+            return nil
+        }
+    case .stereo:
+        adjusted.leftPreampDB -= attenuation
+        adjusted.rightPreampDB -= attenuation
+        guard ProfilePersistence.preampRange.contains(adjusted.leftPreampDB),
+              ProfilePersistence.preampRange.contains(adjusted.rightPreampDB) else {
+            return nil
         }
     }
+    return adjusted
 }
 
 private struct PendingHeadroomRow: View {
