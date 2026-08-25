@@ -308,7 +308,8 @@ public struct ProfileStoreRepairSummary: Equatable, Sendable {
 }
 
 public struct ProfileStore: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    static let initialSchemaVersion = 1
+    public static let currentSchemaVersion = 2
     public static let defaultProfiles: [EQProfile] = [.flatGraphic31, .flatGraphic10, .flatParametric]
 
     public var schemaVersion: Int
@@ -337,7 +338,7 @@ public struct ProfileStore: Codable, Equatable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.currentSchemaVersion
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.initialSchemaVersion
         profiles = try container.decode([EQProfile].self, forKey: .profiles)
         outputMappings = try container.decode([OutputDeviceProfileMapping].self, forKey: .outputMappings)
         fallbackProfileID = try container.decode(UUID.self, forKey: .fallbackProfileID)
