@@ -1400,7 +1400,14 @@ final class GlassEQAppModel {
         }
     }
 
-    private func clearProgrammeComparisonSession() {
+    private func clearProgrammeComparisonSession(
+        restoringEqualizedRendererIfRunning: Bool = false
+    ) {
+        if restoringEqualizedRendererIfRunning,
+           programmeComparisonReturnProfile != nil,
+           case .running = engine.state {
+            engine.setProgrammeComparisonSelection(.equalized)
+        }
         programmeComparisonTask?.cancel()
         programmeComparisonTask = nil
         programmeComparisonReturnProfile = nil
@@ -1649,6 +1656,7 @@ final class GlassEQAppModel {
             return
         }
 
+        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         let rollback = profileRollback()
         previewReturnProfile = nil
         switch result {
@@ -3227,6 +3235,7 @@ final class GlassEQAppModel {
               case .failed = engine.state else {
             return
         }
+        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         invalidatePendingEngineStart()
         lifecycleState = .stopped
         isRunning = false
