@@ -115,6 +115,66 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func renegotiationCannotOverwriteMetadataDuringSameRouteReplacement() async {
+        let initialOutput = makeOutput(
+            uid: "replacing-adaptive-output",
+            name: "Replacing Adaptive Output",
+            bufferFrameSize: 480
+        )
+        let replacementOutput = makeOutput(
+            uid: initialOutput.uid,
+            name: initialOutput.name,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(initialOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        engine.blockStart(for: replacementOutput.uid)
+        lookup.result = .success(replacementOutput)
+        observers.observers[0].emit(.success(replacementOutput))
+        await waitUntil {
+            engine.startCalls.count == 2
+                && model.currentOutputBufferFrameSize == replacementOutput.bufferFrameSize
+        }
+        #expect(engine.waitUntilStartIsBlocked(
+            for: replacementOutput.uid,
+            timeout: .now() + 1
+        ))
+
+        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
+            outputName: initialOutput.name,
+            outputUID: initialOutput.uid,
+            sampleRate: initialOutput.nominalSampleRate,
+            previousFrameSize: 256,
+            frameSize: initialOutput.bufferFrameSize,
+            playbackTargetFrames: 1_024,
+            cause: .stableDecay
+        ))
+        await settleAsyncWork()
+
+        #expect(model.currentOutputBufferFrameSize == replacementOutput.bufferFrameSize)
+
+        engine.unblockStart(for: replacementOutput.uid)
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.count == 2
+                && engine.state == .running(output: replacementOutput)
+        }
+    }
+
+    @Test
     func runtimeEngineFailureStopsTheModelAndSurfacesItsStatus() async {
         let output = makeOutput(uid: "runtime-output", name: "Runtime Output")
         let engine = FakeAudioEngine()

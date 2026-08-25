@@ -3219,7 +3219,10 @@ final class GlassEQAppModel {
     private func processPlaybackBufferRenegotiation(
         _ renegotiation: PlaybackBufferRenegotiation
     ) {
-        guard case .running(let output) = engine.state,
+        guard lifecycleState == .running,
+              isRunning,
+              engineStartTask == nil,
+              case .running(let output) = engine.state,
               output.uid == renegotiation.outputUID,
               output.uid == currentOutputUID,
               abs(output.nominalSampleRate - renegotiation.sampleRate) < 0.5,
