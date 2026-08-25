@@ -7,6 +7,72 @@ import Testing
 
 @Suite
 struct SettingsIPCTests {
+    @Test
+    func autoEQCatalogueParserReadsRecommendedResults() throws {
+        let markdown = """
+        # Recommended Results
+        - [Sennheiser HD 58X](./oratory1990/over-ear/Sennheiser%20HD%2058X)
+        - [7Hz Salnotes Zero](./crinacle/711%20in-ear/7Hz%20Salnotes%20Zero)
+        """
+
+        let entries = try AutoEQCatalogueParser.parse(markdown)
+
+        #expect(entries == [
+            AutoEQCatalogueEntry(
+                name: "Sennheiser HD 58X",
+                encodedResultPath: "oratory1990/over-ear/Sennheiser%20HD%2058X",
+                source: "oratory1990",
+                form: "Over-ear"
+            ),
+            AutoEQCatalogueEntry(
+                name: "7Hz Salnotes Zero",
+                encodedResultPath: "crinacle/711%20in-ear/7Hz%20Salnotes%20Zero",
+                source: "crinacle",
+                form: "In-ear"
+            )
+        ])
+    }
+
+    @Test
+    func autoEQProfileURLPreservesResultPathAndEncodesFilename() throws {
+        let entry = AutoEQCatalogueEntry(
+            name: "Sennheiser HD 58X",
+            encodedResultPath: "oratory1990/over-ear/Sennheiser%20HD%2058X",
+            source: "oratory1990",
+            form: "Over-ear"
+        )
+
+        let responseCurveURL = try AutoEQRepositoryClient.profileURL(
+            for: entry,
+            kind: .responseCurve
+        )
+        let parametricURL = try AutoEQRepositoryClient.profileURL(
+            for: entry,
+            kind: .parametric
+        )
+
+        #expect(responseCurveURL.absoluteString.hasSuffix(
+            "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20GraphicEQ.txt"
+        ))
+        #expect(parametricURL.absoluteString.hasSuffix(
+            "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20ParametricEQ.txt"
+        ))
+    }
+
+    @Test
+    func importedEQTextDetectorRecognizesREWHeaders() {
+        #expect(ImportedEQTextDetector.format(for: "* Filter Settings file") == .rew)
+        #expect(ImportedEQTextDetector.format(for: "Filter Settings file") == .rew)
+        #expect(ImportedEQTextDetector.format(for: "Room EQ Wizard V5.40") == .rew)
+        #expect(ImportedEQTextDetector.format(
+            for: "Filter 1: ON Modal Fc 44 Hz Gain -5 dB Q 3"
+        ) == .rew)
+        #expect(ImportedEQTextDetector.format(for: "GraphicEQ: 20 0; 20000 -1") == .autoEQ)
+        #expect(ImportedEQTextDetector.format(
+            for: "Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1"
+        ) == .autoEQ)
+    }
+
     @Test(arguments: [0.707, 0.12345678901234567, 20_000.125])
     func editableNumberTextRoundTripsTypedPrecision(_ value: Double) {
         let locale = Locale(identifier: "en_US_POSIX")
@@ -306,6 +372,31 @@ struct SettingsIPCTests {
             let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
             #expect(decoded == message)
         }
+    }
+
+    @Test
+    func impulseResponseImportCommandRoundTrips() throws {
+        let profile = EQProfile(
+            name: "Room IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25, -0.125]
+            ))
+        )
+        let command = SettingsCommand.importParsedProfile(profile)
+        let message = SettingsPipeMessage.request(
+            sessionToken: "token",
+            id: "impulse-response",
+            kind: .command,
+            command: command
+        )
+
+        let encoded = try SettingsPipeCodec.encodeLine(message)
+        let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
+
+        #expect(decoded == message)
     }
 
     @Test

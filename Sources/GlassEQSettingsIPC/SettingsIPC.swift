@@ -590,6 +590,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case useProfileForCurrentOutput(EQProfile)
     case setFallback(EQProfile)
     case importProfile(format: SettingsImportFormat, name: String, text: String)
+    case importParsedProfile(EQProfile)
     case preview(EQProfile)
     case stopPreview
     case startProgrammeComparison(EQProfile)

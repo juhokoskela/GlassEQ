@@ -74,18 +74,33 @@ public struct MagnitudeCurveSource: Codable, Equatable, Sendable {
     }
 }
 
+public struct ImpulseResponseSource: Codable, Equatable, Sendable {
+    public static let maximumFrameCount = MinimumPhaseFIRCompiler.tapCount
+
+    public var sampleRate: Double
+    public var samples: [Float]
+
+    public init(sampleRate: Double, samples: [Float]) {
+        self.sampleRate = sampleRate
+        self.samples = samples
+    }
+}
+
 public enum EQConvolutionSource: Equatable, Sendable {
     case magnitudeCurve(MagnitudeCurveSource)
+    case impulseResponse(ImpulseResponseSource)
 }
 
 extension EQConvolutionSource: Codable {
     private enum SourceType: String, Codable {
         case magnitudeCurve
+        case impulseResponse
     }
 
     private enum CodingKeys: String, CodingKey {
         case type
         case magnitudeCurve
+        case impulseResponse
     }
 
     public init(from decoder: any Decoder) throws {
@@ -94,6 +109,10 @@ extension EQConvolutionSource: Codable {
         case .magnitudeCurve:
             self = .magnitudeCurve(
                 try container.decode(MagnitudeCurveSource.self, forKey: .magnitudeCurve)
+            )
+        case .impulseResponse:
+            self = .impulseResponse(
+                try container.decode(ImpulseResponseSource.self, forKey: .impulseResponse)
             )
         }
     }
@@ -104,6 +123,9 @@ extension EQConvolutionSource: Codable {
         case .magnitudeCurve(let source):
             try container.encode(SourceType.magnitudeCurve, forKey: .type)
             try container.encode(source, forKey: .magnitudeCurve)
+        case .impulseResponse(let source):
+            try container.encode(SourceType.impulseResponse, forKey: .type)
+            try container.encode(source, forKey: .impulseResponse)
         }
     }
 }

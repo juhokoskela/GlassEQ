@@ -233,6 +233,22 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func importsREWTextWithUncommentedFilterSettingsHeader() throws {
+        let text = """
+        Filter Settings file
+
+        Room EQ V5.31.3
+        Equaliser: Generic
+        Filter 1: ON PK Fc 45.0 Hz Gain -4.5 dB Q 3.20
+        """
+
+        let profile = try EQProfileTextImporter.importREW(text)
+
+        #expect(profile.filters.count == 1)
+        #expect(profile.filters[0].frequency == 45)
+    }
+
+    @Test
     func importsREWFilterKindsAndDecimalCommas() throws {
         let text = """
         Filter 1: ON LS Fc 80,5 Hz Gain 3,5 dB Q 0,70
