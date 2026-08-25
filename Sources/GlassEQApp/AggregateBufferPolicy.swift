@@ -317,9 +317,11 @@ final class AggregateBufferPolicyStore {
 
     private static func previousAutomaticFrameSize(before frameSize: UInt32) -> UInt32? {
         switch frameSize {
-        case 64...:
+        case 65...:
+            64
+        case 33...64:
             32
-        case 32..<64:
+        case 17...32:
             16
         default:
             nil

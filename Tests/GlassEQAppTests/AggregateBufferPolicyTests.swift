@@ -166,6 +166,17 @@ struct AggregateBufferPolicyTests {
     }
 
     @Test
+    func cleanSessionsMapRuntimeAboveTheLadderToSixtyFour() throws {
+        let store = AggregateBufferPolicyStore(url: temporaryPolicyURL())
+        let route = fingerprint(uid: "clamped-runtime", stream: 0, sampleRate: 48_000)
+
+        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 512) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 512) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 512) == 64)
+        #expect(store.selection(for: route).automaticFrameSize == 64)
+    }
+
+    @Test
     func legacyOneShotLearningIsResetButFixedModeIsPreserved() throws {
         let url = temporaryPolicyURL()
         let data = Data(

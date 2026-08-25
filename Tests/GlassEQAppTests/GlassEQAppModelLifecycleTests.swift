@@ -782,13 +782,21 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 16)
     }
 
-    @Test
-    func automaticCleanSessionsRetryBelowTheAcceptedRuntimeRung() async throws {
+    @Test(arguments: [
+        (applied: UInt32(64), retry: UInt32(32)),
+        (applied: UInt32(512), retry: UInt32(64))
+    ])
+    func automaticCleanSessionsRetryBelowTheAcceptedRuntimeRung(
+        _ scenario: (applied: UInt32, retry: UInt32)
+    ) async throws {
         let storeURL = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: storeURL) }
-        let output = makeOutput(uid: "accepted-clean-rung", name: "Accepted Clean Rung")
+        let output = makeOutput(
+            uid: "accepted-clean-rung-\(scenario.applied)",
+            name: "Accepted Clean Rung"
+        )
         let engine = FakeAudioEngine()
-        engine.forcedAppliedAggregateBufferFrameSize = 64
+        engine.forcedAppliedAggregateBufferFrameSize = scenario.applied
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
             storeURL: storeURL,
@@ -803,7 +811,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             model.lifecycleState == .running
                 && engine.startCalls.count == 1
-                && model.settingsSnapshot().currentOutputBufferFrameSize == 64
+                && model.settingsSnapshot().currentOutputBufferFrameSize == scenario.applied
         }
 
         var metrics = engine.metrics
@@ -825,8 +833,11 @@ struct GlassEQAppModelLifecycleTests {
             engine.startCalls.count == 5
         }
 
-        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [16, 32, 32, 32, 32])
-        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 64)
+        #expect(
+            engine.startCalls.map(\.aggregateBufferFrameSize)
+                == [16, 32, 32, 32, scenario.retry]
+        )
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == scenario.applied)
     }
 
     @Test
