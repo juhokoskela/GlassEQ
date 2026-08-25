@@ -360,12 +360,16 @@ private struct TextProfileImportPane: View {
                     Spacer()
 
                     Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(
-                            EQProfileTextExporter.exportEqualizerAPO(currentProfile),
-                            forType: .string
-                        )
-                        didCopyCurrentProfile = true
+                        do {
+                            let exported = try EQProfileTextExporter.exportEqualizerAPO(currentProfile)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(exported, forType: .string)
+                            didCopyCurrentProfile = true
+                            errorMessage = nil
+                        } catch {
+                            didCopyCurrentProfile = false
+                            errorMessage = error.localizedDescription
+                        }
                     } label: {
                         Label(
                             didCopyCurrentProfile
