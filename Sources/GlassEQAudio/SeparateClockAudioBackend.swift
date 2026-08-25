@@ -1621,7 +1621,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     func completeCombinedHandoff() {
         control.withLock { state in
-            stopLocked(&state, restoringDirectPlayback: false)
+            stopLocked(&state)
         }
         updatePlaybackBufferAdaptationTimer()
     }
@@ -1964,16 +1964,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
     #endif
 
-    private func stopLocked(
-        _ state: inout ControlState,
-        restoringDirectPlayback: Bool = true
-    ) {
+    private func stopLocked(_ state: inout ControlState) {
         state.runtime?.markStopping()
         stopOutputHalfLocked(&state)
-        stopCaptureHalfLocked(
-            &state,
-            restoringDirectPlayback: restoringDirectPlayback
-        )
+        stopCaptureHalfLocked(&state)
         state.activeProfile = nil
         state.profileRevision &+= 1
         state.playbackBufferAdaptationEvidence = PlaybackBufferAdaptationEvidence()
@@ -2091,20 +2085,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         traceDiagnostic { "compatibility capture create end device=\(state.aggregateDeviceID)" }
     }
 
-    private func stopCaptureHalfLocked(
-        _ state: inout ControlState,
-        restoringDirectPlayback: Bool = false
-    ) {
+    private func stopCaptureHalfLocked(_ state: inout ControlState) {
         state.runtime?.markStopping()
-
-        // Hand direct playback back to HAL as soon as capture stops. Destroying an
-        // always-muted tap first can leave an active client silent until it rebuilds.
-        if restoringDirectPlayback, state.tapID != kAudioObjectUnknown {
-            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
-                .mutedWhenTapped,
-                tapID: state.tapID
-            )
-        }
 
         if state.aggregateDeviceID != kAudioObjectUnknown, let captureIOProcID = state.captureIOProcID {
             _ = AudioDeviceStop(state.aggregateDeviceID, captureIOProcID)

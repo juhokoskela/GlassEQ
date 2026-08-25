@@ -2818,14 +2818,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 }
             }
 
-            if let installedTaps {
-                prepareTapSetForDirectPlayback(installedTaps)
-            }
             let installedTapsMatch = installedTaps?.main == taps?.main
                 && installedTaps?.systemSounds == taps?.systemSounds
-            if let taps, !installedTapsMatch {
-                prepareTapSetForDirectPlayback(taps)
-            }
             if let preparedAggregate {
                 _ = disposeDetachedCombinedAggregate(
                     DetachedCombinedAggregate(
@@ -3611,12 +3605,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             state.state = .stopped
             state.status = .stopped
         }
-        // Once the IOProc stops reading a mutedWhenTapped tap, HAL resumes the source's
-        // direct route. Do this before dismantling the aggregate so active clients do not
-        // have to recover from an unread, always-muted tap.
-        if restoringDirectPlayback, let detachedTaps {
-            prepareTapSetForDirectPlayback(detachedTaps)
-        }
+        // mutedWhenTapped restores direct output when the IOProc stops reading the taps.
+        // Explicit handback skips the fade; rebuild teardown retains it.
         if let detachedAggregate {
             let records = disposeDetachedCombinedAggregate(
                 detachedAggregate,
@@ -3669,21 +3659,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
         detached.runtime?.drainDSPConfigBoxes()
         return records
-    }
-
-    private func prepareTapSetForDirectPlayback(_ taps: CombinedTapSet) {
-        if taps.main != kAudioObjectUnknown {
-            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
-                .mutedWhenTapped,
-                tapID: taps.main
-            )
-        }
-        if taps.systemSounds != kAudioObjectUnknown {
-            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
-                .mutedWhenTapped,
-                tapID: taps.systemSounds
-            )
-        }
     }
 
     private func detachTapSetLocked(_ state: inout ControlState) -> CombinedTapSet? {
@@ -4715,19 +4690,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
     }
 
-    static func tapInputChannelOffset(
-        physicalInputChannelCount: Int,
-        aggregateInputChannelCount: Int,
-        tapChannelCount: Int
-    ) -> Int? {
-        guard physicalInputChannelCount >= 0,
-              tapChannelCount > 0,
-              aggregateInputChannelCount == physicalInputChannelCount + tapChannelCount else {
-            return nil
-        }
-        return physicalInputChannelCount
-    }
-
     static func tapInputChannelOffsets(
         physicalInputChannelCount: Int,
         aggregateInputChannelCount: Int,
@@ -5136,10 +5098,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return UInt64(
             max((Double(frameCount) * 1_000_000_000 / sampleRate).rounded(), 1)
         )
-    }
-
-    static func preferredBufferFrameSize(for _: AudioOutputDevice) -> UInt32 {
-        preferredAggregateBufferFrameSize
     }
 
     static func timestampSlopeAgrees(

@@ -1180,13 +1180,6 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func preferredBufferFrameSizeUses16FramesForStandardSpeakerRoutes() {
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 128)) == 16)
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 512)) == 16)
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 2_048)) == 16)
-    }
-
-    @Test
     func renderDeadlineMissesRequireAtLeastTwoCallbackPeriods() {
         #expect(SystemTapAudioEngine.missedRenderDeadlines(
             elapsedNanoseconds: 650_000,
@@ -1300,16 +1293,6 @@ struct CoreAudioDeviceTests {
             rateScalar: 1.03,
             rateScalarIsValid: true
         ))
-    }
-
-    @Test
-    func aggregateBufferPreferenceIs16FramesForBluetoothAndLowSampleRateRoutes() {
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(
-            for: output(channelCount: 2, bufferFrameSize: 256, transportType: kAudioDeviceTransportTypeBluetooth)
-        ) == 16)
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 256)
-        ) == 16)
     }
 
     @Test
