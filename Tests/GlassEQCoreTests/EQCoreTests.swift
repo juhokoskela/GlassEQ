@@ -1,5 +1,5 @@
 import Darwin
-import GlassEQCore
+@testable import GlassEQCore
 import Foundation
 import Testing
 
@@ -381,6 +381,61 @@ struct EQCoreTests {
     }
 
     @Test
+    func programmeComparisonCallbackPathStaysWithinGenerousDebugBudget() {
+        guard !isThreadSanitizerRuntimeLoaded else {
+            return
+        }
+        let profile = EQProfile.flatGraphic31
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: profile,
+                sampleRate: 48_000,
+                channelCount: 2
+            )),
+            maximumFrameCount: 64,
+            channelCount: 2,
+            sampleRate: 48_000
+        )
+        let didBegin = transition.beginProgrammeComparison(
+            equalizedProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: profile,
+                sampleRate: 48_000,
+                channelCount: 2
+            )),
+            filtersOffProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: profile.programmeComparisonReference,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
+        )
+        #expect(didBegin)
+        var samples = makeStereoTestBlock(frameCount: 64, sampleRate: 48_000)
+        for _ in 0..<24 {
+            _ = samples.withUnsafeMutableBufferPointer {
+                transition.processInterleavedWithDiagnostics(
+                    $0,
+                    frameCount: 64,
+                    channelCount: 2
+                )
+            }
+        }
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        for _ in 0..<1_024 {
+            _ = samples.withUnsafeMutableBufferPointer {
+                transition.processInterleavedWithDiagnostics(
+                    $0,
+                    frameCount: 64,
+                    channelCount: 2
+                )
+            }
+        }
+
+        #expect(start.duration(to: clock.now) < .seconds(4))
+    }
+
+    @Test
     func preparedRenderConfigurationMatchesConfigurationInitializer() {
         let profile = EQProfile(
             name: "Prepared",
@@ -657,6 +712,248 @@ struct EQCoreTests {
         #expect(abs(samples[3] - 0.25) < 0.000_001)
         #expect(result.completedTransition)
         #expect(transition.activeConfiguration.isBypassed)
+    }
+
+    @Test
+    func programmeComparisonReferenceKeepsPreampAndDisablesOnlyFilters() {
+        let profile = EQProfile(
+            name: "Stereo",
+            mode: .parametric,
+            channelMode: .stereo,
+            preampDB: -7,
+            filters: [
+                EQFilter(kind: .peak, frequency: 1_000, gainDB: 4, q: 1)
+            ],
+            leftPreampDB: -5,
+            leftFilters: [
+                EQFilter(kind: .lowShelf, frequency: 100, gainDB: 3, q: 0.7)
+            ],
+            rightPreampDB: -9,
+            rightFilters: [
+                EQFilter(kind: .highShelf, frequency: 8_000, gainDB: -2, q: 0.7)
+            ]
+        )
+        var bypassed = profile
+        bypassed.isBypassed = true
+
+        let reference = bypassed.programmeComparisonReference
+
+        #expect(reference.preampDB == -7)
+        #expect(reference.leftPreampDB == -5)
+        #expect(reference.rightPreampDB == -9)
+        #expect(reference.channelMode == .stereo)
+        #expect(reference.filters.isEmpty)
+        #expect(reference.leftFilters.isEmpty)
+        #expect(reference.rightFilters.isEmpty)
+        #expect(!reference.isBypassed)
+    }
+
+    @Test
+    func programmeLoudnessMatcherAttenuatesOnlyTheLouderBranch() {
+        let sampleRate = 48_000.0
+        let frameCount = Int(sampleRate * 4)
+        var equalized = [Float](repeating: 0, count: frameCount * 2)
+        var filtersOff = [Float](repeating: 0, count: frameCount * 2)
+        for frame in 0..<frameCount {
+            let sample = Float(sin(2 * Double.pi * 1_000 * Double(frame) / sampleRate))
+            equalized[frame * 2] = sample * 0.2
+            equalized[frame * 2 + 1] = sample * 0.2
+            filtersOff[frame * 2] = sample * 0.1
+            filtersOff[frame * 2 + 1] = sample * 0.1
+        }
+        var matcher = RealtimeProgrammeLoudnessMatcher(
+            sampleRate: sampleRate,
+            channelCount: 2
+        )
+
+        equalized.withUnsafeBufferPointer { equalizedSamples in
+            filtersOff.withUnsafeBufferPointer { filtersOffSamples in
+                for frame in 0..<frameCount {
+                    _ = matcher.observeFrame(
+                        equalized: equalizedSamples,
+                        filtersOff: filtersOffSamples,
+                        sampleOffset: frame * 2,
+                        channelCount: 2
+                    )
+                }
+            }
+        }
+
+        let match = matcher.snapshot
+        #expect(match.isReady)
+        #expect(abs(match.equalizedAttenuationDB + 6.0206) < 0.02)
+        #expect(abs(match.filtersOffAttenuationDB) < 0.000_001)
+    }
+
+    @Test
+    func kWeightingCoefficientsMatchBS1770At48KHz() {
+        let shelf = KWeightingCoefficients.kWeightingShelf(sampleRate: 48_000)
+        #expect(abs(shelf.b0 - 1.535_124_9) < 0.000_001)
+        #expect(abs(shelf.b1 + 2.691_696_2) < 0.000_001)
+        #expect(abs(shelf.b2 - 1.198_392_9) < 0.000_001)
+        #expect(abs(shelf.a1 + 1.690_659_3) < 0.000_001)
+        #expect(abs(shelf.a2 - 0.732_480_76) < 0.000_001)
+
+        let highPass = KWeightingCoefficients.kWeightingHighPass(sampleRate: 48_000)
+        #expect(highPass.b0 == 1)
+        #expect(highPass.b1 == -2)
+        #expect(highPass.b2 == 1)
+        #expect(abs(highPass.a1 + 1.990_047_5) < 0.000_001)
+        #expect(abs(highPass.a2 - 0.990_072_25) < 0.000_001)
+    }
+
+    @Test
+    func programmeComparisonTransitionsIntoBothBranchesAndBackOut() {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let equalized = EQProfile(
+            name: "Equalized",
+            mode: .parametric,
+            preampDB: 6.020_599_913,
+            filters: []
+        )
+        let filtersOff = EQProfile(name: "Filters off", mode: .parametric, filters: [])
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 48_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 4,
+            channelCount: 1,
+            sampleRate: 48_000,
+            warmupSeconds: 0,
+            blendSeconds: 4.0 / 48_000
+        )
+
+        let didBeginComparison = transition.beginProgrammeComparison(
+            equalizedProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: equalized,
+                sampleRate: 48_000,
+                channelCount: 1
+            )),
+            filtersOffProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: filtersOff,
+                sampleRate: 48_000,
+                channelCount: 1
+            ))
+        )
+        #expect(didBeginComparison)
+        var entry = [Float](repeating: 0.25, count: 4)
+        let entryResult = entry.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        #expect(entryResult.completedTransition)
+        #expect(entryResult.programmeComparison.isActive)
+        #expect(abs(entry[0] - 0.25) < 0.000_001)
+        #expect(abs(entry[3] - 0.5) < 0.000_001)
+
+        transition.setProgrammeComparisonSelection(.filtersOff)
+        var comparison = [Float](repeating: 0.25, count: 4)
+        let comparisonResult = comparison.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        #expect(comparisonResult.programmeComparison.isActive)
+        #expect(abs(comparison[0] - 0.5) < 0.000_001)
+        #expect(abs(comparison[3] - 0.25) < 0.000_001)
+
+        let didBeginExit = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+            profile: active,
+            sampleRate: 48_000,
+            channelCount: 1
+        )))
+        #expect(didBeginExit)
+        var exitSelection = [Float](repeating: 0.25, count: 4)
+        _ = exitSelection.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        var exitProfile = [Float](repeating: 0.25, count: 4)
+        let exitResult = exitProfile.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        #expect(exitResult.completedTransition)
+        #expect(exitResult.retiredProcessor != nil)
+        #expect(exitResult.secondRetiredProcessor != nil)
+        #expect(!exitResult.programmeComparison.isActive)
+        #expect(abs(exitProfile[0] - 0.5) < 0.000_001)
+        #expect(abs(exitProfile[3] - 0.25) < 0.000_001)
+    }
+
+    @Test
+    func programmeComparisonPublishesReadinessDuringSteadyStateRendering() {
+        let sampleRate = 48_000.0
+        let blockFrames = 4_800
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let equalized = EQProfile(
+            name: "Equalized",
+            mode: .parametric,
+            preampDB: 6.020_599_913,
+            filters: []
+        )
+        let filtersOff = EQProfile(name: "Filters off", mode: .parametric, filters: [])
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: sampleRate,
+                channelCount: 1
+            )),
+            maximumFrameCount: blockFrames,
+            channelCount: 1,
+            sampleRate: sampleRate,
+            warmupSeconds: 0,
+            blendSeconds: Double(blockFrames) / sampleRate
+        )
+        let didBegin = transition.beginProgrammeComparison(
+            equalizedProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: equalized,
+                sampleRate: sampleRate,
+                channelCount: 1
+            )),
+            filtersOffProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: filtersOff,
+                sampleRate: sampleRate,
+                channelCount: 1
+            ))
+        )
+        #expect(didBegin)
+
+        var lastResult = EQTransitionRenderResult()
+        for block in 0..<40 {
+            var samples = (0..<blockFrames).map { frame in
+                Float(sin(
+                    2 * Double.pi * 1_000
+                        * Double(block * blockFrames + frame)
+                        / sampleRate
+                )) * 0.1
+            }
+            lastResult = samples.withUnsafeMutableBufferPointer {
+                transition.processInterleavedWithDiagnostics(
+                    $0,
+                    frameCount: blockFrames,
+                    channelCount: 1
+                )
+            }
+        }
+
+        #expect(lastResult.programmeComparison.isActive)
+        #expect(lastResult.programmeComparison.isReady)
+        #expect(lastResult.programmeComparison.equalizedAttenuationDB < -5.9)
+        #expect(abs(lastResult.programmeComparison.filtersOffAttenuationDB) < 0.001)
     }
 
     @Test

@@ -1046,6 +1046,65 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func programmeComparisonKeepsTheActiveProfileAndReturnsThroughDSPTransition() async throws {
+        let active = makeProfile(name: "Active")
+        let output = makeOutput(uid: "comparison-output", name: "Comparison Output")
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var draft = active
+        draft.preampDB = -6
+        draft.filters = [
+            EQFilter(kind: .peak, frequency: 1_000, gainDB: 5, q: 1)
+        ]
+        try model.startProgrammeComparison(profile: draft)
+
+        #expect(engine.programmeComparisonCalls == [draft])
+        #expect(engine.programmeComparisonSelections == [.equalized])
+        #expect(model.activeProfile == active)
+        #expect(model.settingsSnapshot().programmeComparison.isActive)
+
+        model.selectProgrammeComparison(.filtersOff)
+        #expect(engine.programmeComparisonSelections == [.equalized, .filtersOff])
+        #expect(model.settingsSnapshot().programmeComparison.selection == .filtersOff)
+
+        engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
+            isActive: true,
+            isReady: true,
+            selection: .filtersOff,
+            equalizedAttenuationDB: -3.25
+        )
+        await waitUntil {
+            model.settingsSnapshot().programmeComparison.isReady
+        }
+        #expect(
+            abs(
+                model.settingsSnapshot().programmeComparison.equalizedAttenuationDB
+                    + 3.25
+            ) < 0.001
+        )
+
+        model.stopProgrammeComparison()
+
+        #expect(engine.programmeComparisonSelections.last == .equalized)
+        #expect(engine.updateDSPCalls.last == active)
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(model.activeProfile == active)
+    }
+
+    @Test
     func outputChangeToBypassedProfileDoesNotStartEngine() async {
         let fallback = makeProfile(name: "Fallback")
         var disabled = makeProfile(name: "Disabled")
@@ -3584,6 +3643,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateError: Error?
     private var _updateErrorPreservesRunningState = false
     private var _updateDSPResult = true
+    private var _beginProgrammeComparisonResult = true
     private var _startDelaySeconds: TimeInterval = 0
     private var _startDelaySecondsByUID: [String: TimeInterval] = [:]
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
@@ -3591,6 +3651,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _startCalls: [StartCall] = []
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
+    private var _programmeComparisonCalls: [EQProfile] = []
+    private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
+    private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
@@ -3648,6 +3711,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _updateDSPResult = newValue } }
     }
 
+    var beginProgrammeComparisonResult: Bool {
+        get { withLock { _beginProgrammeComparisonResult } }
+        set { withLock { _beginProgrammeComparisonResult = newValue } }
+    }
+
     var startDelaySeconds: TimeInterval {
         get { withLock { _startDelaySeconds } }
         set { withLock { _startDelaySeconds = newValue } }
@@ -3671,6 +3739,21 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var updateDSPCalls: [EQProfile] {
         get { withLock { _updateDSPCalls } }
         set { withLock { _updateDSPCalls = newValue } }
+    }
+
+    private(set) var programmeComparisonCalls: [EQProfile] {
+        get { withLock { _programmeComparisonCalls } }
+        set { withLock { _programmeComparisonCalls = newValue } }
+    }
+
+    private(set) var programmeComparisonSelections: [EQProgrammeComparisonSelection] {
+        get { withLock { _programmeComparisonSelections } }
+        set { withLock { _programmeComparisonSelections = newValue } }
+    }
+
+    var programmeComparisonSnapshot: EQProgrammeComparisonSnapshot {
+        get { withLock { _programmeComparisonSnapshot } }
+        set { withLock { _programmeComparisonSnapshot = newValue } }
     }
 
     private(set) var stopCallCount: Int {
@@ -3860,6 +3943,34 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _events.append("updateDSP:\(profile.id)")
             _updateDSPCalls.append(profile)
             return _updateDSPResult
+        }
+    }
+
+    func beginProgrammeComparison(profile: EQProfile) -> Bool {
+        withLock {
+            _programmeComparisonCalls.append(profile)
+            if _beginProgrammeComparisonResult {
+                _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
+                    isActive: true,
+                    selection: .equalized
+                )
+            }
+            return _beginProgrammeComparisonResult
+        }
+    }
+
+    func setProgrammeComparisonSelection(
+        _ selection: EQProgrammeComparisonSelection
+    ) {
+        withLock {
+            _programmeComparisonSelections.append(selection)
+            _programmeComparisonSnapshot.selection = selection
+        }
+    }
+
+    func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+        withLock {
+            _programmeComparisonSnapshot
         }
     }
 

@@ -25,6 +25,8 @@ The audio render path must not allocate, lock, touch disk, log, parse text, muta
 
 A watchdog observes render progress outside the callback. One three-second steady-state stall stops the engine before rebuilding it once. Another stall within 60 seconds leaves GlassEQ stopped, restoring direct system audio until the user explicitly retries.
 
+Programme-loudness A/B comparison is another transient render mode, not a profile mutation. The renderer runs the draft profile and a filters-off reference in parallel; the reference retains the same linked or per-channel preamp gains. Both branches pass through BS.1770 K-weighting and a shared three-second rolling gate so they are measured over the same programme passages. GlassEQ attenuates only the louder branch, smooths match changes over 500 ms, and crossfades A/B selection over 10 ms. Starting and stopping the comparison reuse the whole-bank warm-up and transition path, including a gain restoration before returning to the saved active profile. The measured gains, selected branch, and filters-off reference are never persisted.
+
 ## Current Implementation Status
 
 This repository contains the SwiftPM project, DSP engine, importers, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.

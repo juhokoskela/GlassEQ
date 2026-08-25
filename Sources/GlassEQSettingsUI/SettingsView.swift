@@ -182,6 +182,7 @@ func settingsCanDeleteSelectedProfile(_ snapshot: SettingsSnapshot) -> Bool {
     !snapshot.profileStoreProtection.isProtected
         && snapshot.profiles.count > 1
         && !snapshot.isPreviewing
+        && !snapshot.programmeComparison.isActive
         && snapshot.selectedProfileID != snapshot.activeProfileID
 }
 
@@ -271,7 +272,7 @@ public struct SettingsView: View {
                 onDuplicate: duplicateSelectedProfile,
                 onDelete: deleteSelectedProfile,
                 canDeleteSelectedProfile: canDeleteSelectedProfile,
-                isReadOnly: isProfileStoreProtected
+                isReadOnly: isProfileStoreProtected || snapshot.programmeComparison.isActive
             )
                 .frame(width: 260)
 
@@ -288,6 +289,9 @@ public struct SettingsView: View {
                 onImport: importProfile,
                 onPreview: previewDraft,
                 onStopPreview: stopPreview,
+                onStartProgrammeComparison: startProgrammeComparison,
+                onSelectProgrammeComparison: selectProgrammeComparison,
+                onStopProgrammeComparison: stopProgrammeComparison,
                 onResetDiagnostics: resetDiagnostics,
                 onSetAggregateBufferMode: setAggregateBufferMode,
                 onRetryAutomaticAggregateBuffer: retryAutomaticAggregateBuffer,
@@ -397,6 +401,20 @@ public struct SettingsView: View {
 
     private func stopPreview() {
         perform(.stopPreview)
+    }
+
+    private func startProgrammeComparison() {
+        perform(.startProgrammeComparison(snapshot.draftProfile))
+    }
+
+    private func selectProgrammeComparison(
+        _ selection: EQProgrammeComparisonSelection
+    ) {
+        perform(.selectProgrammeComparison(selection))
+    }
+
+    private func stopProgrammeComparison() {
+        perform(.stopProgrammeComparison)
     }
 
     private func resetDiagnostics() {
@@ -971,6 +989,9 @@ private struct ProfileDetail: View {
     var onImport: (ImportFormat, String, String) async -> Bool
     var onPreview: () -> Void
     var onStopPreview: () -> Void
+    var onStartProgrammeComparison: () -> Void
+    var onSelectProgrammeComparison: (EQProgrammeComparisonSelection) -> Void
+    var onStopProgrammeComparison: () -> Void
     var onResetDiagnostics: () -> Void
     var onSetAggregateBufferMode: (SettingsAggregateBufferMode) -> Void
     var onRetryAutomaticAggregateBuffer: () -> Void
@@ -986,6 +1007,7 @@ private struct ProfileDetail: View {
                     draftProfile: $draftProfile,
                     tab: $tab,
                     isReadOnly: isProfileStoreProtected
+                        || snapshot.programmeComparison.isActive
                 )
             }
 
@@ -1009,7 +1031,10 @@ private struct ProfileDetail: View {
                                 sampleRate: snapshot.currentOutputSampleRate,
                                 draftEditGeneration: draftEditGeneration
                             )
-                            .disabled(isProfileStoreProtected)
+                            .disabled(
+                                isProfileStoreProtected
+                                    || snapshot.programmeComparison.isActive
+                            )
                         case .importer:
                             ImportTab(
                                 profile: draftProfile,
@@ -1047,11 +1072,16 @@ private struct ProfileDetail: View {
                         hasUnsavedDraft: hasUnsavedDraft,
                         currentOutputUID: snapshot.currentOutputUID,
                         isPreviewing: snapshot.isPreviewing,
+                        isRunning: snapshot.isRunning,
+                        programmeComparison: snapshot.programmeComparison,
                         isReadOnly: isProfileStoreProtected,
                         onApply: onApply,
                         onRevert: onRevert,
                         onPreview: onPreview,
                         onStopPreview: onStopPreview,
+                        onStartProgrammeComparison: onStartProgrammeComparison,
+                        onSelectProgrammeComparison: onSelectProgrammeComparison,
+                        onStopProgrammeComparison: onStopProgrammeComparison,
                         onUseForCurrentOutput: onUseForCurrentOutput
                     )
                     .cardPanel(padding: 16)
@@ -1519,48 +1549,123 @@ private struct ApplyBar: View {
     var hasUnsavedDraft: Bool
     var currentOutputUID: String
     var isPreviewing: Bool
+    var isRunning: Bool
+    var programmeComparison: EQProgrammeComparisonSnapshot
     var isReadOnly: Bool
     var onApply: () -> Void
     var onRevert: () -> Void
     var onPreview: () -> Void
     var onStopPreview: () -> Void
+    var onStartProgrammeComparison: () -> Void
+    var onSelectProgrammeComparison: (EQProgrammeComparisonSelection) -> Void
+    var onStopProgrammeComparison: () -> Void
     var onUseForCurrentOutput: () -> Void
 
     var body: some View {
-        HStack {
-            Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(Text(localized("Profile edit state")))
-                .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
-            Spacer()
-            Button(localized("Revert")) {
-                onRevert()
-            }
-            .disabled(!hasUnsavedDraft)
-            .buttonStyle(ToolbarButtonStyle())
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(localized("Programme-loudness A/B"))
+                        .font(.caption.weight(.semibold))
+                    Text(comparisonDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if programmeComparison.isActive {
+                    Picker(
+                        localized("A/B branch"),
+                        selection: Binding(
+                            get: { programmeComparison.selection },
+                            set: { selection in
+                                onSelectProgrammeComparison(selection)
+                            }
+                        )
+                    ) {
+                        Text(localized("A · EQ"))
+                            .tag(EQProgrammeComparisonSelection.equalized)
+                        Text(localized("B · Filters off"))
+                            .tag(EQProgrammeComparisonSelection.filtersOff)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 210)
 
-            Button(localized("Apply")) {
-                onApply()
+                    Button(localized("Stop A/B")) {
+                        onStopProgrammeComparison()
+                    }
+                    .buttonStyle(ToolbarButtonStyle())
+                } else {
+                    Button(localized("Start A/B")) {
+                        onStartProgrammeComparison()
+                    }
+                    .disabled(isReadOnly || isPreviewing || !isRunning)
+                    .buttonStyle(ToolbarButtonStyle())
+                    .help(localized("Compares the draft EQ with its filters disabled while preserving the same preamp."))
+                }
             }
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(isReadOnly || !hasUnsavedDraft)
-            .buttonStyle(ToolbarButtonStyle(prominent: true))
 
-            Button(isPreviewing ? localized("Stop Preview") : localized("Preview")) {
-                isPreviewing ? onStopPreview() : onPreview()
-            }
-            .disabled(isReadOnly && !isPreviewing)
-            .buttonStyle(ToolbarButtonStyle())
-            .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
+            Divider()
 
-            Button(localized("Assign to current output")) {
-                onUseForCurrentOutput()
+            HStack {
+                Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Text(localized("Profile edit state")))
+                    .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+                Spacer()
+                Button(localized("Revert")) {
+                    onRevert()
+                }
+                .disabled(!hasUnsavedDraft || programmeComparison.isActive)
+                .buttonStyle(ToolbarButtonStyle())
+
+                Button(localized("Apply")) {
+                    onApply()
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(isReadOnly || !hasUnsavedDraft || programmeComparison.isActive)
+                .buttonStyle(ToolbarButtonStyle(prominent: true))
+
+                Button(isPreviewing ? localized("Stop Preview") : localized("Preview")) {
+                    isPreviewing ? onStopPreview() : onPreview()
+                }
+                .disabled((isReadOnly && !isPreviewing) || programmeComparison.isActive)
+                .buttonStyle(ToolbarButtonStyle())
+                .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
+
+                Button(localized("Assign to current output")) {
+                    onUseForCurrentOutput()
+                }
+                .disabled(
+                    isReadOnly
+                        || currentOutputUID.isEmpty
+                        || programmeComparison.isActive
+                )
+                .buttonStyle(ToolbarButtonStyle())
+                .accessibilityHint(Text(currentOutputUID.isEmpty ? localized("No current output is available") : localized("Maps the selected profile to the current output device")))
             }
-            .disabled(isReadOnly || currentOutputUID.isEmpty)
-            .buttonStyle(ToolbarButtonStyle())
-            .accessibilityHint(Text(currentOutputUID.isEmpty ? localized("No current output is available") : localized("Maps the selected profile to the current output device")))
         }
+    }
+
+    private var comparisonDescription: String {
+        guard programmeComparison.isActive else {
+            return localized("Compare the draft EQ with filters off. Preamp stays enabled in both.")
+        }
+        guard programmeComparison.isReady else {
+            return localized("Measuring the current programme…")
+        }
+        if programmeComparison.equalizedAttenuationDB < -0.05 {
+            return localized(
+                "Matched · EQ \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
+            )
+        }
+        if programmeComparison.filtersOffAttenuationDB < -0.05 {
+            return localized(
+                "Matched · Filters off \(localizedDecibels(programmeComparison.filtersOffAttenuationDB))"
+            )
+        }
+        return localized("Matched · no level adjustment needed")
     }
 }
 
