@@ -55,10 +55,6 @@ struct ImportedImpulseResponse: Equatable, Sendable {
     var channels: [Channel]
     var sourceFileCount: Int
 
-    var frameCount: Int {
-        channels.map(\.frameCount).max() ?? 0
-    }
-
     var channelCount: Int {
         channels.count
     }

@@ -53,7 +53,6 @@ struct ImpulseResponseWAVImporterTests {
             expectedSampleRate: 48_000
         )
 
-        #expect(imported.frameCount == 3)
         #expect(imported.channelCount == 1)
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .linked)

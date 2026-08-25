@@ -50,8 +50,6 @@ public enum SettingsAggregateBufferMode: String, CaseIterable, Codable, Identifi
 }
 
 public enum SettingsSection: String, Codable, Equatable, Sendable {
-    case editor
-    case importer
     case output
 }
 

@@ -432,10 +432,6 @@ public struct SettingsView: View {
 
     private func show(_ section: SettingsSection) {
         switch section {
-        case .editor:
-            tab = .editor
-        case .importer:
-            isImportSheetPresented = true
         case .output:
             tab = .output
         }
@@ -1351,17 +1347,6 @@ private enum EditorSection: String, CaseIterable, Identifiable {
     case output
 
     var id: String { rawValue }
-
-    init(_ section: SettingsSection) {
-        switch section {
-        case .editor:
-            self = .editor
-        case .importer:
-            self = .editor
-        case .output:
-            self = .output
-        }
-    }
 
     var title: String {
         switch self {

@@ -432,6 +432,19 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func settingsSectionCodableOnlyAcceptsOutput() throws {
+        let decoder = JSONDecoder()
+
+        #expect(try decoder.decode(SettingsSection.self, from: Data(#""output""#.utf8)) == .output)
+        #expect(throws: DecodingError.self) {
+            _ = try decoder.decode(SettingsSection.self, from: Data(#""editor""#.utf8))
+        }
+        #expect(throws: DecodingError.self) {
+            _ = try decoder.decode(SettingsSection.self, from: Data(#""importer""#.utf8))
+        }
+    }
+
+    @Test
     func programmeComparisonCommandsRoundTrip() throws {
         let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
         let commands: [SettingsCommand] = [
