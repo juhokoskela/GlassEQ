@@ -34,6 +34,45 @@ struct SettingsFileImportChoice {
     var errorMessage: String?
 }
 
+enum ProfileImportNameValidation: Equatable {
+    case valid(trimmedName: String)
+    case empty
+    case tooLong(byteCount: Int, maximum: Int)
+
+    init(_ name: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            self = .empty
+            return
+        }
+
+        let byteCount = trimmedName.utf8.count
+        let maximum = ProfilePersistence.maxProfileNameUTF8Bytes
+        guard byteCount <= maximum else {
+            self = .tooLong(byteCount: byteCount, maximum: maximum)
+            return
+        }
+        self = .valid(trimmedName: trimmedName)
+    }
+
+    var errorMessage: String? {
+        switch self {
+        case .valid:
+            nil
+        case .empty:
+            localized("Enter a profile name.")
+        case let .tooLong(byteCount, maximum):
+            localized("Profile name is \(byteCount) UTF-8 bytes; the maximum is \(maximum).")
+        }
+    }
+}
+
+private enum ProfileImportTaskPhase {
+    case idle
+    case preparing
+    case committing
+}
+
 struct ProfileImportSheet: View {
     var currentProfile: EQProfile
     var isReadOnly: Bool
@@ -43,6 +82,7 @@ struct ProfileImportSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var route = ProfileImportRoute.autoEQ
+    @State private var isImportCommitInFlight = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -60,6 +100,7 @@ struct ProfileImportSheet: View {
                 }
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)
+                .disabled(isImportCommitInFlight)
             }
             .frame(width: 190)
             .background(.regularMaterial)
@@ -71,6 +112,7 @@ struct ProfileImportSheet: View {
                 case .autoEQ:
                     AutoEQImportPane(
                         isReadOnly: isReadOnly,
+                        isCommitInFlight: $isImportCommitInFlight,
                         onImport: onImport,
                         onCancel: { dismiss() },
                         onImported: { dismiss() }
@@ -79,6 +121,7 @@ struct ProfileImportSheet: View {
                     TextProfileImportPane(
                         currentProfile: currentProfile,
                         isReadOnly: isReadOnly,
+                        isCommitInFlight: $isImportCommitInFlight,
                         onImport: onImport,
                         onImportParsedProfile: onImportParsedProfile,
                         onChooseImportFiles: onChooseImportFiles,
@@ -90,11 +133,13 @@ struct ProfileImportSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 580)
+        .interactiveDismissDisabled(isImportCommitInFlight)
     }
 }
 
 private struct AutoEQImportPane: View {
     var isReadOnly: Bool
+    @Binding var isCommitInFlight: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onCancel: () -> Void
     var onImported: () -> Void
@@ -104,8 +149,10 @@ private struct AutoEQImportPane: View {
     @State private var selection: AutoEQCatalogueEntry?
     @State private var profileKind = AutoEQProfileKind.responseCurve
     @State private var isLoading = true
-    @State private var isImporting = false
+    @State private var importPhase = ProfileImportTaskPhase.idle
     @State private var errorMessage: String?
+    @State private var catalogueTask: Task<Void, Never>?
+    @State private var importTask: Task<Void, Never>?
 
     private let client = AutoEQRepositoryClient()
 
@@ -180,12 +227,16 @@ private struct AutoEQImportPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(localized("Cancel"), action: onCancel)
+                Button(localized("Cancel")) {
+                    cancelPendingTasks()
+                    onCancel()
+                }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(importPhase == .committing)
                 Button {
                     importSelection()
                 } label: {
-                    if isImporting {
+                    if importPhase != .idle {
                         ProgressView()
                             .controlSize(.small)
                     } else {
@@ -193,12 +244,15 @@ private struct AutoEQImportPane: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selection == nil || isReadOnly || isImporting)
+                .disabled(selection == nil || isReadOnly || importPhase != .idle)
             }
             .padding(16)
         }
         .task {
             await loadCatalogue()
+        }
+        .onDisappear {
+            cancelPendingTasks()
         }
         .onChange(of: searchText) { _, _ in
             selection = nil
@@ -222,7 +276,10 @@ private struct AutoEQImportPane: View {
                 Text(errorMessage ?? localized("GlassEQ could not load the headphone catalogue."))
             } actions: {
                 Button(localized("Try Again")) {
-                    Task { await loadCatalogue() }
+                    catalogueTask?.cancel()
+                    catalogueTask = Task { @MainActor in
+                        await loadCatalogue()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 170)
@@ -274,44 +331,73 @@ private struct AutoEQImportPane: View {
     private func loadCatalogue() async {
         isLoading = true
         errorMessage = nil
+        defer {
+            isLoading = false
+        }
         do {
             entries = try await client.catalogue()
         } catch is CancellationError {
+            return
+        } catch where Task.isCancelled {
             return
         } catch {
             entries = []
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 
     private func importSelection() {
-        guard let selection else {
+        guard let selection, importPhase == .idle else {
             return
         }
-        isImporting = true
+        setImportPhase(.preparing)
         errorMessage = nil
         let kind = profileKind
-        Task {
+        importTask = Task { @MainActor in
             do {
+                try Task.checkCancellation()
                 let text = try await client.profileText(for: selection, kind: kind)
+                try Task.checkCancellation()
+                setImportPhase(.committing)
                 if let importError = await onImport(.autoEQ, selection.name, text) {
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     errorMessage = importError
-                    isImporting = false
+                    setImportPhase(.idle)
                 } else {
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    setImportPhase(.idle)
                     onImported()
                 }
+            } catch is CancellationError {
+                setImportPhase(.idle)
+            } catch where Task.isCancelled {
+                setImportPhase(.idle)
             } catch {
                 errorMessage = error.localizedDescription
-                isImporting = false
+                setImportPhase(.idle)
             }
         }
+    }
+
+    private func setImportPhase(_ phase: ProfileImportTaskPhase) {
+        importPhase = phase
+        isCommitInFlight = phase == .committing
+    }
+
+    private func cancelPendingTasks() {
+        catalogueTask?.cancel()
+        importTask?.cancel()
     }
 }
 
 private struct TextProfileImportPane: View {
     var currentProfile: EQProfile
     var isReadOnly: Bool
+    @Binding var isCommitInFlight: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
     var onChooseImportFiles: (SettingsFileImportMode) async -> SettingsFileImportChoice
@@ -324,9 +410,11 @@ private struct TextProfileImportPane: View {
     @State private var importedImpulseResponse: ImportedImpulseResponse?
     @State private var importedStereoTextPair: ImportedStereoTextPair?
     @State private var isLoadingFile = false
-    @State private var isImporting = false
+    @State private var importPhase = ProfileImportTaskPhase.idle
     @State private var didCopyCurrentProfile = false
     @State private var errorMessage: String?
+    @State private var fileSelectionTask: Task<Void, Never>?
+    @State private var importTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -345,6 +433,7 @@ private struct TextProfileImportPane: View {
                         Label(localized("Select a File…"), systemImage: "doc.badge.plus")
                     }
                     .controlSize(.large)
+                    .disabled(isLoadingFile || importPhase != .idle)
                     .help(localized("Opens EQ settings or a WAV impulse response"))
 
                     Button {
@@ -353,6 +442,7 @@ private struct TextProfileImportPane: View {
                         Label(localized("Select L/R Files…"), systemImage: "rectangle.split.2x1")
                     }
                     .controlSize(.large)
+                    .disabled(isLoadingFile || importPhase != .idle)
                     .help(localized("Imports separate text or mono WAV files for the left and right channels"))
 
                     if let importedFilename {
@@ -390,6 +480,13 @@ private struct TextProfileImportPane: View {
                     .font(.headline)
                 TextField(localized("Imported Profile"), text: $profileName)
                     .textFieldStyle(.roundedBorder)
+                if let nameError = profileNameValidation.errorMessage {
+                    Text(nameError)
+                        .font(.caption)
+                        .foregroundStyle(Color(nsColor: .systemRed))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel(Text(localized("Profile name error: \(nameError)")))
+                }
 
                 if let importedImpulseResponse {
                     impulseResponseSummary(importedImpulseResponse)
@@ -439,12 +536,16 @@ private struct TextProfileImportPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(localized("Cancel"), action: onCancel)
+                Button(localized("Cancel")) {
+                    cancelPendingTasks()
+                    onCancel()
+                }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(importPhase == .committing)
                 Button {
                     importSelectedProfile()
                 } label: {
-                    if isImporting {
+                    if importPhase != .idle {
                         ProgressView()
                             .controlSize(.small)
                     } else {
@@ -454,16 +555,23 @@ private struct TextProfileImportPane: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     isReadOnly
-                        || profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || profileNameValidation.errorMessage != nil
                         || (importedImpulseResponse == nil
                             && importedStereoTextPair == nil
                             && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         || isLoadingFile
-                        || isImporting
+                        || importPhase != .idle
                 )
             }
             .padding(16)
         }
+        .onDisappear {
+            cancelPendingTasks()
+        }
+    }
+
+    private var profileNameValidation: ProfileImportNameValidation {
+        ProfileImportNameValidation(profileName)
     }
 
     private var footerText: String {
@@ -573,10 +681,19 @@ private struct TextProfileImportPane: View {
     }
 
     private func chooseFiles(_ mode: SettingsFileImportMode) {
+        guard !isLoadingFile, importPhase == .idle else {
+            return
+        }
         isLoadingFile = true
         errorMessage = nil
-        Task {
+        fileSelectionTask = Task { @MainActor in
+            guard !Task.isCancelled else {
+                return
+            }
             let choice = await onChooseImportFiles(mode)
+            guard !Task.isCancelled else {
+                return
+            }
             if let selection = choice.selection {
                 apply(selection)
             }
@@ -636,38 +753,78 @@ private struct TextProfileImportPane: View {
     }
 
     private func importParsedProfile(_ importedProfile: EQProfile) {
+        guard case let .valid(name) = profileNameValidation,
+              importPhase == .idle else {
+            return
+        }
         var profile = importedProfile
-        profile.name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        isImporting = true
+        profile.name = name
+        setImportPhase(.committing)
         errorMessage = nil
-        Task {
+        importTask = Task { @MainActor in
+            guard !Task.isCancelled else {
+                return
+            }
             if let importError = await onImportParsedProfile(profile) {
+                guard !Task.isCancelled else {
+                    return
+                }
                 errorMessage = importError
-                isImporting = false
+                setImportPhase(.idle)
             } else {
+                guard !Task.isCancelled else {
+                    return
+                }
+                setImportPhase(.idle)
                 onImported()
             }
         }
     }
 
     private func importText() {
-        let name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard case let .valid(name) = profileNameValidation,
+              importPhase == .idle else {
+            return
+        }
         let importedText = text
         let format = ImportedEQTextDetector.format(for: importedText)
-        isImporting = true
+        setImportPhase(.committing)
         errorMessage = nil
-        Task {
+        importTask = Task { @MainActor in
+            guard !Task.isCancelled else {
+                return
+            }
             if let importError = await onImport(format, name, importedText) {
+                guard !Task.isCancelled else {
+                    return
+                }
                 errorMessage = importError
-                isImporting = false
+                setImportPhase(.idle)
             } else {
+                guard !Task.isCancelled else {
+                    return
+                }
+                setImportPhase(.idle)
                 onImported()
             }
         }
     }
+
+    private func cancelPendingTasks() {
+        fileSelectionTask?.cancel()
+        importTask?.cancel()
+    }
+
+    private func setImportPhase(_ phase: ProfileImportTaskPhase) {
+        importPhase = phase
+        isCommitInFlight = phase == .committing
+    }
 }
 
-private func readImportedTextFile(_ url: URL) throws -> String {
+func readImportedTextFile(
+    _ url: URL,
+    maximumBytes: Int = ProfileImportLimits.default.maxUTF8Bytes
+) throws -> String {
     let hasAccess = url.startAccessingSecurityScopedResource()
     defer {
         if hasAccess {
@@ -677,13 +834,57 @@ private func readImportedTextFile(_ url: URL) throws -> String {
 
     let values = try url.resourceValues(forKeys: [.fileSizeKey])
     if let fileSize = values.fileSize,
-       fileSize > ProfileImportLimits.default.maxUTF8Bytes {
+       fileSize > maximumBytes {
         throw ProfileImportError.inputTooLarge(
             byteCount: fileSize,
-            maximum: ProfileImportLimits.default.maxUTF8Bytes
+            maximum: maximumBytes
         )
     }
-    return try String(contentsOf: url, encoding: .utf8)
+    let handle = try FileHandle(forReadingFrom: url)
+    defer {
+        try? handle.close()
+    }
+    return try readBoundedImportedText(
+        from: handle,
+        knownFileSize: values.fileSize,
+        maximumBytes: maximumBytes
+    )
+}
+
+func readBoundedImportedText(
+    from handle: FileHandle,
+    knownFileSize: Int?,
+    maximumBytes: Int
+) throws -> String {
+    if let knownFileSize, knownFileSize > maximumBytes {
+        throw ProfileImportError.inputTooLarge(
+            byteCount: knownFileSize,
+            maximum: maximumBytes
+        )
+    }
+
+    var data = Data()
+    data.reserveCapacity(min(max(knownFileSize ?? 0, 0), maximumBytes))
+    while true {
+        try Task.checkCancellation()
+        let remainingCapacity = maximumBytes - data.count
+        let readCount = min(64 * 1_024, remainingCapacity + 1)
+        guard let chunk = try handle.read(upToCount: readCount), !chunk.isEmpty else {
+            break
+        }
+        data.append(chunk)
+        guard data.count <= maximumBytes else {
+            throw ProfileImportError.inputTooLarge(
+                byteCount: data.count,
+                maximum: maximumBytes
+            )
+        }
+    }
+
+    guard let text = String(data: data, encoding: .utf8) else {
+        throw CocoaError(.fileReadInapplicableStringEncoding)
+    }
+    return text
 }
 
 enum StereoTextPairImportError: Error, LocalizedError {
@@ -867,13 +1068,23 @@ public enum SettingsFileImportPicker {
             }
         }
 
-        return try await Task.detached(priority: .userInitiated) {
-            try loadSelection(
+        let loadTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let selection = try loadSelection(
                 mode: mode,
                 urls: urls,
                 expectedSampleRate: expectedSampleRate
             )
-        }.value
+            try Task.checkCancellation()
+            return selection
+        }
+        return try await withTaskCancellationHandler {
+            let selection = try await loadTask.value
+            try Task.checkCancellation()
+            return selection
+        } onCancel: {
+            loadTask.cancel()
+        }
     }
 
     static func loadSelection(
