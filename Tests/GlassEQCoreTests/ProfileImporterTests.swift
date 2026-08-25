@@ -156,14 +156,45 @@ struct ProfileImporterTests {
     @Test
     func ignoresDisabledEqualizerAPOFilters() throws {
         let text = """
-        Filter 1: OFF PK Fc 1000 Hz Gain 6 dB Q 1
-        Filter 2: ON PK Fc 2000 Hz Gain 3 dB Q 1
+        Filter 1: OFF BP Fc 1000 Hz Gain 6 dB Q 1
+        Filter 2: OFF
+        Filter 3: ON PK Fc 2000 Hz Gain 3 dB Q 1
         """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
         #expect(profile.filters.count == 1)
         #expect(profile.filters[0].frequency == 2_000)
+    }
+
+    @Test
+    func rejectsUnsupportedEnabledEqualizerAPOFiltersWithoutPartialImport() throws {
+        let text = """
+        Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
+        Filter 2: ON BP Fc 1000 Hz Gain 6 dB Q 1
+        """
+
+        #expect(throws: ProfileImportError.unsupportedEqualizerAPOFilter(
+            line: 2,
+            kind: "BP"
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
+    }
+
+    @Test
+    func rejectsEnabledEqualizerAPOFilterWithoutKind() throws {
+        let text = """
+        Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
+        Filter 2: ON
+        """
+
+        #expect(throws: ProfileImportError.unsupportedEqualizerAPOFilter(
+            line: 2,
+            kind: nil
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
     }
 
     @Test

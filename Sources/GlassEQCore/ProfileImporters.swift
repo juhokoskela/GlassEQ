@@ -48,6 +48,7 @@ public struct ProfileImportLimits: Equatable, Sendable {
 public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
     case noSupportedFilters
     case mixedEqualizerAPOFormats(graphicEQLine: Int, filterLine: Int)
+    case unsupportedEqualizerAPOFilter(line: Int, kind: String?)
     case inputTooLarge(byteCount: Int, maximum: Int)
     case tooManyLines(lineCount: Int, maximum: Int)
     case invalidNumber(line: Int, field: String, value: String)
@@ -64,6 +65,11 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
             return "No supported filters were found in the imported profile."
         case let .mixedEqualizerAPOFormats(graphicEQLine, filterLine):
             return "Line \(graphicEQLine) contains GraphicEQ, but line \(filterLine) contains a Filter directive. Import one EqualizerAPO format at a time."
+        case let .unsupportedEqualizerAPOFilter(line, kind):
+            if let kind {
+                return "Line \(line) uses unsupported enabled EqualizerAPO filter kind \(kind)."
+            }
+            return "Line \(line) is missing a supported enabled EqualizerAPO filter kind."
         case let .inputTooLarge(byteCount, maximum):
             return "Imported profile is \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
         case let .tooManyLines(lineCount, maximum):
@@ -191,10 +197,16 @@ public enum EQProfileTextImporter {
             }
 
             let isEnabled = !tokens.contains { $0.caseInsensitiveCompare("OFF") == .orderedSame }
-            guard isEnabled,
-                  let kindToken = value(afterAnyOf: ["ON", "OFF"], in: tokens),
-                  let kind = parseEqualizerAPOKind(kindToken) else {
+            guard isEnabled else {
                 continue
+            }
+            let kindToken = value(afterAnyOf: ["ON", "OFF"], in: tokens)
+            guard let kindToken,
+                  let kind = parseEqualizerAPOKind(kindToken) else {
+                throw ProfileImportError.unsupportedEqualizerAPOFilter(
+                    line: lineNumber,
+                    kind: kindToken
+                )
             }
 
             guard let frequency = try requiredValue(afterAnyOf: ["Fc", "F"], in: tokens, field: "frequency", line: lineNumber) else {
