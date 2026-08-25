@@ -930,6 +930,9 @@ struct GlassEQAppModelLifecycleTests {
                 && engine.startCalls.count == 1
                 && model.settingsSnapshot().currentOutputBufferFrameSize == scenario.applied
         }
+        await waitUntil {
+            engine.snapshotMetricsCallCount > 0
+        }
 
         var metrics = engine.metrics
         metrics.qualifyingPairedTimestampDiscontinuities = 2
@@ -4842,6 +4845,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
+    private var _snapshotMetricsCallCount = 0
     private var _events: [String] = []
     private var _preferredAggregateBufferFrameSize: UInt32 = 16
     private var _nativeOutputStreamIndex = 0
@@ -4966,6 +4970,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var metrics: AudioEngineMetrics {
         get { withLock { _metrics } }
         set { withLock { _metrics = newValue } }
+    }
+
+    var snapshotMetricsCallCount: Int {
+        withLock { _snapshotMetricsCallCount }
     }
 
     var reflectPreferredAggregateBufferFrameSize: Bool {
@@ -5295,7 +5303,8 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     func snapshotMetrics() -> AudioEngineMetrics {
         withLock {
-            _metrics
+            _snapshotMetricsCallCount += 1
+            return _metrics
         }
     }
 
