@@ -272,40 +272,121 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func finalCombinedHandoffQualificationFailureRestoresBeforeFailing() {
-        #expect(SystemTapAudioEngine.combinedStartupFailureDisposition(
-            isSeparateClockHandoff: true,
-            isQualificationFailure: true,
-            hasAnotherAttempt: false
-        ) == .restoreThenFail)
+    func finalCombinedHandoffQualificationFailureRestoresOutputBeforeEscaping() {
+        var events: [String] = []
+        var compatibilityOutputIsActive = true
+        let startupError = SystemTapAudioEngine.AggregateStartupQualificationError(
+            expectedFrameCount: 32,
+            snapshot: .init(
+                validCallbackStreak: 0,
+                observedCallbacks: 0,
+                rejectedCallbacks: 0
+            )
+        )
+
+        do {
+            try SystemTapAudioEngine.runCombinedStartupAttempts(
+                frameSizes: [16, 16, 32],
+                isSeparateClockHandoff: true,
+                attempt: { frameSize in
+                    #expect(compatibilityOutputIsActive)
+                    events.append("attempt \(frameSize)")
+                    compatibilityOutputIsActive = false
+                    throw startupError
+                },
+                restoreSeparateClockOutput: {
+                    #expect(!compatibilityOutputIsActive)
+                    events.append("restore")
+                    compatibilityOutputIsActive = true
+                },
+                waitBeforeRetry: {
+                    #expect(compatibilityOutputIsActive)
+                    events.append("wait")
+                }
+            )
+            Issue.record("Expected final qualification failure")
+        } catch let error as SystemTapAudioEngine.AggregateStartupQualificationError {
+            events.append("escape")
+            #expect(error.expectedFrameCount == startupError.expectedFrameCount)
+        } catch {
+            Issue.record("Expected the qualification error, got \(error)")
+        }
+
+        #expect(compatibilityOutputIsActive)
+        #expect(events == [
+            "attempt 16", "restore", "wait",
+            "attempt 16", "restore", "wait",
+            "attempt 32", "restore", "escape",
+        ])
     }
 
     @Test
-    func nonQualificationCombinedHandoffFailureRestoresWithoutRetrying() {
-        #expect(SystemTapAudioEngine.combinedStartupFailureDisposition(
-            isSeparateClockHandoff: true,
-            isQualificationFailure: false,
-            hasAnotherAttempt: true
-        ) == .restoreThenFail)
+    func nonQualificationCombinedHandoffFailureRestoresOutputBeforeEscaping() {
+        var events: [String] = []
+        var compatibilityOutputIsActive = true
+        let startupError = HandoffStartupTestError()
+
+        do {
+            try SystemTapAudioEngine.runCombinedStartupAttempts(
+                frameSizes: [16, 16, 32],
+                isSeparateClockHandoff: true,
+                attempt: { frameSize in
+                    #expect(compatibilityOutputIsActive)
+                    events.append("attempt \(frameSize)")
+                    compatibilityOutputIsActive = false
+                    throw startupError
+                },
+                restoreSeparateClockOutput: {
+                    #expect(!compatibilityOutputIsActive)
+                    events.append("restore")
+                    compatibilityOutputIsActive = true
+                },
+                waitBeforeRetry: {
+                    events.append("wait")
+                }
+            )
+            Issue.record("Expected non-qualification startup failure")
+        } catch let error as HandoffStartupTestError {
+            events.append("escape")
+            #expect(error === startupError)
+        } catch {
+            Issue.record("Expected the original startup error, got \(error)")
+        }
+
+        #expect(compatibilityOutputIsActive)
+        #expect(events == ["attempt 16", "restore", "escape"])
     }
 
     @Test
     func combinedHandoffRestorationFailurePreservesStartupError() {
-        let startupError = CoreAudioError(operation: "startup", status: -1)
-        let restorationError = CoreAudioError(operation: "restoration", status: -2)
+        var events: [String] = []
+        let startupError = HandoffStartupTestError()
 
         do {
-            try SystemTapAudioEngine.restoreAfterCombinedStartupFailure(
-                preserving: startupError
-            ) {
-                throw restorationError
-            }
+            try SystemTapAudioEngine.runCombinedStartupAttempts(
+                frameSizes: [16],
+                isSeparateClockHandoff: true,
+                attempt: { frameSize in
+                    events.append("attempt \(frameSize)")
+                    throw startupError
+                },
+                restoreSeparateClockOutput: {
+                    events.append("restore")
+                    throw HandoffRestorationTestError()
+                },
+                waitBeforeRetry: {
+                    events.append("wait")
+                }
+            )
             Issue.record("Expected handoff restoration to fail")
-        } catch let error as CoreAudioError {
-            #expect(error == startupError)
+        } catch let error as HandoffStartupTestError {
+            events.append("escape")
+            #expect(error === startupError)
         } catch {
             Issue.record("Expected the startup error, got \(error)")
         }
+
+        #expect(events == ["attempt 16", "restore", "escape"])
     }
 
     @Test
@@ -1427,6 +1508,10 @@ struct CoreAudioDeviceTests {
 private enum TestDeviceMutationError: Error {
     case recordFailed
 }
+
+private final class HandoffStartupTestError: Error {}
+
+private struct HandoffRestorationTestError: Error {}
 
 private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
     private let record: (String) -> Void

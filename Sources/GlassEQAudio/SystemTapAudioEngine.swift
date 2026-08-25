@@ -710,13 +710,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         case separateClock
     }
 
-    private struct StartupQualificationSnapshot {
+    struct StartupQualificationSnapshot {
         var validCallbackStreak: UInt64
         var observedCallbacks: UInt64
         var rejectedCallbacks: UInt64
     }
 
-    private struct AggregateStartupQualificationError: Error,
+    struct AggregateStartupQualificationError: Error,
         LocalizedError,
         CustomStringConvertible {
         var expectedFrameCount: Int
@@ -729,13 +729,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var description: String {
             errorDescription ?? "Core Audio callbacks did not settle during startup."
         }
-    }
-
-    enum CombinedStartupFailureDisposition: Equatable {
-        case fail
-        case retry
-        case restoreThenFail
-        case restoreThenRetry
     }
 
     private struct PromotedHeadsetRoute: Equatable {
@@ -2469,10 +2462,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let attemptFrameSizes = Self.startupAttemptFrameSizes(
             requestedFrameSize: requestedFrameSize
         )
-        var lastStartupError: (any Error)?
-
-        for (index, frameSize) in attemptFrameSizes.enumerated() {
-            do {
+        try Self.runCombinedStartupAttempts(
+            frameSizes: attemptFrameSizes,
+            isSeparateClockHandoff: isSeparateClockHandoff,
+            attempt: { frameSize in
                 try startCombinedAggregateAttempt(
                     output: output,
                     profile: profile,
@@ -2480,47 +2473,25 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     isSeparateClockHandoff: isSeparateClockHandoff,
                     usePhysicalFirstOrdering: usePhysicalFirstOrdering
                 )
-                return
-            } catch {
-                lastStartupError = error
-                let disposition = Self.combinedStartupFailureDisposition(
-                    isSeparateClockHandoff: isSeparateClockHandoff,
-                    isQualificationFailure: error is AggregateStartupQualificationError,
-                    hasAnotherAttempt: index + 1 < attemptFrameSizes.count
-                )
-                switch disposition {
-                case .fail:
-                    throw error
-                case .retry:
-                    break
-                case .restoreThenFail, .restoreThenRetry:
-                    try Self.restoreAfterCombinedStartupFailure(
-                        preserving: error
-                    ) {
-                        do {
-                            try restoreSeparateClockBackend(
-                                afterRejectedPromotion: (output, profile),
-                                preserveOutputBuffer: preserveStagingOutputBuffer
-                            )
-                        } catch {
-                            let restorationError = error
-                            traceDiagnostic {
-                                "combined handoff restoration failed error=\(restorationError)"
-                            }
-                            throw restorationError
-                        }
+            },
+            restoreSeparateClockOutput: {
+                do {
+                    try restoreSeparateClockBackend(
+                        afterRejectedPromotion: (output, profile),
+                        preserveOutputBuffer: preserveStagingOutputBuffer
+                    )
+                } catch {
+                    let restorationError = error
+                    traceDiagnostic {
+                        "combined handoff restoration failed error=\(restorationError)"
                     }
-                    if disposition == .restoreThenFail {
-                        throw error
-                    }
+                    throw restorationError
                 }
+            },
+            waitBeforeRetry: {
                 Thread.sleep(forTimeInterval: 0.05)
             }
-        }
-
-        if let lastStartupError {
-            throw lastStartupError
-        }
+        )
     }
 
     private func startCombinedAggregateAttempt(
@@ -4432,25 +4403,42 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return attempts
     }
 
-    static func combinedStartupFailureDisposition(
+    static func runCombinedStartupAttempts(
+        frameSizes: [UInt32],
         isSeparateClockHandoff: Bool,
-        isQualificationFailure: Bool,
-        hasAnotherAttempt: Bool
-    ) -> CombinedStartupFailureDisposition {
-        if isQualificationFailure, hasAnotherAttempt {
-            return isSeparateClockHandoff ? .restoreThenRetry : .retry
-        }
-        return isSeparateClockHandoff ? .restoreThenFail : .fail
-    }
-
-    static func restoreAfterCombinedStartupFailure(
-        preserving startupError: any Error,
-        restoration: () throws -> Void
+        attempt: (UInt32) throws -> Void,
+        restoreSeparateClockOutput: () throws -> Void,
+        waitBeforeRetry: () -> Void
     ) throws {
-        do {
-            try restoration()
-        } catch {
-            throw startupError
+        var lastStartupError: (any Error)?
+
+        for (index, frameSize) in frameSizes.enumerated() {
+            do {
+                try attempt(frameSize)
+                return
+            } catch {
+                let startupError = error
+                lastStartupError = startupError
+                let hasAnotherAttempt = index + 1 < frameSizes.count
+
+                if isSeparateClockHandoff {
+                    do {
+                        try restoreSeparateClockOutput()
+                    } catch {
+                        throw startupError
+                    }
+                }
+
+                guard startupError is AggregateStartupQualificationError,
+                      hasAnotherAttempt else {
+                    throw startupError
+                }
+                waitBeforeRetry()
+            }
+        }
+
+        if let lastStartupError {
+            throw lastStartupError
         }
     }
 
