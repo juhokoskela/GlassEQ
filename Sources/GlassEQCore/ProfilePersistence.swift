@@ -230,6 +230,22 @@ public enum ProfilePersistence {
             return recoverInvalidStore(at: url, timestamp: timestamp)
         }
 
+        let schemaVersion: Int
+        do {
+            schemaVersion = try decoder.decode(ProfileStoreSchemaEnvelope.self, from: data).schemaVersion
+        } catch {
+            return recoverInvalidStore(at: url, timestamp: timestamp)
+        }
+        if schemaVersion > ProfileStore.currentSchemaVersion {
+            return ProfileStoreLoadResult(
+                store: defaultStore(),
+                status: .unsupportedSchemaVersion(
+                    version: schemaVersion,
+                    maximumSupported: ProfileStore.currentSchemaVersion
+                )
+            )
+        }
+
         let decodedStore: ProfileStore
         do {
             decodedStore = try decodeRaw(data)
@@ -362,6 +378,20 @@ public enum ProfilePersistence {
         let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
         return data
+    }
+
+    private struct ProfileStoreSchemaEnvelope: Decodable {
+        var schemaVersion: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+                ?? ProfileStore.initialSchemaVersion
+        }
     }
 
     private struct ProfileStoreEnvelope: Decodable {
@@ -741,6 +771,11 @@ public enum ProfilePersistence {
         }
 
         summary.merge(store.repairReferences())
+
+        if store.schemaVersion >= ProfileStore.initialSchemaVersion,
+           store.schemaVersion < ProfileStore.currentSchemaVersion {
+            store.schemaVersion = ProfileStore.currentSchemaVersion
+        }
 
         do {
             try validate(store)

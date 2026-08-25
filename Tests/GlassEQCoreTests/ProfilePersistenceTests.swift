@@ -214,6 +214,61 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func loadFutureSchemaWithIncompatiblePayloadDoesNotModifyStore() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let futureVersion = ProfileStore.currentSchemaVersion + 1
+        let data = Data("""
+        {
+          "fallbackProfileID" : { "reference" : "future" },
+          "outputMappings" : "future mappings",
+          "profiles" : { "storage" : "future profiles" },
+          "schemaVersion" : \(futureVersion)
+        }
+        """.utf8)
+        try data.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .unsupportedSchemaVersion(
+            version: futureVersion,
+            maximumSupported: ProfileStore.currentSchemaVersion
+        ))
+        #expect(try Data(contentsOf: url) == data)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
+    }
+
+    @Test
+    func loadRepairsSchemaOneInvalidProfileAsCurrentSchema() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let valid = EQProfile(name: "Valid", mode: .parametric, filters: [])
+        let invalid = EQProfile(name: "", mode: .parametric, filters: [])
+        let store = ProfileStore(
+            schemaVersion: 1,
+            profiles: [valid, invalid],
+            fallbackProfileID: valid.id
+        )
+        let invalidData = try ProfilePersistence.encoder.encode(store)
+        try invalidData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        guard case .repairedInvalidStore(let backupURL, let summary) = result.status else {
+            Issue.record("Expected invalid profile repair, got \(result.status)")
+            return
+        }
+        #expect(try Data(contentsOf: backupURL) == invalidData)
+        #expect(result.store.schemaVersion == ProfileStore.currentSchemaVersion)
+        #expect(result.store.profiles == [valid])
+        #expect(summary.removedInvalidProfiles == 1)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == result.store)
+    }
+
+    @Test
     func loadRepairsInvalidProfileWithoutDroppingValidProfiles() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
