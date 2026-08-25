@@ -178,18 +178,6 @@ private func localizedFrameCount(_ value: UInt32) -> String {
     return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
 }
 
-func canResetPlaybackBufferCalibration(isRunning: Bool, outputUID: String) -> Bool {
-    isRunning && !outputUID.isEmpty
-}
-
-func sampleRateConversionIsActive(isRunning: Bool, metricsActive: Bool) -> Bool {
-    isRunning && metricsActive
-}
-
-func clockCorrectionLimitIsReached(isRunning: Bool, metricsSaturated: Bool) -> Bool {
-    isRunning && metricsSaturated
-}
-
 func settingsCanDeleteSelectedProfile(_ snapshot: SettingsSnapshot) -> Bool {
     !snapshot.profileStoreProtection.isProtected
         && snapshot.profiles.count > 1
@@ -239,8 +227,23 @@ private extension Notification.Name {
 
 @MainActor
 public enum SettingsWindowFocus {
-    public static func request() {
-        NotificationCenter.default.post(name: .glassEQBringSettingsToFront, object: nil)
+    private static var pendingSection: SettingsSection?
+
+    public static func request(section: SettingsSection? = nil) {
+        if let section {
+            pendingSection = section
+        }
+        NotificationCenter.default.post(
+            name: .glassEQBringSettingsToFront,
+            object: section
+        )
+    }
+
+    static func consumePendingSection() -> SettingsSection? {
+        defer {
+            pendingSection = nil
+        }
+        return pendingSection
     }
 }
 
@@ -286,7 +289,8 @@ public struct SettingsView: View {
                 onPreview: previewDraft,
                 onStopPreview: stopPreview,
                 onResetDiagnostics: resetDiagnostics,
-                onResetPlaybackBufferCalibration: resetPlaybackBufferCalibration,
+                onSetAggregateBufferMode: setAggregateBufferMode,
+                onRetryAutomaticAggregateBuffer: retryAutomaticAggregateBuffer,
                 onRetryAudioEngine: retryAudioEngine,
                 onOpenPrivacySettings: openPrivacySettings,
                 onResetUnsupportedProfileStore: resetUnsupportedProfileStore
@@ -317,6 +321,9 @@ public struct SettingsView: View {
             refreshSnapshotFromModel()
         }
         .onAppear {
+            if let requestedSection = SettingsWindowFocus.consumePendingSection() {
+                tab = EditorSection(requestedSection)
+            }
             refreshSnapshotFromModel()
             updateMetricsPolling()
         }
@@ -325,6 +332,14 @@ public struct SettingsView: View {
         }
         .onChange(of: tab) { _, _ in
             updateMetricsPolling()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .glassEQBringSettingsToFront)
+        ) { notification in
+            if let requestedSection = notification.object as? SettingsSection {
+                tab = EditorSection(requestedSection)
+                _ = SettingsWindowFocus.consumePendingSection()
+            }
         }
     }
 
@@ -388,8 +403,12 @@ public struct SettingsView: View {
         perform(.resetDiagnostics)
     }
 
-    private func resetPlaybackBufferCalibration() {
-        perform(.resetPlaybackBufferCalibration)
+    private func setAggregateBufferMode(_ mode: SettingsAggregateBufferMode) {
+        perform(.setAggregateBufferMode(mode))
+    }
+
+    private func retryAutomaticAggregateBuffer() {
+        perform(.retryAutomaticAggregateBuffer)
     }
 
     private func retryAudioEngine() {
@@ -953,7 +972,8 @@ private struct ProfileDetail: View {
     var onPreview: () -> Void
     var onStopPreview: () -> Void
     var onResetDiagnostics: () -> Void
-    var onResetPlaybackBufferCalibration: () -> Void
+    var onSetAggregateBufferMode: (SettingsAggregateBufferMode) -> Void
+    var onRetryAutomaticAggregateBuffer: () -> Void
     var onRetryAudioEngine: () -> Void
     var onOpenPrivacySettings: () -> Void
     var onResetUnsupportedProfileStore: () -> Void
@@ -1003,7 +1023,8 @@ private struct ProfileDetail: View {
                                 onUseForCurrentOutput: onUseForCurrentOutput,
                                 onSetFallback: onSetFallback,
                                 onResetDiagnostics: onResetDiagnostics,
-                                onResetPlaybackBufferCalibration: onResetPlaybackBufferCalibration,
+                                onSetAggregateBufferMode: onSetAggregateBufferMode,
+                                onRetryAutomaticAggregateBuffer: onRetryAutomaticAggregateBuffer,
                                 onRetryAudioEngine: onRetryAudioEngine,
                                 onOpenPrivacySettings: onOpenPrivacySettings
                             )
@@ -1159,6 +1180,17 @@ private enum EditorSection: String, CaseIterable, Identifiable {
     case output
 
     var id: String { rawValue }
+
+    init(_ section: SettingsSection) {
+        switch section {
+        case .editor:
+            self = .editor
+        case .importer:
+            self = .importer
+        case .output:
+            self = .output
+        }
+    }
 
     var title: String {
         switch self {
@@ -2302,7 +2334,8 @@ private struct OutputTab: View {
     var onUseForCurrentOutput: () -> Void
     var onSetFallback: () -> Void
     var onResetDiagnostics: () -> Void
-    var onResetPlaybackBufferCalibration: () -> Void
+    var onSetAggregateBufferMode: (SettingsAggregateBufferMode) -> Void
+    var onRetryAutomaticAggregateBuffer: () -> Void
     var onRetryAudioEngine: () -> Void
     var onOpenPrivacySettings: () -> Void
 
@@ -2319,6 +2352,40 @@ private struct OutputTab: View {
                     LabeledContent(localized("Sample Rate"), value: sampleRateLabel)
                     LabeledContent(localized("Channels"), value: localizedInteger(snapshot.currentOutputChannelCount))
                     LabeledContent(localized("Buffer"), value: localizedFrameCount(snapshot.currentOutputBufferFrameSize))
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .cardPanel(padding: 16)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(localized("Audio Buffer"))
+                        .font(.headline)
+                    Picker(
+                        localized("Audio Buffer"),
+                        selection: Binding(
+                            get: { snapshot.aggregateBuffer.mode },
+                            set: { onSetAggregateBufferMode($0) }
+                        )
+                    ) {
+                        Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
+                        Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
+                        Text(localized("32 frames")).tag(SettingsAggregateBufferMode.frames32)
+                        Text(localized("64 frames")).tag(SettingsAggregateBufferMode.frames64)
+                    }
+                    .labelsHidden()
+                    .disabled(!snapshot.aggregateBuffer.isAvailable)
+
+                    Text(aggregateBufferExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if snapshot.aggregateBuffer.mode == .automatic,
+                       snapshot.aggregateBuffer.automaticFrameSize > 16 {
+                        Button(localized("Retry 16 frames")) {
+                            onRetryAutomaticAggregateBuffer()
+                        }
+                        .controlSize(.large)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .cardPanel(padding: 16)
@@ -2374,55 +2441,35 @@ private struct OutputTab: View {
                     LabeledContent(localized("Played"), value: localizedInteger(snapshot.metrics.playedFrames))
                     LabeledContent(localized("Underruns"), value: localizedInteger(snapshot.metrics.playbackUnderrunFrames))
                     LabeledContent(localized("Dropped Input"), value: localizedInteger(snapshot.metrics.droppedInputFrames))
-                    LabeledContent(localized("Dropped Buffered"), value: localizedInteger(snapshot.metrics.droppedBufferedFrames))
-                    LabeledContent(localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures))
                     LabeledContent(localized("Saturated Samples"), value: localizedInteger(snapshot.metrics.saturatedSamples))
-                    LabeledContent(localized("Buffered"), value: localizedFrameCount(snapshot.metrics.currentBufferedFrames))
-                    LabeledContent(localized("Peak Buffer"), value: localizedFrameCount(snapshot.metrics.maximumPlaybackBufferedFrames))
-                    LabeledContent(localized("Ring Peak"), value: localizedFrameCount(snapshot.metrics.maxBufferedFrames))
                     LabeledContent(localized("Capture Callback Peak"), value: localizedFrameCount(snapshot.metrics.maximumCaptureCallbackFrames))
                     LabeledContent(localized("Output Callback Peak"), value: localizedFrameCount(snapshot.metrics.maximumPlaybackCallbackFrames))
-                    LabeledContent(localized("Output Timing Gaps"), value: localizedInteger(snapshot.metrics.playbackTimestampDiscontinuities))
-                    LabeledContent(localized("Buffer Renegotiations"), value: localizedInteger(snapshot.metrics.playbackBufferRenegotiations))
-                    LabeledContent(localized("Adaptive Render Failures"), value: localizedInteger(snapshot.metrics.adaptivePlaybackRenderFailures))
-                    LabeledContent(
-                        localized("Sample Rate Conversion"),
-                        value: sampleRateConversionIsActive(
-                            isRunning: snapshot.isRunning,
-                            metricsActive: snapshot.metrics.playbackSampleRateConversionActive
+                    if usesSeparateClockDiagnostics {
+                        LabeledContent(localized("Dropped Buffered"), value: localizedInteger(snapshot.metrics.droppedBufferedFrames))
+                        LabeledContent(localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures))
+                        LabeledContent(localized("Buffered"), value: localizedFrameCount(snapshot.metrics.currentBufferedFrames))
+                        LabeledContent(localized("Peak Buffer"), value: localizedFrameCount(snapshot.metrics.maximumPlaybackBufferedFrames))
+                        LabeledContent(localized("Output Timing Gaps"), value: localizedInteger(snapshot.metrics.playbackTimestampDiscontinuities))
+                        LabeledContent(
+                            localized("Sample Rate Conversion"),
+                            value: snapshot.metrics.playbackSampleRateConversionActive
+                                ? localized("Active")
+                                : localized("Inactive")
                         )
-                            ? localized("Active")
-                            : localized("Inactive")
-                    )
-                    LabeledContent(localized("Clock Correction"), value: playbackRateCorrectionLabel)
-                    LabeledContent(
-                        localized("Clock Correction Limit"),
-                        value: clockCorrectionLimitIsReached(
-                            isRunning: snapshot.isRunning,
-                            metricsSaturated: snapshot.metrics.playbackRateCorrectionSaturated
-                        )
-                            ? localized("Reached")
-                            : localized("Not reached")
-                    )
-                    LabeledContent(localized("Servo Buffer"), value: servoBufferLabel)
-                    LabeledContent(localized("Added Latency"), value: averageAddedLatencyLabel)
-                    LabeledContent(localized("Latency Range"), value: addedLatencyRangeLabel)
-                    HStack {
-                        Button(localized("Reset metrics")) {
-                            onResetDiagnostics()
-                        }
-                        .controlSize(.large)
-
-                        Button(localized("Reset buffer calibration for this device")) {
-                            onResetPlaybackBufferCalibration()
-                        }
-                        .disabled(!canResetPlaybackBufferCalibration(
-                            isRunning: snapshot.isRunning,
-                            outputUID: snapshot.currentOutputUID
-                        ))
-                        .controlSize(.large)
-                        .help(localized("Forget the learned callback size for this output device and calibrate it again"))
+                        LabeledContent(localized("Clock Correction"), value: playbackRateCorrectionLabel)
+                        LabeledContent(localized("Servo Buffer"), value: servoBufferLabel)
+                        LabeledContent(localized("Bridge Latency"), value: bridgeLatencyLabel)
+                        LabeledContent(localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
+                    } else {
+                        LabeledContent(localized("Input Timestamp Jumps"), value: localizedInteger(snapshot.metrics.inputTimestampDiscontinuities))
+                        LabeledContent(localized("Output Timestamp Jumps"), value: localizedInteger(snapshot.metrics.outputTimestampDiscontinuities))
+                        LabeledContent(localized("Tap-to-Output Latency"), value: tapToOutputLatencyLabel)
+                        LabeledContent(localized("Tap-to-Output Range"), value: tapToOutputLatencyRangeLabel)
                     }
+                    Button(localized("Reset metrics")) {
+                        onResetDiagnostics()
+                    }
+                    .controlSize(.large)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .cardPanel(padding: 16)
@@ -2440,6 +2487,20 @@ private struct OutputTab: View {
         return profile.name
     }
 
+    private var aggregateBufferExplanation: String {
+        guard snapshot.aggregateBuffer.isAvailable else {
+            return localized("This route uses GlassEQ's compatibility audio path.")
+        }
+        if snapshot.aggregateBuffer.mode == .automatic {
+            return localized(
+                "Automatic uses the smallest buffer proven reliable for this device stream and sample rate. It is currently \(snapshot.aggregateBuffer.automaticFrameSize) frames."
+            )
+        }
+        return localized(
+            "A fixed buffer disables automatic reliability fallback for this route."
+        )
+    }
+
     private var sampleRateLabel: String {
         guard snapshot.currentOutputSampleRate > 0 else {
             return localized("Unknown")
@@ -2447,26 +2508,59 @@ private struct OutputTab: View {
         return localizedFrequency(snapshot.currentOutputSampleRate)
     }
 
-    private var averageAddedLatencyLabel: String {
-        guard snapshot.metrics.playbackBufferObservations > 0 else {
+    private var tapToOutputLatencyLabel: String {
+        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
             return localized("No samples")
         }
-        return formatLatency(milliseconds: framesToMilliseconds(snapshot.metrics.averagePlaybackBufferedFrames))
+        return localizedLatency(
+            milliseconds: snapshot.metrics.averageTapToOutputLatencyNanoseconds / 1_000_000
+        )
     }
 
-    private var addedLatencyRangeLabel: String {
-        guard snapshot.metrics.playbackBufferObservations > 0 else {
+    private var tapToOutputLatencyRangeLabel: String {
+        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
             return localized("No samples")
         }
-        let minimum = formatLatency(milliseconds: framesToMilliseconds(Double(snapshot.metrics.minimumPlaybackBufferedFrames)))
-        let maximum = formatLatency(milliseconds: framesToMilliseconds(Double(snapshot.metrics.maximumPlaybackBufferedFrames)))
-        return "\(minimum)-\(maximum)"
+        let minimum = localizedLatency(
+            milliseconds: Double(snapshot.metrics.minimumTapToOutputLatencyNanoseconds) / 1_000_000
+        )
+        let maximum = localizedLatency(
+            milliseconds: Double(snapshot.metrics.maximumTapToOutputLatencyNanoseconds) / 1_000_000
+        )
+        return localized("\(minimum) to \(maximum)")
+    }
+
+    private var usesSeparateClockDiagnostics: Bool {
+        snapshot.metrics.playbackBufferObservations > 0
+    }
+
+    private var bridgeLatencyLabel: String {
+        localizedLatency(
+            milliseconds: playbackFramesToMilliseconds(
+                snapshot.metrics.averagePlaybackBufferedFrames,
+                bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
+                fallbackSampleRate: snapshot.currentOutputSampleRate
+            )
+        )
+    }
+
+    private var bridgeLatencyRangeLabel: String {
+        let minimum = playbackFramesToMilliseconds(
+            Double(snapshot.metrics.minimumPlaybackBufferedFrames),
+            bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
+            fallbackSampleRate: snapshot.currentOutputSampleRate
+        )
+        let maximum = playbackFramesToMilliseconds(
+            Double(snapshot.metrics.maximumPlaybackBufferedFrames),
+            bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
+            fallbackSampleRate: snapshot.currentOutputSampleRate
+        )
+        return localized(
+            "\(localizedLatency(milliseconds: minimum)) to \(localizedLatency(milliseconds: maximum))"
+        )
     }
 
     private var playbackRateCorrectionLabel: String {
-        guard snapshot.isRunning else {
-            return localized("Inactive")
-        }
         let correction = localizedDecimal(
             snapshot.metrics.playbackRateCorrectionPPM,
             minimumFractionDigits: 1,
@@ -2477,9 +2571,6 @@ private struct OutputTab: View {
     }
 
     private var servoBufferLabel: String {
-        guard snapshot.isRunning else {
-            return localized("Inactive")
-        }
         let occupancy = localizedDecimal(
             snapshot.metrics.filteredPlaybackOccupancyFrames,
             minimumFractionDigits: 1,
@@ -2489,17 +2580,6 @@ private struct OutputTab: View {
         return localized("\(occupancy) / \(target) frames")
     }
 
-    private func framesToMilliseconds(_ frames: Double) -> Double {
-        playbackFramesToMilliseconds(
-            frames,
-            bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
-            fallbackSampleRate: snapshot.currentOutputSampleRate
-        )
-    }
-
-    private func formatLatency(milliseconds: Double) -> String {
-        localizedLatency(milliseconds: milliseconds)
-    }
 }
 
 private extension EQMode {

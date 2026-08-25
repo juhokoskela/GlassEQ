@@ -7,12 +7,166 @@ import Testing
 @Suite
 struct CoreAudioDeviceTests {
     @Test
+    func realtimeOutputFadeStartsMutedAndReachesUnity() {
+        var fade = RealtimeOutputFade(
+            sampleRate: 4,
+            durationSeconds: 1
+        )
+        var samples = Array(repeating: Float(1), count: 8)
+
+        fade.setMuted(false)
+        samples.withUnsafeMutableBufferPointer {
+            fade.apply(to: $0, frameCount: 4, channelCount: 2)
+        }
+
+        #expect(samples == [0, 0, 0.15625, 0.15625, 0.5, 0.5, 0.84375, 0.84375])
+        #expect(fade.gain == 1)
+        #expect(!fade.isMuted)
+
+        samples = [1, 1]
+        samples.withUnsafeMutableBufferPointer {
+            fade.apply(to: $0, frameCount: 1, channelCount: 2)
+        }
+        #expect(samples == [1, 1])
+    }
+
+    @Test
+    func realtimeOutputFadeEndsAtSilence() {
+        var fade = RealtimeOutputFade(
+            sampleRate: 4,
+            initiallyMuted: false,
+            durationSeconds: 1
+        )
+        var samples = Array(repeating: Float(1), count: 4)
+
+        fade.setMuted(true)
+        samples.withUnsafeMutableBufferPointer {
+            fade.apply(to: $0, frameCount: 4, channelCount: 1)
+        }
+
+        #expect(samples == [1, 0.84375, 0.5, 0.15625])
+        #expect(fade.gain == 0)
+        #expect(fade.isMuted)
+
+        samples = [1]
+        samples.withUnsafeMutableBufferPointer {
+            fade.apply(to: $0, frameCount: 1, channelCount: 1)
+        }
+        #expect(samples == [0])
+    }
+
+    @Test
+    func realtimeOutputFadeReversesWithoutGainJump() {
+        var fade = RealtimeOutputFade(
+            sampleRate: 4,
+            durationSeconds: 1
+        )
+        var fadeInSamples = Array(repeating: Float(1), count: 2)
+
+        fade.setMuted(false)
+        fadeInSamples.withUnsafeMutableBufferPointer {
+            fade.apply(to: $0, frameCount: 2, channelCount: 1)
+        }
+        #expect(fadeInSamples == [0, 0.15625])
+        #expect(fade.gain == 0.5)
+
+        var fadeOutSamples = Array(repeating: Float(1), count: 4)
+        fade.setMuted(true)
+        fadeOutSamples.withUnsafeMutableBufferPointer {
+            fade.apply(to: $0, frameCount: 4, channelCount: 1)
+        }
+
+        #expect(fadeOutSamples == [0.5, 0.421875, 0.25, 0.078125])
+        #expect(fade.isMuted)
+    }
+
+    @Test
     func defaultOutputQueryDoesNotCrash() throws {
         let device = try CoreAudioDeviceQuery.defaultOutputDevice()
 
         #expect(!device.name.isEmpty)
         #expect(!device.uid.isEmpty)
         #expect(device.nominalSampleRate > 0)
+    }
+
+    @Test
+    func systemTapExcludesGlassEQAndSystemSoundsByBundleID() {
+        let description = SystemTapAudioEngine.makeSystemTapDescription(
+            excluding: [42],
+            outputUID: "test-output",
+            streamIndex: 1
+        )
+
+        #expect(description.processes == [42])
+        #expect(description.bundleIDs == ["systemsoundserverd"])
+        #expect(description.isExclusive)
+        #expect(description.isProcessRestoreEnabled)
+    }
+
+    @Test
+    func systemSoundTapIncludesDormantDaemonByBundleID() {
+        let description = SystemTapAudioEngine.makeSystemSoundTapDescription(
+            outputUID: "test-output",
+            streamIndex: 1
+        )
+
+        #expect(description.processes.isEmpty)
+        #expect(description.bundleIDs == ["systemsoundserverd"])
+        #expect(!description.isExclusive)
+        #expect(description.muteBehavior == .muted)
+        #expect(!description.isMixdown)
+        #expect(description.isProcessRestoreEnabled)
+    }
+
+    @Test
+    func aggregateTapValidationReturnsHALStreamOrder() {
+        let systemSounds = aggregateTapEntry(uid: "system-sounds")
+        let main = aggregateTapEntry(uid: "main")
+
+        let order = SystemTapAudioEngine.validatedAggregateTapUIDOrder(
+            [systemSounds, main],
+            expectedTapDriftCompensation: ["main": true, "system-sounds": true]
+        )
+
+        #expect(order == ["system-sounds", "main"])
+    }
+
+    @Test
+    func aggregateTapValidationRejectsUnknownOrUncompensatedTap() {
+        let main = aggregateTapEntry(uid: "main")
+        let unknown = aggregateTapEntry(uid: "unknown")
+        let uncompensated = aggregateTapEntry(uid: "system-sounds", drift: false)
+
+        #expect(SystemTapAudioEngine.validatedAggregateTapUIDOrder(
+            [main, unknown],
+            expectedTapDriftCompensation: ["main": true, "system-sounds": true]
+        ) == nil)
+        #expect(SystemTapAudioEngine.validatedAggregateTapUIDOrder(
+            [main, uncompensated],
+            expectedTapDriftCompensation: ["main": true, "system-sounds": true]
+        ) == nil)
+    }
+
+    @Test
+    func systemSoundPreampUsesPerChannelProfileGains() {
+        let profile = EQProfile(
+            name: "Stereo",
+            mode: .parametric,
+            channelMode: .stereo,
+            filters: [],
+            leftPreampDB: -6,
+            rightPreampDB: -12
+        )
+        let configuration = EQRenderConfiguration(
+            profile: profile,
+            sampleRate: 48_000,
+            channelCount: 2
+        )
+
+        let gains = SystemTapAudioEngine.systemSoundPreampGains(for: configuration)
+
+        #expect(abs(gains.left - Float(pow(10, -6.0 / 20))) < 0.000_001)
+        #expect(abs(gains.right - Float(pow(10, -12.0 / 20))) < 0.000_001)
     }
 
     @Test
@@ -92,53 +246,73 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func playbackConversionCapacityRejectsPrimesWithoutRingHeadroom() throws {
-        try SystemTapAudioEngine.validatePlaybackConversionCapacity(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 8_192),
-            tapSampleRate: 48_000
-        )
-        try SystemTapAudioEngine.validatePlaybackConversionCapacity(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 1_024),
-            tapSampleRate: 192_000
-        )
+    func tapToOutputLatencyUsesValidHostTimestamps() throws {
+        var inputTime = AudioTimeStamp()
+        inputTime.mHostTime = AudioConvertNanosToHostTime(1_000_000_000)
+        inputTime.mFlags = .hostTimeValid
 
-        do {
-            try SystemTapAudioEngine.validatePlaybackConversionCapacity(
-                for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 8_192),
-                tapSampleRate: 96_000
-            )
-            Issue.record("Expected oversized converted playback prime to be rejected")
-        } catch let error as AudioDeviceAvailabilityError {
-            #expect(error == .unsupportedPlaybackConversionBuffer(
-                42,
-                requiredPrimeFrames: 50_176,
-                maximumPrimeFrames: 40_960
-            ))
-        } catch {
-            Issue.record("Expected unsupported converted playback buffer error, got \(error)")
-        }
+        let latencyHostTime = AudioConvertNanosToHostTime(2_500_000)
+        var outputTime = AudioTimeStamp()
+        outputTime.mHostTime = inputTime.mHostTime + latencyHostTime
+        outputTime.mFlags = .hostTimeValid
+
+        #expect(SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
+            inputTime: inputTime,
+            outputTime: outputTime
+        ) == AudioConvertHostTimeToNanos(latencyHostTime))
+
+        var invalidInputTime = inputTime
+        invalidInputTime.mFlags = []
+        #expect(SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
+            inputTime: invalidInputTime,
+            outputTime: outputTime
+        ) == nil)
+
+        outputTime.mHostTime = inputTime.mHostTime - 1
+        #expect(SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
+            inputTime: inputTime,
+            outputTime: outputTime
+        ) == nil)
     }
 
     @Test
-    func unsupportedRuntimeChannelCountSkipsDevicePreparation() {
-        var didPrepareDevice = false
-        let channelCount = CoreAudioDeviceQuery.maxChannelCount + 1
+    func callbackTimingSplitsInputAgeFromOutputLead() throws {
+        var inputTime = AudioTimeStamp()
+        inputTime.mHostTime = AudioConvertNanosToHostTime(1_000_000_000)
+        inputTime.mFlags = .hostTimeValid
 
-        do {
-            _ = try SystemTapAudioEngine.performAfterRuntimeChannelValidation(
-                for: output(channelCount: channelCount, sampleRate: 44_100)
-            ) {
-                didPrepareDevice = true
-                return output(channelCount: channelCount, sampleRate: 48_000)
-            }
-            Issue.record("Expected out-of-range output to be rejected")
-        } catch let error as AudioDeviceAvailabilityError {
-            #expect(error == .unsupportedOutputChannelCount(42, channelCount))
-        } catch {
-            Issue.record("Expected unsupported channel count error, got \(error)")
-        }
+        let inputAgeHostTime = AudioConvertNanosToHostTime(1_875_000)
+        let outputLeadHostTime = AudioConvertNanosToHostTime(625_000)
+        let callbackHostTime = inputTime.mHostTime + inputAgeHostTime
+        var outputTime = AudioTimeStamp()
+        outputTime.mHostTime = callbackHostTime + outputLeadHostTime
+        outputTime.mFlags = .hostTimeValid
 
-        #expect(!didPrepareDevice)
+        let timing = try #require(SystemTapAudioEngine.callbackTimingNanoseconds(
+            inputTime: inputTime,
+            callbackHostTime: callbackHostTime,
+            outputTime: outputTime
+        ))
+        #expect(timing.inputAge == AudioConvertHostTimeToNanos(inputAgeHostTime))
+        #expect(timing.outputLead == AudioConvertHostTimeToNanos(outputLeadHostTime))
+
+        var invalidInputTime = inputTime
+        invalidInputTime.mFlags = []
+        #expect(SystemTapAudioEngine.callbackTimingNanoseconds(
+            inputTime: invalidInputTime,
+            callbackHostTime: callbackHostTime,
+            outputTime: outputTime
+        ) == nil)
+        #expect(SystemTapAudioEngine.callbackTimingNanoseconds(
+            inputTime: inputTime,
+            callbackHostTime: inputTime.mHostTime - 1,
+            outputTime: outputTime
+        ) == nil)
+        #expect(SystemTapAudioEngine.callbackTimingNanoseconds(
+            inputTime: inputTime,
+            callbackHostTime: outputTime.mHostTime + 1,
+            outputTime: outputTime
+        ) == nil)
     }
 
     @Test
@@ -149,55 +323,6 @@ struct CoreAudioDeviceTests {
         #expect(resolvedOutput.uid == defaultOutput.uid)
         #expect(resolvedOutput.outputChannelCount > 0)
         #expect(try CoreAudioDeviceQuery.outputDevice(uid: "") == nil)
-    }
-
-    @Test
-    func sampleRateMutationRecordsRestorationBeforeDeviceWrite() throws {
-        let output = output(uid: "record-before-set", channelCount: 2, sampleRate: 44_100)
-        var events: [String] = []
-
-        try SystemTapAudioEngine.setSampleRateAfterRecordingRestoration(
-            48_000,
-            on: output,
-            needsRestoration: true,
-            recordRestoration: { restoration in
-                #expect(restoration.uid == output.uid)
-                #expect(restoration.originalSampleRate == 44_100)
-                events.append("record")
-            },
-            installRestoration: { restoration in
-                #expect(restoration.uid == output.uid)
-                events.append("install")
-            },
-            setSampleRate: { sampleRate, objectID in
-                #expect(sampleRate == 48_000)
-                #expect(objectID == output.id)
-                events.append("set")
-            }
-        )
-
-        #expect(events == ["record", "install", "set"])
-    }
-
-    @Test
-    func sampleRateMutationSkipsDeviceWriteWhenRestorationRecordFails() {
-        let output = output(uid: "record-fails", channelCount: 2, sampleRate: 44_100)
-        var didInstall = false
-        var didSet = false
-
-        #expect(throws: TestDeviceMutationError.recordFailed) {
-            try SystemTapAudioEngine.setSampleRateAfterRecordingRestoration(
-                48_000,
-                on: output,
-                needsRestoration: true,
-                recordRestoration: { _ in throw TestDeviceMutationError.recordFailed },
-                installRestoration: { _ in didInstall = true },
-                setSampleRate: { _, _ in didSet = true }
-            )
-        }
-
-        #expect(!didInstall)
-        #expect(!didSet)
     }
 
     @Test
@@ -230,59 +355,6 @@ struct CoreAudioDeviceTests {
         #expect(setCalls.count == 1)
         #expect(setCalls.first?.sampleRate == 48_000)
         #expect(setCalls.first?.objectID == 9_001)
-    }
-
-    @Test
-    func sameOutputRebuildReinstallsRestorationFromFreshDeviceRate() throws {
-        let uid = "same-output"
-        let objectID = AudioObjectID(9_003)
-        var currentSampleRate = 48_000.0
-        let originalRestoration = SystemTapAudioEngine.SampleRateRestoration(
-            uid: uid,
-            originalSampleRate: 44_100
-        )
-        let outputForUID: (String) throws -> AudioOutputDevice? = { requestedUID in
-            #expect(requestedUID == uid)
-            return output(
-                id: objectID,
-                uid: uid,
-                channelCount: 2,
-                sampleRate: currentSampleRate
-            )
-        }
-        let setSampleRate: (Double, AudioObjectID) throws -> Void = { sampleRate, requestedID in
-            #expect(requestedID == objectID)
-            currentSampleRate = sampleRate
-        }
-
-        #expect(SystemTapAudioEngine.restoreSampleRateRestoration(
-            originalRestoration,
-            outputForUID: outputForUID,
-            setSampleRate: setSampleRate
-        ))
-        let refreshedOutput = try #require(try outputForUID(uid))
-        #expect(refreshedOutput.nominalSampleRate == 44_100)
-        #expect(SystemTapAudioEngine.shouldRecordSampleRateRestoration(
-            tapSampleRate: 48_000,
-            output: refreshedOutput
-        ))
-
-        var replacementRestoration: SystemTapAudioEngine.SampleRateRestoration?
-        try SystemTapAudioEngine.setSampleRateAfterRecordingRestoration(
-            48_000,
-            on: refreshedOutput,
-            needsRestoration: true,
-            recordRestoration: { replacementRestoration = $0 },
-            installRestoration: { _ in },
-            setSampleRate: setSampleRate
-        )
-        #expect(currentSampleRate == 48_000)
-        #expect(SystemTapAudioEngine.restoreSampleRateRestoration(
-            try #require(replacementRestoration),
-            outputForUID: outputForUID,
-            setSampleRate: setSampleRate
-        ))
-        #expect(currentSampleRate == 44_100)
     }
 
     @Test
@@ -364,6 +436,56 @@ struct CoreAudioDeviceTests {
 
         #expect(restored)
         #expect(!didSet)
+    }
+
+    @Test
+    func adaptiveBufferDecayWritesAndVerifiesThePreviousStep() throws {
+        let current = output(channelCount: 2, bufferFrameSize: 256)
+        var requestedFrameSize: UInt32?
+
+        let updated = try SeparateClockAudioBackend.decayedPlaybackOutput(
+            current,
+            supportedRange: AudioBufferFrameSizeRange(minimum: 64, maximum: 512),
+            setBufferFrameSize: { frameSize, objectID in
+                #expect(objectID == current.id)
+                requestedFrameSize = frameSize
+            },
+            queryOutput: { objectID in
+                #expect(objectID == current.id)
+                return output(id: objectID, channelCount: 2, bufferFrameSize: 128)
+            }
+        )
+
+        #expect(requestedFrameSize == 128)
+        #expect(updated?.bufferFrameSize == 128)
+    }
+
+    @Test
+    func adaptiveBufferDecayWaitsForTheDevicePropertyToSettle() throws {
+        let current = output(channelCount: 2, bufferFrameSize: 256)
+        var queryCount = 0
+        var waitCount = 0
+
+        let updated = try SeparateClockAudioBackend.decayedPlaybackOutput(
+            current,
+            supportedRange: AudioBufferFrameSizeRange(minimum: 64, maximum: 512),
+            setBufferFrameSize: { _, _ in },
+            queryOutput: { objectID in
+                queryCount += 1
+                return output(
+                    id: objectID,
+                    channelCount: 2,
+                    bufferFrameSize: queryCount < 3 ? 256 : 128
+                )
+            },
+            waitForPropertySettlement: {
+                waitCount += 1
+            }
+        )
+
+        #expect(queryCount == 3)
+        #expect(waitCount == 2)
+        #expect(updated?.bufferFrameSize == 128)
     }
 
     @Test
@@ -504,174 +626,104 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func preferredBufferFrameSizeShrinksStandardSpeakerRoutesForLowLatency() {
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 128)) == 64)
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 512)) == 64)
-        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 2_048)) == 64)
+    func preferredBufferFrameSizeUses16FramesForStandardSpeakerRoutes() {
+        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 128)) == 16)
+        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 512)) == 16)
+        #expect(SystemTapAudioEngine.preferredBufferFrameSize(for: output(channelCount: 2, bufferFrameSize: 2_048)) == 16)
     }
 
     @Test
-    func bluetoothAndLowSampleRateRoutesKeepRouteSpecificBufferPreferences() {
+    func aggregateTimestampSlopeQualificationRequiresStableNominalTiming() {
+        #expect(SystemTapAudioEngine.timestampSlopeAgrees(
+            frameCount: 16,
+            sampleRate: 48_000,
+            sampleTimeDeltaFrames: 0,
+            hostIntervalErrorNanoseconds: 40_000,
+            rateScalar: 1.000005752,
+            rateScalarIsValid: true
+        ))
+        #expect(!SystemTapAudioEngine.timestampSlopeAgrees(
+            frameCount: 16,
+            sampleRate: 48_000,
+            sampleTimeDeltaFrames: 1,
+            hostIntervalErrorNanoseconds: 40_000,
+            rateScalar: 1,
+            rateScalarIsValid: true
+        ))
+        #expect(!SystemTapAudioEngine.timestampSlopeAgrees(
+            frameCount: 16,
+            sampleRate: 48_000,
+            sampleTimeDeltaFrames: 0,
+            hostIntervalErrorNanoseconds: 100_000,
+            rateScalar: 1,
+            rateScalarIsValid: true
+        ))
+        #expect(!SystemTapAudioEngine.timestampSlopeAgrees(
+            frameCount: 16,
+            sampleRate: 48_000,
+            sampleTimeDeltaFrames: 0,
+            hostIntervalErrorNanoseconds: 0,
+            rateScalar: 1.02,
+            rateScalarIsValid: true
+        ))
+    }
+
+    @Test
+    func headsetPromotionRequiresDeviceClockToMatchTheNominalRate() {
+        #expect(SystemTapAudioEngine.deviceClockSlopeAgrees(
+            sampleTimeDeltaFrames: 2_400,
+            hostTimeDeltaNanoseconds: 100_000_000,
+            nominalSampleRate: 24_000,
+            rateScalar: 1,
+            rateScalarIsValid: true
+        ))
+        #expect(!SystemTapAudioEngine.deviceClockSlopeAgrees(
+            sampleTimeDeltaFrames: 4_800,
+            hostTimeDeltaNanoseconds: 100_000_000,
+            nominalSampleRate: 24_000,
+            rateScalar: 1,
+            rateScalarIsValid: true
+        ))
+        #expect(!SystemTapAudioEngine.deviceClockSlopeAgrees(
+            sampleTimeDeltaFrames: 2_400,
+            hostTimeDeltaNanoseconds: 100_000_000,
+            nominalSampleRate: 24_000,
+            rateScalar: 1.03,
+            rateScalarIsValid: true
+        ))
+    }
+
+    @Test
+    func aggregateBufferPreferenceIs16FramesForBluetoothAndLowSampleRateRoutes() {
         #expect(SystemTapAudioEngine.preferredBufferFrameSize(
             for: output(channelCount: 2, bufferFrameSize: 256, transportType: kAudioDeviceTransportTypeBluetooth)
-        ) == 64)
+        ) == 16)
         #expect(SystemTapAudioEngine.preferredBufferFrameSize(
             for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 256)
-        ) == 1_024)
+        ) == 16)
     }
 
     @Test
-    func playbackPrimeTracksTheTunedRouteCallbackSize() {
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, bufferFrameSize: 64)
-        ) == 128)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, bufferFrameSize: 128)
-        ) == 192)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
+    func headsetModeUsesSeparateClockBackend() {
+        #expect(SystemTapAudioEngine.shouldUseSeparateClockBackend(
             for: output(
                 channelCount: 2,
-                bufferFrameSize: 64,
+                sampleRate: 24_000,
+                bufferFrameSize: 480,
                 transportType: kAudioDeviceTransportTypeBluetooth
             )
-        ) == 128)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
+        ))
+        #expect(!SystemTapAudioEngine.shouldUseSeparateClockBackend(
             for: output(
                 channelCount: 2,
-                bufferFrameSize: 1_024,
-                transportType: kAudioDeviceTransportTypeBluetooth
-            )
-        ) == 1_088)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 1_024)
-        ) == 2_048)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, sampleRate: 24_000, bufferFrameSize: 1_024),
-            tapSampleRate: 48_000
-        ) == 3_072)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 1_024),
-            tapSampleRate: 48_000
-        ) == 4_096)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 1_024),
-            tapSampleRate: 48_000,
-            captureCallbackFrames: 8_192
-        ) == 11_264)
-        #expect(SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, sampleRate: 48_000, bufferFrameSize: 64),
-            tapSampleRate: 24_000
-        ) == 1_056)
-    }
-
-    @Test
-    func startupCaptureCallbackUsesReportedSizeOrAdmittedMaximum() {
-        #expect(SystemTapAudioEngine.startupCaptureCallbackFrames(reportedFrames: 64) == 64)
-        #expect(SystemTapAudioEngine.startupCaptureCallbackFrames(reportedFrames: 8_192) == 8_192)
-        #expect(SystemTapAudioEngine.startupCaptureCallbackFrames(reportedFrames: nil) == 8_192)
-        #expect(SystemTapAudioEngine.startupCaptureCallbackFrames(reportedFrames: 8_193) == 8_192)
-    }
-
-    @Test
-    func headsetSampleRateConversionHandlesBothTransitionDirections() {
-        let headsetOutput = output(
-            channelCount: 2,
-            sampleRate: 24_000,
-            bufferFrameSize: 1_024,
-            transportType: kAudioDeviceTransportTypeBluetooth
-        )
-        let normalOutput = output(
-            channelCount: 2,
-            sampleRate: 48_000,
-            bufferFrameSize: 128,
-            transportType: kAudioDeviceTransportTypeBluetooth
-        )
-
-        #expect(SystemTapAudioEngine.shouldUseSampleRateConversion(
-            tapSampleRate: 48_000,
-            output: headsetOutput
-        ))
-        #expect(!SystemTapAudioEngine.shouldUseSampleRateConversion(
-            tapSampleRate: 48_000,
-            output: normalOutput
-        ))
-        #expect(SystemTapAudioEngine.shouldUseSampleRateConversion(
-            tapSampleRate: 24_000,
-            output: normalOutput
-        ))
-        #expect(!SystemTapAudioEngine.shouldUseSampleRateConversion(
-            tapSampleRate: 24_000,
-            output: headsetOutput
-        ))
-        #expect(SystemTapAudioEngine.shouldRefreshCaptureForOutput(
-            tapSampleRate: 24_000,
-            output: normalOutput
-        ))
-        #expect(SystemTapAudioEngine.shouldRefreshCaptureForOutput(
-            tapSampleRate: 16_000,
-            output: headsetOutput
-        ))
-        #expect(!SystemTapAudioEngine.shouldRefreshCaptureForOutput(
-            tapSampleRate: 24_000,
-            output: output(
-                channelCount: 2,
-                sampleRate: 16_000,
-                bufferFrameSize: 1_024,
+                sampleRate: 48_000,
+                bufferFrameSize: 512,
                 transportType: kAudioDeviceTransportTypeBluetooth
             )
         ))
-        #expect(!SystemTapAudioEngine.shouldRefreshCaptureForOutput(
-            tapSampleRate: 48_000,
-            output: headsetOutput
+        #expect(!SystemTapAudioEngine.shouldUseSeparateClockBackend(
+            for: output(channelCount: 2, sampleRate: 24_000, bufferFrameSize: 480)
         ))
-        #expect(SystemTapAudioEngine.maximumPlaybackReservoirFrames(
-            for: normalOutput,
-            tapSampleRate: 24_000,
-            maximumKnownCaptureCallbackFrames: 768
-        ) == 1_024)
-        #expect(SystemTapAudioEngine.maximumPlaybackReservoirFrames(
-            for: normalOutput,
-            tapSampleRate: 48_000,
-            maximumKnownCaptureCallbackFrames: 768
-        ) == AdaptivePlaybackBufferPolicy.maximumReservoirFrames)
-    }
-
-    @Test
-    func outputRebuildUsesAProfileHotSwappedAfterPreparation() {
-        let prepared = EQProfile(name: "Prepared", mode: .parametric, filters: [])
-        let hotSwapped = EQProfile(name: "Hot Swapped", mode: .parametric, filters: [])
-
-        #expect(SystemTapAudioEngine.effectiveOutputRebuildProfile(
-            preparedProfile: prepared,
-            preparedProfileRevision: 1,
-            activeProfile: prepared,
-            activeProfileRevision: 1
-        ) == prepared)
-        #expect(SystemTapAudioEngine.effectiveOutputRebuildProfile(
-            preparedProfile: prepared,
-            preparedProfileRevision: 1,
-            activeProfile: hotSwapped,
-            activeProfileRevision: 2
-        ) == hotSwapped)
-    }
-
-    @Test
-    func staleOutputRebuildRequestUsesTheCurrentProfile() {
-        let requested = EQProfile(name: "Requested", mode: .parametric, filters: [])
-        let current = EQProfile(name: "Current", mode: .parametric, filters: [])
-
-        #expect(SystemTapAudioEngine.requestedOutputRebuildProfile(
-            requestedProfile: requested,
-            expectedProfileRevision: 1,
-            activeProfile: requested,
-            activeProfileRevision: 1
-        ) == requested)
-        #expect(SystemTapAudioEngine.requestedOutputRebuildProfile(
-            requestedProfile: requested,
-            expectedProfileRevision: 1,
-            activeProfile: current,
-            activeProfileRevision: 2
-        ) == current)
     }
 
     @Test
@@ -682,160 +734,6 @@ struct CoreAudioDeviceTests {
 
         let activeOutput = output(uid: "profile-update-output", channelCount: 2)
         #expect(try SystemTapAudioEngine.profileUpdateOutput(activeOutput) == activeOutput)
-    }
-
-    @Test
-    func adaptivePlaybackBufferAppliesToEveryValidOutputRate() {
-        #expect(SystemTapAudioEngine.shouldAdaptPlaybackBuffer(
-            for: output(channelCount: 2, bufferFrameSize: 64)
-        ))
-        #expect(SystemTapAudioEngine.shouldAdaptPlaybackBuffer(
-            for: output(
-                channelCount: 2,
-                bufferFrameSize: 64,
-                transportType: kAudioDeviceTransportTypeBluetooth
-            )
-        ))
-        #expect(SystemTapAudioEngine.shouldAdaptPlaybackBuffer(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 1_024)
-        ))
-        #expect(SystemTapAudioEngine.playbackInputCallbackFrames(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 1_024),
-            tapSampleRate: 48_000
-        ) == 3_072)
-    }
-
-    @Test
-    func runtimeRingAlwaysLeavesHeadroomAboveTheLargestPrime() {
-        let largestPrime = SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, bufferFrameSize: 8_192)
-        )
-
-        #expect(largestPrime == 8_256)
-        #expect(SystemTapAudioEngine.runtimeRingCapacityFrames >= largestPrime * 2)
-
-        let largestConvertedPrime = SystemTapAudioEngine.preferredPlaybackPrimeFrames(
-            for: output(channelCount: 2, sampleRate: 16_000, bufferFrameSize: 8_192),
-            tapSampleRate: 48_000
-        )
-        #expect(SystemTapAudioEngine.runtimeRingCapacityFrames >= largestConvertedPrime * 2)
-    }
-
-    @Test
-    func adaptiveBufferLadderStopsAtStableLegacySize() {
-        let range = AudioBufferFrameSizeRange(minimum: 15, maximum: 960)
-
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 64, supportedRange: range) == 128)
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 128, supportedRange: range) == 256)
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 256, supportedRange: range) == 512)
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 512, supportedRange: range) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.previousFrameSize(before: 512, supportedRange: range) == 256)
-        #expect(AdaptivePlaybackBufferPolicy.previousFrameSize(before: 128, supportedRange: range) == 64)
-        #expect(AdaptivePlaybackBufferPolicy.previousFrameSize(before: 64, supportedRange: range) == 15)
-    }
-
-    @Test
-    func adaptiveBufferLadderHonorsPartialDeviceRange() {
-        let range = AudioBufferFrameSizeRange(minimum: 96, maximum: 300)
-
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 96, supportedRange: range) == 128)
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 128, supportedRange: range) == 256)
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 256, supportedRange: range) == 300)
-        #expect(AdaptivePlaybackBufferPolicy.nextFrameSize(after: 300, supportedRange: range) == nil)
-    }
-
-    @Test
-    func adaptiveBufferRenegotiationWritesAndVerifiesTheNextStep() throws {
-        let current = output(
-            channelCount: 2,
-            bufferFrameSize: 64,
-            transportType: kAudioDeviceTransportTypeBluetooth
-        )
-        var requestedFrameSize: UInt32?
-
-        let updated = try SystemTapAudioEngine.renegotiatedPlaybackOutput(
-            current,
-            supportedRange: AudioBufferFrameSizeRange(minimum: 15, maximum: 960),
-            setBufferFrameSize: { frameSize, objectID in
-                #expect(objectID == current.id)
-                requestedFrameSize = frameSize
-            },
-            queryOutput: { objectID in
-                #expect(objectID == current.id)
-                return output(
-                    id: objectID,
-                    channelCount: 2,
-                    bufferFrameSize: 128,
-                    transportType: kAudioDeviceTransportTypeBluetooth
-                )
-            }
-        )
-
-        #expect(requestedFrameSize == 128)
-        #expect(updated?.bufferFrameSize == 128)
-    }
-
-    @Test
-    func adaptiveBufferRenegotiationWaitsForTheDevicePropertyToSettle() throws {
-        let current = output(channelCount: 2, bufferFrameSize: 64)
-        var queryCount = 0
-        var waitCount = 0
-
-        let updated = try SystemTapAudioEngine.renegotiatedPlaybackOutput(
-            current,
-            supportedRange: AudioBufferFrameSizeRange(minimum: 64, maximum: 512),
-            setBufferFrameSize: { _, _ in },
-            queryOutput: { objectID in
-                queryCount += 1
-                return output(
-                    id: objectID,
-                    channelCount: 2,
-                    bufferFrameSize: queryCount < 3 ? 64 : 128
-                )
-            },
-            waitForPropertySettlement: {
-                waitCount += 1
-            }
-        )
-
-        #expect(queryCount == 3)
-        #expect(waitCount == 2)
-        #expect(updated?.bufferFrameSize == 128)
-    }
-
-    @Test
-    func topologyRebuildAcquiresMuteGuardBeforeRebuildAndReleasesAfter() throws {
-        var events: [String] = []
-        let result = try SystemTapAudioEngine.performTopologyRebuild(
-            acquireMuteGuard: {
-                events.append("acquire")
-                return FakeTopologyRebuildMuteGuard(events: { events.append($0) })
-            },
-            rebuild: {
-                events.append("rebuild")
-                return 7
-            }
-        )
-
-        #expect(result == 7)
-        #expect(events == ["acquire", "rebuild", "release"])
-    }
-
-    @Test
-    func topologyRebuildSkipsTeardownWhenMuteGuardCannotBeAcquired() {
-        var rebuildWasCalled = false
-
-        #expect(throws: TopologyRebuildMuteGuardUnavailable.self) {
-            _ = try SystemTapAudioEngine.performTopologyRebuild(
-                acquireMuteGuard: {
-                    throw CoreAudioError(operation: "test mute guard", status: kAudioHardwareUnspecifiedError)
-                },
-                rebuild: {
-                    rebuildWasCalled = true
-                }
-            )
-        }
-        #expect(!rebuildWasCalled)
     }
 
     @Test
@@ -1018,6 +916,13 @@ struct CoreAudioDeviceTests {
             try CoreAudioDeviceQuery.validateStreamConfigurationSize(4, objectID: 42)
         }
         expectInvalidMetadata {
+            try CoreAudioDeviceQuery.validateAudioBufferListStorage(
+                bufferCount: 1,
+                byteCount: 8,
+                objectID: 42
+            )
+        }
+        expectInvalidMetadata {
             try CoreAudioDeviceQuery.validateStreamConfigurationSize(
                 CoreAudioDeviceQuery.maxStreamConfigurationBytes + 1,
                 objectID: 42
@@ -1038,6 +943,16 @@ struct CoreAudioDeviceTests {
         #expect(range == AudioBufferFrameSizeRange(minimum: 128, maximum: 256))
     }
 
+    @Test
+    func zeroBufferStreamConfigurationIsValidForOutputOnlyDevice() throws {
+        try CoreAudioDeviceQuery.validateStreamConfigurationSize(8, objectID: 42)
+        try CoreAudioDeviceQuery.validateAudioBufferListStorage(
+            bufferCount: 0,
+            byteCount: 8,
+            objectID: 42
+        )
+    }
+
     private func expectInvalidMetadata(_ operation: () throws -> Void) {
         do {
             try operation()
@@ -1050,6 +965,18 @@ struct CoreAudioDeviceTests {
         } catch {
             Issue.record("Expected invalid metadata error, got \(error)")
         }
+    }
+
+    private func aggregateTapEntry(
+        uid: String,
+        drift: Bool = true
+    ) -> NSDictionary {
+        [
+            kAudioSubTapUIDKey: uid,
+            kAudioSubTapDriftCompensationKey: NSNumber(value: drift),
+            kAudioSubTapDriftCompensationQualityKey:
+                NSNumber(value: kAudioAggregateDriftCompensationHighQuality)
+        ] as NSDictionary
     }
 
     private func output(
@@ -1072,10 +999,6 @@ struct CoreAudioDeviceTests {
     }
 }
 
-private enum TestDeviceMutationError: Error {
-    case recordFailed
-}
-
 private final class LockedCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -1092,17 +1015,5 @@ private final class LockedCounter: @unchecked Sendable {
             lock.unlock()
         }
         return count
-    }
-}
-
-private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
-    private let record: (String) -> Void
-
-    init(events record: @escaping (String) -> Void) {
-        self.record = record
-    }
-
-    func release() {
-        record("release")
     }
 }

@@ -401,6 +401,8 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
             model.commandErrorMessage = failure.message
         case .focusRequested:
             SettingsWindowFocus.request()
+        case .sectionRequested(let section):
+            SettingsWindowFocus.request(section: section)
         case .shutdown:
             NSApplication.shared.terminate(nil)
         }

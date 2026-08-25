@@ -64,6 +64,10 @@ struct PlaybackRateServo: Sendable {
         correction * 1_000_000
     }
 
+    var learnedCorrectionPartsPerMillion: Double {
+        correctionBias * 1_000_000
+    }
+
     mutating func reset(targetFrames: Int) {
         self.targetFrames = Double(max(targetFrames, 1))
         filteredOccupancyFrames = self.targetFrames
@@ -74,16 +78,13 @@ struct PlaybackRateServo: Sendable {
     }
 
     mutating func beginPriming() {
-        if !isPriming {
-            // Re-centring occupancy must not erase the rate learned for the same clock pair.
-            correctionBias = correction
-        }
+        // Keep the integral's clock-rate estimate. The current correction may also contain a
+        // transient proportional response, which must not become learned bias during a reprime.
         filteredOccupancyFrames = targetFrames
         isPriming = true
     }
 
     mutating func retarget(_ targetFrames: Int) {
-        correctionBias = correction
         self.targetFrames = Double(max(targetFrames, 1))
         filteredOccupancyFrames = self.targetFrames
         isPriming = true

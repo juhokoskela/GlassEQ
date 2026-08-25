@@ -26,6 +26,9 @@ private struct DiagnosticsOptions {
     var health = false
     var expectPermissionDenied = false
     var intentionalCrashAfterStart = false
+    var listOutputs = false
+    var clockSourceProbe = false
+    var outputObjectID: UInt32?
 
     init(arguments: [String]) throws {
         var positionalDuration: TimeInterval?
@@ -41,6 +44,19 @@ private struct DiagnosticsOptions {
                 expectPermissionDenied = true
             case "--intentional-crash-after-start":
                 intentionalCrashAfterStart = true
+            case "--list-outputs":
+                listOutputs = true
+            case "--clock-source-probe":
+                clockSourceProbe = true
+            case "--output-id":
+                index += 1
+                guard index < arguments.count else {
+                    throw DiagnosticsArgumentError.missingValue(argument)
+                }
+                outputObjectID = try Self.parseObjectID(arguments[index], option: argument)
+            case let value where value.hasPrefix("--output-id="):
+                let objectID = String(value.dropFirst("--output-id=".count))
+                outputObjectID = try Self.parseObjectID(objectID, option: "--output-id")
             case "--hold-after-start":
                 index += 1
                 guard index < arguments.count else {
@@ -71,11 +87,19 @@ private struct DiagnosticsOptions {
         }
         return seconds
     }
+
+    private static func parseObjectID(_ value: String, option: String) throws -> UInt32 {
+        guard let objectID = UInt32(value), objectID > 0 else {
+            throw DiagnosticsArgumentError.invalidObjectID(option: option, value: value)
+        }
+        return objectID
+    }
 }
 
 private enum DiagnosticsArgumentError: Error, CustomStringConvertible {
     case missingValue(String)
     case invalidSeconds(option: String, value: String)
+    case invalidObjectID(option: String, value: String)
     case unknownOption(String)
     case unexpectedArgument(String)
 
@@ -85,6 +109,8 @@ private enum DiagnosticsArgumentError: Error, CustomStringConvertible {
             return "\(option) requires a seconds value."
         case .invalidSeconds(let option, let value):
             return "\(option) requires a non-negative seconds value; got \(value)."
+        case .invalidObjectID(let option, let value):
+            return "\(option) requires a positive Core Audio object ID; got \(value)."
         case .unknownOption(let option):
             return "Unknown option \(option)."
         case .unexpectedArgument(let argument):
@@ -97,7 +123,17 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
     let engine = SystemTapAudioEngine()
 
     do {
-        let output = try CoreAudioDeviceQuery.defaultOutputDevice()
+        if options.listOutputs {
+            for output in try CoreAudioDeviceQuery.outputDevices() {
+                print("\(output.id)\t\(output.name)\t\(output.uid)")
+            }
+            return 0
+        }
+        let output = if let objectID = options.outputObjectID {
+            try CoreAudioDeviceQuery.outputDevice(id: objectID)
+        } else {
+            try CoreAudioDeviceQuery.defaultOutputDevice()
+        }
         print("GlassEQ diagnostics")
         if options.health {
             print("Mode: health")
@@ -111,6 +147,10 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
             print("Transport type: \(transportType)")
         }
 
+        if options.clockSourceProbe {
+            return runAggregateClockSourceProbe(output: output)
+        }
+
         printAudioEngineStatus(.starting)
         try engine.start(output: output, profile: .flatGraphic31)
         printAudioEngineStatus(engine.status)
@@ -118,7 +158,10 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
         if case .running(let activeOutput) = engine.state {
             print("Active buffer frames: \(activeOutput.bufferFrameSize)")
         }
-
+        if let latencyMetadata = engine.snapshotLatencyMetadata() {
+            printLatencyMetadata(latencyMetadata.physicalDevice, label: "Physical device")
+            printLatencyMetadata(latencyMetadata.aggregateDevice, label: "Combined aggregate")
+        }
         if options.intentionalCrashAfterStart {
             print("Intentional crash requested after engine start. Pending device setting restoration is persisted and retried on the next launch.")
             fflush(stdout)
@@ -129,7 +172,9 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
         Thread.sleep(forTimeInterval: options.holdAfterStart)
         let metrics = engine.snapshotMetrics()
         engine.stop()
-        printMetrics(metrics, fallbackSampleRate: output.nominalSampleRate)
+        let timestampProbeRecords = engine.snapshotTimestampProbeRecords()
+        printMetrics(metrics, sampleRate: output.nominalSampleRate)
+        printTimestampProbeRecords(timestampProbeRecords)
         printAudioEngineStatus(.stopped)
         print("Engine stopped cleanly.")
 
@@ -160,6 +205,39 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
         print("Expected permission denial, but observed a different failure.")
         return 1
     }
+}
+
+private func printLatencyMetadata(
+    _ metadata: AudioDeviceLatencyMetadata,
+    label: String
+) {
+    print("\(label) object ID: \(metadata.objectID)")
+    if let device = try? CoreAudioDeviceQuery.outputDevice(id: metadata.objectID) {
+        print("\(label) nominal sample rate: \(device.nominalSampleRate)")
+    } else {
+        print("\(label) nominal sample rate: unavailable")
+    }
+    print("\(label) buffer frames: \(optionalFrames(metadata.bufferFrameSize))")
+    print("\(label) input stream channels: \(optionalChannelCounts(metadata.inputStreamChannelCounts))")
+    print("\(label) output stream channels: \(optionalChannelCounts(metadata.outputStreamChannelCounts))")
+    print("\(label) input latency: \(optionalFrames(metadata.inputLatencyFrames))")
+    print("\(label) input safety offset: \(optionalFrames(metadata.inputSafetyOffsetFrames))")
+    print("\(label) input safety offset settable: \(optionalBoolean(metadata.inputSafetyOffsetSettable))")
+    print("\(label) output latency: \(optionalFrames(metadata.outputLatencyFrames))")
+    print("\(label) output safety offset: \(optionalFrames(metadata.outputSafetyOffsetFrames))")
+    print("\(label) output safety offset settable: \(optionalBoolean(metadata.outputSafetyOffsetSettable))")
+}
+
+private func optionalFrames(_ frames: UInt32?) -> String {
+    frames.map(String.init) ?? "unavailable"
+}
+
+private func optionalBoolean(_ value: Bool?) -> String {
+    value.map(String.init) ?? "unavailable"
+}
+
+private func optionalChannelCounts(_ counts: [Int]?) -> String {
+    counts.map { String(describing: $0) } ?? "unavailable"
 }
 
 private func audioEngineStatus(from state: AudioEngineState) -> AudioEngineStatus {
@@ -242,40 +320,97 @@ private func printAudioEngineFailure(_ failure: AudioEngineFailure) {
     }
 }
 
-private func printMetrics(_ metrics: AudioEngineMetrics, fallbackSampleRate: Double) {
-    let playbackBufferSampleRate = metrics.playbackBufferSampleRate > 0
-        ? metrics.playbackBufferSampleRate
-        : fallbackSampleRate
-    let playbackBufferMillisecondsPerFrame = 1_000 / playbackBufferSampleRate
+private func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
     print("Captured frames: \(metrics.capturedFrames)")
     print("Played frames: \(metrics.playedFrames)")
     print("Playback underrun frames: \(metrics.playbackUnderrunFrames)")
     print("Dropped input frames: \(metrics.droppedInputFrames)")
-    print("Dropped buffered frames: \(metrics.droppedBufferedFrames)")
-    print("Ring gate contention failures: \(metrics.ringGateContentionFailures)")
     print("Saturated samples: \(metrics.saturatedSamples)")
-    print("Buffered frames at stop: \(metrics.currentBufferedFrames)")
-    print("Max ring buffered frames: \(metrics.maxBufferedFrames)")
-    print("Max playback buffered frames: \(metrics.maximumPlaybackBufferedFrames)")
+    print("Input timestamp jumps: \(metrics.inputTimestampDiscontinuities)")
+    print("Output timestamp jumps: \(metrics.outputTimestampDiscontinuities)")
+    print("Paired timestamp jumps: \(metrics.pairedTimestampDiscontinuities)")
+    if metrics.pairedTimestampDiscontinuities > 0 {
+        print(String(
+            format: "Last input jump: %+.3f frames, host interval error %+.3f ms",
+            metrics.lastInputTimestampJumpFrames,
+            Double(metrics.lastInputHostIntervalErrorNanoseconds) / 1_000_000
+        ))
+        print(String(
+            format: "Last output jump: %+.3f frames, host interval error %+.3f ms",
+            metrics.lastOutputTimestampJumpFrames,
+            Double(metrics.lastOutputHostIntervalErrorNanoseconds) / 1_000_000
+        ))
+    }
+    if metrics.timestampJumpIntervalObservations > 0 {
+        print(String(
+            format: "Paired jump interval: %.3f ms average, %.3f to %.3f ms",
+            metrics.averageTimestampJumpIntervalNanoseconds / 1_000_000,
+            Double(metrics.minimumTimestampJumpIntervalNanoseconds) / 1_000_000,
+            Double(metrics.maximumTimestampJumpIntervalNanoseconds) / 1_000_000
+        ))
+    } else {
+        print("Paired jump interval: unavailable")
+    }
     print("Max capture callback frames: \(metrics.maximumCaptureCallbackFrames)")
     print("Max playback callback frames: \(metrics.maximumPlaybackCallbackFrames)")
-    print("Output timestamp discontinuities: \(metrics.playbackTimestampDiscontinuities)")
-    print("Playback buffer renegotiations: \(metrics.playbackBufferRenegotiations)")
-    print("Adaptive playback render failures: \(metrics.adaptivePlaybackRenderFailures)")
-    print("Sample-rate conversion active: \(metrics.playbackSampleRateConversionActive)")
-    print(String(format: "Playback rate correction: %+.2f ppm", metrics.playbackRateCorrectionPPM))
-    print("Playback rate correction saturated: \(metrics.playbackRateCorrectionSaturated)")
-    print("Playback occupancy target: \(metrics.playbackOccupancyTargetFrames) frames")
-    print(String(format: "Filtered playback occupancy: %.2f frames", metrics.filteredPlaybackOccupancyFrames))
-    print(String(
-        format: "Max playback buffered latency: %.2f ms",
-        Double(metrics.maximumPlaybackBufferedFrames) * playbackBufferMillisecondsPerFrame
-    ))
-    print("Playback latency observations: \(metrics.playbackBufferObservations)")
-    print(String(format: "GlassEQ added latency: min %.2f ms, avg %.2f ms, max %.2f ms",
-                 Double(metrics.minimumPlaybackBufferedFrames) * playbackBufferMillisecondsPerFrame,
-                 metrics.averagePlaybackBufferedFrames * playbackBufferMillisecondsPerFrame,
-                 Double(metrics.maximumPlaybackBufferedFrames) * playbackBufferMillisecondsPerFrame))
+    if metrics.tapToOutputLatencyObservations > 0 {
+        print(String(
+            format: "Tap-to-output latency: %.3f ms average, %.3f to %.3f ms",
+            metrics.averageTapToOutputLatencyNanoseconds / 1_000_000,
+            Double(metrics.minimumTapToOutputLatencyNanoseconds) / 1_000_000,
+            Double(metrics.maximumTapToOutputLatencyNanoseconds) / 1_000_000
+        ))
+    } else {
+        print("Tap-to-output latency: unavailable")
+    }
+    if metrics.callbackTimingObservations > 0 {
+        print(String(
+            format: "Input age: %.3f ms average, %.3f frames, %.3f to %.3f ms",
+            metrics.averageInputAgeNanoseconds / 1_000_000,
+            metrics.averageInputAgeNanoseconds * sampleRate / 1_000_000_000,
+            Double(metrics.minimumInputAgeNanoseconds) / 1_000_000,
+            Double(metrics.maximumInputAgeNanoseconds) / 1_000_000
+        ))
+        print(String(
+            format: "Output lead: %.3f ms average, %.3f frames, %.3f to %.3f ms",
+            metrics.averageOutputLeadNanoseconds / 1_000_000,
+            metrics.averageOutputLeadNanoseconds * sampleRate / 1_000_000_000,
+            Double(metrics.minimumOutputLeadNanoseconds) / 1_000_000,
+            Double(metrics.maximumOutputLeadNanoseconds) / 1_000_000
+        ))
+    } else {
+        print("Input age: unavailable")
+        print("Output lead: unavailable")
+    }
+}
+
+private func printTimestampProbeRecords(_ records: [AudioTimestampProbeRecord]) {
+    print("Timestamp probe records: \(records.count)")
+    for record in records {
+        print(
+            "Jump #\(record.sequence) callbacks=\(record.inputFrameCount)/\(record.outputFrameCount) "
+                + "inputJump=\(record.inputJumpDetected ? "yes" : "no") "
+                + "outputJump=\(record.outputJumpDetected ? "yes" : "no")"
+        )
+        print(String(
+            format: "  input  mSampleTime=%.6f mHostTime=%llu mRateScalar=%.12f mFlags=0x%08X delta=%+.3f frames hostError=%+.3f ms",
+            record.inputSampleTime,
+            record.inputHostTime,
+            record.inputRateScalar,
+            record.inputFlags,
+            record.inputSampleTimeDeltaFrames,
+            Double(record.inputHostIntervalErrorNanoseconds) / 1_000_000
+        ))
+        print(String(
+            format: "  output mSampleTime=%.6f mHostTime=%llu mRateScalar=%.12f mFlags=0x%08X delta=%+.3f frames hostError=%+.3f ms",
+            record.outputSampleTime,
+            record.outputHostTime,
+            record.outputRateScalar,
+            record.outputFlags,
+            record.outputSampleTimeDeltaFrames,
+            Double(record.outputHostIntervalErrorNanoseconds) / 1_000_000
+        ))
+    }
 }
 
 private struct DSPBenchmarkCase {
@@ -293,26 +428,40 @@ private func runDSPBenchmark() {
             profile: .flatParametric,
             sampleRate: 48_000,
             channelCount: 2,
-            frameCount: 256
+            frameCount: 16
         ),
         DSPBenchmarkCase(
-            name: "31-band graphic",
+            name: "31-band graphic at 48 kHz",
             profile: .flatGraphic31,
             sampleRate: 48_000,
             channelCount: 2,
-            frameCount: 256
+            frameCount: 16
+        ),
+        DSPBenchmarkCase(
+            name: "31-band graphic at 96 kHz",
+            profile: .flatGraphic31,
+            sampleRate: 96_000,
+            channelCount: 2,
+            frameCount: 16
+        ),
+        DSPBenchmarkCase(
+            name: "31-band graphic at 192 kHz",
+            profile: .flatGraphic31,
+            sampleRate: 192_000,
+            channelCount: 2,
+            frameCount: 16
         ),
         DSPBenchmarkCase(
             name: "Complex stereo",
             profile: complexStereoProfile(),
             sampleRate: 48_000,
             channelCount: 2,
-            frameCount: 256
+            frameCount: 16
         )
     ]
 
     print("GlassEQ DSP benchmark")
-    print("Measures CPU processing time only; Core Audio buffering and device latency are not included.")
+    print("Measures the 16-frame DSP workload; Core Audio buffering and device latency are not included.")
     print("Biquad EQ is in-place and has no fixed block/sample delay; recursive filters still have frequency-dependent phase/group delay.")
     print("")
 

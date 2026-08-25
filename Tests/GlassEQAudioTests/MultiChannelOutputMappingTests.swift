@@ -19,6 +19,42 @@ struct MultiChannelOutputMappingTests {
     }
 
     @Test
+    func deviceTapUsesStreamContainingBothPlaybackChannels() {
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [2],
+            playbackChannels: (0, 1)
+        ) == 0)
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [2, 2, 2],
+            playbackChannels: (2, 3)
+        ) == 1)
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [2, 2, 1],
+            playbackChannels: (4, 4)
+        ) == 2)
+    }
+
+    @Test
+    func deviceTapRejectsPlaybackChannelsThatCannotShareAStream() {
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [2, 2, 2],
+            playbackChannels: (1, 2)
+        ) == nil)
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [2, 0, 2],
+            playbackChannels: (0, 1)
+        ) == nil)
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [],
+            playbackChannels: (0, 1)
+        ) == nil)
+        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
+            streamChannelCounts: [6],
+            playbackChannels: (2, 3)
+        ) == nil)
+    }
+
+    @Test
     func playbackChannelPairEncodingRoundTripsAndClamps() {
         #expect(SystemTapAudioEngine.decodedPlaybackChannelPair(
             SystemTapAudioEngine.encodedPlaybackChannelPair(left: 0, right: 1)
@@ -199,6 +235,175 @@ struct MultiChannelOutputMappingTests {
         #expect(written == [[1, 2, 3, 4]])
     }
 
+    @Test
+    func tapInputOffsetAccountsForDuplexPhysicalOutput() {
+        #expect(SystemTapAudioEngine.tapInputChannelOffset(
+            physicalInputChannelCount: 0,
+            aggregateInputChannelCount: 2,
+            tapChannelCount: 2
+        ) == 0)
+        #expect(SystemTapAudioEngine.tapInputChannelOffset(
+            physicalInputChannelCount: 2,
+            aggregateInputChannelCount: 4,
+            tapChannelCount: 2
+        ) == 2)
+        #expect(SystemTapAudioEngine.tapInputChannelOffset(
+            physicalInputChannelCount: 2,
+            aggregateInputChannelCount: 2,
+            tapChannelCount: 2
+        ) == nil)
+    }
+
+    @Test
+    func tapInputOffsetsAccountForBothProcessTaps() throws {
+        let duplexOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
+            physicalInputChannelCount: 2,
+            aggregateInputChannelCount: 6,
+            mainTapChannelCount: 2,
+            systemSoundTapChannelCount: 2
+        ))
+        let outputOnlyOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
+            physicalInputChannelCount: 0,
+            aggregateInputChannelCount: 4,
+            mainTapChannelCount: 2,
+            systemSoundTapChannelCount: 2
+        ))
+        let reorderedOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
+            physicalInputChannelCount: 2,
+            aggregateInputChannelCount: 6,
+            mainTapChannelCount: 2,
+            systemSoundTapChannelCount: 2,
+            mainTapIndex: 1,
+            systemSoundTapIndex: 0
+        ))
+
+        #expect(duplexOffsets.main == 2)
+        #expect(duplexOffsets.systemSounds == 4)
+        #expect(outputOnlyOffsets.main == 0)
+        #expect(outputOnlyOffsets.systemSounds == 2)
+        #expect(reorderedOffsets.main == 4)
+        #expect(reorderedOffsets.systemSounds == 2)
+        #expect(SystemTapAudioEngine.tapInputChannelOffsets(
+            physicalInputChannelCount: 2,
+            aggregateInputChannelCount: 5,
+            mainTapChannelCount: 2,
+            systemSoundTapChannelCount: 1
+        ) == nil)
+        #expect(SystemTapAudioEngine.tapInputChannelOffsets(
+            physicalInputChannelCount: 2,
+            aggregateInputChannelCount: 6,
+            mainTapChannelCount: 2,
+            systemSoundTapChannelCount: 2,
+            mainTapIndex: 0,
+            systemSoundTapIndex: 0
+        ) == nil)
+    }
+
+    @Test
+    func inputStreamUsageEnablesOnlyTapStreams() {
+        #expect(SystemTapAudioEngine.inputStreamUsage(
+            streamChannelCounts: [2, 2],
+            tapChannelOffset: 2,
+            tapChannelCount: 2
+        ) == [0, 1])
+        #expect(SystemTapAudioEngine.inputStreamUsage(
+            streamChannelCounts: [2],
+            tapChannelOffset: 0,
+            tapChannelCount: 2
+        ) == [1])
+        #expect(SystemTapAudioEngine.inputStreamUsage(
+            streamChannelCounts: [2, 2, 2],
+            tapChannelOffset: 2,
+            tapChannelCount: 4
+        ) == [0, 1, 1])
+    }
+
+    @Test
+    func inputStreamUsageRejectsLayoutsThatCannotIsolateTheTap() {
+        #expect(SystemTapAudioEngine.inputStreamUsage(
+            streamChannelCounts: [4],
+            tapChannelOffset: 2,
+            tapChannelCount: 2
+        ) == nil)
+        #expect(SystemTapAudioEngine.inputStreamUsage(
+            streamChannelCounts: [2, 2],
+            tapChannelOffset: 2,
+            tapChannelCount: 1
+        ) == nil)
+        #expect(SystemTapAudioEngine.inputStreamUsage(
+            streamChannelCounts: [2, 0, 2],
+            tapChannelOffset: 2,
+            tapChannelCount: 2
+        ) == nil)
+    }
+
+    @Test
+    func aggregateInputCopySkipsPhysicalInputChannels() {
+        let interleaved = copiedInput(
+            input: [
+                10, 11, 1, 2,
+                12, 13, 3, 4
+            ],
+            inputChannelLayout: [4],
+            frameCount: 2,
+            channelCount: 2,
+            sourceChannelOffset: 2
+        )
+        let split = copiedInput(
+            input: [
+                10, 11, 12, 13,
+                1, 2, 3, 4
+            ],
+            inputChannelLayout: [2, 2],
+            frameCount: 2,
+            channelCount: 2,
+            sourceChannelOffset: 2
+        )
+
+        #expect(interleaved == [1, 2, 3, 4])
+        #expect(split == [1, 2, 3, 4])
+    }
+
+    @Test
+    func systemSoundInputIsMixedWithPerChannelPreamp() {
+        let result = mixedInput(
+            input: [
+                10, 11, 12, 13,
+                20, 21, 22, 23,
+                0.4, -0.4, 0.2, -0.2
+            ],
+            inputChannelLayout: [2, 2, 2],
+            samples: [0.1, -0.2, 0.3, -0.4],
+            frameCount: 2,
+            channelCount: 2,
+            sourceChannelOffset: 4,
+            preampGains: (left: 0.5, right: 0.25)
+        )
+
+        #expect(abs(result.samples[0] - 0.3) < 0.000_001)
+        #expect(abs(result.samples[1] + 0.3) < 0.000_001)
+        #expect(abs(result.samples[2] - 0.4) < 0.000_001)
+        #expect(abs(result.samples[3] + 0.45) < 0.000_001)
+        #expect(result.saturated == 0)
+    }
+
+    @Test
+    func systemSoundMixSmoothlyLimitsOverload() {
+        let result = mixedInput(
+            input: [1, -1],
+            inputChannelLayout: [2],
+            samples: [0.5, -0.5],
+            frameCount: 1,
+            channelCount: 2,
+            sourceChannelOffset: 0,
+            preampGains: (left: 1, right: 1)
+        )
+
+        #expect(result.samples[0] > 0.98 && result.samples[0] <= 1)
+        #expect(result.samples[1] < -0.98 && result.samples[1] >= -1)
+        #expect(result.saturated == 2)
+    }
+
     // MARK: - Helpers
 
     /// Builds an AudioBufferList with one garbage-prefilled buffer per channelLayout entry,
@@ -260,5 +465,75 @@ struct MultiChannelOutputMappingTests {
                 )
             }
         }
+    }
+
+    private func copiedInput(
+        input: [Float],
+        inputChannelLayout: [Int],
+        frameCount: Int,
+        channelCount: Int,
+        sourceChannelOffset: Int
+    ) -> [Float] {
+        var inputOffset = 0
+        var samples = Array(repeating: Float.zero, count: frameCount * channelCount)
+        _ = withMappedBuffers(channelLayout: inputChannelLayout, frames: frameCount) { buffers in
+            for bufferIndex in buffers.indices {
+                let sampleCount = inputChannelLayout[bufferIndex] * frameCount
+                input.withUnsafeBufferPointer { source in
+                    buffers[bufferIndex].mData?.assumingMemoryBound(to: Float.self).update(
+                        from: source.baseAddress!.advanced(by: inputOffset),
+                        count: sampleCount
+                    )
+                }
+                inputOffset += sampleCount
+            }
+            samples.withUnsafeMutableBufferPointer { destination in
+                SystemTapAudioEngine.copyInputSamples(
+                    from: buffers,
+                    into: destination,
+                    frameCount: frameCount,
+                    channelCount: channelCount,
+                    sourceChannelOffset: sourceChannelOffset
+                )
+            }
+        }
+        return samples
+    }
+
+    private func mixedInput(
+        input: [Float],
+        inputChannelLayout: [Int],
+        samples: [Float],
+        frameCount: Int,
+        channelCount: Int,
+        sourceChannelOffset: Int,
+        preampGains: (left: Float, right: Float)
+    ) -> (samples: [Float], saturated: UInt64) {
+        var inputOffset = 0
+        var samples = samples
+        var saturated: UInt64 = 0
+        _ = withMappedBuffers(channelLayout: inputChannelLayout, frames: frameCount) { buffers in
+            for bufferIndex in buffers.indices {
+                let sampleCount = inputChannelLayout[bufferIndex] * frameCount
+                input.withUnsafeBufferPointer { source in
+                    buffers[bufferIndex].mData?.assumingMemoryBound(to: Float.self).update(
+                        from: source.baseAddress!.advanced(by: inputOffset),
+                        count: sampleCount
+                    )
+                }
+                inputOffset += sampleCount
+            }
+            samples.withUnsafeMutableBufferPointer { destination in
+                saturated = SystemTapAudioEngine.mixInputSamples(
+                    from: buffers,
+                    into: destination,
+                    frameCount: frameCount,
+                    channelCount: channelCount,
+                    sourceChannelOffset: sourceChannelOffset,
+                    preampGains: preampGains
+                )
+            }
+        }
+        return (samples, saturated)
     }
 }

@@ -69,6 +69,9 @@ public final class GlassEQSettingsViewModel {
         if let profileStoreProtection = patch.profileStoreProtection {
             snapshot.profileStoreProtection = profileStoreProtection
         }
+        if let aggregateBuffer = patch.aggregateBuffer {
+            snapshot.aggregateBuffer = aggregateBuffer
+        }
         switch patch.currentOutputMappedProfileID {
         case .set(let profileID):
             snapshot.currentOutputMappedProfileID = profileID

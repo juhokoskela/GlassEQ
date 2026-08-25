@@ -10,6 +10,349 @@ import Testing
 @Suite
 struct GlassEQAppModelLifecycleTests {
     @Test
+    func runtimeEngineFailureStopsTheModelAndSurfacesItsStatus() async {
+        let output = makeOutput(uid: "runtime-output", name: "Runtime Output")
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        let model = makeModel(engine: engine)
+
+        model.retryAudioEngine()
+        await waitUntil {
+            model.lifecycleState == .running
+        }
+        engine.emitRuntimeFailure(adaptiveRenderFailure)
+        await waitUntil {
+            model.lifecycleState == .stopped
+        }
+
+        #expect(!model.isRunning)
+        #expect(model.statusMessage == localized(
+            "Audio engine failed: \(adaptiveRenderFailure.userMessage)"
+        ))
+    }
+
+    @Test
+    func runtimeFailureDoesNotCancelNewerPendingRouteStart() async {
+        let firstOutput = makeOutput(uid: "runtime-first", name: "Runtime First", id: 200)
+        let secondOutput = makeOutput(uid: "runtime-second", name: "Runtime Second", id: 300)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(firstOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        engine.blockStart(for: secondOutput.uid)
+        lookup.result = .success(secondOutput)
+        observer.emit(.success(secondOutput))
+        await waitUntil {
+            engine.startCalls.contains { $0.output == secondOutput }
+        }
+        #expect(engine.waitUntilStartIsBlocked(for: secondOutput.uid, timeout: .now() + 1))
+
+        engine.emitRuntimeFailure(adaptiveRenderFailure)
+        await settleAsyncWork()
+        #expect(model.lifecycleState == .running)
+
+        engine.unblockStart(for: secondOutput.uid)
+        await waitUntil {
+            model.lifecycleState == .running
+                && model.currentOutputUID == secondOutput.uid
+                && engine.state == .running(output: secondOutput)
+        }
+    }
+
+    @Test
+    func staleRuntimeFailureDoesNotStopCompletedNewerRoute() async {
+        let firstOutput = makeOutput(uid: "stale-runtime-first", name: "Stale Runtime First", id: 200)
+        let secondOutput = makeOutput(uid: "stale-runtime-second", name: "Stale Runtime Second", id: 300)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(firstOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        lookup.result = .success(secondOutput)
+        observer.emit(.success(secondOutput))
+        await waitUntil {
+            model.lifecycleState == .running
+                && model.currentOutputUID == secondOutput.uid
+                && engine.state == .running(output: secondOutput)
+        }
+
+        engine.emitRuntimeFailure(adaptiveRenderFailure, markEngineFailed: false)
+        await settleAsyncWork()
+
+        #expect(model.lifecycleState == .running)
+        #expect(model.isRunning)
+        #expect(model.currentOutputUID == secondOutput.uid)
+        #expect(engine.state == .running(output: secondOutput))
+    }
+
+    @Test
+    func settledHeadsetRoutePromotesToCombinedAggregate() async {
+        let output = makeOutput(
+            uid: "headset-promotion",
+            name: "AirPods Headset",
+            nominalSampleRate: 24_000,
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        engine.headsetPromotionCandidateUIDs = [output.uid]
+        engine.headsetAggregatePromotionResult = .promoted(output)
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateStabilityDelay: .seconds(1),
+            headsetAggregatePromotionDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.headsetAggregatePromotionAttemptCount == 1
+                && engine.isUsingPromotedHeadsetAggregate
+        }
+
+        #expect(engine.startCalls.count == 1)
+        #expect(model.statusMessage.contains("low-latency headset path"))
+    }
+
+    @Test
+    func promotedHeadsetRouteFallsBackAfterOneSteadyStateJump() async {
+        let output = makeOutput(
+            uid: "headset-demotion",
+            name: "AirPods Headset",
+            nominalSampleRate: 24_000,
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        engine.headsetPromotionCandidateUIDs = [output.uid]
+        engine.headsetAggregatePromotionResult = .promoted(output)
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero,
+            headsetAggregatePromotionDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.headsetAggregatePromotionAttemptCount == 1
+                && engine.isUsingPromotedHeadsetAggregate
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 1
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.isUsingTransitionalHeadsetBackend
+        }
+
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(engine.headsetAggregatePromotionAttemptCount == 1)
+        #expect(model.statusMessage.contains("compatibility mode"))
+    }
+
+    @Test
+    func automaticAggregateBufferClimbsToSixtyFourAfterQualifyingInterruptions() async {
+        let output = makeOutput(uid: "adaptive-aggregate", name: "Adaptive Aggregate")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let notifier = FakeAggregateBufferNotifier()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateBufferNotifier: notifier
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.count == 1
+                && engine.startCalls[0].aggregateBufferFrameSize == 16
+        }
+        try? await Task.sleep(for: .milliseconds(30))
+
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 1
+        engine.metrics = metrics
+        try? await Task.sleep(for: .milliseconds(350))
+        #expect(engine.startCalls.count == 1)
+
+        metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 2
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 32
+                && notifier.calls.count == 1
+        }
+        try? await Task.sleep(for: .milliseconds(30))
+
+        metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 3
+        engine.metrics = metrics
+        try? await Task.sleep(for: .milliseconds(350))
+        #expect(engine.startCalls.count == 2)
+
+        metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 4
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.startCalls[2].aggregateBufferFrameSize == 64
+                && notifier.calls.count == 2
+        }
+
+        metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 6
+        engine.metrics = metrics
+        try? await Task.sleep(for: .milliseconds(350))
+
+        #expect(engine.startCalls.count == 3)
+        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 64)
+    }
+
+    @Test
+    func automaticAggregateBufferIgnoresInterruptionsBeforeRouteSettles() async {
+        let output = makeOutput(uid: "settling-aggregate", name: "Settling Aggregate")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateStabilityDelay: .seconds(1)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 1
+        engine.metrics = metrics
+        try? await Task.sleep(for: .milliseconds(350))
+
+        #expect(engine.startCalls.count == 1)
+        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 16)
+    }
+
+    @Test
+    func automaticAggregateBufferRetriesLowerRungAfterThreeCleanRuns() async throws {
+        let output = makeOutput(uid: "clean-aggregate", name: "Clean Aggregate")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateCleanSessionDuration: .milliseconds(100)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 2
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 32
+        }
+
+        try? await Task.sleep(for: .milliseconds(350))
+        try model.setAggregateBufferMode(.automatic)
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.startCalls[2].aggregateBufferFrameSize == 32
+        }
+
+        try? await Task.sleep(for: .milliseconds(350))
+        try model.setAggregateBufferMode(.automatic)
+        await waitUntil {
+            engine.startCalls.count == 4
+                && engine.startCalls[3].aggregateBufferFrameSize == 32
+        }
+        await waitUntil {
+            engine.startCalls.count == 5
+                && engine.startCalls[4].aggregateBufferFrameSize == 16
+        }
+
+        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 16)
+    }
+
+    @Test
+    func aggregateBufferControlsAreUnavailableDuringARebuild() async throws {
+        let output = makeOutput(uid: "rebuilding-aggregate", name: "Rebuilding Aggregate")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero)
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        #expect(model.settingsSnapshot().aggregateBuffer.isAvailable)
+
+        engine.startDelaySeconds = 0.1
+        try model.setAggregateBufferMode(.frames32)
+
+        #expect(!model.settingsSnapshot().aggregateBuffer.isAvailable)
+        #expect(throws: SettingsCommandFailure.self) {
+            try model.setAggregateBufferMode(.frames64)
+        }
+
+        await waitUntil {
+            engine.startCalls.count == 2
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
+        }
+        #expect(model.settingsSnapshot().aggregateBuffer.isAvailable)
+    }
+
+    @Test
     func retryRunningEngineUpdatesActiveProfileWithoutDefaultLookup() async {
         let runningOutput = makeOutput(uid: "running-output", name: "Running Output")
         let defaultOutput = makeOutput(uid: "default-output", name: "Default Output")
@@ -118,85 +461,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.currentOutputName == output.name)
         #expect(!model.isRunning)
         #expect(model.lifecycleState == .stopped)
-    }
-
-    @Test
-    func conversionCapacityStartFailureReportsUnsupportedOutputFormat() async {
-        let output = makeOutput(uid: "converted-output", name: "Converted Output")
-        let error = AudioDeviceAvailabilityError.unsupportedPlaybackConversionBuffer(
-            output.id,
-            requiredPrimeFrames: 50_176,
-            maximumPrimeFrames: 40_960
-        )
-        let engine = FakeAudioEngine()
-        engine.startError = error
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let model = makeModel(engine: engine, lookup: lookup)
-        let expectedStatus = localized("Output format unsupported: \(error.description)")
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .stopped
-                && engine.startCalls.count == 1
-                && model.statusMessage == expectedStatus
-        }
-
-        #expect(model.statusMessage == expectedStatus)
-    }
-
-    @Test
-    func runtimeEngineFailureStopsTheModelAndSurfacesItsStatus() async {
-        let output = makeOutput(uid: "runtime-output", name: "Runtime Output")
-        let engine = FakeAudioEngine()
-        engine.state = .running(output: output)
-        let model = makeModel(engine: engine)
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running
-        }
-        engine.emitRuntimeFailure(adaptiveRenderFailure)
-        await waitUntil {
-            model.lifecycleState == .stopped
-        }
-
-        #expect(!model.isRunning)
-        #expect(model.statusMessage == localized("Audio engine failed: \(adaptiveRenderFailure.userMessage)"))
-    }
-
-    @Test
-    func runtimeFailureDoesNotCancelNewerPendingRouteStart() async {
-        let firstOutput = makeOutput(uid: "runtime-first", name: "Runtime First", id: 200)
-        let secondOutput = makeOutput(uid: "runtime-second", name: "Runtime Second", id: 300)
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(engine: engine, lookup: lookup, observers: observers, outputDelay: .zero)
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(firstOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        engine.blockStart(for: secondOutput.uid)
-        lookup.result = .success(secondOutput)
-        observer.emit(.success(secondOutput))
-        await waitUntil {
-            engine.startCalls.contains { $0.output == secondOutput }
-        }
-        #expect(engine.waitUntilStartIsBlocked(for: secondOutput.uid, timeout: .now() + 1))
-
-        engine.emitRuntimeFailure(adaptiveRenderFailure)
-        await settleAsyncWork()
-        #expect(model.lifecycleState == .running)
-
-        engine.unblockStart(for: secondOutput.uid)
-        await waitUntil {
-            model.lifecycleState == .running
-                && model.currentOutputUID == secondOutput.uid
-                && engine.state == .running(output: secondOutput)
-        }
     }
 
     @Test
@@ -657,38 +921,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.profileStore.outputMappings == [originalMapping])
         #expect(!model.profileStore.profiles.contains(where: { $0.id == intermediate.id }))
         #expect(model.profileStore.profile(forOutputUID: secondOutput.uid) == confirmed)
-        #expect(engine.state == .running(output: secondOutput))
-    }
-
-    @Test
-    func staleRuntimeFailureDoesNotStopCompletedNewerRoute() async {
-        let firstOutput = makeOutput(uid: "stale-runtime-first", name: "Stale Runtime First", id: 200)
-        let secondOutput = makeOutput(uid: "stale-runtime-second", name: "Stale Runtime Second", id: 300)
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(engine: engine, lookup: lookup, observers: observers, outputDelay: .zero)
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(firstOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        lookup.result = .success(secondOutput)
-        observer.emit(.success(secondOutput))
-        await waitUntil {
-            model.lifecycleState == .running
-                && model.currentOutputUID == secondOutput.uid
-                && engine.state == .running(output: secondOutput)
-        }
-
-        engine.emitRuntimeFailure(adaptiveRenderFailure, markEngineFailed: false)
-        await settleAsyncWork()
-
-        #expect(model.lifecycleState == .running)
-        #expect(model.isRunning)
-        #expect(model.currentOutputUID == secondOutput.uid)
         #expect(engine.state == .running(output: secondOutput))
     }
 
@@ -2148,8 +2380,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.metrics = AudioEngineMetrics(
             capturedFrames: 123,
             playedFrames: 100,
-            ringGateContentionFailures: 2,
-            playbackBufferSampleRate: 48_000
+            droppedInputFrames: 2
         )
         let model = makeModel(engine: engine)
 
@@ -2158,383 +2389,9 @@ struct GlassEQAppModelLifecycleTests {
         #expect(response.snapshot == nil)
         #expect(model.engineMetrics.capturedFrames == 123)
         #expect(model.engineMetrics.playedFrames == 100)
-        #expect(model.engineMetrics.ringGateContentionFailures == 2)
-        #expect(model.settingsSnapshot().metrics.playbackBufferSampleRate == 48_000)
+        #expect(model.engineMetrics.droppedInputFrames == 2)
+        #expect(model.settingsSnapshot().metrics.droppedInputFrames == 2)
         model.stopMetricsPolling()
-    }
-
-    @Test
-    func resettingPlaybackBufferCalibrationTargetsCurrentDeviceAndRebuildsIt() async throws {
-        let output = makeOutput(uid: "scarlett", name: "Scarlett Solo USB", bufferFrameSize: 1_024)
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let model = makeModel(engine: engine, lookup: lookup)
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        let response = try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-
-        #expect(engine.resetPlaybackBufferCalibrationUIDs == [output.uid])
-        #expect(response.snapshot?.statusMessage == localized("Processing Scarlett Solo USB with Fallback"))
-        #expect(model.isRunning)
-        #expect(model.lifecycleState == .running)
-    }
-
-    @Test
-    func profileAppliedDuringPlaybackBufferCalibrationResetIsRepublished() async throws {
-        let output = makeOutput(uid: "apply-during-reset", name: "Apply During Reset")
-        let initialProfile = makeProfile(name: "Initial")
-        let appliedProfile = makeProfile(name: "Applied During Reset")
-        let store = ProfileStore(
-            profiles: [initialProfile, appliedProfile],
-            fallbackProfileID: initialProfile.id
-        )
-        let engine = FakeAudioEngine()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output))
-        )
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        engine.blockPlaybackBufferCalibrationReset()
-
-        let resetTask = Task {
-            try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-        await waitUntil {
-            engine.resetPlaybackBufferCalibrationUIDs == [output.uid]
-        }
-        #expect(engine.waitUntilPlaybackBufferCalibrationResetIsBlocked(timeout: .now() + 1))
-
-        try model.apply(profile: appliedProfile)
-        #expect(engine.updateDSPCalls.isEmpty)
-
-        engine.unblockPlaybackBufferCalibrationReset()
-        _ = try await resetTask.value
-        await waitUntil {
-            engine.updateCalls.last == appliedProfile
-        }
-
-        #expect(model.activeProfile == appliedProfile)
-        #expect(model.lifecycleState == .running)
-    }
-
-    @Test
-    func stoppingPreviewDuringPlaybackBufferCalibrationResetRepublishesReturnProfile() async throws {
-        let output = makeOutput(uid: "stop-preview-reset", name: "Stop Preview Reset")
-        let initialProfile = makeProfile(name: "Initial")
-        let previewProfile = makeProfile(name: "Preview")
-        let store = ProfileStore(
-            profiles: [initialProfile, previewProfile],
-            fallbackProfileID: initialProfile.id
-        )
-        let engine = FakeAudioEngine()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output))
-        )
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        model.preview(profile: previewProfile)
-        #expect(engine.updateDSPCalls == [previewProfile])
-        engine.blockPlaybackBufferCalibrationReset()
-
-        let resetTask = Task {
-            try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-        await waitUntil {
-            engine.resetPlaybackBufferCalibrationUIDs == [output.uid]
-        }
-        #expect(engine.waitUntilPlaybackBufferCalibrationResetIsBlocked(timeout: .now() + 1))
-
-        model.stopPreview()
-        #expect(engine.updateDSPCalls == [previewProfile])
-
-        engine.unblockPlaybackBufferCalibrationReset()
-        _ = try await resetTask.value
-        await waitUntil {
-            engine.updateCalls.last == initialProfile
-        }
-
-        #expect(model.activeProfile == initialProfile)
-        #expect(model.previewReturnProfile == nil)
-        #expect(model.lifecycleState == .running)
-    }
-
-    @Test
-    func stoppingDuringPlaybackBufferCalibrationResetKeepsModelStopped() async throws {
-        let output = makeOutput(uid: "stop-during-reset", name: "Stop During Reset")
-        let engine = FakeAudioEngine()
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)))
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        engine.blockPlaybackBufferCalibrationReset()
-
-        let resetTask = Task {
-            try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-        await waitUntil {
-            engine.resetPlaybackBufferCalibrationUIDs == [output.uid]
-        }
-        #expect(engine.waitUntilPlaybackBufferCalibrationResetIsBlocked(timeout: .now() + 1))
-
-        model.stop()
-        engine.unblockPlaybackBufferCalibrationReset()
-        _ = try await resetTask.value
-        await waitUntil {
-            engine.stopCallCount == 1
-        }
-
-        #expect(!model.isRunning)
-        #expect(model.lifecycleState == .stopped)
-        #expect(model.statusMessage == localized("Stopped"))
-    }
-
-    @Test
-    func sleepingDuringPlaybackBufferCalibrationResetKeepsModelSleeping() async throws {
-        let output = makeOutput(uid: "sleep-during-reset", name: "Sleep During Reset")
-        let engine = FakeAudioEngine()
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)))
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        engine.blockPlaybackBufferCalibrationReset()
-
-        let resetTask = Task {
-            try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-        await waitUntil {
-            engine.resetPlaybackBufferCalibrationUIDs == [output.uid]
-        }
-        #expect(engine.waitUntilPlaybackBufferCalibrationResetIsBlocked(timeout: .now() + 1))
-
-        model.handleWillSleep()
-        engine.unblockPlaybackBufferCalibrationReset()
-        _ = try await resetTask.value
-        await waitUntil {
-            engine.stopCallCount == 1
-        }
-
-        #expect(!model.isRunning)
-        #expect(model.lifecycleState == .sleeping)
-        #expect(model.statusMessage == localized("Paused for system sleep"))
-    }
-
-    @Test
-    func playbackBufferCalibrationResetIsRejectedWhileSleepingOrWaking() async {
-        let output = makeOutput(uid: "sleep-reset", name: "Sleep Reset")
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            wakeDelay: .zero
-        )
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running
-        }
-        model.handleWillSleep()
-
-        await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-        #expect(model.lifecycleState == .sleeping)
-        #expect(engine.resetPlaybackBufferCalibrationUIDs.isEmpty)
-
-        model.handleDidWake()
-        await waitUntil {
-            model.lifecycleState == .waking && observers.observers.count == 1
-        }
-        await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-        #expect(model.lifecycleState == .waking)
-        #expect(engine.resetPlaybackBufferCalibrationUIDs.isEmpty)
-    }
-
-    @Test
-    func playbackBufferCalibrationFailureReconcilesFailedEngineState() async {
-        let output = makeOutput(uid: "failed-reset", name: "Failed Reset")
-        let engine = FakeAudioEngine()
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)))
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        engine.playbackBufferCalibrationResetError = TestAudioError.calibrationResetFailed
-        engine.playbackBufferCalibrationResetFailureState = .failed("Calibration rebuild failed")
-
-        await #expect(throws: TestAudioError.calibrationResetFailed) {
-            _ = try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-
-        #expect(!model.isRunning)
-        #expect(model.lifecycleState == .stopped)
-        #expect(model.statusMessage == "Calibration rebuild failed")
-    }
-
-    @Test
-    func playbackBufferCalibrationFailurePublishesReconciledHelperSnapshot() async throws {
-        let output = makeOutput(uid: "failed-helper-reset", name: "Failed Helper Reset")
-        let engine = FakeAudioEngine()
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)))
-        let launcher = ControllableSettingsHelperLauncher()
-        let coordinator = SettingsCoordinator(
-            model: model,
-            helperLauncher: launcher,
-            helperValidator: PermissiveSettingsHelperLaunchValidator(),
-            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
-        )
-        model.settingsCoordinator = coordinator
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        engine.playbackBufferCalibrationResetError = TestAudioError.calibrationResetFailed
-        engine.playbackBufferCalibrationResetFailureState = .failed("Calibration rebuild failed")
-
-        #expect(coordinator.openSettings() == .helper)
-        await waitUntil {
-            launcher.receivedAppMessages.contains { message in
-                if case .bootstrap = message {
-                    return true
-                }
-                return false
-            }
-        }
-        let bootstrap = try #require(launcher.receivedAppMessages.first { message in
-            if case .bootstrap = message {
-                return true
-            }
-            return false
-        })
-        guard case .bootstrap(let token) = bootstrap else {
-            Issue.record("Expected Settings bootstrap message")
-            return
-        }
-
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "connect",
-            kind: .connect,
-            command: nil
-        ))
-        await waitUntil {
-            launcher.receivedAppMessages.contains { message in
-                if case .response(_, "connect", _, _) = message {
-                    return true
-                }
-                return false
-            }
-        }
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "ready",
-            kind: .ready,
-            command: nil
-        ))
-        await waitUntil {
-            coordinator.isHelperReadyForTesting
-        }
-        let commandMessageStart = launcher.receivedAppMessages.count
-
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "reset",
-            kind: .command,
-            command: .resetPlaybackBufferCalibration
-        ))
-        await waitUntil {
-            launcher.receivedAppMessages.contains { message in
-                if case .response(_, "reset", _, _) = message {
-                    return true
-                }
-                return false
-            }
-        }
-
-        let commandMessages = Array(launcher.receivedAppMessages.dropFirst(commandMessageStart))
-        let patchIndex = try #require(commandMessages.firstIndex { message in
-            guard case .event(_, .snapshotPatched(let patch)) = message else {
-                return false
-            }
-            return patch.isRunning == false && patch.statusMessage == "Calibration rebuild failed"
-        })
-        let errorIndex = try #require(commandMessages.firstIndex { message in
-            guard case .response(_, "reset", nil, let error) = message else {
-                return false
-            }
-            return error != nil
-        })
-        #expect(patchIndex < errorIndex)
-    }
-
-    @Test
-    func playbackBufferCalibrationFailurePreservesRunningEngineState() async {
-        let output = makeOutput(uid: "running-reset", name: "Running Reset")
-        let engine = FakeAudioEngine()
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)))
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        engine.playbackBufferCalibrationResetError = TestAudioError.calibrationResetFailed
-
-        await #expect(throws: TestAudioError.calibrationResetFailed) {
-            _ = try await model.performSettingsCommand(.resetPlaybackBufferCalibration)
-        }
-
-        #expect(model.isRunning)
-        #expect(model.lifecycleState == .running)
-        #expect(model.statusMessage.contains("Buffer calibration reset failed"))
-    }
-
-    @Test
-    func bufferRenegotiationUpdatesOutputAndSendsNotification() async {
-        let engine = FakeAudioEngine()
-        let notifier = FakePlaybackBufferRenegotiationNotifier()
-        let output = makeOutput(bufferFrameSize: 64)
-        let renegotiation = PlaybackBufferRenegotiation(
-            outputName: output.name,
-            outputUID: output.uid,
-            sampleRate: output.nominalSampleRate,
-            previousFrameSize: 64,
-            frameSize: 128,
-            playbackTargetFrames: 192,
-            reason: .outputTimestampDiscontinuity
-        )
-        let model = makeModel(engine: engine, playbackBufferNotifier: notifier)
-        #expect(notifier.prepareCallCount == 1)
-        model.currentOutputUID = output.uid
-        model.currentOutputBufferFrameSize = 64
-
-        engine.emitBufferRenegotiation(renegotiation)
-        await Task.yield()
-
-        #expect(model.currentOutputBufferFrameSize == 128)
-        #expect(notifier.renegotiations == [renegotiation])
     }
 
     @Test
@@ -2967,6 +2824,17 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func aggregateBufferNotificationOpensSettingsInTheMainProcess() {
+        let model = makeModel()
+
+        model.openAggregateBufferSettings()
+
+        #expect(model.inProcessSettingsPresentationIsPending)
+        #expect(model.inProcessSettingsPresentationGeneration == 1)
+        #expect(!model.settingsCoordinator.hasActiveSessionResourcesForTesting)
+    }
+
+    @Test
     func inProcessSettingsFallbackPerformsCommandsAndTracksModelChanges() async throws {
         let model = makeModel()
         let settingsModel = model.inProcessSettingsViewModel()
@@ -3138,20 +3006,6 @@ struct GlassEQAppModelLifecycleTests {
 }
 
 @MainActor
-private final class FakePlaybackBufferRenegotiationNotifier: PlaybackBufferRenegotiationNotifying {
-    private(set) var prepareCallCount = 0
-    private(set) var renegotiations: [PlaybackBufferRenegotiation] = []
-
-    func prepare() {
-        prepareCallCount += 1
-    }
-
-    func notify(_ renegotiation: PlaybackBufferRenegotiation) {
-        renegotiations.append(renegotiation)
-    }
-}
-
-@MainActor
 private func makeModel(
     store: ProfileStore? = nil,
     storeURL: URL = FileManager.default.temporaryDirectory
@@ -3160,11 +3014,14 @@ private func makeModel(
     lookup: FakeDefaultOutputLookup = FakeDefaultOutputLookup(.success(makeOutput())),
     observers: any DefaultOutputObservingMaking = FakeDefaultOutputObserverFactory(),
     workspaceOpener: any WorkspaceOpening = FakeWorkspaceOpener(results: []),
-    playbackBufferNotifier: any PlaybackBufferRenegotiationNotifying = FakePlaybackBufferRenegotiationNotifier(),
     profileImportOperation: (@Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>)? = nil,
     saveDelay: Duration = .zero,
     outputDelay: Duration? = nil,
-    wakeDelay: Duration? = nil
+    wakeDelay: Duration? = nil,
+    aggregateStabilityDelay: Duration = .zero,
+    aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
+    headsetAggregatePromotionDelay: Duration = .seconds(6),
+    aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil
 ) -> GlassEQAppModel {
     let store = normalizedStore(store ?? ProfileStore(profiles: [makeProfile(name: "Fallback")]))
     return GlassEQAppModel(
@@ -3177,11 +3034,16 @@ private func makeModel(
         installLifecycleObservers: false,
         registerAppDelegate: false,
         workspaceOpener: workspaceOpener,
-        playbackBufferRenegotiationNotifier: playbackBufferNotifier,
         profileImportOperation: profileImportOperation,
         saveDebounceDelay: saveDelay,
         outputChangeSettlingDelayOverride: outputDelay,
-        wakeReconnectDelayOverride: wakeDelay
+        wakeReconnectDelayOverride: wakeDelay,
+        aggregateBufferPolicyURL: storeURL.deletingPathExtension()
+            .appendingPathExtension("aggregate-buffer-policy.json"),
+        aggregateStabilitySettlingDelay: aggregateStabilityDelay,
+        aggregateCleanSessionDuration: aggregateCleanSessionDuration,
+        headsetAggregatePromotionDelay: headsetAggregatePromotionDelay,
+        aggregateBufferNotifier: aggregateBufferNotifier
     )
 }
 
@@ -3312,7 +3174,6 @@ private enum TestAudioError: Error, Equatable {
     case startFailed
     case updateFailed
     case defaultOutputUnavailable
-    case calibrationResetFailed
 }
 
 private let adaptiveRenderFailure = AudioEngineFailure(
@@ -3661,6 +3522,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     struct StartCall: Equatable {
         var output: AudioOutputDevice
         var profile: EQProfile
+        var aggregateBufferFrameSize: UInt32
     }
 
     private let lock = NSLock()
@@ -3681,18 +3543,29 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
     private var _setBypassedCalls: [Bool] = []
-    private var _resetPlaybackBufferCalibrationUIDs: [String] = []
-    private var _playbackBufferCalibrationResetBlocker: FakeStartBlocker?
-    private var _playbackBufferCalibrationResetError: Error?
-    private var _playbackBufferCalibrationResetFailureState: AudioEngineState?
     private var _metrics = AudioEngineMetrics()
-    private var _bufferRenegotiationHandler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
     private var _events: [String] = []
+    private var _preferredAggregateBufferFrameSize: UInt32 = 16
+    private var _nativeOutputStreamIndex = 0
+    private var _reflectPreferredAggregateBufferFrameSize = false
+    private var _headsetPromotionCandidateUIDs: Set<String> = []
+    private var _headsetAggregatePromotionResult = HeadsetAggregatePromotionResult.notApplicable
+    private var _headsetAggregatePromotionAttemptCount = 0
+    private var _isUsingTransitionalHeadsetBackend = false
+    private var _isUsingPromotedHeadsetAggregate = false
     private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
 
     var state: AudioEngineState {
         get { withLock { _state } }
         set { withLock { _state = newValue } }
+    }
+
+    var isUsingTransitionalHeadsetBackend: Bool {
+        withLock { _isUsingTransitionalHeadsetBackend }
+    }
+
+    var isUsingPromotedHeadsetAggregate: Bool {
+        withLock { _isUsingPromotedHeadsetAggregate }
     }
 
     var startError: Error? {
@@ -3765,24 +3638,28 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _setBypassedCalls = newValue } }
     }
 
-    private(set) var resetPlaybackBufferCalibrationUIDs: [String] {
-        get { withLock { _resetPlaybackBufferCalibrationUIDs } }
-        set { withLock { _resetPlaybackBufferCalibrationUIDs = newValue } }
-    }
-
-    var playbackBufferCalibrationResetError: Error? {
-        get { withLock { _playbackBufferCalibrationResetError } }
-        set { withLock { _playbackBufferCalibrationResetError = newValue } }
-    }
-
-    var playbackBufferCalibrationResetFailureState: AudioEngineState? {
-        get { withLock { _playbackBufferCalibrationResetFailureState } }
-        set { withLock { _playbackBufferCalibrationResetFailureState = newValue } }
-    }
-
     var metrics: AudioEngineMetrics {
         get { withLock { _metrics } }
         set { withLock { _metrics = newValue } }
+    }
+
+    var reflectPreferredAggregateBufferFrameSize: Bool {
+        get { withLock { _reflectPreferredAggregateBufferFrameSize } }
+        set { withLock { _reflectPreferredAggregateBufferFrameSize = newValue } }
+    }
+
+    var headsetPromotionCandidateUIDs: Set<String> {
+        get { withLock { _headsetPromotionCandidateUIDs } }
+        set { withLock { _headsetPromotionCandidateUIDs = newValue } }
+    }
+
+    var headsetAggregatePromotionResult: HeadsetAggregatePromotionResult {
+        get { withLock { _headsetAggregatePromotionResult } }
+        set { withLock { _headsetAggregatePromotionResult = newValue } }
+    }
+
+    var headsetAggregatePromotionAttemptCount: Int {
+        withLock { _headsetAggregatePromotionAttemptCount }
     }
 
     var events: [String] {
@@ -3827,41 +3704,14 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         blocker?.unblock()
     }
 
-    func blockPlaybackBufferCalibrationReset() {
-        withLock {
-            _playbackBufferCalibrationResetBlocker = FakeStartBlocker()
-        }
-    }
-
-    func waitUntilPlaybackBufferCalibrationResetIsBlocked(timeout: DispatchTime) -> Bool {
-        withLock {
-            _playbackBufferCalibrationResetBlocker
-        }?.waitUntilEntered(timeout: timeout) ?? false
-    }
-
-    func unblockPlaybackBufferCalibrationReset() {
-        let blocker = withLock {
-            let blocker = _playbackBufferCalibrationResetBlocker
-            _playbackBufferCalibrationResetBlocker = nil
-            return blocker
-        }
-        blocker?.unblock()
-    }
-
-    func emitRuntimeFailure(_ failure: AudioEngineFailure, markEngineFailed: Bool = true) {
-        let handler = withLock {
-            if markEngineFailed {
-                _state = .failed(failure.description)
-            }
-            return _runtimeFailureHandler
-        }
-        handler?(failure)
-    }
-
     func start(output: AudioOutputDevice, profile: EQProfile) throws {
         let startControl = withLock {
             _events.append("start:\(output.uid)")
-            _startCalls.append(StartCall(output: output, profile: profile))
+            _startCalls.append(StartCall(
+                output: output,
+                profile: profile,
+                aggregateBufferFrameSize: _preferredAggregateBufferFrameSize
+            ))
             return (
                 delay: _startDelaySecondsByUID[output.uid] ?? _startDelaySeconds,
                 blocker: _startBlockersByUID[output.uid],
@@ -3884,7 +3734,53 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             throw startError
         }
         withLock {
-            _state = .running(output: output)
+            var activeOutput = output
+            if _reflectPreferredAggregateBufferFrameSize {
+                activeOutput.bufferFrameSize = _preferredAggregateBufferFrameSize
+            }
+            _state = .running(output: activeOutput)
+            _isUsingTransitionalHeadsetBackend = _headsetPromotionCandidateUIDs.contains(output.uid)
+            _isUsingPromotedHeadsetAggregate = false
+        }
+    }
+
+    func attemptHeadsetAggregatePromotion() throws -> HeadsetAggregatePromotionResult {
+        withLock {
+            _headsetAggregatePromotionAttemptCount += 1
+            let result = _headsetAggregatePromotionResult
+            if case .promoted(let output) = result {
+                _state = .running(output: output)
+                _isUsingTransitionalHeadsetBackend = false
+                _isUsingPromotedHeadsetAggregate = true
+            }
+            return result
+        }
+    }
+
+    func rejectHeadsetAggregatePromotion() {
+        withLock {
+            _isUsingPromotedHeadsetAggregate = false
+        }
+    }
+
+    func aggregateRouteFingerprint(
+        for output: AudioOutputDevice
+    ) throws -> AggregateAudioRouteFingerprint? {
+        withLock {
+            if _isUsingTransitionalHeadsetBackend {
+                return nil
+            }
+            return AggregateAudioRouteFingerprint(
+                outputDeviceUID: output.uid,
+                nativeOutputStreamIndex: _nativeOutputStreamIndex,
+                nominalSampleRate: output.nominalSampleRate
+            )
+        }
+    }
+
+    func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32) {
+        withLock {
+            _preferredAggregateBufferFrameSize = frameSize
         }
     }
 
@@ -3944,11 +3840,23 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
+    func emitRuntimeFailure(_ failure: AudioEngineFailure, markEngineFailed: Bool = true) {
+        let handler = withLock {
+            if markEngineFailed {
+                _state = .failed(failure.description)
+            }
+            return _runtimeFailureHandler
+        }
+        handler?(failure)
+    }
+
     func stop() {
         withLock {
             _events.append("stop")
             _stopCallCount += 1
             _state = .stopped
+            _isUsingTransitionalHeadsetBackend = false
+            _isUsingPromotedHeadsetAggregate = false
         }
     }
 
@@ -3964,41 +3872,33 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func resetPlaybackBufferCalibration(forOutputUID outputUID: String) throws {
-        let reset = withLock {
-            _resetPlaybackBufferCalibrationUIDs.append(outputUID)
-            return (
-                blocker: _playbackBufferCalibrationResetBlocker,
-                error: _playbackBufferCalibrationResetError,
-                failureState: _playbackBufferCalibrationResetFailureState
-            )
-        }
-        reset.blocker?.waitUntilUnblocked()
-        if let error = reset.error {
-            if let failureState = reset.failureState {
-                state = failureState
-            }
-            throw error
-        }
-    }
-
-    func setPlaybackBufferRenegotiationHandler(
-        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
-    ) {
-        withLock {
-            _bufferRenegotiationHandler = handler
-        }
-    }
-
-    func emitBufferRenegotiation(_ renegotiation: PlaybackBufferRenegotiation) {
-        let handler = withLock { _bufferRenegotiationHandler }
-        handler?(renegotiation)
-    }
-
     private func withLock<T>(_ body: () -> T) -> T {
         lock.lock()
         defer { lock.unlock() }
         return body()
+    }
+}
+
+@MainActor
+private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying {
+    struct Call: Equatable {
+        var outputName: String
+        var previousFrameSize: UInt32
+        var newFrameSize: UInt32
+    }
+
+    private(set) var calls: [Call] = []
+
+    func notifyBufferIncrease(
+        outputName: String,
+        previousFrameSize: UInt32,
+        newFrameSize: UInt32
+    ) {
+        calls.append(Call(
+            outputName: outputName,
+            previousFrameSize: previousFrameSize,
+            newFrameSize: newFrameSize
+        ))
     }
 }
 

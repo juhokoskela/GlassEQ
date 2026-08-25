@@ -17,11 +17,11 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-    <string>0.9.0</string>
+    <string>0.9.1</string>
 	<key>CFBundleVersion</key>
-    <string>12</string>
+    <string>13</string>
 	<key>GlassEQReleaseLabel</key>
-    <string>alpha-0.9</string>
+    <string>alpha-0.9.1</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
 	<key>LSMinimumSystemVersion</key>
