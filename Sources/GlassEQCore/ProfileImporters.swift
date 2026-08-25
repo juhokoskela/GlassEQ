@@ -5,6 +5,7 @@ public struct ProfileImportLimits: Equatable, Sendable {
     public var maxLineCount: Int
     public var maxFiltersPerChannel: Int
     public var maxTotalFilters: Int
+    public var maxMagnitudePoints: Int
     public var frequencyRange: ClosedRange<Double>
     public var gainRange: ClosedRange<Double>
     public var preampRange: ClosedRange<Double>
@@ -18,12 +19,14 @@ public struct ProfileImportLimits: Equatable, Sendable {
         frequencyRange: ClosedRange<Double>,
         gainRange: ClosedRange<Double>,
         preampRange: ClosedRange<Double>,
-        qRange: ClosedRange<Double>
+        qRange: ClosedRange<Double>,
+        maxMagnitudePoints: Int = 2_048
     ) {
         self.maxUTF8Bytes = maxUTF8Bytes
         self.maxLineCount = maxLineCount
         self.maxFiltersPerChannel = maxFiltersPerChannel
         self.maxTotalFilters = maxTotalFilters
+        self.maxMagnitudePoints = maxMagnitudePoints
         self.frequencyRange = frequencyRange
         self.gainRange = gainRange
         self.preampRange = preampRange
@@ -51,6 +54,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
     case valueOutOfRange(line: Int, field: String, value: Double, range: ClosedRange<Double>)
     case tooManyFilters(line: Int, channel: String, count: Int, maximum: Int)
     case tooManyTotalFilters(line: Int, count: Int, maximum: Int)
+    case tooManyMagnitudePoints(line: Int, count: Int, maximum: Int)
+    case duplicateMagnitudeFrequency(line: Int, frequency: Double)
 
     public var errorDescription: String? {
         switch self {
@@ -70,6 +75,10 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
             return "Line \(line) adds filter \(count) to \(channel), which exceeds the \(maximum)-filter channel limit."
         case let .tooManyTotalFilters(line, count, maximum):
             return "Line \(line) adds filter \(count), which exceeds the \(maximum)-filter total limit."
+        case let .tooManyMagnitudePoints(line, count, maximum):
+            return "Line \(line) contains \(count) magnitude points, which exceeds the \(maximum)-point limit."
+        case let .duplicateMagnitudeFrequency(line, frequency):
+            return "Line \(line) contains duplicate frequency \(format(frequency))."
         }
     }
 
@@ -91,6 +100,19 @@ public enum EQProfileTextImporter {
         limits: ProfileImportLimits = .default
     ) throws -> EQProfile {
         try validateInput(text, limits: limits)
+
+        if text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .contains(where: {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .hasPrefix("graphiceq")
+            }) {
+            return try importGraphicEQ(
+                text,
+                profileName: profileName,
+                limits: limits
+            )
+        }
 
         var filters: [EQFilter] = []
         var leftFilters: [EQFilter] = []
@@ -217,6 +239,179 @@ public enum EQProfileTextImporter {
         }
 
         return EQProfile(name: profileName, mode: inferredMode(filters: filters), preampDB: preampDB, filters: filters)
+    }
+
+    private static func importGraphicEQ(
+        _ text: String,
+        profileName: String,
+        limits: ProfileImportLimits
+    ) throws -> EQProfile {
+        var preampDB = 0.0
+        var points: [EQMagnitudePoint] = []
+        var frequencies = Set<Double>()
+        var leftPreampDB: Double?
+        var leftPoints: [EQMagnitudePoint] = []
+        var leftFrequencies = Set<Double>()
+        var rightPreampDB: Double?
+        var rightPoints: [EQMagnitudePoint] = []
+        var rightFrequencies = Set<Double>()
+        var currentChannel = ImportChannel.linked
+
+        for (offset, rawLine) in text.split(
+            omittingEmptySubsequences: false,
+            whereSeparator: \.isNewline
+        ).enumerated() {
+            let lineNumber = offset + 1
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#") else {
+                continue
+            }
+
+            let tokens = line
+                .replacingOccurrences(of: ":", with: " ")
+                .split(whereSeparator: \.isWhitespace)
+                .map(String.init)
+
+            if tokens.first?.caseInsensitiveCompare("Channel") == .orderedSame,
+               let channel = tokens.dropFirst().first {
+                switch channel.uppercased() {
+                case "L", "LEFT":
+                    currentChannel = .left
+                case "R", "RIGHT":
+                    currentChannel = .right
+                default:
+                    currentChannel = .linked
+                }
+                continue
+            }
+
+            if line.lowercased().hasPrefix("preamp") {
+                guard let value = try requiredValue(
+                    after: "Preamp",
+                    in: tokens,
+                    field: "preamp",
+                    line: lineNumber
+                ) else {
+                    throw ProfileImportError.missingNumber(
+                        line: lineNumber,
+                        field: "preamp"
+                    )
+                }
+                try validate(
+                    value,
+                    in: limits.preampRange,
+                    field: "preamp",
+                    line: lineNumber
+                )
+                switch currentChannel {
+                case .linked:
+                    preampDB = value
+                case .left:
+                    leftPreampDB = value
+                case .right:
+                    rightPreampDB = value
+                }
+                continue
+            }
+
+            guard line.lowercased().hasPrefix("graphiceq"),
+                  let colon = line.firstIndex(of: ":") else {
+                continue
+            }
+            let declarations = line[line.index(after: colon)...].split(separator: ";")
+            for declaration in declarations {
+                let tokens = declaration.split(whereSeparator: \.isWhitespace).map(String.init)
+                guard tokens.count == 2 else {
+                    throw ProfileImportError.missingNumber(
+                        line: lineNumber,
+                        field: "GraphicEQ frequency/gain pair"
+                    )
+                }
+                let frequency = try parseNumber(tokens[0], field: "frequency", line: lineNumber)
+                let gain = try parseNumber(tokens[1], field: "gain", line: lineNumber)
+                try validate(
+                    frequency,
+                    in: limits.frequencyRange,
+                    field: "frequency",
+                    line: lineNumber
+                )
+                try validate(gain, in: limits.gainRange, field: "gain", line: lineNumber)
+                let point = EQMagnitudePoint(frequency: frequency, gainDB: gain)
+                switch currentChannel {
+                case .linked:
+                    try appendMagnitudePoint(
+                        point,
+                        to: &points,
+                        frequencies: &frequencies,
+                        line: lineNumber,
+                        limits: limits
+                    )
+                case .left:
+                    try appendMagnitudePoint(
+                        point,
+                        to: &leftPoints,
+                        frequencies: &leftFrequencies,
+                        line: lineNumber,
+                        limits: limits
+                    )
+                case .right:
+                    try appendMagnitudePoint(
+                        point,
+                        to: &rightPoints,
+                        frequencies: &rightFrequencies,
+                        line: lineNumber,
+                        limits: limits
+                    )
+                }
+            }
+        }
+
+        let hasStereoData = !leftPoints.isEmpty
+            || !rightPoints.isEmpty
+            || leftPreampDB != nil
+            || rightPreampDB != nil
+        if hasStereoData {
+            let resolvedLeft = leftPoints.isEmpty ? points : leftPoints
+            let resolvedRight = rightPoints.isEmpty ? points : rightPoints
+            guard resolvedLeft.count >= 2, resolvedRight.count >= 2 else {
+                throw ProfileImportError.noSupportedFilters
+            }
+            let linkedSource = points.count >= 2
+                ? EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(
+                    points: points.sorted { $0.frequency < $1.frequency }
+                ))
+                : nil
+            return EQProfile(
+                name: profileName,
+                mode: .convolution,
+                channelMode: .stereo,
+                preampDB: preampDB,
+                filters: [],
+                leftPreampDB: leftPreampDB ?? preampDB,
+                leftFilters: [],
+                rightPreampDB: rightPreampDB ?? preampDB,
+                rightFilters: [],
+                convolution: linkedSource,
+                leftConvolution: .magnitudeCurve(MagnitudeCurveSource(
+                    points: resolvedLeft.sorted { $0.frequency < $1.frequency }
+                )),
+                rightConvolution: .magnitudeCurve(MagnitudeCurveSource(
+                    points: resolvedRight.sorted { $0.frequency < $1.frequency }
+                ))
+            )
+        }
+
+        guard points.count >= 2 else {
+            throw ProfileImportError.noSupportedFilters
+        }
+        points.sort { $0.frequency < $1.frequency }
+        return EQProfile(
+            name: profileName,
+            mode: .convolution,
+            preampDB: preampDB,
+            filters: [],
+            convolution: .magnitudeCurve(MagnitudeCurveSource(points: points))
+        )
     }
 
     public static func importREW(
@@ -464,6 +659,30 @@ public enum EQProfileTextImporter {
         filters.append(filter)
     }
 
+    private static func appendMagnitudePoint(
+        _ point: EQMagnitudePoint,
+        to points: inout [EQMagnitudePoint],
+        frequencies: inout Set<Double>,
+        line: Int,
+        limits: ProfileImportLimits
+    ) throws {
+        guard frequencies.insert(point.frequency).inserted else {
+            throw ProfileImportError.duplicateMagnitudeFrequency(
+                line: line,
+                frequency: point.frequency
+            )
+        }
+        let pointCount = points.count + 1
+        guard pointCount <= limits.maxMagnitudePoints else {
+            throw ProfileImportError.tooManyMagnitudePoints(
+                line: line,
+                count: pointCount,
+                maximum: limits.maxMagnitudePoints
+            )
+        }
+        points.append(point)
+    }
+
     private static func totalFilterCount(
         filters: [EQFilter],
         leftFilters: [EQFilter],
@@ -512,6 +731,9 @@ public enum EQProfileTextImporter {
 
 public enum EQProfileTextExporter {
     public static func exportEqualizerAPO(_ profile: EQProfile) -> String {
+        if profile.mode == .convolution {
+            return exportGraphicEQ(profile)
+        }
         var lines: [String] = []
 
         switch profile.channelMode {
@@ -535,6 +757,52 @@ public enum EQProfileTextExporter {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    private static func exportGraphicEQ(_ profile: EQProfile) -> String {
+        var lines = [String(format: "Preamp: %.2f dB", profile.preampDB)]
+        switch profile.channelMode {
+        case .linked:
+            if let line = graphicEQLine(profile.convolution) {
+                lines.append(line)
+            }
+        case .stereo:
+            lines.append("")
+            lines.append("Channel: L")
+            if profile.leftPreampDB != profile.preampDB {
+                lines.append(String(format: "Preamp: %.2f dB", profile.leftPreampDB))
+            }
+            if let line = graphicEQLine(profile.leftConvolution) {
+                lines.append(line)
+            }
+            lines.append("")
+            lines.append("Channel: R")
+            if profile.rightPreampDB != profile.preampDB {
+                lines.append(String(format: "Preamp: %.2f dB", profile.rightPreampDB))
+            }
+            if let line = graphicEQLine(profile.rightConvolution) {
+                lines.append(line)
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func graphicEQLine(_ source: EQConvolutionSource?) -> String? {
+        guard case .magnitudeCurve(let curve) = source else {
+            return nil
+        }
+        let declarations = curve.points
+            .sorted { $0.frequency < $1.frequency }
+            .map {
+                String(
+                    format: "%.8g %.8g",
+                    locale: Locale(identifier: "en_US_POSIX"),
+                    $0.frequency,
+                    $0.gainDB
+                )
+            }
+            .joined(separator: "; ")
+        return "GraphicEQ: \(declarations)"
     }
 
     private static func filterLines(_ filters: [EQFilter]) -> [String] {

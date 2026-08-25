@@ -185,6 +185,32 @@ struct EQCoreTests {
     }
 
     @Test
+    func responseCurveAnalysisUsesCurvePeakAndLogFrequencyInterpolation() {
+        var profile = EQProfile.flatConvolution
+        profile.preampDB = -2
+        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 0),
+            EQMagnitudePoint(frequency: 200, gainDB: 8),
+            EQMagnitudePoint(frequency: 20_000, gainDB: -3)
+        ]))
+
+        let recommended = EQProfileAnalysis.recommendedPreampDB(
+            profile: profile,
+            sampleRate: 48_000
+        )
+        let response = FrequencyResponse.points(
+            for: profile.convolution,
+            preampDB: profile.preampDB,
+            sampleRate: 48_000,
+            count: 3
+        )
+
+        #expect(recommended == -6.5)
+        #expect(abs(response[0].magnitudeDB + 2) < 0.000_001)
+        #expect(response.count == 3)
+    }
+
+    @Test
     func bypassLeavesSamplesUntouched() {
         var profile = EQProfile(
             name: "Bypass",
@@ -627,6 +653,71 @@ struct EQCoreTests {
     }
 
     @Test
+    func convolutionTransitionWarmsEntireImpulseHistoryBeforeBlending() throws {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        var incoming = EQProfile.flatConvolution
+        incoming.preampDB = 6.020_599_913
+        let incomingConfiguration = try EQRenderConfiguration.prepare(
+            profile: incoming,
+            sampleRate: 48_000,
+            channelCount: 1
+        )
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 48_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 480,
+            channelCount: 1,
+            sampleRate: 48_000,
+            warmupSeconds: 0,
+            blendSeconds: 4.0 / 48_000
+        )
+        let didBegin = transition.beginTransition(to: EQProcessor(
+            renderConfiguration: incomingConfiguration
+        ))
+        #expect(didBegin)
+
+        var renderedFrames = 0
+        var observedTailCompletion = false
+        while renderedFrames < PreparedConvolutionKernel.tapCount - 1 {
+            let frameCount = min(
+                480,
+                PreparedConvolutionKernel.tapCount - 1 - renderedFrames
+            )
+            var samples = [Float](repeating: 0.25, count: frameCount)
+            let result = samples.withUnsafeMutableBufferPointer {
+                transition.processInterleavedWithDiagnostics(
+                    $0,
+                    frameCount: frameCount,
+                    channelCount: 1
+                )
+            }
+            #expect(samples.allSatisfy { abs($0 - 0.25) < 0.000_001 })
+            #expect(!result.completedTransition)
+            #expect(result.workTiming.directHeadHostTicks > 0)
+            #expect(result.workTiming.tailDeadlineMisses == 0)
+            observedTailCompletion = observedTailCompletion
+                || result.workTiming.tailCompletionObservations > 0
+            renderedFrames += frameCount
+        }
+        #expect(observedTailCompletion)
+
+        var blend = [Float](repeating: 0.25, count: 4)
+        let blendResult = blend.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        #expect(abs(blend[0] - 0.25) < 0.000_01)
+        #expect(abs(blend[3] - 0.5) < 0.000_01)
+        #expect(blendResult.completedTransition)
+    }
+
+    @Test
     func wholeBankTransitionAllowsFilterTopologyChanges() {
         let active = EQProfile(name: "Active", mode: .parametric, filters: [])
         let incoming = EQProfile(
@@ -745,6 +836,22 @@ struct EQCoreTests {
         #expect(reference.filters.isEmpty)
         #expect(reference.leftFilters.isEmpty)
         #expect(reference.rightFilters.isEmpty)
+        #expect(!reference.isBypassed)
+    }
+
+    @Test
+    func programmeComparisonReferenceKeepsConvolutionPreampAndDisablesCurve() {
+        var profile = EQProfile.flatConvolution
+        profile.preampDB = -8
+        profile.isBypassed = true
+
+        let reference = profile.programmeComparisonReference
+
+        #expect(reference.preampDB == -8)
+        #expect(reference.mode == .parametric)
+        #expect(reference.convolution == nil)
+        #expect(reference.leftConvolution == nil)
+        #expect(reference.rightConvolution == nil)
         #expect(!reference.isBypassed)
     }
 

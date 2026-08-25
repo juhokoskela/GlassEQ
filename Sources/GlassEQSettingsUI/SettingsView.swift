@@ -269,6 +269,7 @@ public struct SettingsView: View {
                 onCreateGraphic31: createGraphic31Profile,
                 onCreateGraphic10: createGraphic10Profile,
                 onCreateParametric: createParametricProfile,
+                onCreateConvolution: createConvolutionProfile,
                 onDuplicate: duplicateSelectedProfile,
                 onDelete: deleteSelectedProfile,
                 canDeleteSelectedProfile: canDeleteSelectedProfile,
@@ -451,6 +452,10 @@ public struct SettingsView: View {
 
     private func createParametricProfile() {
         perform(.createProfile(.parametric))
+    }
+
+    private func createConvolutionProfile() {
+        perform(.createProfile(.convolution))
     }
 
     private func duplicateSelectedProfile() {
@@ -715,6 +720,9 @@ struct EQAnalysisSignature: Equatable, Sendable {
     var leftFilters: [EQFilter]
     var rightPreampDB: Double
     var rightFilters: [EQFilter]
+    var convolution: EQConvolutionSource?
+    var leftConvolution: EQConvolutionSource?
+    var rightConvolution: EQConvolutionSource?
 
     init(profile: EQProfile, sampleRate: Double) {
         self.sampleRate = Self.effectiveSampleRate(sampleRate)
@@ -726,6 +734,9 @@ struct EQAnalysisSignature: Equatable, Sendable {
         self.leftFilters = profile.leftFilters
         self.rightPreampDB = profile.rightPreampDB
         self.rightFilters = profile.rightFilters
+        self.convolution = profile.convolution
+        self.leftConvolution = profile.leftConvolution
+        self.rightConvolution = profile.rightConvolution
     }
 
     static func effectiveSampleRate(_ sampleRate: Double) -> Double {
@@ -759,8 +770,10 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
 
         switch profile.channelMode {
         case .linked:
-            self.linkedPoints = FrequencyResponse.points(
-                for: profile.filters,
+            self.linkedPoints = Self.responsePoints(
+                mode: profile.mode,
+                filters: profile.filters,
+                source: profile.convolution,
                 preampDB: profile.preampDB,
                 sampleRate: sampleRate
             )
@@ -768,17 +781,42 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
             self.rightPoints = []
         case .stereo:
             self.linkedPoints = []
-            self.leftPoints = FrequencyResponse.points(
-                for: profile.leftFilters,
+            self.leftPoints = Self.responsePoints(
+                mode: profile.mode,
+                filters: profile.leftFilters,
+                source: profile.leftConvolution,
                 preampDB: profile.leftPreampDB,
                 sampleRate: sampleRate
             )
-            self.rightPoints = FrequencyResponse.points(
-                for: profile.rightFilters,
+            self.rightPoints = Self.responsePoints(
+                mode: profile.mode,
+                filters: profile.rightFilters,
+                source: profile.rightConvolution,
                 preampDB: profile.rightPreampDB,
                 sampleRate: sampleRate
             )
         }
+    }
+
+    private static func responsePoints(
+        mode: EQMode,
+        filters: [EQFilter],
+        source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double
+    ) -> [FrequencyResponsePoint] {
+        if mode == .convolution {
+            return FrequencyResponse.points(
+                for: source,
+                preampDB: preampDB,
+                sampleRate: sampleRate
+            )
+        }
+        return FrequencyResponse.points(
+            for: filters,
+            preampDB: preampDB,
+            sampleRate: sampleRate
+        )
     }
 
     var accessibilitySummary: String {
@@ -828,6 +866,7 @@ private struct ProfileSidebar: View {
     var onCreateGraphic31: () -> Void
     var onCreateGraphic10: () -> Void
     var onCreateParametric: () -> Void
+    var onCreateConvolution: () -> Void
     var onDuplicate: () -> Void
     var onDelete: () -> Void
     var canDeleteSelectedProfile: Bool
@@ -918,6 +957,18 @@ private struct ProfileSidebar: View {
                     .disabled(isReadOnly)
                     .accessibilityLabel(Text(localized("New parametric profile")))
                     .accessibilityHint(Text(localized("Creates a parametric equalizer profile")))
+
+                    Button {
+                        onCreateConvolution()
+                    } label: {
+                        Image(systemName: "waveform.path")
+                            .frame(width: 28, height: 28)
+                            .contentShape(.rect)
+                    }
+                    .help(localized("New response curve profile"))
+                    .disabled(isReadOnly)
+                    .accessibilityLabel(Text(localized("New response curve profile")))
+                    .accessibilityHint(Text(localized("Creates a minimum-phase response curve profile")))
 
                     Spacer()
 
@@ -1298,7 +1349,7 @@ private struct EditorTab: View {
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .frame(maxWidth: 300)
+                    .frame(maxWidth: 420)
                     .accessibilityLabel(Text(localized("Profile type")))
                     .accessibilityValue(Text(draftProfile.mode.title))
                     .accessibilityHint(Text(localized("Changes the equalizer profile type")))
@@ -1381,12 +1432,17 @@ private struct EditorTab: View {
             }
             .cardPanel(padding: 16)
 
-            if draftProfile.mode == .parametric {
+            switch draftProfile.mode {
+            case .parametric:
                 ParametricFilterEditor(filters: activeFiltersBinding)
                     .id("parametric:\(activeEditContextID)")
-            } else {
+            case .graphic10, .graphic31:
                 GraphicFilterEditor(filters: activeFiltersBinding)
                     .id("graphic:\(activeEditContextID)")
+                    .cardPanel(padding: 16)
+            case .convolution:
+                MagnitudeCurveEditor(points: activeMagnitudePointsBinding)
+                    .id("curve:\(activeEditContextID)")
                     .cardPanel(padding: 16)
             }
 
@@ -1451,10 +1507,22 @@ private struct EditorTab: View {
             filters = GraphicEQBands.thirtyOneBand.map {
                 EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
             }
+        case .convolution:
+            filters = []
         }
         draftProfile.filters = filters
         draftProfile.leftFilters = filters
         draftProfile.rightFilters = filters
+        if mode == .convolution {
+            let source = EQProfile.flatConvolution.convolution
+            draftProfile.convolution = source
+            draftProfile.leftConvolution = source
+            draftProfile.rightConvolution = source
+        } else {
+            draftProfile.convolution = nil
+            draftProfile.leftConvolution = nil
+            draftProfile.rightConvolution = nil
+        }
     }
 
     private var activePreampBinding: Binding<Double> {
@@ -1479,6 +1547,38 @@ private struct EditorTab: View {
         }
     }
 
+    private var activeMagnitudePointsBinding: Binding<[EQMagnitudePoint]> {
+        let source: Binding<EQConvolutionSource?>
+        switch (draftProfile.channelMode, editChannel) {
+        case (.stereo, .left):
+            source = $draftProfile.leftConvolution
+        case (.stereo, .right):
+            source = $draftProfile.rightConvolution
+        default:
+            source = $draftProfile.convolution
+        }
+        return Binding(
+            get: {
+                guard case .magnitudeCurve(let curve) = source.wrappedValue else {
+                    return []
+                }
+                return curve.points
+            },
+            set: { points in
+                let version: UInt16
+                if case .magnitudeCurve(let curve) = source.wrappedValue {
+                    version = curve.synthesisVersion
+                } else {
+                    version = MinimumPhaseFIRCompiler.synthesisVersion
+                }
+                source.wrappedValue = .magnitudeCurve(MagnitudeCurveSource(
+                    synthesisVersion: version,
+                    points: points
+                ))
+            }
+        )
+    }
+
     private var activeEditContextID: String {
         let channel = draftProfile.channelMode == .stereo ? editChannel.rawValue : "linked"
         return "\(draftProfile.id.uuidString):\(channel):\(draftEditGeneration)"
@@ -1493,13 +1593,19 @@ private struct EditorTab: View {
         case .linked:
             let sourceFilters = editChannel == .right ? draftProfile.rightFilters : draftProfile.leftFilters
             let sourcePreamp = editChannel == .right ? draftProfile.rightPreampDB : draftProfile.leftPreampDB
+            let sourceConvolution = editChannel == .right
+                ? draftProfile.rightConvolution
+                : draftProfile.leftConvolution
             draftProfile.filters = sourceFilters
             draftProfile.preampDB = sourcePreamp
+            draftProfile.convolution = sourceConvolution
         case .stereo:
             draftProfile.leftFilters = draftProfile.filters
             draftProfile.rightFilters = draftProfile.filters
             draftProfile.leftPreampDB = draftProfile.preampDB
             draftProfile.rightPreampDB = draftProfile.preampDB
+            draftProfile.leftConvolution = draftProfile.convolution
+            draftProfile.rightConvolution = draftProfile.convolution
             editChannel = .left
         }
 
@@ -1828,6 +1934,94 @@ private struct FrequencyResponseGraph: View {
         let maxDB = 12.0
         let fraction = 1 - ((magnitudeDB - minDB) / (maxDB - minDB))
         return rect.minY + rect.height * fraction
+    }
+}
+
+private struct MagnitudeCurveEditor: View {
+    @Binding var points: [EQMagnitudePoint]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(localized("Response Curve"))
+                    .font(.headline)
+                Spacer()
+                Button {
+                    addPoint()
+                } label: {
+                    Label(localized("Add Point"), systemImage: "plus")
+                        .frame(minHeight: 28)
+                        .contentShape(.rect)
+                }
+                .controlSize(.large)
+                .accessibilityHint(Text(localized("Adds a magnitude point in the largest frequency gap")))
+            }
+
+            Text(localized("GlassEQ interpolates these points in log-frequency space and compiles a 16,384-tap minimum-phase filter when you apply the profile."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            LazyVStack(spacing: 6) {
+                ForEach($points) { $point in
+                    HStack(spacing: 10) {
+                        EditableValueText(
+                            title: localized("Frequency"),
+                            value: $point.frequency,
+                            range: ProfilePersistence.frequencyRange,
+                            display: point.frequency.frequencyLabel,
+                            width: 72
+                        )
+                        Slider(
+                            value: Binding(
+                                get: { point.gainDB },
+                                set: { point.gainDB = quantized($0, step: 0.1) }
+                            ),
+                            in: -24...12
+                        )
+                        .frame(maxWidth: 640)
+                        .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
+                        .accessibilityValue(Text(point.gainDB.dbLabel))
+                        EditableValueText(
+                            title: localized("Gain"),
+                            value: $point.gainDB,
+                            range: ProfilePersistence.gainRange,
+                            display: point.gainDB.dbLabel,
+                            width: 60
+                        )
+                        Button(role: .destructive) {
+                            points.removeAll { $0.id == point.id }
+                        } label: {
+                            Image(systemName: "trash")
+                                .frame(width: 24, height: 24)
+                                .contentShape(.rect)
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(points.count <= 2)
+                        .accessibilityLabel(Text(localized("Delete response point")))
+                        .accessibilityHint(Text(localized("Removes this magnitude point")))
+                    }
+                    .accessibilityElement(children: .contain)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func addPoint() {
+        let sorted = points.sorted { $0.frequency < $1.frequency }
+        let candidates = Set([20.0, 20_000.0] + sorted.map(\.frequency))
+            .filter { ProfilePersistence.frequencyRange.contains($0) }
+            .sorted()
+        let widestGap = zip(candidates, candidates.dropFirst()).max { lhs, rhs in
+            log(lhs.1 / lhs.0) < log(rhs.1 / rhs.0)
+        }
+        let frequency = widestGap.map { sqrt($0.0 * $0.1) } ?? 1_000
+        let gain = MinimumPhaseFIRCompiler.interpolatedGainDB(
+            frequency: frequency,
+            points: sorted
+        )
+        points.append(EQMagnitudePoint(frequency: frequency, gainDB: gain))
+        points.sort { $0.frequency < $1.frequency }
     }
 }
 
@@ -2573,10 +2767,62 @@ private struct OutputTab: View {
                         LabeledContent(localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
                     } else {
                         LabeledContent(localized("Render Deadline Misses"), value: localizedInteger(snapshot.metrics.renderDeadlineMisses))
+                        LabeledContent(localized("Start Starvations"), value: localizedInteger(snapshot.metrics.callbackStartStarvations))
+                        LabeledContent(localized("Render Overruns"), value: localizedInteger(snapshot.metrics.renderOverruns))
+                        LabeledContent(localized("Paired Discontinuities"), value: localizedInteger(snapshot.metrics.pairedTimestampDiscontinuities))
+                        LabeledContent(
+                            localized("Callback Start Late p99.99 / Max"),
+                            value: extremeDurationLabel(
+                                observations: snapshot.metrics.renderTiming.callbackStartLatenessObservations,
+                                p9999Nanoseconds: snapshot.metrics.renderTiming.callbackStartLatenessP9999Nanoseconds,
+                                maximumNanoseconds: snapshot.metrics.renderTiming.maximumCallbackStartLatenessNanoseconds
+                            )
+                        )
+                        if snapshot.metrics.renderTiming.directHeadObservations > 0 {
+                            LabeledContent(
+                                localized("FIR Head p99.99 / Max"),
+                                value: extremeDurationLabel(
+                                    observations: snapshot.metrics.renderTiming.directHeadObservations,
+                                    p9999Nanoseconds: snapshot.metrics.renderTiming.directHeadP9999Nanoseconds,
+                                    maximumNanoseconds: snapshot.metrics.renderTiming.maximumDirectHeadNanoseconds
+                                )
+                            )
+                            LabeledContent(
+                                localized("FIR Tail p99.99 / Max"),
+                                value: extremeDurationLabel(
+                                    observations: snapshot.metrics.renderTiming.tailWorkObservations,
+                                    p9999Nanoseconds: snapshot.metrics.renderTiming.tailWorkP9999Nanoseconds,
+                                    maximumNanoseconds: snapshot.metrics.renderTiming.maximumTailWorkNanoseconds
+                                )
+                            )
+                            LabeledContent(
+                                localized("Tail Completion Slack"),
+                                value: tailCompletionSlackLabel
+                            )
+                        }
+                        LabeledContent(
+                            localized("Total Render p99.99 / Max"),
+                            value: extremeDurationLabel(
+                                observations: snapshot.metrics.renderTiming.totalRenderObservations,
+                                p9999Nanoseconds: snapshot.metrics.renderTiming.totalRenderP9999Nanoseconds,
+                                maximumNanoseconds: snapshot.metrics.renderTiming.maximumTotalRenderNanoseconds
+                            )
+                        )
+                        LabeledContent(
+                            localized("Completion Late p99.99 / Max"),
+                            value: extremeDurationLabel(
+                                observations: snapshot.metrics.renderTiming.completionLatenessObservations,
+                                p9999Nanoseconds: snapshot.metrics.renderTiming.completionLatenessP9999Nanoseconds,
+                                maximumNanoseconds: snapshot.metrics.renderTiming.maximumCompletionLatenessNanoseconds
+                            )
+                        )
                         LabeledContent(localized("Input Timestamp Jumps"), value: localizedInteger(snapshot.metrics.inputTimestampDiscontinuities))
                         LabeledContent(localized("Output Timestamp Jumps"), value: localizedInteger(snapshot.metrics.outputTimestampDiscontinuities))
                         LabeledContent(localized("Tap-to-Output Latency"), value: tapToOutputLatencyLabel)
                         LabeledContent(localized("Tap-to-Output Range"), value: tapToOutputLatencyRangeLabel)
+                        Text(localized("Failure categories can overlap. Timing percentiles use bounded realtime histograms and update every 1,024 callbacks."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     Button(localized("Reset metrics")) {
                         onResetDiagnostics()
@@ -2665,6 +2911,37 @@ private struct OutputTab: View {
         snapshot.metrics.playbackBufferObservations > 0
     }
 
+    private func extremeDurationLabel(
+        observations: UInt64,
+        p9999Nanoseconds: UInt64,
+        maximumNanoseconds: UInt64
+    ) -> String {
+        guard observations > 0 else {
+            return localized("No samples")
+        }
+        let percentile = localizedDecimal(
+            Double(p9999Nanoseconds) / 1_000,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        )
+        let maximum = localizedDecimal(
+            Double(maximumNanoseconds) / 1_000,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        )
+        return localized("\(percentile) / \(maximum) us")
+    }
+
+    private var tailCompletionSlackLabel: String {
+        let timing = snapshot.metrics.renderTiming
+        guard timing.tailCompletionObservations > 0 else {
+            return localized("No completed blocks")
+        }
+        return localized(
+            "\(localizedInteger(timing.minimumTailCompletionSlackFrames)) frames, \(localizedInteger(timing.tailDeadlineMisses)) misses"
+        )
+    }
+
     private var bridgeLatencyLabel: String {
         localizedLatency(
             milliseconds: playbackFramesToMilliseconds(
@@ -2722,6 +2999,8 @@ private extension EQMode {
             localized("10-Band")
         case .graphic31:
             localized("31-Band")
+        case .convolution:
+            localized("Response Curve")
         }
     }
 }

@@ -307,16 +307,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let playbackChannelPair = Atomic<UInt64>(SeparateClockAudioBackend.encodedPlaybackChannelPair(left: 0, right: 1))
 
         init(
-            profile: EQProfile,
-            sampleRate: Double,
-            channelCount: Int,
+            renderConfiguration: EQRenderConfiguration,
             ringCapacityFrames: Int,
             scratchFrames: Int,
             captureCallbackFrames: Int,
             playbackPrimeFrames: Int
         ) {
-            self.channelCount = max(channelCount, 1)
-            self.sampleRate = sampleRate
+            self.channelCount = max(renderConfiguration.configuration.channelCount, 1)
+            self.sampleRate = renderConfiguration.configuration.sampleRate
             self.configuredCaptureCallbackFrames = max(captureCallbackFrames, 1)
             self.ringBuffer = RealtimeAudioRingBuffer(
                 channelCount: self.channelCount,
@@ -336,25 +334,21 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             self.adaptivePlaybackTargetFrames = Atomic(max(playbackPrimeFrames, 1))
             self.maxCallbackFrames = SeparateClockAudioBackend.maximumSupportedCallbackFrames
             self.playbackRateServo = PlaybackRateServo(
-                sampleRate: sampleRate,
+                sampleRate: self.sampleRate,
                 targetFrames: playbackPrimeFrames
             )
             self.playbackResampler = HermitePlaybackResampler(channelCount: self.channelCount)
             self.playbackSampleRatePlan = PlaybackSampleRatePlan(
-                inputSampleRate: sampleRate,
-                outputSampleRate: sampleRate
+                inputSampleRate: self.sampleRate,
+                outputSampleRate: self.sampleRate
             )
             self.dspTransition = RealtimeEQTransition(
                 activeProcessor: EQProcessor(
-                    renderConfiguration: EQRenderConfiguration(
-                        profile: profile,
-                        sampleRate: sampleRate,
-                        channelCount: self.channelCount
-                    )
+                    renderConfiguration: renderConfiguration
                 ),
                 maximumFrameCount: scratchFrames,
                 channelCount: self.channelCount,
-                sampleRate: sampleRate
+                sampleRate: self.sampleRate
             )
         }
 
@@ -1751,8 +1745,38 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     @discardableResult
     public func updateDSP(profile: EQProfile) -> Bool {
-        control.withLock { state in
-            updateDSPLocked(&state, profile: profile)
+        guard let preparation = control.withLock({ state -> (AudioRuntime, EQProfile, UInt64, Double)? in
+            guard let runtime = state.runtime,
+                  let activeProfile = state.activeProfile else {
+                return nil
+            }
+            let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
+                sampleRate: state.activeOutput?.nominalSampleRate ?? runtime.sampleRate
+            )
+            return (runtime, activeProfile, state.profileRevision, maximumUsableFrequency)
+        }) else {
+            return false
+        }
+        let (runtime, activeProfile, profileRevision, maximumUsableFrequency) = preparation
+        guard let preparedConfig = try? EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ) else {
+            return false
+        }
+        return control.withLock { state in
+            guard state.runtime === runtime,
+                  state.activeProfile == activeProfile,
+                  state.profileRevision == profileRevision else {
+                return false
+            }
+            return updateDSPLocked(
+                &state,
+                profile: profile,
+                preparedConfig: preparedConfig
+            )
         }
     }
 
@@ -1761,27 +1785,37 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         guard !profile.isBypassed else {
             return false
         }
-        return control.withLock { state in
+        guard let preparation = control.withLock({ state -> (AudioRuntime, UInt64, Double)? in
             guard let runtime = state.runtime else {
-                return false
+                return nil
             }
             let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
                 sampleRate: state.activeOutput?.nominalSampleRate ?? runtime.sampleRate
             )
-            let equalizedConfig = EQRenderConfiguration(
-                profile: profile,
-                sampleRate: runtime.sampleRate,
-                channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
-            )
-            let referenceConfig = EQRenderConfiguration(
-                profile: profile.programmeComparisonReference,
-                sampleRate: runtime.sampleRate,
-                channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
-            )
-            guard equalizedConfig.isNumericallySafe,
-                  referenceConfig.isNumericallySafe else {
+            return (runtime, state.profileRevision, maximumUsableFrequency)
+        }) else {
+            return false
+        }
+        let (runtime, profileRevision, maximumUsableFrequency) = preparation
+        guard let equalizedConfig = try? EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ),
+        let referenceConfig = try? EQRenderConfiguration.prepare(
+            profile: profile.programmeComparisonReference,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ),
+        equalizedConfig.isNumericallySafe,
+        referenceConfig.isNumericallySafe else {
+            return false
+        }
+        return control.withLock { state in
+            guard state.runtime === runtime,
+                  state.profileRevision == profileRevision else {
                 return false
             }
             runtime.setProgrammeComparisonSelection(.equalized)
@@ -1810,6 +1844,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func updateDSPLocked(
         _ state: inout ControlState,
         profile: EQProfile,
+        preparedConfig: EQRenderConfiguration? = nil,
         incrementsProfileRevision: Bool = true
     ) -> Bool {
         guard let runtime = state.runtime,
@@ -1820,22 +1855,22 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRate: state.activeOutput?.nominalSampleRate ?? runtime.sampleRate
         )
 
-        guard Self.canHotSwapDSP(
-            from: activeProfile,
-            to: profile,
-            sampleRate: runtime.sampleRate,
-            channelCount: runtime.channelCount,
-            maximumUsableFrequency: maximumUsableFrequency
-        ) else {
-            return false
-        }
-
-        let preparedConfig = EQRenderConfiguration(
+        guard let preparedConfig = preparedConfig ?? (try? EQRenderConfiguration.prepare(
             profile: profile,
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        )
+        )),
+        Self.canHotSwapDSP(
+            from: activeProfile,
+            to: profile,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency,
+            preparedConfiguration: preparedConfig
+        ) else {
+            return false
+        }
         runtime.setProgrammeComparisonSelection(.equalized)
         runtime.drainDSPConfigBoxes()
         runtime.publishPendingDSPConfig(preparedConfig)
@@ -1851,14 +1886,18 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         to nextProfile: EQProfile,
         sampleRate: Double,
         channelCount: Int,
-        maximumUsableFrequency: Double? = nil
+        maximumUsableFrequency: Double? = nil,
+        preparedConfiguration: EQRenderConfiguration? = nil
     ) -> Bool {
-        EQRenderConfiguration(
+        if let preparedConfiguration {
+            return preparedConfiguration.isNumericallySafe
+        }
+        return (try? EQRenderConfiguration.prepare(
             profile: nextProfile,
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ).isNumericallySafe
+        ))?.isNumericallySafe == true
     }
 
     public func muteOutputForTransition() {
@@ -2044,10 +2083,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             reportedFrames: reportedCaptureCallbackFrames
         )
 
-        let runtime = AudioRuntime(
+        let renderConfiguration = try EQRenderConfiguration.prepare(
             profile: profile,
             sampleRate: tapSampleRate,
-            channelCount: tapChannelCount,
+            channelCount: tapChannelCount
+        )
+        let runtime = AudioRuntime(
+            renderConfiguration: renderConfiguration,
             ringCapacityFrames: ringCapacityFrames,
             scratchFrames: scratchFrames,
             captureCallbackFrames: captureCallbackFrames,
@@ -2200,7 +2242,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 captureCallbackFrames: runtime.maximumKnownCaptureCallbackFrames()
             )
             runtime.drainDSPConfigBoxes()
-            runtime.publishPendingDSPConfig(EQRenderConfiguration(
+            runtime.publishPendingDSPConfig(try EQRenderConfiguration.prepare(
                 profile: effectiveProfile,
                 sampleRate: runtime.sampleRate,
                 channelCount: runtime.channelCount,

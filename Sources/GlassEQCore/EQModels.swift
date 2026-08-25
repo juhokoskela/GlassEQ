@@ -4,6 +4,7 @@ public enum EQMode: String, Codable, Sendable, CaseIterable {
     case parametric
     case graphic10
     case graphic31
+    case convolution
 }
 
 public enum EQChannelMode: String, Codable, Sendable, CaseIterable {
@@ -44,6 +45,69 @@ public struct EQFilter: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public struct EQMagnitudePoint: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var frequency: Double
+    public var gainDB: Double
+
+    public init(
+        id: UUID = UUID(),
+        frequency: Double,
+        gainDB: Double
+    ) {
+        self.id = id
+        self.frequency = frequency
+        self.gainDB = gainDB
+    }
+}
+
+public struct MagnitudeCurveSource: Codable, Equatable, Sendable {
+    public var synthesisVersion: UInt16
+    public var points: [EQMagnitudePoint]
+
+    public init(
+        synthesisVersion: UInt16 = MinimumPhaseFIRCompiler.synthesisVersion,
+        points: [EQMagnitudePoint]
+    ) {
+        self.synthesisVersion = synthesisVersion
+        self.points = points
+    }
+}
+
+public enum EQConvolutionSource: Equatable, Sendable {
+    case magnitudeCurve(MagnitudeCurveSource)
+}
+
+extension EQConvolutionSource: Codable {
+    private enum SourceType: String, Codable {
+        case magnitudeCurve
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case magnitudeCurve
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(SourceType.self, forKey: .type) {
+        case .magnitudeCurve:
+            self = .magnitudeCurve(
+                try container.decode(MagnitudeCurveSource.self, forKey: .magnitudeCurve)
+            )
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .magnitudeCurve(let source):
+            try container.encode(SourceType.magnitudeCurve, forKey: .type)
+            try container.encode(source, forKey: .magnitudeCurve)
+        }
+    }
+}
+
 public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
@@ -55,6 +119,9 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
     public var leftFilters: [EQFilter]
     public var rightPreampDB: Double
     public var rightFilters: [EQFilter]
+    public var convolution: EQConvolutionSource?
+    public var leftConvolution: EQConvolutionSource?
+    public var rightConvolution: EQConvolutionSource?
     public var isBypassed: Bool
 
     public init(
@@ -68,6 +135,9 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         leftFilters: [EQFilter]? = nil,
         rightPreampDB: Double? = nil,
         rightFilters: [EQFilter]? = nil,
+        convolution: EQConvolutionSource? = nil,
+        leftConvolution: EQConvolutionSource? = nil,
+        rightConvolution: EQConvolutionSource? = nil,
         isBypassed: Bool = false
     ) {
         self.id = id
@@ -80,6 +150,9 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         self.leftFilters = leftFilters ?? filters
         self.rightPreampDB = rightPreampDB ?? preampDB
         self.rightFilters = rightFilters ?? filters
+        self.convolution = convolution
+        self.leftConvolution = leftConvolution ?? convolution
+        self.rightConvolution = rightConvolution ?? convolution
         self.isBypassed = isBypassed
     }
 
@@ -94,6 +167,9 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         case leftFilters
         case rightPreampDB
         case rightFilters
+        case convolution
+        case leftConvolution
+        case rightConvolution
         case isBypassed
     }
 
@@ -109,6 +185,11 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         leftFilters = try container.decodeIfPresent([EQFilter].self, forKey: .leftFilters) ?? filters
         rightPreampDB = try container.decodeIfPresent(Double.self, forKey: .rightPreampDB) ?? preampDB
         rightFilters = try container.decodeIfPresent([EQFilter].self, forKey: .rightFilters) ?? filters
+        convolution = try container.decodeIfPresent(EQConvolutionSource.self, forKey: .convolution)
+        leftConvolution = try container.decodeIfPresent(EQConvolutionSource.self, forKey: .leftConvolution)
+            ?? convolution
+        rightConvolution = try container.decodeIfPresent(EQConvolutionSource.self, forKey: .rightConvolution)
+            ?? convolution
         isBypassed = try container.decodeIfPresent(Bool.self, forKey: .isBypassed) ?? false
     }
 
@@ -124,6 +205,9 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         try container.encode(leftFilters, forKey: .leftFilters)
         try container.encode(rightPreampDB, forKey: .rightPreampDB)
         try container.encode(rightFilters, forKey: .rightFilters)
+        try container.encodeIfPresent(convolution, forKey: .convolution)
+        try container.encodeIfPresent(leftConvolution, forKey: .leftConvolution)
+        try container.encodeIfPresent(rightConvolution, forKey: .rightConvolution)
         try container.encode(isBypassed, forKey: .isBypassed)
     }
 
@@ -147,6 +231,16 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         filters: GraphicEQBands.thirtyOneBand.map {
             EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
         }
+    )
+
+    public static let flatConvolution = EQProfile(
+        name: "Flat Response Curve",
+        mode: .convolution,
+        filters: [],
+        convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 0),
+            EQMagnitudePoint(frequency: 20_000, gainDB: 0)
+        ]))
     )
 }
 

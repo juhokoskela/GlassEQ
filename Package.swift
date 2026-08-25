@@ -19,7 +19,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "GlassEQCore"
+            name: "GlassEQCore",
+            linkerSettings: [
+                .linkedFramework("Accelerate")
+            ]
         ),
         .target(
             name: "GlassEQAudio",
