@@ -68,6 +68,47 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func rejectsMixedGraphicEQAndFilterDirectives() throws {
+        let text = """
+        Preamp: -4 dB
+        GraphicEQ: 20 0; 1000 3; 20000 0
+        Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1
+        """
+
+        #expect(throws: ProfileImportError.mixedEqualizerAPOFormats(
+            graphicEQLine: 2,
+            filterLine: 3
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
+    }
+
+    @Test
+    func importsChannelGraphicEQWithCommentsAndPreamps() throws {
+        let text = """
+        # Filter 1: this comment is not an active filter
+        Preamp: -4 dB
+        Channel: L
+        Preamp: -5 dB
+        GraphicEQ: 20 0; 20000 -1
+        Channel: R
+        GraphicEQ: 20 -2; 20000 1
+        """
+
+        let profile = try EQProfileTextImporter.importAutoEQ(text)
+
+        #expect(profile.channelMode == .stereo)
+        #expect(profile.preampDB == -4)
+        #expect(profile.leftPreampDB == -5)
+        #expect(profile.rightPreampDB == -4)
+        guard case .magnitudeCurve = profile.leftConvolution,
+              case .magnitudeCurve = profile.rightConvolution else {
+            Issue.record("Expected separate magnitude curves")
+            return
+        }
+    }
+
+    @Test
     func graphicEQExportRoundTripsStereoCurvesAndPreamps() throws {
         let left = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 2),
@@ -91,7 +132,7 @@ struct ProfileImporterTests {
             rightConvolution: right
         )
 
-        let exported = EQProfileTextExporter.exportEqualizerAPO(profile)
+        let exported = try EQProfileTextExporter.exportEqualizerAPO(profile)
         let imported = try EQProfileTextImporter.importAutoEQ(exported)
 
         #expect(imported.mode == .convolution)
@@ -123,6 +164,23 @@ struct ProfileImporterTests {
 
         #expect(profile.filters.count == 1)
         #expect(profile.filters[0].frequency == 2_000)
+    }
+
+    @Test
+    func rejectsImpulseResponseEqualizerAPOExport() throws {
+        let profile = EQProfile(
+            name: "Imported IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0]
+            ))
+        )
+
+        #expect(throws: EQProfileTextExportError.impulseResponseUnsupported) {
+            _ = try EQProfileTextExporter.exportEqualizerAPO(profile)
+        }
     }
 
     @Test
@@ -269,7 +327,7 @@ struct ProfileImporterTests {
 
     @Test
     func importsGraphicProfileRoundTripAsGraphicMode() throws {
-        let exported = EQProfileTextExporter.exportEqualizerAPO(.flatGraphic10)
+        let exported = try EQProfileTextExporter.exportEqualizerAPO(.flatGraphic10)
 
         let profile = try EQProfileTextImporter.importAutoEQ(exported)
 
@@ -299,7 +357,7 @@ struct ProfileImporterTests {
             leftFilters: EQProfile.flatGraphic10.filters,
             rightFilters: EQProfile.flatGraphic10.filters
         )
-        let exported = EQProfileTextExporter.exportEqualizerAPO(stereoGraphic)
+        let exported = try EQProfileTextExporter.exportEqualizerAPO(stereoGraphic)
 
         let profile = try EQProfileTextImporter.importAutoEQ(exported)
         let store = ProfileStore(profiles: [profile], fallbackProfileID: profile.id)

@@ -47,6 +47,7 @@ public struct ProfileImportLimits: Equatable, Sendable {
 
 public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
     case noSupportedFilters
+    case mixedEqualizerAPOFormats(graphicEQLine: Int, filterLine: Int)
     case inputTooLarge(byteCount: Int, maximum: Int)
     case tooManyLines(lineCount: Int, maximum: Int)
     case invalidNumber(line: Int, field: String, value: String)
@@ -61,6 +62,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
         switch self {
         case .noSupportedFilters:
             return "No supported filters were found in the imported profile."
+        case let .mixedEqualizerAPOFormats(graphicEQLine, filterLine):
+            return "Line \(graphicEQLine) contains GraphicEQ, but line \(filterLine) contains a Filter directive. Import one EqualizerAPO format at a time."
         case let .inputTooLarge(byteCount, maximum):
             return "Imported profile is \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
         case let .tooManyLines(lineCount, maximum):
@@ -101,12 +104,34 @@ public enum EQProfileTextImporter {
     ) throws -> EQProfile {
         try validateInput(text, limits: limits)
 
-        if text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-            .contains(where: {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                    .hasPrefix("graphiceq")
-            }) {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        var graphicEQLine: Int?
+        var filterLine: Int?
+        for (offset, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#") else {
+                continue
+            }
+            if line.lowercased().hasPrefix("graphiceq") {
+                graphicEQLine = graphicEQLine ?? offset + 1
+            }
+            let firstToken = line
+                .replacingOccurrences(of: ":", with: " ")
+                .split(whereSeparator: \.isWhitespace)
+                .first
+            if firstToken?.lowercased() == "filter" {
+                filterLine = filterLine ?? offset + 1
+            }
+        }
+
+        if let graphicEQLine, let filterLine {
+            throw ProfileImportError.mixedEqualizerAPOFormats(
+                graphicEQLine: graphicEQLine,
+                filterLine: filterLine
+            )
+        }
+
+        if graphicEQLine != nil {
             return try importGraphicEQ(
                 text,
                 profileName: profileName,
@@ -734,10 +759,21 @@ public enum EQProfileTextImporter {
     }
 }
 
+public enum EQProfileTextExportError: Error, Equatable, Sendable, LocalizedError {
+    case impulseResponseUnsupported
+
+    public var errorDescription: String? {
+        switch self {
+        case .impulseResponseUnsupported:
+            "Impulse-response profiles cannot be exported as EqualizerAPO text."
+        }
+    }
+}
+
 public enum EQProfileTextExporter {
-    public static func exportEqualizerAPO(_ profile: EQProfile) -> String {
+    public static func exportEqualizerAPO(_ profile: EQProfile) throws -> String {
         if profile.mode == .convolution {
-            return exportGraphicEQ(profile)
+            return try exportGraphicEQ(profile)
         }
         var lines: [String] = []
 
@@ -764,11 +800,11 @@ public enum EQProfileTextExporter {
         return lines.joined(separator: "\n")
     }
 
-    private static func exportGraphicEQ(_ profile: EQProfile) -> String {
+    private static func exportGraphicEQ(_ profile: EQProfile) throws -> String {
         var lines = [String(format: "Preamp: %.2f dB", profile.preampDB)]
         switch profile.channelMode {
         case .linked:
-            if let line = graphicEQLine(profile.convolution) {
+            if let line = try graphicEQLine(profile.convolution) {
                 lines.append(line)
             }
         case .stereo:
@@ -777,7 +813,7 @@ public enum EQProfileTextExporter {
             if profile.leftPreampDB != profile.preampDB {
                 lines.append(String(format: "Preamp: %.2f dB", profile.leftPreampDB))
             }
-            if let line = graphicEQLine(profile.leftConvolution) {
+            if let line = try graphicEQLine(profile.leftConvolution) {
                 lines.append(line)
             }
             lines.append("")
@@ -785,16 +821,19 @@ public enum EQProfileTextExporter {
             if profile.rightPreampDB != profile.preampDB {
                 lines.append(String(format: "Preamp: %.2f dB", profile.rightPreampDB))
             }
-            if let line = graphicEQLine(profile.rightConvolution) {
+            if let line = try graphicEQLine(profile.rightConvolution) {
                 lines.append(line)
             }
         }
         return lines.joined(separator: "\n")
     }
 
-    private static func graphicEQLine(_ source: EQConvolutionSource?) -> String? {
-        guard case .magnitudeCurve(let curve) = source else {
+    private static func graphicEQLine(_ source: EQConvolutionSource?) throws -> String? {
+        guard let source else {
             return nil
+        }
+        guard case .magnitudeCurve(let curve) = source else {
+            throw EQProfileTextExportError.impulseResponseUnsupported
         }
         let declarations = curve.points
             .sorted { $0.frequency < $1.frequency }
