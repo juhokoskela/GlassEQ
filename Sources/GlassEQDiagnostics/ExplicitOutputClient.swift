@@ -143,14 +143,14 @@ func runExplicitOutputClient(output: AudioOutputDevice) throws -> Int32 {
             status: kAudioHardwareUnspecifiedError
         )
     }
-    try disableExplicitClientInput(
-        deviceID: output.id,
-        ioProcID: ioProcID
-    )
     defer {
         _ = AudioDeviceStop(output.id, ioProcID)
         _ = AudioDeviceDestroyIOProcID(output.id, ioProcID)
     }
+    try disableExplicitClientInput(
+        deviceID: output.id,
+        ioProcID: ioProcID
+    )
 
     try requireExplicitClientNoErr(
         AudioDeviceStart(output.id, ioProcID),
