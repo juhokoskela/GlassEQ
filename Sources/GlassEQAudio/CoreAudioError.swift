@@ -126,11 +126,27 @@ public func classifyCoreAudioError(operation: String, status: OSStatus) -> Audio
 }
 
 private func isSystemAudioCapturePermissionFailure(operation: String, status: OSStatus) -> Bool {
-    let isPermissionOperation = operation == "AudioHardwareCreateProcessTap"
-        || operation == "AudioDeviceStart(capture tap)"
-    let isPermissionStatus = status == kAudioHardwareIllegalOperationError
+    let isPermissionStatus = status == kAudioDevicePermissionsError
+        || status == kAudioHardwareIllegalOperationError
         || status == OSStatus(EPERM)
-    return isPermissionOperation && isPermissionStatus
+    return isPermissionStatus && isSystemAudioCaptureOperation(operation)
+}
+
+private func isSystemAudioCaptureOperation(_ operation: String) -> Bool {
+    let createsProcessTap = operation == "AudioHardwareCreateProcessTap"
+        || operation.hasPrefix("AudioHardwareCreateProcessTap(")
+    if createsProcessTap {
+        return true
+    }
+
+    switch operation {
+    case "AudioDeviceStart(capture tap)",
+         "AudioDeviceStart(combined aggregate)",
+         "AudioDeviceStart(profile rebuild mute tap)":
+        return true
+    default:
+        return false
+    }
 }
 
 private func isOutputDeviceUnavailableFailure(operation: String, status: OSStatus) -> Bool {

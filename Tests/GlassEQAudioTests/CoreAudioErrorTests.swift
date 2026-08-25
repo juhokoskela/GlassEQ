@@ -16,27 +16,52 @@ struct CoreAudioErrorTests {
     }
 
     @Test
-    func classifiesProcessTapPermissionFailure() {
-        let failure = classifyCoreAudioError(
-            operation: "AudioHardwareCreateProcessTap",
-            status: kAudioHardwareIllegalOperationError
-        )
+    func classifiesCapturePermissionFailuresForProductionOperations() {
+        let operations = [
+            "AudioHardwareCreateProcessTap",
+            "AudioHardwareCreateProcessTap(main)",
+            "AudioHardwareCreateProcessTap(system sounds)",
+            "AudioDeviceStart(capture tap)",
+            "AudioDeviceStart(combined aggregate)",
+            "AudioDeviceStart(profile rebuild mute tap)"
+        ]
+        let statuses = [
+            kAudioDevicePermissionsError,
+            kAudioHardwareIllegalOperationError,
+            OSStatus(EPERM)
+        ]
 
-        #expect(failure.category == .systemAudioCapturePermission)
-        #expect(failure.operation == "AudioHardwareCreateProcessTap")
-        #expect(failure.status == kAudioHardwareIllegalOperationError)
-        #expect(failure.statusFourCC == "nope")
+        for operation in operations {
+            for status in statuses {
+                let failure = classifyCoreAudioError(operation: operation, status: status)
+
+                #expect(failure.category == .systemAudioCapturePermission)
+                #expect(failure.operation == operation)
+                #expect(failure.status == status)
+                #expect(failure.statusFourCC == formatOSStatusFourCC(status))
+            }
+        }
     }
 
     @Test
-    func classifiesCaptureStartPermissionFailure() {
-        let failure = classifyCoreAudioError(
-            operation: "AudioDeviceStart(capture tap)",
-            status: OSStatus(EPERM)
-        )
+    func doesNotClassifyNonCaptureOperationsAsPermissionFailures() {
+        let cases: [(String, OSStatus, AudioEngineFailure.Category)] = [
+            ("AudioDeviceStart(physical-first aggregate)", kAudioDevicePermissionsError, .coreAudioOperationFailed),
+            ("AudioDeviceStart(default output)", OSStatus(EPERM), .coreAudioOperationFailed),
+            (
+                "AudioDeviceSetPropertyData(output device format)",
+                kAudioHardwareIllegalOperationError,
+                .coreAudioOperationFailed
+            ),
+            ("AudioHardwareCreateProcessTapMetadata", kAudioHardwareIllegalOperationError, .coreAudioOperationFailed),
+            ("AudioHardwareCreateProcessTap(main)", kAudioDeviceUnsupportedFormatError, .deviceFormatUnsupported)
+        ]
 
-        #expect(failure.category == .systemAudioCapturePermission)
-        #expect(failure.statusFourCC == nil)
+        for (operation, status, expectedCategory) in cases {
+            let failure = classifyCoreAudioError(operation: operation, status: status)
+
+            #expect(failure.category == expectedCategory)
+        }
     }
 
     @Test
