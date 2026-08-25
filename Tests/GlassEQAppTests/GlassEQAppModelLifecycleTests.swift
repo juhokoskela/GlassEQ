@@ -349,6 +349,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.headsetAggregatePromotionAttemptCount == 1
                 && engine.isUsingPromotedHeadsetAggregate
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
         }
 
         #expect(engine.startCalls.count == 1)
@@ -413,6 +414,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.headsetAggregatePromotionAttemptCount == 1
                 && engine.isUsingPromotedHeadsetAggregate
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
         }
         try? await Task.sleep(for: .milliseconds(300))
 
@@ -457,6 +459,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.headsetAggregatePromotionAttemptCount == 1
                 && engine.isUsingPromotedHeadsetAggregate
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
         }
         let route = try engine.aggregateRouteFingerprint(for: output)
         let aggregateRoute = try #require(route)
@@ -512,6 +515,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.headsetAggregatePromotionAttemptCount == 1
                 && engine.isUsingPromotedHeadsetAggregate
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
         }
 
         try model.setAggregateBufferMode(.frames32)
