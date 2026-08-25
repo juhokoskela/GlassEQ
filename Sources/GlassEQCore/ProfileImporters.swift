@@ -759,10 +759,21 @@ public enum EQProfileTextImporter {
     }
 }
 
+public enum EQProfileTextExportError: Error, Equatable, Sendable, LocalizedError {
+    case impulseResponseUnsupported
+
+    public var errorDescription: String? {
+        switch self {
+        case .impulseResponseUnsupported:
+            "Impulse-response profiles cannot be exported as EqualizerAPO text."
+        }
+    }
+}
+
 public enum EQProfileTextExporter {
-    public static func exportEqualizerAPO(_ profile: EQProfile) -> String {
+    public static func exportEqualizerAPO(_ profile: EQProfile) throws -> String {
         if profile.mode == .convolution {
-            return exportGraphicEQ(profile)
+            return try exportGraphicEQ(profile)
         }
         var lines: [String] = []
 
@@ -789,11 +800,11 @@ public enum EQProfileTextExporter {
         return lines.joined(separator: "\n")
     }
 
-    private static func exportGraphicEQ(_ profile: EQProfile) -> String {
+    private static func exportGraphicEQ(_ profile: EQProfile) throws -> String {
         var lines = [String(format: "Preamp: %.2f dB", profile.preampDB)]
         switch profile.channelMode {
         case .linked:
-            if let line = graphicEQLine(profile.convolution) {
+            if let line = try graphicEQLine(profile.convolution) {
                 lines.append(line)
             }
         case .stereo:
@@ -802,7 +813,7 @@ public enum EQProfileTextExporter {
             if profile.leftPreampDB != profile.preampDB {
                 lines.append(String(format: "Preamp: %.2f dB", profile.leftPreampDB))
             }
-            if let line = graphicEQLine(profile.leftConvolution) {
+            if let line = try graphicEQLine(profile.leftConvolution) {
                 lines.append(line)
             }
             lines.append("")
@@ -810,16 +821,19 @@ public enum EQProfileTextExporter {
             if profile.rightPreampDB != profile.preampDB {
                 lines.append(String(format: "Preamp: %.2f dB", profile.rightPreampDB))
             }
-            if let line = graphicEQLine(profile.rightConvolution) {
+            if let line = try graphicEQLine(profile.rightConvolution) {
                 lines.append(line)
             }
         }
         return lines.joined(separator: "\n")
     }
 
-    private static func graphicEQLine(_ source: EQConvolutionSource?) -> String? {
-        guard case .magnitudeCurve(let curve) = source else {
+    private static func graphicEQLine(_ source: EQConvolutionSource?) throws -> String? {
+        guard let source else {
             return nil
+        }
+        guard case .magnitudeCurve(let curve) = source else {
+            throw EQProfileTextExportError.impulseResponseUnsupported
         }
         let declarations = curve.points
             .sorted { $0.frequency < $1.frequency }
