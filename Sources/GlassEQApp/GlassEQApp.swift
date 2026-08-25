@@ -541,12 +541,15 @@ final class GlassEQAppModel {
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
         case unsupportedSchema(version: Int, maximumSupported: Int)
+        case oversizedStore(byteCount: Int, maximum: Int)
 
         var isProtected: Bool {
-            if case .unsupportedSchema = self {
+            switch self {
+            case .normal:
+                return false
+            case .unsupportedSchema, .oversizedStore:
                 return true
             }
-            return false
         }
     }
 
@@ -835,6 +838,8 @@ final class GlassEQAppModel {
         let persistenceMode: ProfilePersistenceMode
         if case let .unsupportedSchemaVersion(version, maximumSupported) = loadResult?.status {
             persistenceMode = .unsupportedSchema(version: version, maximumSupported: maximumSupported)
+        } else if case let .oversizedStore(byteCount, maximum) = loadResult?.status {
+            persistenceMode = .oversizedStore(byteCount: byteCount, maximum: maximum)
         } else {
             persistenceMode = .normal
         }
@@ -1016,6 +1021,12 @@ final class GlassEQAppModel {
                 message: localized("Profiles are read-only because this store was written by a newer GlassEQ schema \(version). This build supports schema \(maximumSupported)."),
                 resetButtonTitle: localized("Reset profiles for this version")
             )
+        case let .oversizedStore(byteCount, maximum):
+            return SettingsProfileStoreProtectionDTO(
+                isProtected: true,
+                message: localized("Profiles are read-only because this store is at least \(byteCount) bytes, above this build's \(maximum)-byte limit."),
+                resetButtonTitle: localized("Reset profiles for this version")
+            )
         }
     }
 
@@ -1029,8 +1040,8 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return ""
-        case .unsupportedSchema:
-            return localized("Profile store was written by a newer GlassEQ; reset profiles or use a newer build.")
+        case .unsupportedSchema, .oversizedStore:
+            return localized("Profile store is protected; reset profiles before editing it.")
         }
     }
 
@@ -3574,6 +3585,8 @@ final class GlassEQAppModel {
             return localized("Profile store was invalid; using defaults, but backup failed")
         case let .unsupportedSchemaVersion(version, maximumSupported):
             return localized("Profile store was written by a newer GlassEQ version (schema \(version)); using defaults without modifying it. This build supports schema \(maximumSupported).")
+        case let .oversizedStore(byteCount, maximum):
+            return localized("Profile store is at least \(byteCount) bytes, above this build's \(maximum)-byte limit; using defaults without modifying it.")
         }
     }
 

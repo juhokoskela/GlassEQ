@@ -2782,6 +2782,38 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func oversizedStoreIsProtectedFromImplicitWrites() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let oversizedData = Data(
+            repeating: 0,
+            count: ProfilePersistence.maxStoreBytes + 1
+        )
+        try FileManager.default.createDirectory(
+            at: storeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try oversizedData.write(to: storeURL)
+
+        let model = GlassEQAppModel(
+            storeURL: storeURL,
+            engine: FakeAudioEngine(),
+            defaultOutputLookup: FakeDefaultOutputLookup(.success(makeOutput())),
+            observerFactory: FakeDefaultOutputObserverFactory(),
+            autoStart: false,
+            installLifecycleObservers: false,
+            registerAppDelegate: false
+        )
+
+        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        #expect(await model.flushStoreBeforeQuit())
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await model.performSettingsCommand(.createProfile(.parametric))
+        }
+        #expect(try Data(contentsOf: storeURL) == oversizedData)
+    }
+
+    @Test
     func preservedRunningProfileUpdateFailureRevertsModelToRunningProfile() async throws {
         let running = makeProfile(name: "Running")
         let requested = makeProfile(name: "Requested")

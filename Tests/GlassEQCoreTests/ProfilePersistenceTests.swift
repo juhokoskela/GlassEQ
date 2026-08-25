@@ -54,7 +54,7 @@ struct ProfilePersistenceTests {
     }
 
     @Test
-    func loadBacksUpOversizedStoreBeforeDecode() throws {
+    func loadLeavesOversizedStoreUntouched() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let oversizedData = Data(repeating: 0, count: ProfilePersistence.maxStoreBytes + 1)
@@ -62,12 +62,41 @@ struct ProfilePersistenceTests {
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
-        guard case .recoveredDefaults(let backupURL) = result.status else {
-            Issue.record("Expected oversized store recovery, got \(result.status)")
-            return
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .oversizedStore(
+            byteCount: oversizedData.count,
+            maximum: ProfilePersistence.maxStoreBytes
+        ))
+        #expect(try Data(contentsOf: url) == oversizedData)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
+    }
+
+    @Test
+    func loadLeavesOversizedFutureSchemaStoreUntouched() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let futureVersion = ProfileStore.currentSchemaVersion + 1
+        let data = Data("""
+        {
+          "padding" : "\(String(repeating: "x", count: ProfilePersistence.maxStoreBytes))",
+          "schemaVersion" : \(futureVersion)
         }
-        #expect((try Data(contentsOf: backupURL)).count == oversizedData.count)
-        #expect(try ProfilePersistence.decode(Data(contentsOf: url)).profiles == ProfileStore.defaultProfiles)
+        """.utf8)
+        try data.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .oversizedStore(
+            byteCount: data.count,
+            maximum: ProfilePersistence.maxStoreBytes
+        ))
+        #expect(try Data(contentsOf: url) == data)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
     }
 
     @Test
