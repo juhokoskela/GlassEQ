@@ -2971,6 +2971,121 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func incompatibleImpulseResponseCannotBeAppliedPreviewedComparedOrMapped() async throws {
+        let fallback = makeProfile(name: "Fallback")
+        let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            fallbackProfileID: fallback.id
+        )
+        let output = makeOutput(
+            uid: "rate-mismatch-output",
+            name: "44.1 kHz Output",
+            nominalSampleRate: 44_100
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try model.apply(profile: impulse)
+        }
+        #expect(throws: SettingsCommandFailure.self) {
+            try model.useForCurrentOutput(profile: impulse)
+        }
+
+        model.preview(profile: impulse)
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try model.startProgrammeComparison(profile: impulse)
+        }
+        #expect(model.profileStore == store)
+        #expect(model.activeProfile == fallback)
+        #expect(model.previewReturnProfile == nil)
+        #expect(engine.updateDSPCalls.isEmpty)
+        #expect(engine.programmeComparisonCalls.isEmpty)
+        #expect(model.statusMessage.contains("48"))
+        #expect(model.statusMessage.contains("44"))
+    }
+
+    @Test
+    func incompatibleMappedImpulseResponseStaysDryUntilTheRouteMatches() async {
+        let fallback = makeProfile(name: "Fallback")
+        let impulse = makeImpulseResponseProfile(name: "Mapped IR", sampleRate: 48_000)
+        let incompatibleOutput = makeOutput(
+            uid: "mapped-ir-output",
+            name: "Mapped Output",
+            nominalSampleRate: 44_100
+        )
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: incompatibleOutput.uid,
+                    profileID: impulse.id
+                )
+            ],
+            fallbackProfileID: fallback.id
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(incompatibleOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(incompatibleOutput))
+        await waitUntil {
+            model.currentOutputUID == incompatibleOutput.uid
+                && model.currentOutputSampleRate == 44_100
+                && model.lifecycleState == .stopped
+                && model.statusMessage.contains(impulse.name)
+        }
+
+        #expect(model.lifecycleState == .stopped)
+        #expect(!model.isRunning)
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.activeProfile == impulse)
+        #expect(model.profileStore.outputMappings == store.outputMappings)
+        #expect(model.statusMessage.contains("48"))
+        #expect(model.statusMessage.contains("44"))
+
+        model.retryAudioEngine()
+        await settleAsyncWork()
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+
+        var compatibleOutput = incompatibleOutput
+        compatibleOutput.nominalSampleRate = 48_000
+        lookup.result = .success(compatibleOutput)
+        observer.emit(.success(compatibleOutput))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.count == 1
+        }
+
+        #expect(engine.startCalls[0].profile == impulse)
+        #expect(model.profileStore.outputMappings == store.outputMappings)
+    }
+
+    @Test
     func metricsPollingCommandReturnsNoSnapshotAndPublishesImmediateMetrics() async throws {
         let engine = FakeAudioEngine()
         engine.metrics = AudioEngineMetrics(
@@ -3768,6 +3883,21 @@ private func normalizedStore(_ store: ProfileStore) -> ProfileStore {
 
 private func makeProfile(name: String) -> EQProfile {
     EQProfile(name: name, mode: .parametric, filters: [])
+}
+
+private func makeImpulseResponseProfile(
+    name: String,
+    sampleRate: Double
+) -> EQProfile {
+    EQProfile(
+        name: name,
+        mode: .convolution,
+        filters: [],
+        convolution: .impulseResponse(ImpulseResponseSource(
+            sampleRate: sampleRate,
+            samples: [1, 0.25, -0.125]
+        ))
+    )
 }
 
 private func makeStore(profileCount: Int) -> ProfileStore {
