@@ -261,4 +261,79 @@ struct AudioRenderWatchdogTests {
             at: start.advanced(by: .seconds(7))
         ) == .restart)
     }
+
+    @Test
+    func deadlineBurstRequiresThreeMissesInsideOneSecond() {
+        var detector = AudioRenderDeadlineBurstDetector(
+            requiredMisses: 3,
+            window: .seconds(1)
+        )
+        let start = ContinuousClock.now
+
+        let first = detector.observe(newMisses: 1, at: start)
+        let second = detector.observe(
+            newMisses: 1,
+            at: start.advanced(by: .milliseconds(500))
+        )
+        let third = detector.observe(
+            newMisses: 1,
+            at: start.advanced(by: .milliseconds(900))
+        )
+        let fourth = detector.observe(
+            newMisses: 2,
+            at: start.advanced(by: .seconds(2))
+        )
+        let fifth = detector.observe(
+            newMisses: 1,
+            at: start.advanced(by: .seconds(4))
+        )
+
+        #expect(!first)
+        #expect(!second)
+        #expect(third)
+        #expect(!fourth)
+        #expect(!fifth)
+    }
+
+    @Test
+    func fixedBufferRecoveryRebuildsThenClimbsWithoutChangingPreference() {
+        var recovery = FixedBufferRecoverySession(
+            runtimeFrameSize: 16,
+            repeatedFailureWindow: .seconds(60)
+        )
+        let start = ContinuousClock.now
+
+        let first = recovery.observeFailure(at: start)
+        let second = recovery.observeFailure(
+            at: start.advanced(by: .seconds(10))
+        )
+        #expect(first == .rebuild(frameSize: 16))
+        #expect(second == .temporarilyIncrease(frameSize: 32))
+        #expect(recovery.runtimeFrameSize == 32)
+        let third = recovery.observeFailure(
+            at: start.advanced(by: .seconds(20))
+        )
+        #expect(third == .temporarilyIncrease(frameSize: 64))
+        #expect(recovery.runtimeFrameSize == 64)
+        let fourth = recovery.observeFailure(
+            at: start.advanced(by: .seconds(30))
+        )
+        #expect(fourth == .stop)
+    }
+
+    @Test
+    func fixedBufferRecoveryRebuildsCurrentRuntimeRungAfterQuietWindow() {
+        var recovery = FixedBufferRecoverySession(
+            runtimeFrameSize: 32,
+            repeatedFailureWindow: .seconds(60)
+        )
+        let start = ContinuousClock.now
+
+        let first = recovery.observeFailure(at: start)
+        let second = recovery.observeFailure(
+            at: start.advanced(by: .seconds(61))
+        )
+        #expect(first == .rebuild(frameSize: 32))
+        #expect(second == .rebuild(frameSize: 32))
+    }
 }

@@ -296,6 +296,65 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func fixedBufferRebuildsOnceThenUsesTemporarySaferRung() async throws {
+        let output = makeOutput(uid: "fixed-recovery", name: "Fixed Recovery")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let notifier = FakeAggregateBufferNotifier()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateBufferNotifier: notifier
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        try model.setAggregateBufferMode(.frames16)
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 16
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        var metrics = engine.metrics
+        metrics.renderDeadlineMisses = 3
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.startCalls[2].aggregateBufferFrameSize == 16
+                && notifier.calls.last?.kind == .fixedRebuild
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        metrics = engine.metrics
+        metrics.renderDeadlineMisses = 6
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 4
+                && engine.startCalls[3].aggregateBufferFrameSize == 32
+                && notifier.calls.last?.kind == .fixedTemporaryIncrease
+        }
+
+        let temporarySnapshot = model.settingsSnapshot()
+        #expect(temporarySnapshot.aggregateBuffer.mode == .frames16)
+        #expect(temporarySnapshot.currentOutputBufferFrameSize == 32)
+
+        model.retryAudioEngine()
+        await waitUntil {
+            engine.startCalls.count == 5
+                && engine.startCalls[4].aggregateBufferFrameSize == 16
+                && model.settingsSnapshot().currentOutputBufferFrameSize == 16
+        }
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames16)
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 16)
+    }
+
+    @Test
     func automaticAggregateBufferIgnoresInterruptionsBeforeRouteSettles() async {
         let output = makeOutput(uid: "settling-aggregate", name: "Settling Aggregate")
         let engine = FakeAudioEngine()
@@ -4031,9 +4090,16 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 @MainActor
 private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying {
     struct Call: Equatable {
+        enum Kind: Equatable {
+            case automatic
+            case fixedRebuild
+            case fixedTemporaryIncrease
+        }
+
         var outputName: String
         var previousFrameSize: UInt32
         var newFrameSize: UInt32
+        var kind: Kind = .automatic
     }
 
     private(set) var calls: [Call] = []
@@ -4047,6 +4113,31 @@ private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying 
             outputName: outputName,
             previousFrameSize: previousFrameSize,
             newFrameSize: newFrameSize
+        ))
+    }
+
+    func notifyFixedBufferRebuild(
+        outputName: String,
+        frameSize: UInt32
+    ) {
+        calls.append(Call(
+            outputName: outputName,
+            previousFrameSize: frameSize,
+            newFrameSize: frameSize,
+            kind: .fixedRebuild
+        ))
+    }
+
+    func notifyTemporaryBufferIncrease(
+        outputName: String,
+        preferredFrameSize: UInt32,
+        runtimeFrameSize: UInt32
+    ) {
+        calls.append(Call(
+            outputName: outputName,
+            previousFrameSize: preferredFrameSize,
+            newFrameSize: runtimeFrameSize,
+            kind: .fixedTemporaryIncrease
         ))
     }
 }

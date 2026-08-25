@@ -14,6 +14,15 @@ protocol AggregateBufferChangeNotifying: AnyObject {
         previousFrameSize: UInt32,
         newFrameSize: UInt32
     )
+    func notifyFixedBufferRebuild(
+        outputName: String,
+        frameSize: UInt32
+    )
+    func notifyTemporaryBufferIncrease(
+        outputName: String,
+        preferredFrameSize: UInt32,
+        runtimeFrameSize: UInt32
+    )
 }
 
 @MainActor
@@ -62,6 +71,40 @@ final class AggregateBufferNotifier: NSObject,
         previousFrameSize: UInt32,
         newFrameSize: UInt32
     ) {
+        notify(
+            title: localized("GlassEQ increased the audio buffer"),
+            body: localized(
+                "GlassEQ detected a timing interruption while \(outputName) was using \(previousFrameSize)-frame buffers. It switched this route to \(newFrameSize) frames for more reliable playback."
+            )
+        )
+    }
+
+    func notifyFixedBufferRebuild(
+        outputName: String,
+        frameSize: UInt32
+    ) {
+        notify(
+            title: localized("GlassEQ rebuilt the audio engine"),
+            body: localized(
+                "\(outputName) missed several audio deadlines at \(frameSize) frames. GlassEQ rebuilt the route at the same setting."
+            )
+        )
+    }
+
+    func notifyTemporaryBufferIncrease(
+        outputName: String,
+        preferredFrameSize: UInt32,
+        runtimeFrameSize: UInt32
+    ) {
+        notify(
+            title: localized("GlassEQ temporarily increased the audio buffer"),
+            body: localized(
+                "\(outputName) remained unstable at \(preferredFrameSize) frames. GlassEQ is using \(runtimeFrameSize) frames for this session. Your fixed setting was not changed."
+            )
+        )
+    }
+
+    private func notify(title: String, body: String) {
         guard Self.canUseUserNotifications() else {
             return
         }
@@ -73,14 +116,12 @@ final class AggregateBufferNotifier: NSObject,
                 return
             }
             let content = UNMutableNotificationContent()
-            content.title = localized("GlassEQ increased the audio buffer")
-            content.body = localized(
-                "GlassEQ detected a timing interruption while \(outputName) was using \(previousFrameSize)-frame buffers. It switched this route to \(newFrameSize) frames for more reliable playback."
-            )
+            content.title = title
+            content.body = body
             content.categoryIdentifier = Self.categoryIdentifier
             try? await center.add(
                 UNNotificationRequest(
-                    identifier: "glasseq-buffer-reliability-\(UUID().uuidString)",
+                    identifier: "glasseq-buffer-recovery-\(UUID().uuidString)",
                     content: content,
                     trigger: nil
                 )
@@ -118,6 +159,17 @@ final class NoopAggregateBufferNotifier: AggregateBufferChangeNotifying {
         outputName _: String,
         previousFrameSize _: UInt32,
         newFrameSize _: UInt32
+    ) {}
+
+    func notifyFixedBufferRebuild(
+        outputName _: String,
+        frameSize _: UInt32
+    ) {}
+
+    func notifyTemporaryBufferIncrease(
+        outputName _: String,
+        preferredFrameSize _: UInt32,
+        runtimeFrameSize _: UInt32
     ) {}
 }
 

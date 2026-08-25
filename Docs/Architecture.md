@@ -25,6 +25,8 @@ The audio render path must not allocate, lock, touch disk, log, parse text, muta
 
 A watchdog observes render progress outside the callback. One three-second steady-state stall stops the engine before rebuilding it once. Another stall within 60 seconds leaves GlassEQ stopped, restoring direct system audio until the user explicitly retries.
 
+The render callback also counts callbacks that arrive or finish at least one complete callback period late. After the route has settled, three misses within one second form a deadline burst. Automatic mode continues to use its persisted route-specific reliability policy. A fixed mode rebuilds once at the selected size, then temporarily climbs through 32 and 64 frames if bursts recur within 60 seconds. The fixed preference is never overwritten. The temporary rung lasts until the route session ends or the user retries the fixed size. Another burst at 64 frames stops processing.
+
 Programme-loudness A/B comparison is another transient render mode, not a profile mutation. The renderer runs the draft profile and a filters-off reference in parallel; the reference retains the same linked or per-channel preamp gains. Both branches pass through BS.1770 K-weighting and a shared three-second rolling gate so they are measured over the same programme passages. GlassEQ attenuates only the louder branch, smooths match changes over 500 ms, and crossfades A/B selection over 10 ms. Starting and stopping the comparison reuse the whole-bank warm-up and transition path, including a gain restoration before returning to the saved active profile. The measured gains, selected branch, and filters-off reference are never persisted.
 
 ## Current Implementation Status
@@ -62,6 +64,7 @@ The command prints output device metadata and post-run callback metrics:
 - Playback underrun frames.
 - Input frames dropped because a callback exposed more input than output capacity.
 - Peak capture and output callback sizes.
+- Render callbacks that missed at least one complete callback period.
 - Average and range of tap-to-output latency from Core Audio's I/O timestamps.
 - Samples that reached the soft clipper.
 

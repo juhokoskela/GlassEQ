@@ -66,6 +66,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public var averageTimestampJumpIntervalNanoseconds: Double
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
+    public var renderDeadlineMisses: UInt64
     public var playbackTimestampDiscontinuities: UInt64
     public var playbackBufferRenegotiations: UInt64
     public var adaptivePlaybackRenderFailures: UInt64
@@ -115,6 +116,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         averageTimestampJumpIntervalNanoseconds: Double = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
+        renderDeadlineMisses: UInt64 = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
         playbackBufferRenegotiations: UInt64 = 0,
         adaptivePlaybackRenderFailures: UInt64 = 0,
@@ -163,6 +165,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         self.averageTimestampJumpIntervalNanoseconds = averageTimestampJumpIntervalNanoseconds
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
+        self.renderDeadlineMisses = renderDeadlineMisses
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
         self.playbackBufferRenegotiations = playbackBufferRenegotiations
         self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
@@ -563,6 +566,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let totalTimestampJumpIntervalNanoseconds = Atomic<UInt64>(0)
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
+        private let renderDeadlineMisses = Atomic<UInt64>(0)
+        private var previousRenderStartNanoseconds: UInt64?
+        private var previousRenderFrameCount = 0
         private let tapToOutputLatencyObservations = Atomic<UInt64>(0)
         private let minTapToOutputLatencyNanoseconds = Atomic<UInt64>(.max)
         private let maxTapToOutputLatencyNanoseconds = Atomic<UInt64>(0)
@@ -672,6 +678,38 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ? mainInputFrameCount
                 : rawSystemSoundFrameCount
             let inputFrameCount = min(mainInputFrameCount, systemSoundFrameCount)
+
+            let renderStartNanoseconds = AudioConvertHostTimeToNanos(callbackHostTime)
+            let entryDeadlineMisses = previousRenderStartNanoseconds.map {
+                SystemTapAudioEngine.missedRenderDeadlines(
+                    elapsedNanoseconds: renderStartNanoseconds >= $0
+                        ? renderStartNanoseconds - $0
+                        : 0,
+                    frameCount: previousRenderFrameCount,
+                    sampleRate: sampleRate
+                )
+            } ?? 0
+            previousRenderStartNanoseconds = renderStartNanoseconds
+            previousRenderFrameCount = outputFrameCount
+            defer {
+                let renderEndNanoseconds = AudioConvertHostTimeToNanos(
+                    AudioGetCurrentHostTime()
+                )
+                let executionDeadlineMisses = SystemTapAudioEngine.missedRenderDeadlines(
+                    elapsedNanoseconds: renderEndNanoseconds >= renderStartNanoseconds
+                        ? renderEndNanoseconds - renderStartNanoseconds
+                        : 0,
+                    frameCount: outputFrameCount,
+                    sampleRate: sampleRate
+                )
+                let missedDeadlines = max(entryDeadlineMisses, executionDeadlineMisses)
+                if missedDeadlines > 0 {
+                    renderDeadlineMisses.wrappingAdd(
+                        1,
+                        ordering: .relaxed
+                    )
+                }
+            }
 
             recordTimestampContinuity(
                 inputTime: inputTime,
@@ -865,6 +903,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             totalTimestampJumpIntervalNanoseconds.store(0, ordering: .relaxed)
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
+            renderDeadlineMisses.store(0, ordering: .relaxed)
             tapToOutputLatencyObservations.store(0, ordering: .relaxed)
             minTapToOutputLatencyNanoseconds.store(.max, ordering: .relaxed)
             maxTapToOutputLatencyNanoseconds.store(0, ordering: .relaxed)
@@ -935,6 +974,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     : Double(totalJumpInterval) / Double(jumpIntervalObservations),
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
+                renderDeadlineMisses: renderDeadlineMisses.load(ordering: .relaxed),
                 tapToOutputLatencyObservations: latencyObservations,
                 minimumTapToOutputLatencyNanoseconds: latencyObservations == 0 || minimumLatency == .max
                     ? 0
@@ -3496,6 +3536,23 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             data[destinationIndex] = samples[sourceIndex]
         }
+    }
+
+    static func missedRenderDeadlines(
+        elapsedNanoseconds: UInt64,
+        frameCount: Int,
+        sampleRate: Double
+    ) -> UInt64 {
+        guard frameCount > 0,
+              sampleRate.isFinite,
+              sampleRate > 0 else {
+            return 0
+        }
+        let expectedNanoseconds = UInt64(
+            max((Double(frameCount) * 1_000_000_000 / sampleRate).rounded(), 1)
+        )
+        let elapsedPeriods = elapsedNanoseconds / expectedNanoseconds
+        return elapsedPeriods >= 2 ? elapsedPeriods - 1 : 0
     }
 
     static func preferredBufferFrameSize(for _: AudioOutputDevice) -> UInt32 {

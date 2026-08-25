@@ -339,6 +339,7 @@ struct SettingsIPCTests {
         #expect(metrics.saturatedSamples == 2)
         #expect(metrics.maximumCaptureCallbackFrames == 0)
         #expect(metrics.maximumPlaybackCallbackFrames == 0)
+        #expect(metrics.renderDeadlineMisses == 0)
         #expect(metrics.droppedInputFrames == 0)
         #expect(metrics.tapToOutputLatencyObservations == 0)
         #expect(metrics.minimumTapToOutputLatencyNanoseconds == 0)
@@ -349,6 +350,7 @@ struct SettingsIPCTests {
     @Test
     func audioMetricsRoundTripTapToOutputLatency() throws {
         let metrics = SettingsAudioMetricsDTO(
+            renderDeadlineMisses: 7,
             tapToOutputLatencyObservations: 500,
             minimumTapToOutputLatencyNanoseconds: 1_250_000,
             maximumTapToOutputLatencyNanoseconds: 2_750_000,

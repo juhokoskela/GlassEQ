@@ -654,6 +654,25 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func renderDeadlineMissesRequireAtLeastTwoCallbackPeriods() {
+        #expect(SystemTapAudioEngine.missedRenderDeadlines(
+            elapsedNanoseconds: 650_000,
+            frameCount: 16,
+            sampleRate: 48_000
+        ) == 0)
+        #expect(SystemTapAudioEngine.missedRenderDeadlines(
+            elapsedNanoseconds: 700_000,
+            frameCount: 16,
+            sampleRate: 48_000
+        ) == 1)
+        #expect(SystemTapAudioEngine.missedRenderDeadlines(
+            elapsedNanoseconds: 4_500_000,
+            frameCount: 16,
+            sampleRate: 48_000
+        ) == 12)
+    }
+
+    @Test
     func aggregateTimestampSlopeQualificationRequiresStableNominalTiming() {
         #expect(SystemTapAudioEngine.timestampSlopeAgrees(
             frameCount: 16,

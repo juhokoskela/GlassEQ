@@ -2490,6 +2490,12 @@ private struct OutputTab: View {
                             onRetryAutomaticAggregateBuffer()
                         }
                         .controlSize(.large)
+                    } else if let fixedFrameSize,
+                              snapshot.currentOutputBufferFrameSize > fixedFrameSize {
+                        Button(localized("Retry \(fixedFrameSize) frames")) {
+                            onSetAggregateBufferMode(snapshot.aggregateBuffer.mode)
+                        }
+                        .controlSize(.large)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -2566,6 +2572,7 @@ private struct OutputTab: View {
                         LabeledContent(localized("Bridge Latency"), value: bridgeLatencyLabel)
                         LabeledContent(localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
                     } else {
+                        LabeledContent(localized("Render Deadline Misses"), value: localizedInteger(snapshot.metrics.renderDeadlineMisses))
                         LabeledContent(localized("Input Timestamp Jumps"), value: localizedInteger(snapshot.metrics.inputTimestampDiscontinuities))
                         LabeledContent(localized("Output Timestamp Jumps"), value: localizedInteger(snapshot.metrics.outputTimestampDiscontinuities))
                         LabeledContent(localized("Tap-to-Output Latency"), value: tapToOutputLatencyLabel)
@@ -2601,9 +2608,28 @@ private struct OutputTab: View {
                 "Automatic uses the smallest buffer proven reliable for this device stream and sample rate. It is currently \(snapshot.aggregateBuffer.automaticFrameSize) frames."
             )
         }
+        if let fixedFrameSize,
+           snapshot.currentOutputBufferFrameSize > fixedFrameSize {
+            return localized(
+                "The fixed \(fixedFrameSize)-frame setting became unstable. GlassEQ is temporarily using \(snapshot.currentOutputBufferFrameSize) frames for this session."
+            )
+        }
         return localized(
-            "A fixed buffer disables automatic reliability fallback for this route."
+            "A fixed buffer keeps this preference. GlassEQ may temporarily use a safer buffer if repeated deadline misses continue after a rebuild."
         )
+    }
+
+    private var fixedFrameSize: UInt32? {
+        switch snapshot.aggregateBuffer.mode {
+        case .automatic:
+            nil
+        case .frames16:
+            16
+        case .frames32:
+            32
+        case .frames64:
+            64
+        }
     }
 
     private var sampleRateLabel: String {
