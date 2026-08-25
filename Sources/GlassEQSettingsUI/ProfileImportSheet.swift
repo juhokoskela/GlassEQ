@@ -29,12 +29,17 @@ private enum ProfileImportRoute: String, CaseIterable, Identifiable {
     }
 }
 
+struct SettingsFileImportChoice {
+    var selection: SettingsFileImportSelectionDTO?
+    var errorMessage: String?
+}
+
 struct ProfileImportSheet: View {
     var currentProfile: EQProfile
-    var currentOutputSampleRate: Double
     var isReadOnly: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
+    var onChooseImportFiles: (SettingsFileImportMode) async -> SettingsFileImportChoice
 
     @Environment(\.dismiss) private var dismiss
     @State private var route = ProfileImportRoute.autoEQ
@@ -73,10 +78,10 @@ struct ProfileImportSheet: View {
                 case .text:
                     TextProfileImportPane(
                         currentProfile: currentProfile,
-                        currentOutputSampleRate: currentOutputSampleRate,
                         isReadOnly: isReadOnly,
                         onImport: onImport,
                         onImportParsedProfile: onImportParsedProfile,
+                        onChooseImportFiles: onChooseImportFiles,
                         onCancel: { dismiss() },
                         onImported: { dismiss() }
                     )
@@ -306,10 +311,10 @@ private struct AutoEQImportPane: View {
 
 private struct TextProfileImportPane: View {
     var currentProfile: EQProfile
-    var currentOutputSampleRate: Double
     var isReadOnly: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
+    var onChooseImportFiles: (SettingsFileImportMode) async -> SettingsFileImportChoice
     var onCancel: () -> Void
     var onImported: () -> Void
 
@@ -556,116 +561,63 @@ private struct TextProfileImportPane: View {
     }
 
     private func chooseFile() {
-        let panel = NSOpenPanel()
-        panel.title = localized("Import EQ Settings")
-        panel.message = localized("Choose EQ settings or a mono or stereo WAV impulse response.")
-        panel.prompt = localized("Open")
-        panel.allowedContentTypes = [.plainText, .wav]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else {
-                return
-            }
-            loadFile(url)
-        }
+        chooseFiles(.single)
     }
 
     private func chooseSeparatePair() {
-        let panel = NSOpenPanel()
-        panel.title = localized("Import Separate Left and Right Files")
-        panel.message = localized("Choose two text files or two mono WAV files. GlassEQ will show their left and right assignment before importing them.")
-        panel.prompt = localized("Choose")
-        panel.allowedContentTypes = [.plainText, .wav]
-        panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
-        panel.begin { response in
-            guard response == .OK else {
-                return
-            }
-            guard panel.urls.count == 2 else {
-                errorMessage = localized("Select exactly two files: one for the left channel and one for the right.")
-                return
-            }
-            loadSeparatePair(leftURL: panel.urls[0], rightURL: panel.urls[1])
-        }
+        chooseFiles(.stereoPair)
     }
 
-    private func loadFile(_ url: URL) {
+    private func chooseFiles(_ mode: SettingsFileImportMode) {
         isLoadingFile = true
         errorMessage = nil
-        importedFilename = nil
-        importedImpulseResponse = nil
-        importedStereoTextPair = nil
-        text = ""
         Task {
-            do {
-                if url.pathExtension.lowercased() == "wav" {
-                    let expectedSampleRate = currentOutputSampleRate
-                    let imported = try await Task.detached(priority: .userInitiated) {
-                        try ImpulseResponseWAVImporter.load(
-                            from: url,
-                            expectedSampleRate: expectedSampleRate
-                        )
-                    }.value
-                    importedImpulseResponse = imported
-                    text = ""
-                } else {
-                    let importedText = try await Task.detached(priority: .userInitiated) {
-                        try readImportedTextFile(url)
-                    }.value
-                    text = importedText
-                    importedImpulseResponse = nil
-                }
-                profileName = url.deletingPathExtension().lastPathComponent
-                importedFilename = url.lastPathComponent
-            } catch {
-                errorMessage = error.localizedDescription
+            let choice = await onChooseImportFiles(mode)
+            if let selection = choice.selection {
+                apply(selection)
             }
+            errorMessage = choice.errorMessage
             isLoadingFile = false
         }
     }
 
-    private func loadSeparatePair(leftURL: URL, rightURL: URL) {
-        isLoadingFile = true
-        errorMessage = nil
+    private func apply(_ selection: SettingsFileImportSelectionDTO) {
         importedFilename = nil
         importedImpulseResponse = nil
         importedStereoTextPair = nil
         text = ""
-        Task {
-            do {
-                let leftIsWAV = leftURL.pathExtension.lowercased() == "wav"
-                let rightIsWAV = rightURL.pathExtension.lowercased() == "wav"
-                guard leftIsWAV == rightIsWAV else {
-                    throw StereoTextPairImportError.filesMustUseSameFormat
-                }
-                if leftIsWAV {
-                    let expectedSampleRate = currentOutputSampleRate
-                    let imported = try await Task.detached(priority: .userInitiated) {
-                        try ImpulseResponseWAVImporter.loadStereoPair(
-                            leftURL: leftURL,
-                            rightURL: rightURL,
-                            expectedSampleRate: expectedSampleRate
-                        )
-                    }.value
-                    importedImpulseResponse = imported
-                    profileName = imported.profile.name
-                } else {
-                    let imported = try await Task.detached(priority: .userInitiated) {
-                        try StereoTextPairImporter.load(
-                            leftURL: leftURL,
-                            rightURL: rightURL
-                        )
-                    }.value
-                    importedStereoTextPair = imported
-                    profileName = imported.profile.name
-                }
-                importedFilename = localized("2 files selected")
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            isLoadingFile = false
+
+        switch selection {
+        case let .text(suggestedName, filename, importedText):
+            profileName = suggestedName
+            importedFilename = filename
+            text = importedText
+
+        case let .impulseResponse(profile, channels, sourceFileCount):
+            profileName = profile.name
+            importedFilename = sourceFileCount == 2
+                ? localized("2 files selected")
+                : channels.first?.filename
+            importedImpulseResponse = ImportedImpulseResponse(
+                profile: profile,
+                channels: channels.map {
+                    ImportedImpulseResponse.Channel(
+                        filename: $0.filename,
+                        frameCount: $0.frameCount,
+                        sampleRate: $0.sampleRate
+                    )
+                },
+                sourceFileCount: sourceFileCount
+            )
+
+        case let .stereoText(profile, leftFilename, rightFilename):
+            profileName = profile.name
+            importedFilename = localized("2 files selected")
+            importedStereoTextPair = ImportedStereoTextPair(
+                profile: profile,
+                leftFilename: leftFilename,
+                rightFilename: rightFilename
+            )
         }
     }
 
@@ -856,5 +808,130 @@ private extension EQMode {
         case .convolution:
             localized("Response curve")
         }
+    }
+}
+
+public enum SettingsFileImportPicker {
+    @MainActor
+    public static func choose(
+        mode: SettingsFileImportMode,
+        expectedSampleRate: Double
+    ) async throws -> SettingsFileImportSelectionDTO? {
+        let previousApplication = NSWorkspace.shared.frontmostApplication
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        defer {
+            if previousApplication?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previousApplication?.activate(options: [.activateAllWindows])
+            }
+        }
+
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText, .wav]
+        panel.canChooseDirectories = false
+
+        switch mode {
+        case .single:
+            panel.title = localized("Import EQ Settings")
+            panel.message = localized("Choose EQ settings or a mono or stereo WAV impulse response.")
+            panel.prompt = localized("Open")
+            panel.allowsMultipleSelection = false
+        case .stereoPair:
+            panel.title = localized("Import Separate Left and Right Files")
+            panel.message = localized("Choose two text files or two mono WAV files. GlassEQ will show their left and right assignment before importing them.")
+            panel.prompt = localized("Choose")
+            panel.allowsMultipleSelection = true
+        }
+
+        let response = await withCheckedContinuation { continuation in
+            panel.begin { response in
+                continuation.resume(returning: response)
+            }
+        }
+        guard response == .OK else {
+            return nil
+        }
+
+        let urls = panel.urls
+        switch mode {
+        case .single:
+            guard urls.count == 1 else {
+                throw SettingsCommandFailure(message: localized("Select one file to import."))
+            }
+        case .stereoPair:
+            guard urls.count == 2 else {
+                throw SettingsCommandFailure(message: localized("Select exactly two files: one for the left channel and one for the right."))
+            }
+        }
+
+        return try await Task.detached(priority: .userInitiated) {
+            try loadSelection(
+                mode: mode,
+                urls: urls,
+                expectedSampleRate: expectedSampleRate
+            )
+        }.value
+    }
+
+    static func loadSelection(
+        mode: SettingsFileImportMode,
+        urls: [URL],
+        expectedSampleRate: Double
+    ) throws -> SettingsFileImportSelectionDTO {
+        switch mode {
+        case .single:
+            let url = urls[0]
+            if url.pathExtension.lowercased() == "wav" {
+                return impulseResponseSelection(try ImpulseResponseWAVImporter.load(
+                    from: url,
+                    expectedSampleRate: expectedSampleRate
+                ))
+            }
+            return .text(
+                suggestedName: url.deletingPathExtension().lastPathComponent,
+                filename: url.lastPathComponent,
+                text: try readImportedTextFile(url)
+            )
+
+        case .stereoPair:
+            let leftURL = urls[0]
+            let rightURL = urls[1]
+            let leftIsWAV = leftURL.pathExtension.lowercased() == "wav"
+            let rightIsWAV = rightURL.pathExtension.lowercased() == "wav"
+            guard leftIsWAV == rightIsWAV else {
+                throw StereoTextPairImportError.filesMustUseSameFormat
+            }
+            if leftIsWAV {
+                return impulseResponseSelection(try ImpulseResponseWAVImporter.loadStereoPair(
+                    leftURL: leftURL,
+                    rightURL: rightURL,
+                    expectedSampleRate: expectedSampleRate
+                ))
+            }
+            let imported = try StereoTextPairImporter.load(
+                leftURL: leftURL,
+                rightURL: rightURL
+            )
+            return .stereoText(
+                profile: imported.profile,
+                leftFilename: imported.leftFilename,
+                rightFilename: imported.rightFilename
+            )
+        }
+    }
+
+    private static func impulseResponseSelection(
+        _ imported: ImportedImpulseResponse
+    ) -> SettingsFileImportSelectionDTO {
+        .impulseResponse(
+            profile: imported.profile,
+            channels: imported.channels.map {
+                SettingsImpulseResponseChannelDTO(
+                    filename: $0.filename,
+                    frameCount: $0.frameCount,
+                    sampleRate: $0.sampleRate
+                )
+            },
+            sourceFileCount: imported.sourceFileCount
+        )
     }
 }

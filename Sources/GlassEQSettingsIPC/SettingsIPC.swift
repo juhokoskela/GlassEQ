@@ -582,6 +582,33 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     }
 }
 
+public enum SettingsFileImportMode: String, Codable, Equatable, Sendable {
+    case single
+    case stereoPair
+}
+
+public struct SettingsImpulseResponseChannelDTO: Codable, Equatable, Sendable {
+    public var filename: String
+    public var frameCount: Int
+    public var sampleRate: Double
+
+    public init(filename: String, frameCount: Int, sampleRate: Double) {
+        self.filename = filename
+        self.frameCount = frameCount
+        self.sampleRate = sampleRate
+    }
+}
+
+public enum SettingsFileImportSelectionDTO: Codable, Equatable, Sendable {
+    case text(suggestedName: String, filename: String, text: String)
+    case impulseResponse(
+        profile: EQProfile,
+        channels: [SettingsImpulseResponseChannelDTO],
+        sourceFileCount: Int
+    )
+    case stereoText(profile: EQProfile, leftFilename: String, rightFilename: String)
+}
+
 public enum SettingsCommand: Codable, Equatable, Sendable {
     case createProfile(SettingsProfileKind)
     case duplicateProfile(UUID)
@@ -591,6 +618,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case setFallback(EQProfile)
     case importProfile(format: SettingsImportFormat, name: String, text: String)
     case importParsedProfile(EQProfile)
+    case chooseImportFiles(mode: SettingsFileImportMode, expectedSampleRate: Double)
     case preview(EQProfile)
     case stopPreview
     case startProgrammeComparison(EQProfile)
@@ -609,10 +637,16 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
 public struct SettingsCommandResponse: Codable, Equatable, Sendable {
     public var snapshot: SettingsSnapshotDTO?
     public var importSucceeded: Bool?
+    public var fileImportSelection: SettingsFileImportSelectionDTO?
 
-    public init(snapshot: SettingsSnapshotDTO? = nil, importSucceeded: Bool? = nil) {
+    public init(
+        snapshot: SettingsSnapshotDTO? = nil,
+        importSucceeded: Bool? = nil,
+        fileImportSelection: SettingsFileImportSelectionDTO? = nil
+    ) {
         self.snapshot = snapshot
         self.importSucceeded = importSucceeded
+        self.fileImportSelection = fileImportSelection
     }
 }
 

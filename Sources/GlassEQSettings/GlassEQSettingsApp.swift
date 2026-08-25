@@ -216,7 +216,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
 
     func connect() async throws -> SettingsSnapshotDTO {
         token = try await waitForBootstrapToken()
-        let response = try await send(kind: .connect)
+        let response = try await send(kind: .connect, timeout: requestTimeout)
         guard let snapshot = response.snapshot else {
             throw SettingsCommandFailure(message: "GlassEQ returned an empty settings snapshot.")
         }
@@ -224,11 +224,17 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        try await send(kind: .command, command: command)
+        let timeout: Duration?
+        if case .chooseImportFiles = command {
+            timeout = nil
+        } else {
+            timeout = requestTimeout
+        }
+        return try await send(kind: .command, command: command, timeout: timeout)
     }
 
     func acknowledgeReady() async throws {
-        _ = try await send(kind: .ready)
+        _ = try await send(kind: .ready, timeout: requestTimeout)
     }
 
     func disconnect() {
@@ -298,25 +304,30 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         }
     }
 
-    private func send(kind: SettingsPipeRequestKind, command: SettingsCommand? = nil) async throws -> SettingsCommandResponse {
+    private func send(
+        kind: SettingsPipeRequestKind,
+        command: SettingsCommand? = nil,
+        timeout: Duration?
+    ) async throws -> SettingsCommandResponse {
         guard let token else {
             throw SettingsCommandFailure(message: "Settings IPC session was not initialized.")
         }
         let requestID = UUID().uuidString
-        let timeout = requestTimeout
         return try await withCheckedThrowingContinuation { continuation in
             continuations[requestID] = continuation
-            requestTimeoutTasks[requestID] = Task { [weak self] in
-                guard let self else {
-                    return
-                }
-                try? await Task.sleep(for: timeout)
-                await MainActor.run {
-                    guard let continuation = self.continuations.removeValue(forKey: requestID) else {
+            if let timeout {
+                requestTimeoutTasks[requestID] = Task { [weak self] in
+                    guard let self else {
                         return
                     }
-                    self.requestTimeoutTasks[requestID] = nil
-                    continuation.resume(throwing: SettingsCommandFailure(message: "Settings IPC request timed out."))
+                    try? await Task.sleep(for: timeout)
+                    await MainActor.run {
+                        guard let continuation = self.continuations.removeValue(forKey: requestID) else {
+                            return
+                        }
+                        self.requestTimeoutTasks[requestID] = nil
+                        continuation.resume(throwing: SettingsCommandFailure(message: "Settings IPC request timed out."))
+                    }
                 }
             }
             let message = SettingsPipeMessage.request(sessionToken: token, id: requestID, kind: kind, command: command)

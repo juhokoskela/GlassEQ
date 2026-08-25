@@ -400,6 +400,66 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func fileImportSelectionCommandsAndResponsesRoundTrip() throws {
+        let profile = EQProfile(
+            name: "Imported",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25]
+            ))
+        )
+        let commands: [SettingsCommand] = [
+            .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
+            .chooseImportFiles(mode: .stereoPair, expectedSampleRate: 96_000)
+        ]
+        let selections: [SettingsFileImportSelectionDTO] = [
+            .text(
+                suggestedName: "Headphones",
+                filename: "Headphones.txt",
+                text: "Preamp: -6 dB"
+            ),
+            .impulseResponse(
+                profile: profile,
+                channels: [SettingsImpulseResponseChannelDTO(
+                    filename: "room.wav",
+                    frameCount: 2,
+                    sampleRate: 48_000
+                )],
+                sourceFileCount: 1
+            ),
+            .stereoText(
+                profile: profile,
+                leftFilename: "left.txt",
+                rightFilename: "right.txt"
+            )
+        ]
+
+        for (index, command) in commands.enumerated() {
+            let message = SettingsPipeMessage.request(
+                sessionToken: "token",
+                id: "file-command-\(index)",
+                kind: .command,
+                command: command
+            )
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            #expect(try SettingsPipeCodec.decodeLine(Data(encoded.dropLast())) == message)
+        }
+
+        for (index, selection) in selections.enumerated() {
+            let message = SettingsPipeMessage.response(
+                sessionToken: "token",
+                id: "file-response-\(index)",
+                response: SettingsCommandResponse(fileImportSelection: selection),
+                error: nil
+            )
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            #expect(try SettingsPipeCodec.decodeLine(Data(encoded.dropLast())) == message)
+        }
+    }
+
+    @Test
     func aggregateBufferSnapshotDefaultsLegacyPayloadToAutomaticSixteen() throws {
         let decoded = try JSONDecoder().decode(
             SettingsAggregateBufferDTO.self,

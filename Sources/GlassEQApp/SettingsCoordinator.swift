@@ -288,6 +288,9 @@ final class SettingsCoordinator: NSObject {
     #endif
 
     private func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        if let response = try await fileImportPickerResponse(for: command) {
+            return response
+        }
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
@@ -441,18 +444,30 @@ final class SettingsCoordinator: NSObject {
             guard let self else {
                 return
             }
+            let shouldSuppressModelChanges: Bool
+            if case .chooseImportFiles = command {
+                shouldSuppressModelChanges = false
+            } else {
+                shouldSuppressModelChanges = true
+            }
             do {
-                suppressedModelChangeDepth += 1
+                if shouldSuppressModelChanges {
+                    suppressedModelChangeDepth += 1
+                }
                 let response = try await perform(command)
-                suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
+                if shouldSuppressModelChanges {
+                    suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
+                }
                 if let snapshot = response.snapshot {
                     lastSentSnapshot = snapshot
                 }
                 sendResponse(response, requestID: requestID)
             } catch {
-                suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
-                if suppressedModelChangeDepth == 0, let model {
-                    sendSnapshotUpdate(model.settingsSnapshot())
+                if shouldSuppressModelChanges {
+                    suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
+                    if suppressedModelChangeDepth == 0, let model {
+                        sendSnapshotUpdate(model.settingsSnapshot())
+                    }
                 }
                 sendError(error.localizedDescription, requestID: requestID)
             }
@@ -1058,6 +1073,9 @@ extension GlassEQAppModel {
             let imported = try importParsedProfile(profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
 
+        case .chooseImportFiles:
+            throw SettingsCommandFailure(message: localized("File selection is unavailable from this settings connection."))
+
         case .preview(let profile):
             try validateIncomingProfile(profile)
             preview(profile: profile)
@@ -1135,9 +1153,25 @@ private final class InProcessSettingsClient: SettingsCommanding {
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        if let response = try await fileImportPickerResponse(for: command) {
+            return response
+        }
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
         return try await model.performSettingsCommand(command)
     }
+}
+
+@MainActor
+private func fileImportPickerResponse(
+    for command: SettingsCommand
+) async throws -> SettingsCommandResponse? {
+    guard case let .chooseImportFiles(mode, expectedSampleRate) = command else {
+        return nil
+    }
+    return SettingsCommandResponse(fileImportSelection: try await SettingsFileImportPicker.choose(
+        mode: mode,
+        expectedSampleRate: expectedSampleRate
+    ))
 }

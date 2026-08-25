@@ -107,7 +107,7 @@ swift run GlassEQDiagnostics 2
 
 ## Profile Storage And Settings Helper
 
-Profile data belongs to the main app sandbox and is migrated by the main app through `container-migration.plist`. The settings helper does not share profile storage and does not need an app-group entitlement; it receives snapshots and sends commands over the private stdin/stdout IPC session launched by GlassEQ. User-selected import files and AutoEq downloads are read by the settings process, then the parsed profile is sent to the main app for validation and persistence through the same command channel. The helper carries its own user-selected read-only entitlement because the open-panel Powerbox service checks the presenting process's signature instead of accepting the inherited entitlement from the main app.
+Profile data belongs to the main app sandbox and is migrated by the main app through `container-migration.plist`. The settings helper does not share profile storage and does not need an app-group entitlement; it receives snapshots and sends commands over the private stdin/stdout IPC session launched by GlassEQ. AutoEq downloads run in the settings process. For local imports, the main app presents the open panel, reads and parses the selected files, and returns a bounded preview payload to Settings over the same IPC channel. The helper inherits the main app's static sandbox rights and must be signed with exactly `com.apple.security.app-sandbox` and `com.apple.security.inherit`; adding another App Sandbox entitlement causes `libsystem_secinit` to abort the child process before launch.
 
 ## Backlog
 
