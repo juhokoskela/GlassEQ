@@ -1,5 +1,9 @@
 import Foundation
 
+public enum EQRenderConfigurationError: Error, Equatable, Sendable {
+    case numericallyUnsafe
+}
+
 public struct EQChannelConfiguration: Equatable, Sendable {
     public var preampLinearGain: Float
     public var coefficients: [BiquadCoefficients]
@@ -165,12 +169,16 @@ public struct EQRenderConfiguration: Sendable {
         channelCount: Int,
         maximumUsableFrequency: Double? = nil
     ) throws -> EQRenderConfiguration {
-        try EQRenderConfiguration(preparing: EQConfiguration(
+        let renderConfiguration = try EQRenderConfiguration(preparing: EQConfiguration(
             profile: profile,
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
         ))
+        guard renderConfiguration.isNumericallySafe else {
+            throw EQRenderConfigurationError.numericallyUnsafe
+        }
+        return renderConfiguration
     }
 
     private init(preparing configuration: EQConfiguration) throws {
@@ -253,31 +261,7 @@ public struct EQRenderConfiguration: Sendable {
     }
 
     private static func isNumericallySafe(_ coefficients: RenderBiquadCoefficients) -> Bool {
-        let values = [
-            coefficients.b0,
-            coefficients.b1,
-            coefficients.b2,
-            coefficients.a1,
-            coefficients.a2
-        ]
-        guard values.allSatisfy(\.isFinite) else {
-            return false
-        }
-
-        let a1 = Double(coefficients.a1)
-        let a2 = Double(coefficients.a2)
-        let discriminant = a1 * a1 - 4 * a2
-        let maximumPoleMagnitude: Double
-        if discriminant >= 0 {
-            let root = sqrt(discriminant)
-            maximumPoleMagnitude = max(
-                abs((-a1 + root) / 2),
-                abs((-a1 - root) / 2)
-            )
-        } else {
-            maximumPoleMagnitude = sqrt(max(a2, 0))
-        }
-        return maximumPoleMagnitude <= 1.000_001
+        coefficients.isNumericallySafe
     }
 }
 

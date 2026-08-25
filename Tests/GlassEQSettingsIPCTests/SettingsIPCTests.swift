@@ -676,7 +676,8 @@ struct SettingsIPCTests {
 
         #expect(flat.signature != shaped.signature)
         #expect(abs((shaped.linkedPoints.first?.magnitudeDB ?? 0) - 6) < 0.000_001)
-        #expect(shaped.recommendedPreampDB == -6.5)
+        #expect(shaped.recommendedPreampDB < -6.6)
+        #expect(shaped.recommendedPreampDB > -6.8)
     }
 
     @Test

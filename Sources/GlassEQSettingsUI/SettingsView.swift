@@ -796,7 +796,7 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
     var rightPoints: [FrequencyResponsePoint]
 
     init(profile: EQProfile, sampleRate: Double) {
-        self.init(
+        self = try! Self(
             profile: profile,
             sampleRate: sampleRate,
             cancellationCheck: {}
@@ -820,14 +820,15 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         profile: EQProfile,
         sampleRate: Double,
         cancellationCheck: @Sendable () throws -> Void
-    ) rethrows {
+    ) throws {
         try cancellationCheck()
         let sampleRate = EQAnalysisSignature.effectiveSampleRate(sampleRate)
         self.signature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
         self.channelMode = profile.channelMode
-        self.recommendedPreampDB = EQProfileAnalysis.recommendedPreampDB(
+        self.recommendedPreampDB = try EQProfileAnalysis.recommendedPreampDB(
             profile: profile,
-            sampleRate: sampleRate
+            sampleRate: sampleRate,
+            cancellationCheck: cancellationCheck
         )
         try cancellationCheck()
         self.maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(

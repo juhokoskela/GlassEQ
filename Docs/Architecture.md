@@ -59,7 +59,7 @@ AirPods headset transitions exposed periodic, matching input and output timestam
 
 See [Aggregate clock experiment: findings](AggregateClockExperiment.md) for the measurements and experiments behind this design.
 
-GlassEQ requests a 16-frame callback only from the private combined aggregate and leaves the physical output's shared buffer-frame property unchanged. While the separate-clock headset backend is active, Core Audio owns the physical output's low-rate callback size while tap capture uses its own aggregate quantum. EQ coefficients use the active processing rate; filters above the output route's usable-frequency ceiling receive identity coefficients so runtime behavior matches the editor warning.
+GlassEQ requests a 16-frame callback only from the private combined aggregate and leaves the physical output's shared buffer-frame property unchanged. While the separate-clock headset backend is active, Core Audio owns the physical output's low-rate callback size while tap capture uses its own aggregate quantum. EQ coefficients use the active processing rate. Parametric and graphic filters above the output route's usable-frequency ceiling receive identity coefficients. Convolution curves preserve their interpolated gain at the ceiling; each later control point through Nyquist is synthesized at unity so the response transitions continuously into that region without an unrealizable brick-wall boundary.
 
 ## Diagnostics
 
