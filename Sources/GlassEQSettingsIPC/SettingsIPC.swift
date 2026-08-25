@@ -112,6 +112,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var outputTimestampDiscontinuities: UInt64
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
+    public var renderDeadlineMisses: UInt64
     public var playbackTimestampDiscontinuities: UInt64
     public var playbackBufferRenegotiations: UInt64
     public var adaptivePlaybackRenderFailures: UInt64
@@ -144,6 +145,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case outputTimestampDiscontinuities
         case maximumCaptureCallbackFrames
         case maximumPlaybackCallbackFrames
+        case renderDeadlineMisses
         case playbackTimestampDiscontinuities
         case playbackBufferRenegotiations
         case adaptivePlaybackRenderFailures
@@ -177,6 +179,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         outputTimestampDiscontinuities: UInt64 = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
+        renderDeadlineMisses: UInt64 = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
         playbackBufferRenegotiations: UInt64 = 0,
         adaptivePlaybackRenderFailures: UInt64 = 0,
@@ -208,6 +211,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.outputTimestampDiscontinuities = outputTimestampDiscontinuities
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
+        self.renderDeadlineMisses = renderDeadlineMisses
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
         self.playbackBufferRenegotiations = playbackBufferRenegotiations
         self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
@@ -243,6 +247,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             outputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .outputTimestampDiscontinuities) ?? 0,
             maximumCaptureCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumCaptureCallbackFrames) ?? 0,
             maximumPlaybackCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumPlaybackCallbackFrames) ?? 0,
+            renderDeadlineMisses: try container.decodeIfPresent(UInt64.self, forKey: .renderDeadlineMisses) ?? 0,
             playbackTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
             playbackBufferRenegotiations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferRenegotiations) ?? 0,
             adaptivePlaybackRenderFailures: try container.decodeIfPresent(UInt64.self, forKey: .adaptivePlaybackRenderFailures) ?? 0,

@@ -353,6 +353,7 @@ private func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
     }
     print("Max capture callback frames: \(metrics.maximumCaptureCallbackFrames)")
     print("Max playback callback frames: \(metrics.maximumPlaybackCallbackFrames)")
+    print("Render deadline misses: \(metrics.renderDeadlineMisses)")
     if metrics.tapToOutputLatencyObservations > 0 {
         print(String(
             format: "Tap-to-output latency: %.3f ms average, %.3f to %.3f ms",
