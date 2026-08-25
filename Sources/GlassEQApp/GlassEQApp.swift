@@ -267,6 +267,9 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func stop()
     func snapshotMetrics() -> AudioEngineMetrics
     func resetDiagnostics()
+    func setPlaybackBufferRenegotiationHandler(
+        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
+    )
     func setRuntimeFailureHandler(_ handler: (@Sendable (AudioEngineFailure) -> Void)?)
     #if DEBUG
     func simulateRenderStallForTesting()
@@ -281,6 +284,10 @@ extension AudioEngineControlling {
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
         EQProgrammeComparisonSnapshot()
     }
+
+    func setPlaybackBufferRenegotiationHandler(
+        _: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
+    ) {}
 
     func setRuntimeFailureHandler(
         _: (@Sendable (AudioEngineFailure) -> Void)?
@@ -873,6 +880,11 @@ final class GlassEQAppModel {
                 ? AggregateBufferNotifier.shared
                 : NoopAggregateBufferNotifier())
         self.profilePersistenceMode = persistenceMode
+        engine.setPlaybackBufferRenegotiationHandler { [weak self] renegotiation in
+            Task { @MainActor [weak self] in
+                self?.processPlaybackBufferRenegotiation(renegotiation)
+            }
+        }
         engine.setRuntimeFailureHandler { [weak self] failure in
             Task { @MainActor in
                 self?.handleRuntimeAudioEngineFailure(failure)
@@ -3224,6 +3236,16 @@ final class GlassEQAppModel {
         metricsTask = nil
     }
 
+    private func processPlaybackBufferRenegotiation(
+        _ renegotiation: PlaybackBufferRenegotiation
+    ) {
+        guard renegotiation.outputUID == currentOutputUID else {
+            return
+        }
+        currentOutputBufferFrameSize = renegotiation.frameSize
+        notifyModelDidChange()
+    }
+
     private func startRenderWatchdog() {
         renderWatchdogTask?.cancel()
         renderWatchdog.pause()
@@ -3502,6 +3524,7 @@ final class GlassEQAppModel {
             return false
         }
         lifecycleState = .terminating
+        engine.setPlaybackBufferRenegotiationHandler(nil)
         acceptsSettingsCommands = false
         wasRunningBeforeSleep = false
         invalidatePendingOutputChange()

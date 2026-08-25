@@ -3577,6 +3577,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         control.withLock { $0.runtime }?.resetMetrics()
     }
 
+    public func setPlaybackBufferRenegotiationHandler(
+        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
+    ) {
+        separateClockBackend.setPlaybackBufferRenegotiationHandler(handler)
+    }
+
     public func setRuntimeFailureHandler(
         _ handler: (@Sendable (AudioEngineFailure) -> Void)?
     ) {

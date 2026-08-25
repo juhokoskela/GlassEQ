@@ -10,6 +10,56 @@ import Testing
 @Suite
 struct GlassEQAppModelLifecycleTests {
     @Test
+    func separateClockRenegotiationRefreshesCurrentOutputMetadata() async {
+        let output = makeOutput(
+            uid: "adaptive-output",
+            name: "Adaptive Output",
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
+            outputName: "Other Output",
+            outputUID: "other-output",
+            sampleRate: 48_000,
+            previousFrameSize: 480,
+            frameSize: 128,
+            playbackTargetFrames: 512,
+            cause: .stableDecay
+        ))
+        await settleAsyncWork()
+        #expect(model.currentOutputBufferFrameSize == 480)
+
+        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
+            outputName: output.name,
+            outputUID: output.uid,
+            sampleRate: output.nominalSampleRate,
+            previousFrameSize: 480,
+            frameSize: 256,
+            previousPlaybackTargetFrames: 1_024,
+            playbackTargetFrames: 512,
+            cause: .stableDecay
+        ))
+        await waitUntil {
+            model.currentOutputBufferFrameSize == 256
+        }
+
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 256)
+    }
+
+    @Test
     func runtimeEngineFailureStopsTheModelAndSurfacesItsStatus() async {
         let output = makeOutput(uid: "runtime-output", name: "Runtime Output")
         let engine = FakeAudioEngine()
@@ -4372,6 +4422,8 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _coldStartupAggregatePromotionResult = ColdStartupAggregatePromotionResult.notApplicable
     private var _coldStartupAggregatePromotionAttemptCount = 0
     private var _isDeferringColdStartupAggregate = false
+    private var _playbackBufferRenegotiationHandler:
+        (@Sendable (PlaybackBufferRenegotiation) -> Void)?
     private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
 
     var state: AudioEngineState {
@@ -4732,6 +4784,23 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _events.append("mute")
             _muteOutputCallCount += 1
         }
+    }
+
+    func setPlaybackBufferRenegotiationHandler(
+        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
+    ) {
+        withLock {
+            _playbackBufferRenegotiationHandler = handler
+        }
+    }
+
+    func emitPlaybackBufferRenegotiation(
+        _ renegotiation: PlaybackBufferRenegotiation
+    ) {
+        let handler = withLock {
+            _playbackBufferRenegotiationHandler
+        }
+        handler?(renegotiation)
     }
 
     func setRuntimeFailureHandler(
