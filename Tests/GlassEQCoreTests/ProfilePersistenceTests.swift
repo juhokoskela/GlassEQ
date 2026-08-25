@@ -94,6 +94,126 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func loadMigratesSchemaOneConvolutionStore() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        var convolutionProfile = EQProfile.flatConvolution
+        convolutionProfile.name = "Room Curve"
+        let store = ProfileStore(
+            schemaVersion: 1,
+            profiles: ProfileStore.defaultProfiles + [convolutionProfile],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: "speaker",
+                    profileID: convolutionProfile.id
+                )
+            ],
+            fallbackProfileID: convolutionProfile.id
+        )
+        let schemaOneData = try ProfilePersistence.encoder.encode(store)
+        try schemaOneData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        var expectedStore = store
+        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        #expect(result.status == .loaded)
+        #expect(result.store == expectedStore)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)
+        #expect(try Data(contentsOf: url) != schemaOneData)
+    }
+
+    @Test
+    func loadMigratesSchemaLessStore() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let profile = EQProfile(name: "Legacy", mode: .parametric, filters: [])
+        let store = ProfileStore(
+            schemaVersion: 1,
+            profiles: [profile],
+            fallbackProfileID: profile.id
+        )
+        var object = try #require(
+            JSONSerialization.jsonObject(with: ProfilePersistence.encoder.encode(store)) as? [String: Any]
+        )
+        object.removeValue(forKey: "schemaVersion")
+        let schemaLessData = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys]
+        )
+        try schemaLessData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        var expectedStore = store
+        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        #expect(result.status == .loaded)
+        #expect(result.store == expectedStore)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)
+        #expect(try Data(contentsOf: url) != schemaLessData)
+    }
+
+    @Test
+    func loadLeavesSchemaOneStoreUntouchedWhenMigrationWriteFails() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let profile = EQProfile(name: "Schema One", mode: .parametric, filters: [])
+        let store = ProfileStore(
+            schemaVersion: 1,
+            profiles: [profile],
+            fallbackProfileID: profile.id
+        )
+        let schemaOneData = try ProfilePersistence.encoder.encode(store)
+        try schemaOneData.write(to: url)
+
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555],
+            ofItemAtPath: directory.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: directory.path
+            )
+        }
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.status == .loaded)
+        #expect(result.store == store)
+        #expect(try Data(contentsOf: url) == schemaOneData)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
+    }
+
+    @Test
+    func loadFutureSchemaWithUnknownModeDoesNotModifyStore() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let profile = EQProfile(name: "Future", mode: .parametric, filters: [])
+        var profileObject = try profileJSONObject(profile)
+        profileObject["mode"] = "future-mode"
+        let data = try rawStoreData(
+            schemaVersion: ProfileStore.currentSchemaVersion + 1,
+            profiles: [profileObject],
+            outputMappings: [],
+            fallbackProfileID: profile.id
+        )
+        try data.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .unsupportedSchemaVersion(
+            version: ProfileStore.currentSchemaVersion + 1,
+            maximumSupported: ProfileStore.currentSchemaVersion
+        ))
+        #expect(try Data(contentsOf: url) == data)
+    }
+
+    @Test
     func loadRepairsInvalidProfileWithoutDroppingValidProfiles() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
@@ -374,6 +494,25 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func saveWritesCurrentSchemaVersion() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let profile = EQProfile(name: "Schema One", mode: .parametric, filters: [])
+        let store = ProfileStore(
+            schemaVersion: 1,
+            profiles: [profile],
+            fallbackProfileID: profile.id
+        )
+
+        try ProfilePersistence.save(store, to: url)
+
+        let savedStore = try ProfilePersistence.decode(Data(contentsOf: url))
+        #expect(savedStore.schemaVersion == ProfileStore.currentSchemaVersion)
+        #expect(savedStore.profiles == store.profiles)
+        #expect(savedStore.fallbackProfileID == store.fallbackProfileID)
+    }
+
+    @Test
     func decodeRejectsInvalidFilterBoundsAndCounts() throws {
         let invalidFrequency = EQProfile(
             name: "Invalid Frequency",
@@ -558,6 +697,7 @@ struct ProfilePersistenceTests {
     }
 
     private func rawStoreData(
+        schemaVersion: Int = ProfileStore.currentSchemaVersion,
         profiles: [[String: Any]],
         outputMappings: [OutputDeviceProfileMapping],
         fallbackProfileID: UUID
@@ -566,7 +706,7 @@ struct ProfilePersistenceTests {
             with: ProfilePersistence.encoder.encode(outputMappings)
         )
         let object: [String: Any] = [
-            "schemaVersion": ProfileStore.currentSchemaVersion,
+            "schemaVersion": schemaVersion,
             "profiles": profiles,
             "outputMappings": try #require(mappingObject as? [[String: Any]]),
             "fallbackProfileID": fallbackProfileID.uuidString
