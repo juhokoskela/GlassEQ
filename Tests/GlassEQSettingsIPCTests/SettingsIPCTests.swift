@@ -60,6 +60,85 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func autoEQProfileDownloadAcceptsTheExactByteLimit() async throws {
+        let entry = autoEQNetworkTestEntry(named: "At Limit")
+        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .responseCurve)
+        let body = Data(repeating: 0x78, count: 32)
+        AutoEQTestURLProtocol.register(statusCode: 200, body: body, for: url)
+        defer { AutoEQTestURLProtocol.unregister(url) }
+        let session = autoEQTestSession()
+        defer { session.invalidateAndCancel() }
+        let client = AutoEQRepositoryClient(
+            session: session,
+            maximumProfileBytes: body.count
+        )
+
+        let text = try await client.profileText(for: entry, kind: .responseCurve)
+
+        #expect(text == String(repeating: "x", count: body.count))
+    }
+
+    @Test
+    func autoEQProfileDownloadRejectsTheFirstByteBeyondTheLimit() async throws {
+        let entry = autoEQNetworkTestEntry(named: "Too Large")
+        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .parametric)
+        AutoEQTestURLProtocol.register(
+            statusCode: 200,
+            body: Data(repeating: 0x78, count: 33),
+            for: url
+        )
+        defer { AutoEQTestURLProtocol.unregister(url) }
+        let session = autoEQTestSession()
+        defer { session.invalidateAndCancel() }
+        let client = AutoEQRepositoryClient(
+            session: session,
+            maximumProfileBytes: 32
+        )
+
+        await #expect(throws: AutoEQRepositoryError.profileTooLarge) {
+            try await client.profileText(for: entry, kind: .parametric)
+        }
+    }
+
+    @Test
+    func autoEQCatalogueDownloadUsesItsOwnSizeError() async {
+        let url = URL(
+            string: "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/README.md"
+        )!
+        AutoEQTestURLProtocol.register(
+            statusCode: 200,
+            body: Data(repeating: 0x78, count: 9),
+            for: url
+        )
+        defer { AutoEQTestURLProtocol.unregister(url) }
+        let session = autoEQTestSession()
+        defer { session.invalidateAndCancel() }
+        let client = AutoEQRepositoryClient(
+            session: session,
+            maximumCatalogueBytes: 8
+        )
+
+        await #expect(throws: AutoEQRepositoryError.catalogueTooLarge) {
+            try await client.catalogue()
+        }
+    }
+
+    @Test
+    func autoEQDownloadRejectsAnUnsuccessfulHTTPResponse() async throws {
+        let entry = autoEQNetworkTestEntry(named: "Unavailable")
+        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .responseCurve)
+        AutoEQTestURLProtocol.register(statusCode: 503, body: Data(), for: url)
+        defer { AutoEQTestURLProtocol.unregister(url) }
+        let session = autoEQTestSession()
+        defer { session.invalidateAndCancel() }
+        let client = AutoEQRepositoryClient(session: session)
+
+        await #expect(throws: AutoEQRepositoryError.invalidResponse) {
+            try await client.profileText(for: entry, kind: .responseCurve)
+        }
+    }
+
+    @Test
     func importedEQTextDetectorRecognizesREWHeaders() {
         #expect(ImportedEQTextDetector.format(for: "* Filter Settings file") == .rew)
         #expect(ImportedEQTextDetector.format(for: "Filter Settings file") == .rew)
@@ -1043,6 +1122,92 @@ struct SettingsIPCTests {
         #expect(!model.isConnected)
         #expect(model.commandErrorMessage == "Settings was launched by an unexpected host application.")
     }
+}
+
+private func autoEQNetworkTestEntry(named name: String) -> AutoEQCatalogueEntry {
+    AutoEQCatalogueEntry(
+        name: name,
+        encodedResultPath: "test/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)",
+        source: "test",
+        form: nil
+    )
+}
+
+private func autoEQTestSession() -> URLSession {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AutoEQTestURLProtocol.self]
+    return URLSession(configuration: configuration)
+}
+
+private struct AutoEQTestURLResponse: Sendable {
+    let statusCode: Int
+    let body: Data
+}
+
+private final class AutoEQTestURLResponseStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var responses: [URL: AutoEQTestURLResponse] = [:]
+
+    func register(_ response: AutoEQTestURLResponse, for url: URL) {
+        lock.lock()
+        responses[url] = response
+        lock.unlock()
+    }
+
+    func unregister(_ url: URL) {
+        lock.lock()
+        responses[url] = nil
+        lock.unlock()
+    }
+
+    func response(for url: URL) -> AutoEQTestURLResponse? {
+        lock.lock()
+        defer { lock.unlock() }
+        return responses[url]
+    }
+}
+
+private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let responseStore = AutoEQTestURLResponseStore()
+
+    static func register(statusCode: Int, body: Data, for url: URL) {
+        responseStore.register(
+            AutoEQTestURLResponse(statusCode: statusCode, body: body),
+            for: url
+        )
+    }
+
+    static func unregister(_ url: URL) {
+        responseStore.unregister(url)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let stub = Self.responseStore.response(for: url),
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: stub.statusCode,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: ["Content-Length": String(stub.body.count)]
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: stub.body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private struct FakeHostProcessResolver: SettingsHostProcessResolving {
