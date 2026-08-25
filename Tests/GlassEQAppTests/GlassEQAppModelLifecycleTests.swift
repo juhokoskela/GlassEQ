@@ -387,6 +387,62 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func retryAfterFixedBufferRecoveryStopRestoresConfiguredRung() async throws {
+        let output = makeOutput(uid: "fixed-stop-retry", name: "Fixed Stop Retry")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        try model.setAggregateBufferMode(.frames16)
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 16
+        }
+
+        for (misses, expectedStartCount, expectedFrameSize) in [
+            (3, 3, UInt32(16)),
+            (6, 4, UInt32(32)),
+            (9, 5, UInt32(64))
+        ] {
+            try? await Task.sleep(for: .milliseconds(50))
+            var metrics = engine.metrics
+            metrics.renderDeadlineMisses = UInt64(misses)
+            engine.metrics = metrics
+            await waitUntil {
+                engine.startCalls.count == expectedStartCount
+                    && engine.startCalls.last?.aggregateBufferFrameSize == expectedFrameSize
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(50))
+        var metrics = engine.metrics
+        metrics.renderDeadlineMisses = 12
+        engine.metrics = metrics
+        await waitUntil {
+            model.lifecycleState == .stopped
+        }
+
+        model.retryAudioEngine()
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 6
+        }
+
+        #expect(engine.startCalls[5].aggregateBufferFrameSize == 16)
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames16)
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 16)
+    }
+
+    @Test
     func automaticAggregateBufferIgnoresInterruptionsBeforeRouteSettles() async {
         let output = makeOutput(uid: "settling-aggregate", name: "Settling Aggregate")
         let engine = FakeAudioEngine()

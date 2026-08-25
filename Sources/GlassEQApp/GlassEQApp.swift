@@ -3210,6 +3210,7 @@ final class GlassEQAppModel {
     }
 
     private func invalidatePendingEngineStart() {
+        clearFixedBufferRecoveryAndRestorePreference()
         engineStartGeneration += 1
         renderWatchdogTask?.cancel()
         renderWatchdogTask = nil
@@ -3225,7 +3226,6 @@ final class GlassEQAppModel {
         pendingEngineStartOutput = nil
         activeAggregateRoute = nil
         pendingAggregateBufferIncrease = nil
-        fixedBufferRecovery = nil
     }
 
     private func installLifecycleObservers() {
