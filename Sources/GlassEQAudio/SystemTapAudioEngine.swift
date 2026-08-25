@@ -849,16 +849,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var nominalSampleRate: Int64
     }
 
-    struct BufferFrameSizeRestoration: Equatable, Sendable {
-        var uid: String
-        var originalFrameSize: UInt32
-    }
-
-    struct SampleRateRestoration: Equatable, Sendable {
-        var uid: String
-        var originalSampleRate: Double
-    }
-
     private struct ControlState {
         var state: AudioEngineState = .stopped
         var status: AudioEngineStatus = .stopped
@@ -2320,9 +2310,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         self.separateClockBackend = SeparateClockAudioBackend(
             restorationStoreURL: restorationStoreURL
         )
-        // Current buffer-size restorations belong to the separate-clock backend. This
-        // one-time pass only repairs settings persisted by older combined-backend builds.
-        Self.restorePersistedDeviceSettings(at: restorationStoreURL)
     }
 
     @_spi(GlassEQDiagnostics)
@@ -5288,99 +5275,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             throw AudioEngineProfileUpdateUnavailable()
         }
         return output
-    }
-
-    static func restoreSampleRateRestoration(
-        _ restoration: SampleRateRestoration,
-        outputForUID: (String) throws -> AudioOutputDevice? =
-            CoreAudioDeviceQuery.outputDevice(uid:),
-        setSampleRate: (Double, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
-    ) -> Bool {
-        do {
-            guard let output = try outputForUID(restoration.uid) else {
-                return false
-            }
-            guard abs(output.nominalSampleRate - restoration.originalSampleRate) >= 1 else {
-                return true
-            }
-            try setSampleRate(restoration.originalSampleRate, output.id)
-            guard let verifiedOutput = try outputForUID(restoration.uid) else {
-                return false
-            }
-            return abs(
-                verifiedOutput.nominalSampleRate - restoration.originalSampleRate
-            ) < 1
-        } catch {
-            return false
-        }
-    }
-
-    static func restoreBufferFrameSizeRestoration(
-        _ restoration: BufferFrameSizeRestoration,
-        outputForUID: (String) throws -> AudioOutputDevice? =
-            CoreAudioDeviceQuery.outputDevice(uid:),
-        setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setBufferFrameSize(_:objectID:)
-    ) -> Bool {
-        do {
-            guard let output = try outputForUID(restoration.uid) else {
-                return false
-            }
-            guard output.bufferFrameSize != restoration.originalFrameSize else {
-                return true
-            }
-            try setBufferFrameSize(restoration.originalFrameSize, output.id)
-            guard let verifiedOutput = try outputForUID(restoration.uid) else {
-                return false
-            }
-            return verifiedOutput.bufferFrameSize == restoration.originalFrameSize
-        } catch {
-            return false
-        }
-    }
-
-    static func restorePersistedDeviceSettings(
-        at url: URL,
-        outputForUID: (String) throws -> AudioOutputDevice? =
-            CoreAudioDeviceQuery.outputDevice(uid:),
-        setSampleRate: (Double, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:),
-        setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setBufferFrameSize(_:objectID:)
-    ) {
-        var records = PersistedAudioDeviceRestorationStore.load(from: url)
-        guard !records.isEmpty else {
-            return
-        }
-
-        for (uid, record) in records {
-            var updated = record
-            if let originalSampleRate = record.originalSampleRate,
-               restoreSampleRateRestoration(
-                   SampleRateRestoration(
-                       uid: uid,
-                       originalSampleRate: originalSampleRate
-                   ),
-                   outputForUID: outputForUID,
-                   setSampleRate: setSampleRate
-               ) {
-                updated.originalSampleRate = nil
-            }
-            if let originalBufferFrameSize = record.originalBufferFrameSize,
-               restoreBufferFrameSizeRestoration(
-                   BufferFrameSizeRestoration(
-                       uid: uid,
-                       originalFrameSize: originalBufferFrameSize
-                   ),
-                   outputForUID: outputForUID,
-                   setBufferFrameSize: setBufferFrameSize
-               ) {
-                updated.originalBufferFrameSize = nil
-            }
-            records[uid] = updated.isEmpty ? nil : updated
-        }
-        try? PersistedAudioDeviceRestorationStore.save(records, to: url)
     }
 
 }

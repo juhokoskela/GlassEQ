@@ -883,12 +883,12 @@ struct CoreAudioDeviceTests {
     func sampleRateRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentSampleRate = 44_100.0
         var setCalls: [(sampleRate: Double, objectID: AudioObjectID)] = []
-        let restoration = SystemTapAudioEngine.SampleRateRestoration(
+        let restoration = SeparateClockAudioBackend.SampleRateRestoration(
             uid: "restored-output",
             originalSampleRate: 48_000
         )
 
-        let restored = SystemTapAudioEngine.restoreSampleRateRestoration(
+        let restored = SeparateClockAudioBackend.restoreSampleRateRestoration(
             restoration,
             outputForUID: { uid in
                 #expect(uid == restoration.uid)
@@ -914,12 +914,12 @@ struct CoreAudioDeviceTests {
     @Test
     func sampleRateRestorationIsRetainedWhenDeviceIsAbsentOrWriteCannotBeVerified() {
         var setCallCount = 0
-        let restoration = SystemTapAudioEngine.SampleRateRestoration(
+        let restoration = SeparateClockAudioBackend.SampleRateRestoration(
             uid: "missing-output",
             originalSampleRate: 48_000
         )
 
-        let absentRestored = SystemTapAudioEngine.restoreSampleRateRestoration(
+        let absentRestored = SeparateClockAudioBackend.restoreSampleRateRestoration(
             restoration,
             outputForUID: { _ in nil },
             setSampleRate: { _, _ in setCallCount += 1 }
@@ -928,7 +928,7 @@ struct CoreAudioDeviceTests {
         #expect(!absentRestored)
         #expect(setCallCount == 0)
 
-        let unverifiedRestored = SystemTapAudioEngine.restoreSampleRateRestoration(
+        let unverifiedRestored = SeparateClockAudioBackend.restoreSampleRateRestoration(
             restoration,
             outputForUID: { uid in
                 output(id: 9_002, uid: uid, channelCount: 2, sampleRate: 44_100)
@@ -944,12 +944,12 @@ struct CoreAudioDeviceTests {
     func bufferFrameSizeRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentFrameSize: UInt32 = 512
         var setCalls: [(frameSize: UInt32, objectID: AudioObjectID)] = []
-        let restoration = SystemTapAudioEngine.BufferFrameSizeRestoration(
+        let restoration = SeparateClockAudioBackend.BufferFrameSizeRestoration(
             uid: "buffer-output",
             originalFrameSize: 256
         )
 
-        let restored = SystemTapAudioEngine.restoreBufferFrameSizeRestoration(
+        let restored = SeparateClockAudioBackend.restoreBufferFrameSizeRestoration(
             restoration,
             outputForUID: { uid in
                 #expect(uid == restoration.uid)
@@ -975,12 +975,12 @@ struct CoreAudioDeviceTests {
     @Test
     func bufferFrameSizeRestorationSkipsAlreadyRestoredDevice() {
         var didSet = false
-        let restoration = SystemTapAudioEngine.BufferFrameSizeRestoration(
+        let restoration = SeparateClockAudioBackend.BufferFrameSizeRestoration(
             uid: "already-restored-buffer-output",
             originalFrameSize: 256
         )
 
-        let restored = SystemTapAudioEngine.restoreBufferFrameSizeRestoration(
+        let restored = SeparateClockAudioBackend.restoreBufferFrameSizeRestoration(
             restoration,
             outputForUID: { uid in
                 output(id: 9_004, uid: uid, channelCount: 2, bufferFrameSize: 256)
@@ -1054,7 +1054,7 @@ struct CoreAudioDeviceTests {
         var sampleRate = 44_100.0
         var frameSize: UInt32 = 512
 
-        SystemTapAudioEngine.restorePersistedDeviceSettings(
+        SeparateClockAudioBackend.restorePersistedDeviceSettings(
             at: url,
             outputForUID: { uid in
                 output(uid: uid, channelCount: 2, sampleRate: sampleRate, bufferFrameSize: frameSize)
@@ -1081,7 +1081,7 @@ struct CoreAudioDeviceTests {
         }
         try PersistedAudioDeviceRestorationStore.recordSampleRate(uid: "missing", originalSampleRate: 48_000, at: url)
 
-        SystemTapAudioEngine.restorePersistedDeviceSettings(
+        SeparateClockAudioBackend.restorePersistedDeviceSettings(
             at: url,
             outputForUID: { _ in nil },
             setSampleRate: { _, _ in Issue.record("Unexpected sample-rate write") },
