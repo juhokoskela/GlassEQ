@@ -1551,23 +1551,19 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             let refreshedOutput = try CoreAudioDeviceQuery.outputDevice(id: preparation.output.id)
             preparation.output = refreshedOutput
             preparation.originalBufferFrameSize = refreshedOutput.bufferFrameSize
-            try control.withLock { state in
-                guard state.outputRebuildGeneration == preparation.generation,
-                      state.runtime === preparation.runtime,
-                      state.captureRunning else {
-                    throw StaleOutputRebuild()
-                }
-                if Self.shouldRecordSampleRateRestoration(
-                    tapSampleRate: preparation.tapSampleRate,
-                    output: refreshedOutput
-                ) {
-                    try recordSampleRateRestorationIfNeeded(for: refreshedOutput, state: &state)
-                }
-            }
             let matchedOutput = try preparePlaybackOutput(
                 tapSampleRate: preparation.tapSampleRate,
                 output: preparation.output
-            )
+            ) { restoration in
+                try control.withLock { state in
+                    guard state.outputRebuildGeneration == preparation.generation,
+                          state.runtime === preparation.runtime,
+                          state.captureRunning else {
+                        throw StaleOutputRebuild()
+                    }
+                    try recordSampleRateRestorationIfNeeded(restoration, state: &state)
+                }
+            }
             try control.withLock { state in
                 state.preparedOutputHandoff = try prepareOutputHandoffLocked(
                     &state,
@@ -1699,23 +1695,19 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             preparation.output = refreshedOutput
             preparation.originalBufferFrameSize = refreshedOutput.bufferFrameSize
             activePreparation = preparation
-            try control.withLock { state in
-                guard state.outputRebuildGeneration == preparation.generation,
-                      state.runtime === preparation.runtime,
-                      state.captureRunning else {
-                    throw StaleOutputRebuild()
-                }
-                if Self.shouldRecordSampleRateRestoration(
-                    tapSampleRate: preparation.tapSampleRate,
-                    output: refreshedOutput
-                ) {
-                    try recordSampleRateRestorationIfNeeded(for: refreshedOutput, state: &state)
-                }
-            }
             let matchedOutput = try preparePlaybackOutput(
                 tapSampleRate: preparation.tapSampleRate,
                 output: preparation.output
-            )
+            ) { restoration in
+                try control.withLock { state in
+                    guard state.outputRebuildGeneration == preparation.generation,
+                          state.runtime === preparation.runtime,
+                          state.captureRunning else {
+                        throw StaleOutputRebuild()
+                    }
+                    try recordSampleRateRestorationIfNeeded(restoration, state: &state)
+                }
+            }
             let calibrationProbe = try control.withLock { state -> PlaybackBufferCalibrationProbe? in
                 try finishOutputRebuildLocked(&state, preparation: preparation, matchedOutput: matchedOutput)
                 let active = state.activeOutput ?? output
@@ -2453,12 +2445,18 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func forceSampleRate(
         _ sampleRate: Double,
-        on output: AudioOutputDevice
+        on output: AudioOutputDevice,
+        recordRestoration: (SampleRateRestoration) throws -> Void
     ) throws -> AudioOutputDevice {
         guard sampleRate > 0, abs(output.nominalSampleRate - sampleRate) >= 1 else {
             return output
         }
-        try CoreAudioDeviceQuery.setNominalSampleRate(sampleRate, objectID: output.id)
+        try Self.setSampleRateAfterRecordingRestoration(
+            sampleRate,
+            on: output,
+            recordRestoration: recordRestoration,
+            setSampleRate: CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
+        )
         for _ in 0..<3 {
             let freshOutput = try CoreAudioDeviceQuery.outputDevice(id: output.id)
             if abs(freshOutput.nominalSampleRate - sampleRate) < 1 {
@@ -2475,49 +2473,45 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func preparePlaybackOutput(
         tapSampleRate: Double,
-        output: AudioOutputDevice
+        output: AudioOutputDevice,
+        recordRestoration: (SampleRateRestoration) throws -> Void
     ) throws -> AudioOutputDevice {
         if Self.shouldUseSampleRateConversion(tapSampleRate: tapSampleRate, output: output) {
             return output
         }
-        return try forceSampleRate(tapSampleRate, on: output)
+        return try forceSampleRate(
+            tapSampleRate,
+            on: output,
+            recordRestoration: recordRestoration
+        )
     }
 
     private func recordSampleRateRestorationIfNeeded(
-        for output: AudioOutputDevice,
+        _ restoration: SampleRateRestoration,
         state: inout ControlState
     ) throws {
-        guard state.sampleRateRestorations[output.uid] == nil else {
+        guard state.sampleRateRestorations[restoration.uid] == nil else {
             return
         }
-        let restoration = SampleRateRestoration(
-            uid: output.uid,
-            originalSampleRate: output.nominalSampleRate
-        )
         try PersistedAudioDeviceRestorationStore.recordSampleRate(
             uid: restoration.uid,
             originalSampleRate: restoration.originalSampleRate,
             at: restorationStoreURL
         )
-        state.sampleRateRestorations[output.uid] = restoration
+        state.sampleRateRestorations[restoration.uid] = restoration
     }
 
     static func setSampleRateAfterRecordingRestoration(
         _ sampleRate: Double,
         on output: AudioOutputDevice,
-        needsRestoration: Bool,
         recordRestoration: (SampleRateRestoration) throws -> Void,
-        installRestoration: (SampleRateRestoration) -> Void,
         setSampleRate: (Double, AudioObjectID) throws -> Void
     ) throws {
-        if needsRestoration {
-            let restoration = SampleRateRestoration(
-                uid: output.uid,
-                originalSampleRate: output.nominalSampleRate
-            )
-            try recordRestoration(restoration)
-            installRestoration(restoration)
-        }
+        let restoration = SampleRateRestoration(
+            uid: output.uid,
+            originalSampleRate: output.nominalSampleRate
+        )
+        try recordRestoration(restoration)
         try setSampleRate(sampleRate, output.id)
     }
 
@@ -3836,15 +3830,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     ) -> Bool {
         abs(tapSampleRate - output.nominalSampleRate) >= 1
             && hasLowSampleRateEndpoint(tapSampleRate: tapSampleRate, output: output)
-    }
-
-    static func shouldRecordSampleRateRestoration(
-        tapSampleRate: Double,
-        output: AudioOutputDevice
-    ) -> Bool {
-        tapSampleRate > 0
-            && abs(output.nominalSampleRate - tapSampleRate) >= 1
-            && !shouldUseSampleRateConversion(tapSampleRate: tapSampleRate, output: output)
     }
 
     static func effectiveOutputRebuildProfile(

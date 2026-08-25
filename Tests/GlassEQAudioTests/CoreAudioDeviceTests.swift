@@ -604,6 +604,46 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func sampleRateMutationRecordsRestorationBeforeDeviceWrite() throws {
+        let output = output(uid: "record-before-set", channelCount: 2, sampleRate: 44_100)
+        var events: [String] = []
+
+        try SeparateClockAudioBackend.setSampleRateAfterRecordingRestoration(
+            48_000,
+            on: output,
+            recordRestoration: { restoration in
+                #expect(restoration.uid == output.uid)
+                #expect(restoration.originalSampleRate == 44_100)
+                events.append("record")
+            },
+            setSampleRate: { sampleRate, objectID in
+                #expect(sampleRate == 48_000)
+                #expect(objectID == output.id)
+                events.append("set")
+            }
+        )
+
+        #expect(events == ["record", "set"])
+    }
+
+    @Test
+    func sampleRateMutationSkipsDeviceWriteWhenRestorationRecordFails() {
+        let output = output(uid: "record-fails", channelCount: 2, sampleRate: 44_100)
+        var didSet = false
+
+        #expect(throws: TestDeviceMutationError.recordFailed) {
+            try SeparateClockAudioBackend.setSampleRateAfterRecordingRestoration(
+                48_000,
+                on: output,
+                recordRestoration: { _ in throw TestDeviceMutationError.recordFailed },
+                setSampleRate: { _, _ in didSet = true }
+            )
+        }
+
+        #expect(!didSet)
+    }
+
+    @Test
     func sampleRateRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentSampleRate = 44_100.0
         var setCalls: [(sampleRate: Double, objectID: AudioObjectID)] = []
@@ -1070,6 +1110,44 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func topologyRebuildAcquiresMuteGuardBeforeRebuildAndReleasesAfter() throws {
+        var events: [String] = []
+        let result = try SeparateClockAudioBackend.performTopologyRebuild(
+            acquireMuteGuard: {
+                events.append("acquire")
+                return FakeTopologyRebuildMuteGuard(events: { events.append($0) })
+            },
+            rebuild: {
+                events.append("rebuild")
+                return 7
+            }
+        )
+
+        #expect(result == 7)
+        #expect(events == ["acquire", "rebuild", "release"])
+    }
+
+    @Test
+    func topologyRebuildSkipsTeardownWhenMuteGuardCannotBeAcquired() {
+        var rebuildWasCalled = false
+
+        #expect(throws: TopologyRebuildMuteGuardUnavailable.self) {
+            _ = try SeparateClockAudioBackend.performTopologyRebuild(
+                acquireMuteGuard: {
+                    throw CoreAudioError(
+                        operation: "test mute guard",
+                        status: kAudioHardwareUnspecifiedError
+                    )
+                },
+                rebuild: {
+                    rebuildWasCalled = true
+                }
+            )
+        }
+        #expect(!rebuildWasCalled)
+    }
+
+    @Test
     func selfChangeGuardSuppressesOnlyMatchingDevice() {
         let changeGuard = CoreAudioSelfChangeGuard(windowMilliseconds: 1_000)
 
@@ -1343,6 +1421,22 @@ struct CoreAudioDeviceTests {
             bufferFrameSize: bufferFrameSize,
             transportType: transportType
         )
+    }
+}
+
+private enum TestDeviceMutationError: Error {
+    case recordFailed
+}
+
+private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
+    private let record: (String) -> Void
+
+    init(events record: @escaping (String) -> Void) {
+        self.record = record
+    }
+
+    func release() {
+        record("release")
     }
 }
 
