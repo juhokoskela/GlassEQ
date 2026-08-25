@@ -259,6 +259,65 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func physicalFirstStartupUsesTheAppliedCallbackSize() {
+        let expectation = SystemTapAudioEngine.AggregateCallbackFrameExpectation(
+            frameCount: 16
+        )
+
+        expectation.update(appliedFrameCount: 32)
+        #expect(expectation.validateCallback(
+            mainInputFrameCount: 32,
+            systemSoundInputFrameCount: 32,
+            outputFrameCount: 32,
+            timestampsAreStable: true
+        ).isValid)
+        #expect(!expectation.validateCallback(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 16,
+            outputFrameCount: 16,
+            timestampsAreStable: true
+        ).isValid)
+
+        expectation.update(appliedFrameCount: 512)
+        #expect(!SystemTapAudioEngine.startupAttemptFrameSizes(
+            requestedFrameSize: 16
+        ).contains(512))
+        #expect(expectation.validateCallback(
+            mainInputFrameCount: 512,
+            systemSoundInputFrameCount: 512,
+            outputFrameCount: 512,
+            timestampsAreStable: true
+        ).isValid)
+    }
+
+    @Test
+    func appliedCallbackSizeInvalidatesInFlightStartupValidation() {
+        let expectation = SystemTapAudioEngine.AggregateCallbackFrameExpectation(
+            frameCount: 16
+        )
+        let staleValidation = expectation.validateCallback(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 16,
+            outputFrameCount: 16,
+            timestampsAreStable: true
+        )
+
+        expectation.update(appliedFrameCount: 32)
+        expectation.recordCallback(staleValidation, metDeadlines: true)
+        #expect(expectation.validCallbackStreak == 0)
+
+        let appliedValidation = expectation.validateCallback(
+            mainInputFrameCount: 32,
+            systemSoundInputFrameCount: 32,
+            outputFrameCount: 32,
+            timestampsAreStable: true
+        )
+        expectation.recordCallback(appliedValidation, metDeadlines: true)
+        expectation.recordCallback(staleValidation, metDeadlines: true)
+        #expect(expectation.validCallbackStreak == 1)
+    }
+
+    @Test
     func aggregateStartupRetriesBeforeUsingOneSaferBufferRung() {
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 16
@@ -500,6 +559,30 @@ struct CoreAudioDeviceTests {
                 bufferFrameSize: 16
             ))
         ))
+    }
+
+    @Test
+    func coldStartupPromotionReturnsTheAppliedAggregateMetadata() throws {
+        let physicalOutput = output(
+            id: 9_101,
+            uid: "cold-promotion-output",
+            channelCount: 2,
+            bufferFrameSize: 512
+        )
+        var aggregateOutput = physicalOutput
+        aggregateOutput.bufferFrameSize = 32
+
+        let result = try SystemTapAudioEngine.coldStartupPromotionResult(
+            combinedState: .running(output: aggregateOutput)
+        )
+
+        guard case .promoted(let promotedOutput) = result else {
+            Issue.record("Expected a promoted output")
+            return
+        }
+        #expect(promotedOutput == aggregateOutput)
+        #expect(promotedOutput.bufferFrameSize == 32)
+        #expect(promotedOutput.bufferFrameSize != physicalOutput.bufferFrameSize)
     }
 
     @Test

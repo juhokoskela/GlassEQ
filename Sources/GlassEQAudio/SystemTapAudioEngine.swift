@@ -741,6 +741,104 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var waitBeforeRetry: () -> Void
     }
 
+    final class AggregateCallbackFrameExpectation: @unchecked Sendable {
+        struct Validation {
+            fileprivate var expectation: UInt64
+            var isValid: Bool
+        }
+
+        private static let streakMask = UInt64(UInt16.max)
+        // One atomic transition changes the generation, applied size, and startup streak.
+        private let state: Atomic<UInt64>
+        private let rejectedCallbacks = Atomic<UInt64>(0)
+
+        init(frameCount: Int) {
+            self.state = Atomic(Self.encodedState(
+                generation: 0,
+                frameCount: frameCount,
+                validCallbackStreak: 0
+            ))
+        }
+
+        func update(appliedFrameCount: UInt32) {
+            let previous = state.load(ordering: .relaxed)
+            let generation = UInt32(truncatingIfNeeded: previous >> 32) &+ 1
+            state.store(
+                Self.encodedState(
+                    generation: generation,
+                    frameCount: Int(appliedFrameCount),
+                    validCallbackStreak: 0
+                ),
+                ordering: .releasing
+            )
+        }
+
+        func validateCallback(
+            mainInputFrameCount: Int,
+            systemSoundInputFrameCount: Int,
+            outputFrameCount: Int,
+            timestampsAreStable: Bool
+        ) -> Validation {
+            let snapshot = state.load(ordering: .acquiring)
+            let expectedFrameCount = Int((snapshot >> 16) & UInt64(UInt16.max))
+            return Validation(
+                expectation: snapshot & ~Self.streakMask,
+                isValid: SystemTapAudioEngine.startupCallbackIsValid(
+                    mainInputFrameCount: mainInputFrameCount,
+                    systemSoundInputFrameCount: systemSoundInputFrameCount,
+                    outputFrameCount: outputFrameCount,
+                    expectedFrameCount: expectedFrameCount,
+                    timestampsAreStable: timestampsAreStable
+                )
+            )
+        }
+
+        func recordCallback(
+            _ validation: Validation,
+            metDeadlines: Bool
+        ) {
+            let current = state.load(ordering: .acquiring)
+            guard current & ~Self.streakMask == validation.expectation else {
+                return
+            }
+
+            let isValid = validation.isValid && metDeadlines
+            let currentStreak = current & Self.streakMask
+            let nextStreak = isValid
+                ? min(currentStreak + 1, Self.streakMask)
+                : 0
+            let exchange = state.compareExchange(
+                expected: current,
+                desired: validation.expectation | nextStreak,
+                ordering: .acquiringAndReleasing
+            )
+            if exchange.exchanged, !isValid {
+                rejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
+            }
+        }
+
+        var validCallbackStreak: UInt64 {
+            state.load(ordering: .acquiring) & Self.streakMask
+        }
+
+        var rejectedCallbackCount: UInt64 {
+            rejectedCallbacks.load(ordering: .acquiring)
+        }
+
+        private static func encodedState(
+            generation: UInt32,
+            frameCount: Int,
+            validCallbackStreak: UInt16
+        ) -> UInt64 {
+            let boundedFrameCount = UInt16(
+                min(max(frameCount, 1), Int(UInt16.max))
+            )
+            return UInt64(generation) << 32
+                | UInt64(boundedFrameCount) << 16
+                | UInt64(validCallbackStreak)
+        }
+    }
+
     private struct PromotedHeadsetRoute: Equatable {
         var outputUID: String
         var nominalSampleRate: Int64
@@ -861,7 +959,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         private let inputChannelOffset: Int
         private let systemSoundInputChannelOffset: Int
-        private let expectedCallbackFrames: Int
+        private let callbackFrameExpectation: AggregateCallbackFrameExpectation
         private let maxCallbackFrames: Int
         private var dspTransition: RealtimeEQTransition
         private var activeSystemSoundPreampGains: (left: Float, right: Float)
@@ -892,8 +990,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let qualifyingPairedTimestampDiscontinuities = Atomic<UInt64>(0)
         private let renderCallbackObservations = Atomic<UInt64>(0)
         private let firstRenderCallbackHostTimeNanoseconds = Atomic<UInt64>(0)
-        private let startupValidCallbackStreak = Atomic<UInt64>(0)
-        private let startupRejectedCallbacks = Atomic<UInt64>(0)
         private let lastInputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastOutputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastInputHostIntervalErrorNanoseconds = Atomic<Int64>(0)
@@ -957,7 +1053,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             self.sampleRate = renderConfiguration.configuration.sampleRate
             self.inputChannelOffset = max(inputChannelOffset, 0)
             self.systemSoundInputChannelOffset = max(systemSoundInputChannelOffset, 0)
-            self.expectedCallbackFrames = max(expectedCallbackFrames, 1)
+            self.callbackFrameExpectation = AggregateCallbackFrameExpectation(
+                frameCount: expectedCallbackFrames
+            )
             self.maxCallbackFrames = maxCallbackFrames
             self.outputFade = RealtimeOutputFade(sampleRate: self.sampleRate)
             self.outputDeclicker = RealtimeOutputDeclicker(
@@ -1056,7 +1154,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             previousRenderStartNanoseconds = renderStartNanoseconds
             previousRenderFrameCount = outputFrameCount
             var renderWorkTiming = EQRenderWorkTiming()
-            var startupCallbackCandidate = false
+            var startupCallbackValidation: AggregateCallbackFrameExpectation.Validation?
             defer {
                 let renderEndNanoseconds = AudioConvertHostTimeToNanos(
                     AudioGetCurrentHostTime()
@@ -1112,11 +1210,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: outputFrameCount,
                     sampleRate: sampleRate
                 )
-                recordStartupCallback(
-                    isValid: startupCallbackCandidate
-                        && entryDeadlineMisses == 0
-                        && executionDeadlineMisses == 0
-                )
+                if let startupCallbackValidation {
+                    callbackFrameExpectation.recordCallback(
+                        startupCallbackValidation,
+                        metDeadlines: entryDeadlineMisses == 0
+                            && executionDeadlineMisses == 0
+                    )
+                }
                 if entryDeadlineMisses > 0 {
                     callbackStartStarvations.wrappingAdd(1, ordering: .relaxed)
                 }
@@ -1142,11 +1242,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 outputTime: outputTime,
                 outputFrameCount: outputFrameCount
             )
-            startupCallbackCandidate = SystemTapAudioEngine.startupCallbackIsValid(
+            startupCallbackValidation = callbackFrameExpectation.validateCallback(
                 mainInputFrameCount: mainInputFrameCount,
                 systemSoundInputFrameCount: rawSystemSoundFrameCount,
                 outputFrameCount: outputFrameCount,
-                expectedFrameCount: expectedCallbackFrames,
                 timestampsAreStable: timestampsAreStable
             )
             renderCallbackObservations.wrappingAdd(1, ordering: .relaxed)
@@ -1280,36 +1379,31 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             outputMutedForTransition.store(false, ordering: .releasing)
         }
 
+        func updateExpectedCallbackFrames(appliedFrameCount: UInt32) {
+            callbackFrameExpectation.update(appliedFrameCount: appliedFrameCount)
+        }
+
         func waitForQualifiedStartup(
             minimumConsecutiveCallbacks: UInt64,
             timeout: TimeInterval
         ) -> StartupQualificationSnapshot {
             let deadline = DispatchTime.now().uptimeNanoseconds
                 + UInt64(max(timeout, 0) * 1_000_000_000)
-            while startupValidCallbackStreak.load(ordering: .acquiring)
+            while callbackFrameExpectation.validCallbackStreak
                     < minimumConsecutiveCallbacks,
                   DispatchTime.now().uptimeNanoseconds < deadline {
                 Thread.sleep(forTimeInterval: 0.001)
             }
             return StartupQualificationSnapshot(
-                validCallbackStreak: startupValidCallbackStreak.load(ordering: .acquiring),
+                validCallbackStreak: callbackFrameExpectation.validCallbackStreak,
                 observedCallbacks: renderCallbackObservations.load(ordering: .acquiring),
-                rejectedCallbacks: startupRejectedCallbacks.load(ordering: .acquiring)
+                rejectedCallbacks: callbackFrameExpectation.rejectedCallbackCount
             )
         }
 
         func firstRenderCallbackHostTime() -> UInt64? {
             let value = firstRenderCallbackHostTimeNanoseconds.load(ordering: .acquiring)
             return value == 0 ? nil : value
-        }
-
-        private func recordStartupCallback(isValid: Bool) {
-            if isValid {
-                startupValidCallbackStreak.wrappingAdd(1, ordering: .releasing)
-            } else {
-                startupValidCallbackStreak.store(0, ordering: .releasing)
-                startupRejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
-            }
         }
 
         func markStopping() {
@@ -3112,6 +3206,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 "physical-first aggregate buffer ready device=\(aggregateDeviceID) requested=\(targetFrameSize) actual=\(aggregate.bufferFrameSize)"
             }
             try Self.validatePlaybackCallbackCapacity(for: aggregate)
+            preparedRuntime.updateExpectedCallbackFrames(
+                appliedFrameCount: aggregate.bufferFrameSize
+            )
 
             var activeOutput = route.output
             activeOutput.bufferFrameSize = aggregate.bufferFrameSize
@@ -3186,8 +3283,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return .aggregateUnstable
         }
 
+        let promotionResult = try Self.coldStartupPromotionResult(
+            combinedState: control.withLock { $0.state }
+        )
         deferredColdStartupRoute.withLock { $0 = nil }
-        return .promoted(currentDefault)
+        return promotionResult
     }
 
     private func attemptHeadsetAggregatePromotionSerialized() throws
@@ -4442,6 +4542,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         case .running:
             return false
         }
+    }
+
+    static func coldStartupPromotionResult(
+        combinedState: AudioEngineState
+    ) throws -> ColdStartupAggregatePromotionResult {
+        guard case .running(let output) = combinedState else {
+            throw AudioEngineInternalError(
+                message: "The combined aggregate did not publish its active output."
+            )
+        }
+        return .promoted(output)
     }
 
     static func startupAttemptFrameSizes(requestedFrameSize: UInt32) -> [UInt32] {
