@@ -279,15 +279,14 @@ public enum FrequencyResponse {
             EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         )
         let upper = log10(upperFrequency)
-        let curve = magnitudePoints(from: source)
         return (0..<max(count, 2)).map { index in
             let fraction = Double(index) / Double(max(count - 1, 1))
             let frequency = pow(10, lower + (upper - lower) * fraction)
             return FrequencyResponsePoint(
                 frequency: frequency,
-                magnitudeDB: preampDB + MinimumPhaseFIRCompiler.interpolatedGainDB(
-                    frequency: frequency,
-                    points: curve
+                magnitudeDB: preampDB + convolutionMagnitudeDB(
+                    source: source,
+                    frequency: frequency
                 )
             )
         }
@@ -301,25 +300,49 @@ public enum FrequencyResponse {
         let maximumFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
             sampleRate: sampleRate
         )
-        let curve = magnitudePoints(from: source)
-        let relevantGains = curve.lazy
-            .filter { $0.frequency <= maximumFrequency }
-            .map(\.gainDB)
-        let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
-            frequency: maximumFrequency,
-            points: curve
-        )
-        return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
-    }
-
-    private static func magnitudePoints(
-        from source: EQConvolutionSource?
-    ) -> [EQMagnitudePoint] {
         switch source {
         case .magnitudeCurve(let curve):
-            return curve.points.sorted { $0.frequency < $1.frequency }
+            let relevantGains = curve.points.lazy
+                .filter { $0.frequency <= maximumFrequency }
+                .map(\.gainDB)
+            let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
+                frequency: maximumFrequency,
+                points: curve.points
+            )
+            return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
+        case .impulseResponse, nil:
+            let frequencies = (0..<192).map { index in
+                20 * pow(maximumFrequency / 20, Double(index) / 191)
+            }
+            return preampDB + (frequencies.lazy.map {
+                convolutionMagnitudeDB(source: source, frequency: $0)
+            }.max() ?? 0)
+        }
+    }
+
+    private static func convolutionMagnitudeDB(
+        source: EQConvolutionSource?,
+        frequency: Double
+    ) -> Double {
+        switch source {
+        case .magnitudeCurve(let curve):
+            return MinimumPhaseFIRCompiler.interpolatedGainDB(
+                frequency: frequency,
+                points: curve.points.sorted { $0.frequency < $1.frequency }
+            )
+        case .impulseResponse(let impulse):
+            let boundedFrequency = min(frequency, impulse.sampleRate / 2)
+            let omega = 2 * Double.pi * boundedFrequency / impulse.sampleRate
+            var real = 0.0
+            var imaginary = 0.0
+            for (index, sample) in impulse.samples.enumerated() {
+                let phase = -omega * Double(index)
+                real += Double(sample) * cos(phase)
+                imaginary += Double(sample) * sin(phase)
+            }
+            return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
         case nil:
-            return []
+            return 0
         }
     }
 

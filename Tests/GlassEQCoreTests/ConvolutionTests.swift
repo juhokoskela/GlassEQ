@@ -110,6 +110,56 @@ struct ConvolutionTests {
         }
     }
 
+    @Test
+    func importedImpulseResponseRendersSuppliedSamplesWithoutPhaseReconstruction() throws {
+        let impulse: [Float] = [0, 0.25, -0.5, 0.125]
+        let profile = EQProfile(
+            name: "Imported IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: impulse
+            ))
+        )
+        var processor = EQProcessor(renderConfiguration: try EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: 48_000,
+            channelCount: 1
+        ))
+        var samples: [Float] = [1] + [Float](repeating: 0, count: 7)
+
+        processor.processInterleaved(&samples, channelCount: 1)
+
+        for index in samples.indices {
+            #expect(abs(samples[index] - (index < impulse.count ? impulse[index] : 0)) < 0.000_01)
+        }
+    }
+
+    @Test
+    func importedImpulseResponseRejectsMismatchedRenderRate() {
+        let profile = EQProfile(
+            name: "48 kHz IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1]
+            ))
+        )
+
+        #expect(throws: HybridConvolverError.sampleRateMismatch(
+            source: 48_000,
+            destination: 96_000
+        )) {
+            _ = try EQRenderConfiguration.prepare(
+                profile: profile,
+                sampleRate: 96_000,
+                channelCount: 1
+            )
+        }
+    }
+
     private func render(
         input: [Float],
         impulse: [Float],

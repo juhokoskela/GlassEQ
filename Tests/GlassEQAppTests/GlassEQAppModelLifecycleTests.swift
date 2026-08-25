@@ -2538,6 +2538,36 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsImportsImpulseResponseProfileWithoutChangingActiveAudio() async throws {
+        let model = makeModel()
+        let activeProfile = model.activeProfile
+        let initialProfileCount = model.profileStore.profiles.count
+        let imported = EQProfile(
+            name: "Room IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25, -0.125]
+            ))
+        )
+
+        let response = try await model.performSettingsCommand(
+            .importParsedProfile(imported)
+        )
+
+        #expect(response.importSucceeded == true)
+        #expect(model.activeProfile == activeProfile)
+        #expect(model.profileStore.profiles.count == initialProfileCount + 1)
+        #expect(model.draftProfile.name == "Room IR")
+        guard case .impulseResponse(let source) = model.draftProfile.convolution else {
+            Issue.record("Expected imported impulse response")
+            return
+        }
+        #expect(source.samples == [1, 0.25, -0.125])
+    }
+
+    @Test
     func metricsPollingCommandReturnsNoSnapshotAndPublishesImmediateMetrics() async throws {
         let engine = FakeAudioEngine()
         engine.metrics = AudioEngineMetrics(

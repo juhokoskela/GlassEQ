@@ -41,6 +41,9 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
     case invalidMagnitudePointCount(profileID: UUID, channel: String, count: Int, allowed: ClosedRange<Int>)
     case unsupportedSynthesisVersion(profileID: UUID, version: UInt16)
     case duplicateMagnitudeFrequency(profileID: UUID, channel: String, frequency: Double)
+    case invalidImpulseSampleRate(profileID: UUID, channel: String, sampleRate: Double)
+    case invalidImpulseFrameCount(profileID: UUID, channel: String, count: Int, allowed: ClosedRange<Int>)
+    case nonFiniteImpulseSample(profileID: UUID, channel: String, frame: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -84,6 +87,12 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
             return "Convolution profile uses unsupported synthesis version \(version)."
         case let .duplicateMagnitudeFrequency(_, channel, frequency):
             return "Convolution profile contains duplicate \(channel) frequency \(format(frequency))."
+        case let .invalidImpulseSampleRate(_, channel, sampleRate):
+            return "Convolution profile contains an invalid \(channel) impulse-response sample rate (\(format(sampleRate)) Hz)."
+        case let .invalidImpulseFrameCount(_, channel, count, allowed):
+            return "Convolution profile contains \(count) \(channel) impulse-response frames; expected \(allowed.lowerBound)...\(allowed.upperBound)."
+        case let .nonFiniteImpulseSample(_, channel, frame):
+            return "Convolution profile contains a non-finite \(channel) impulse-response sample at frame \(frame)."
         }
     }
 
@@ -103,6 +112,8 @@ public enum ProfilePersistence {
     public static let maxActiveFiltersPerChannel = maxFiltersPerChannel
     public static let maxStereoActiveFilters = maxStereoFilters
     public static let magnitudePointCountRange = 2...2_048
+    public static let impulseFrameCountRange = 1...ImpulseResponseSource.maximumFrameCount
+    public static let impulseSampleRateRange: ClosedRange<Double> = 8_000...384_000
     public static let frequencyRange: ClosedRange<Double> = 1...24_000
     public static let gainRange: ClosedRange<Double> = -120...120
     public static let preampRange: ClosedRange<Double> = -120...120
@@ -608,6 +619,30 @@ public enum ProfilePersistence {
                         frequency: point.frequency
                     )
                 }
+            }
+        case .impulseResponse(let impulse):
+            guard impulse.sampleRate.isFinite,
+                  impulseSampleRateRange.contains(impulse.sampleRate) else {
+                throw ProfileStoreValidationError.invalidImpulseSampleRate(
+                    profileID: profileID,
+                    channel: channel,
+                    sampleRate: impulse.sampleRate
+                )
+            }
+            guard impulseFrameCountRange.contains(impulse.samples.count) else {
+                throw ProfileStoreValidationError.invalidImpulseFrameCount(
+                    profileID: profileID,
+                    channel: channel,
+                    count: impulse.samples.count,
+                    allowed: impulseFrameCountRange
+                )
+            }
+            if let frame = impulse.samples.firstIndex(where: { !$0.isFinite }) {
+                throw ProfileStoreValidationError.nonFiniteImpulseSample(
+                    profileID: profileID,
+                    channel: channel,
+                    frame: frame
+                )
             }
         }
     }

@@ -36,7 +36,7 @@ private let settingsResourcesBundle: Bundle = {
     return Bundle.main
 }()
 
-private func localized(_ value: String.LocalizationValue) -> String {
+func localized(_ value: String.LocalizationValue) -> String {
     String(localized: value, bundle: settingsResourcesBundle)
 }
 
@@ -253,6 +253,7 @@ public struct SettingsView: View {
     @State private var snapshot: SettingsSnapshot
     @State private var tab = EditorSection.editor
     @State private var draftEditGeneration = 0
+    @State private var isImportSheetPresented = false
 
     public init(model: GlassEQSettingsViewModel) {
         self._model = Bindable(wrappedValue: model)
@@ -287,7 +288,7 @@ public struct SettingsView: View {
                 onRevert: revertDraft,
                 onUseForCurrentOutput: useDraftForCurrentOutput,
                 onSetFallback: setFallbackToDraft,
-                onImport: importProfile,
+                onShowImporter: { isImportSheetPresented = true },
                 onPreview: previewDraft,
                 onStopPreview: stopPreview,
                 onStartProgrammeComparison: startProgrammeComparison,
@@ -304,6 +305,15 @@ public struct SettingsView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .background(FinderStyleWindowConfigurator())
+        .sheet(isPresented: $isImportSheetPresented) {
+            ProfileImportSheet(
+                currentProfile: snapshot.draftProfile,
+                currentOutputSampleRate: snapshot.currentOutputSampleRate,
+                isReadOnly: isProfileStoreProtected,
+                onImport: importProfile,
+                onImportParsedProfile: importParsedProfile
+            )
+        }
         // Run the content up under the (transparent, separator-less) titlebar so there's no bar
         // or hairline between the window controls and the content, and the sidebar card sits
         // beneath the traffic lights — matching System Settings.
@@ -327,7 +337,7 @@ public struct SettingsView: View {
         }
         .onAppear {
             if let requestedSection = SettingsWindowFocus.consumePendingSection() {
-                tab = EditorSection(requestedSection)
+                show(requestedSection)
             }
             refreshSnapshotFromModel()
             updateMetricsPolling()
@@ -342,7 +352,7 @@ public struct SettingsView: View {
             NotificationCenter.default.publisher(for: .glassEQBringSettingsToFront)
         ) { notification in
             if let requestedSection = notification.object as? SettingsSection {
-                tab = EditorSection(requestedSection)
+                show(requestedSection)
                 _ = SettingsWindowFocus.consumePendingSection()
             }
         }
@@ -389,11 +399,35 @@ public struct SettingsView: View {
         perform(.setFallback(snapshot.draftProfile))
     }
 
-    private func importProfile(format: ImportFormat, name: String, text: String) async -> Bool {
+    private func importProfile(format: ImportFormat, name: String, text: String) async -> String? {
         let dispatchedSnapshot = snapshot
         let response = await model.perform(.importProfile(format: format, name: name, text: text))
         refreshSnapshotFromModel(afterCommandDispatchedFrom: dispatchedSnapshot)
-        return response?.importSucceeded ?? false
+        guard response?.importSucceeded == true else {
+            return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
+        }
+        return nil
+    }
+
+    private func importParsedProfile(_ profile: EQProfile) async -> String? {
+        let dispatchedSnapshot = snapshot
+        let response = await model.perform(.importParsedProfile(profile))
+        refreshSnapshotFromModel(afterCommandDispatchedFrom: dispatchedSnapshot)
+        guard response?.importSucceeded == true else {
+            return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
+        }
+        return nil
+    }
+
+    private func show(_ section: SettingsSection) {
+        switch section {
+        case .editor:
+            tab = .editor
+        case .importer:
+            isImportSheetPresented = true
+        case .output:
+            tab = .output
+        }
     }
 
     private func previewDraft() {
@@ -1037,7 +1071,7 @@ private struct ProfileDetail: View {
     var onRevert: () -> Void
     var onUseForCurrentOutput: () -> Void
     var onSetFallback: () -> Void
-    var onImport: (ImportFormat, String, String) async -> Bool
+    var onShowImporter: () -> Void
     var onPreview: () -> Void
     var onStopPreview: () -> Void
     var onStartProgrammeComparison: () -> Void
@@ -1058,7 +1092,8 @@ private struct ProfileDetail: View {
                     draftProfile: $draftProfile,
                     tab: $tab,
                     isReadOnly: isProfileStoreProtected
-                        || snapshot.programmeComparison.isActive
+                        || snapshot.programmeComparison.isActive,
+                    onShowImporter: onShowImporter
                 )
             }
 
@@ -1085,12 +1120,6 @@ private struct ProfileDetail: View {
                             .disabled(
                                 isProfileStoreProtected
                                     || snapshot.programmeComparison.isActive
-                            )
-                        case .importer:
-                            ImportTab(
-                                profile: draftProfile,
-                                isReadOnly: isProfileStoreProtected,
-                                onImport: onImport
                             )
                         case .output:
                             OutputTab(
@@ -1165,6 +1194,7 @@ private struct ProfileHeader: View {
     @Binding var draftProfile: EQProfile
     @Binding var tab: EditorSection
     var isReadOnly: Bool
+    var onShowImporter: () -> Void
     @State private var isRenaming = false
 
     var body: some View {
@@ -1211,6 +1241,15 @@ private struct ProfileHeader: View {
 
             Spacer()
 
+            Button {
+                onShowImporter()
+            } label: {
+                Label(localized("Import"), systemImage: "square.and.arrow.down")
+            }
+            .controlSize(.large)
+            .disabled(isReadOnly)
+            .accessibilityHint(Text(localized("Opens guided profile import")))
+
             Picker(localized("Section"), selection: $tab) {
                 ForEach(EditorSection.allCases) { section in
                     Text(section.title).tag(section)
@@ -1218,10 +1257,10 @@ private struct ProfileHeader: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 320)
+            .frame(width: 230)
             .accessibilityLabel(Text(localized("Section")))
             .accessibilityValue(Text(tab.title))
-            .accessibilityHint(Text(localized("Switches between editor, import, and output details")))
+            .accessibilityHint(Text(localized("Switches between editor and output details")))
         }
         .cardPanel(padding: 16)
     }
@@ -1257,7 +1296,6 @@ private struct ProfileStoreProtectionBanner: View {
 
 private enum EditorSection: String, CaseIterable, Identifiable {
     case editor
-    case importer
     case output
 
     var id: String { rawValue }
@@ -1267,7 +1305,7 @@ private enum EditorSection: String, CaseIterable, Identifiable {
         case .editor:
             self = .editor
         case .importer:
-            self = .importer
+            self = .editor
         case .output:
             self = .output
         }
@@ -1277,8 +1315,6 @@ private enum EditorSection: String, CaseIterable, Identifiable {
         switch self {
         case .editor:
             localized("Editor")
-        case .importer:
-            localized("Import")
         case .output:
             localized("Output")
         }
@@ -1441,9 +1477,15 @@ private struct EditorTab: View {
                     .id("graphic:\(activeEditContextID)")
                     .cardPanel(padding: 16)
             case .convolution:
-                MagnitudeCurveEditor(points: activeMagnitudePointsBinding)
-                    .id("curve:\(activeEditContextID)")
-                    .cardPanel(padding: 16)
+                if case .impulseResponse(let source) = activeConvolutionSource {
+                    ImportedImpulseResponseEditor(source: source)
+                        .id("impulse:\(activeEditContextID)")
+                        .cardPanel(padding: 16)
+                } else {
+                    MagnitudeCurveEditor(points: activeMagnitudePointsBinding)
+                        .id("curve:\(activeEditContextID)")
+                        .cardPanel(padding: 16)
+                }
             }
 
         }
@@ -1577,6 +1619,17 @@ private struct EditorTab: View {
                 ))
             }
         )
+    }
+
+    private var activeConvolutionSource: EQConvolutionSource? {
+        switch (draftProfile.channelMode, editChannel) {
+        case (.stereo, .left):
+            draftProfile.leftConvolution
+        case (.stereo, .right):
+            draftProfile.rightConvolution
+        default:
+            draftProfile.convolution
+        }
     }
 
     private var activeEditContextID: String {
@@ -2022,6 +2075,30 @@ private struct MagnitudeCurveEditor: View {
         )
         points.append(EQMagnitudePoint(frequency: frequency, gainDB: gain))
         points.sort { $0.frequency < $1.frequency }
+    }
+}
+
+private struct ImportedImpulseResponseEditor: View {
+    var source: ImpulseResponseSource
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(localized("Imported Impulse Response"), systemImage: "waveform")
+                .font(.headline)
+            LabeledContent(
+                localized("Length"),
+                value: localized("\(source.samples.count) taps")
+            )
+            LabeledContent(
+                localized("Sample rate"),
+                value: source.sampleRate.frequencyLabel
+            )
+            Text(localized("GlassEQ preserves the file's phase and samples. To replace it, import another WAV file."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2513,117 +2590,6 @@ struct EditableValueEditSession: Equatable {
     mutating func finish() {
         originalValue = nil
         textDrivenValue = nil
-    }
-}
-
-private struct ImportTab: View {
-    var profile: EQProfile
-    var isReadOnly: Bool
-    var onImport: (ImportFormat, String, String) async -> Bool
-    @State private var importFormat: ImportFormat
-    @State private var importName: String
-    @State private var importText: String
-    @State private var isEditorVisible = false
-    @State private var isImporting = false
-
-    init(profile: EQProfile, isReadOnly: Bool, onImport: @escaping (ImportFormat, String, String) async -> Bool) {
-        self.profile = profile
-        self.isReadOnly = isReadOnly
-        self.onImport = onImport
-        _importFormat = State(initialValue: .autoEQ)
-        _importName = State(initialValue: localized("Imported Profile"))
-        _importText = State(initialValue: "")
-    }
-
-    var body: some View {
-        VStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(localized("Import / Export"))
-                    .font(.headline)
-                Picker(localized("Format"), selection: $importFormat) {
-                    ForEach(ImportFormat.allCases) { format in
-                        Text(format.rawValue).tag(format)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                TextField(localized("Profile Name"), text: $importName)
-            }
-            .cardPanel()
-
-            if isEditorVisible {
-                TextEditor(text: $importText)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .padding(10)
-                    .frame(minHeight: 280)
-                    .background(Color(nsColor: .textBackgroundColor).opacity(0.72), in: .rect(cornerRadius: 14))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                    )
-            } else {
-                HStack {
-                    Button {
-                        isEditorVisible = true
-                    } label: {
-                        Label(localized("Open Import Editor"), systemImage: "text.alignleft")
-                            .frame(minHeight: 28)
-                            .contentShape(.rect)
-                    }
-                    .controlSize(.large)
-                    Spacer()
-                }
-                .cardPanel(padding: 12)
-            }
-
-            HStack {
-                Button {
-                    importText = EQProfileTextExporter.exportEqualizerAPO(profile)
-                    importName = profile.name
-                    importFormat = .autoEQ
-                    isEditorVisible = true
-                } label: {
-                    Label(localized("Export Current"), systemImage: "square.and.arrow.up")
-                        .frame(minHeight: 28)
-                        .contentShape(.rect)
-                }
-                .controlSize(.large)
-
-                Spacer()
-                if isEditorVisible {
-                    Button(localized("Clear")) {
-                        importText = ""
-                        isEditorVisible = false
-                    }
-                    .disabled(importText.isEmpty || isImporting)
-                    .controlSize(.large)
-                }
-                Button {
-                    let format = importFormat
-                    let name = importName
-                    let text = importText
-                    isImporting = true
-                    Task {
-                        let imported = await onImport(format, name, text)
-                        await MainActor.run {
-                            if imported {
-                                importText = ""
-                                isEditorVisible = false
-                            }
-                            isImporting = false
-                        }
-                    }
-                } label: {
-                    Label(isImporting ? localized("Importing") : localized("Import"), systemImage: "square.and.arrow.down")
-                        .frame(minHeight: 28)
-                        .contentShape(.rect)
-                }
-                .disabled(isReadOnly || !isEditorVisible || importText.isEmpty || isImporting)
-                .controlSize(.large)
-            }
-            .cardPanel(padding: 12)
-        }
     }
 }
 

@@ -25,6 +25,10 @@ The audio render path must not allocate, lock, touch disk, log, parse text, muta
 
 Response Curve profiles compile log-frequency, linear-dB magnitude points into a 16,384-tap minimum-phase impulse. The compiler constructs the full even log-magnitude spectrum, performs the exact even-length real-cepstrum lift, and persists a synthesis version with the source points; generated samples are not stored. Rendering uses a 512-tap vectorized direct head and 62 vectorized 256-frame tail partitions with 512-point real FFTs. Tail work is scheduled against absolute sample-frame deadlines rather than callback count, so irregular and 480-frame callback sequences can cross internal block boundaries safely. Every Accelerate path and mutable buffer is exercised and detached before publication to the callback.
 
+Imported WAV impulse responses use the same prepared renderer without minimum-phase reconstruction or normalization. GlassEQ persists the supplied mono or stereo samples as the convolution source and requires the file's sample rate to match the active output. Imports are limited to 16,384 taps per channel so they retain the realtime budget already verified for generated curves; longer files and sample-rate mismatches are rejected instead of being truncated or retimed silently.
+
+The guided importer can also combine two linked text profiles or two mono WAV files as separate left and right channels. It shows the assignment before import and can swap the channels without reparsing the source files. The two files must use the same source kind and produce the same profile type.
+
 The direct head produces tap zero immediately, while the partitioned tail is computed before the corresponding output frames become due. Response Curve processing therefore adds computation but no fixed buffering or tap-to-output latency. The fixed tap count provides 2.93 Hz bins and 341 ms support at 48 kHz, 5.86 Hz and 171 ms at 96 kHz, and 11.72 Hz and 85 ms at 192 kHz. The last case is an explicit bass-resolution limit for future room-correction work.
 
 A watchdog observes render progress outside the callback. One three-second steady-state stall stops the engine before rebuilding it once. Another stall within 60 seconds leaves GlassEQ stopped, restoring direct system audio until the user explicitly retries.
@@ -35,7 +39,7 @@ Programme-loudness A/B comparison is another transient render mode, not a profil
 
 ## Current Implementation Status
 
-This repository contains the SwiftPM project, biquad and minimum-phase convolution DSP engines, EqualizerAPO ParametricEQ and GraphicEQ importers, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
+This repository contains the SwiftPM project, biquad and minimum-phase convolution DSP engines, guided EqualizerAPO, AutoEq, REW text, and WAV impulse-response import, native search of AutoEq's recommended results, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
 
 ## Clocking And Routing
 
@@ -99,9 +103,8 @@ swift run GlassEQDiagnostics 2
 
 ## Profile Storage And Settings Helper
 
-Profile data belongs to the main app sandbox and is migrated by the main app through `container-migration.plist`. The settings helper does not share profile storage and does not need an app-group entitlement; it receives snapshots and sends commands over the private stdin/stdout IPC session launched by GlassEQ.
+Profile data belongs to the main app sandbox and is migrated by the main app through `container-migration.plist`. The settings helper does not share profile storage and does not need an app-group entitlement; it receives snapshots and sends commands over the private stdin/stdout IPC session launched by GlassEQ. User-selected import files and AutoEq downloads are read by the settings process, then the parsed profile is sent to the main app for validation and persistence through the same command channel. The helper carries its own user-selected read-only entitlement because the open-panel Powerbox service checks the presenting process's signature instead of accepting the inherited entitlement from the main app.
 
 ## Backlog
 
 - Support preferred stereo pairs inside native output streams wider than two channels without enabling Core Audio tap mixdown. The first version should still process only the preferred pair, preserve the device-scoped native stream format, map the tapped channels and aggregate buffers explicitly, keep physical inputs disabled, and verify that the wider stream does not restore the 43.5 ms mixdown latency.
-- Import arbitrary impulse-response audio assets, starting with REW WAV exports, and preserve the phase and samples supplied by the user instead of running minimum-phase synthesis.

@@ -475,6 +475,53 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func convolutionProfileRoundTripsImportedImpulseResponse() throws {
+        let left = ImpulseResponseSource(
+            sampleRate: 48_000,
+            samples: [1, 0.25, -0.125]
+        )
+        let right = ImpulseResponseSource(
+            sampleRate: 48_000,
+            samples: [0.5, -0.25, 0.125]
+        )
+        let profile = EQProfile(
+            name: "Stereo IR",
+            mode: .convolution,
+            channelMode: .stereo,
+            filters: [],
+            leftConvolution: .impulseResponse(left),
+            rightConvolution: .impulseResponse(right)
+        )
+        let store = ProfileStore(profiles: [profile], fallbackProfileID: profile.id)
+
+        let decoded = try ProfilePersistence.decode(ProfilePersistence.encode(store))
+
+        #expect(decoded == store)
+    }
+
+    @Test
+    func decodeRejectsOversizedImportedImpulseResponse() throws {
+        var profile = EQProfile.flatConvolution
+        profile.convolution = .impulseResponse(ImpulseResponseSource(
+            sampleRate: 48_000,
+            samples: [Float](
+                repeating: 0,
+                count: ImpulseResponseSource.maximumFrameCount + 1
+            )
+        ))
+
+        try expectValidationFailure(
+            ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
+            expected: .invalidImpulseFrameCount(
+                profileID: profile.id,
+                channel: "linked",
+                count: ImpulseResponseSource.maximumFrameCount + 1,
+                allowed: ProfilePersistence.impulseFrameCountRange
+            )
+        )
+    }
+
+    @Test
     func decodeRejectsConvolutionProfileWithoutSource() throws {
         let profile = EQProfile(
             name: "Missing Curve",

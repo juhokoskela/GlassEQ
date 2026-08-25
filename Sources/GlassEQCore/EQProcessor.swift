@@ -241,6 +241,16 @@ public struct EQRenderConfiguration: Sendable {
                             sampleRate: configuration.sampleRate
                         )
                     )
+                case .impulseResponse(let impulse):
+                    guard abs(impulse.sampleRate - configuration.sampleRate) < 0.5 else {
+                        throw HybridConvolverError.sampleRateMismatch(
+                            source: impulse.sampleRate,
+                            destination: configuration.sampleRate
+                        )
+                    }
+                    kernel = try PreparedConvolutionKernel(
+                        impulseResponse: impulse.samples
+                    )
                 }
                 preparedSources.append((source, kernel))
             }

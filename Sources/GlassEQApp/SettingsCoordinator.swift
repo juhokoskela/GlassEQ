@@ -1054,6 +1054,10 @@ extension GlassEQAppModel {
             let imported = try await importProfile(format: format, name: name, text: text)
             return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
 
+        case .importParsedProfile(let profile):
+            let imported = try importParsedProfile(profile)
+            return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
+
         case .preview(let profile):
             try validateIncomingProfile(profile)
             preview(profile: profile)
