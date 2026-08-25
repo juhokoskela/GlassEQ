@@ -478,9 +478,6 @@ final class GlassEQAppModel {
     var profileStore: ProfileStore
     var selectedProfileID: UUID
     var draftProfile: EQProfile
-    var importFormat: ImportFormat = .autoEQ
-    var importName = localized("Imported Profile")
-    var importText = ""
     var engineMetrics = AudioEngineMetrics()
     var previewReturnProfile: EQProfile?
     var programmeComparison = EQProgrammeComparisonSnapshot()
@@ -1254,14 +1251,6 @@ final class GlassEQAppModel {
             try deleteProfile(id: selectedProfileID)
         } catch {
             reportProfileActionFailure(error)
-        }
-    }
-
-    func importProfile() {
-        Task { @MainActor in
-            if ((try? await importProfile(format: importFormat, name: importName, text: importText)) ?? false) {
-                importText = ""
-            }
         }
     }
 
