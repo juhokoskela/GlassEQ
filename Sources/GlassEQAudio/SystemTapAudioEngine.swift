@@ -731,6 +731,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
+    enum CombinedStartupFailureDisposition: Equatable {
+        case fail
+        case retry
+        case restoreThenFail
+        case restoreThenRetry
+    }
+
     private struct PromotedHeadsetRoute: Equatable {
         var outputUID: String
         var nominalSampleRate: Int64
@@ -2462,7 +2469,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let attemptFrameSizes = Self.startupAttemptFrameSizes(
             requestedFrameSize: requestedFrameSize
         )
-        var lastStartupError: AggregateStartupQualificationError?
+        var lastStartupError: (any Error)?
 
         for (index, frameSize) in attemptFrameSizes.enumerated() {
             do {
@@ -2474,21 +2481,37 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     usePhysicalFirstOrdering: usePhysicalFirstOrdering
                 )
                 return
-            } catch let error as AggregateStartupQualificationError {
+            } catch {
                 lastStartupError = error
-                guard index + 1 < attemptFrameSizes.count else {
+                let disposition = Self.combinedStartupFailureDisposition(
+                    isSeparateClockHandoff: isSeparateClockHandoff,
+                    isQualificationFailure: error is AggregateStartupQualificationError,
+                    hasAnotherAttempt: index + 1 < attemptFrameSizes.count
+                )
+                switch disposition {
+                case .fail:
                     throw error
-                }
-                if isSeparateClockHandoff {
-                    do {
-                        try restoreSeparateClockBackend(
-                            afterRejectedPromotion: (output, profile),
-                            preserveOutputBuffer: preserveStagingOutputBuffer
-                        )
-                    } catch let rollbackError {
-                        throw AudioEngineInternalError(
-                            message: "Aggregate startup failed and the staging path could not be restored: \(error.localizedDescription); rollback: \(rollbackError.localizedDescription)"
-                        )
+                case .retry:
+                    break
+                case .restoreThenFail, .restoreThenRetry:
+                    try Self.restoreAfterCombinedStartupFailure(
+                        preserving: error
+                    ) {
+                        do {
+                            try restoreSeparateClockBackend(
+                                afterRejectedPromotion: (output, profile),
+                                preserveOutputBuffer: preserveStagingOutputBuffer
+                            )
+                        } catch {
+                            let restorationError = error
+                            traceDiagnostic {
+                                "combined handoff restoration failed error=\(restorationError)"
+                            }
+                            throw restorationError
+                        }
+                    }
+                    if disposition == .restoreThenFail {
+                        throw error
                     }
                 }
                 Thread.sleep(forTimeInterval: 0.05)
@@ -3143,16 +3166,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 preserveStagingOutputBuffer: true
             )
         } catch {
-            let promotionError = error
-            do {
-                try restoreSeparateClockBackend(
-                    afterRejectedPromotion: context,
-                    preserveOutputBuffer: true
-                )
-            } catch let rollbackError {
-                throw AudioEngineInternalError(
-                    message: "Aggregate startup failed and the compatibility path could not be restored: \(promotionError.localizedDescription); rollback: \(rollbackError.localizedDescription)"
-                )
+            guard activeBackend.withLock({ $0 }) == .separateClock,
+                  separateClockBackend.activeOutputAndProfile() != nil else {
+                throw error
             }
             return .aggregateUnstable
         }
@@ -3184,13 +3200,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         do {
             try startCombinedAggregate(output: currentDefault, profile: context.profile)
         } catch {
-            let promotionError = error
-            do {
-                try restoreSeparateClockBackend(afterRejectedPromotion: context)
-            } catch let rollbackError {
-                throw AudioEngineInternalError(
-                    message: "Headset aggregate promotion failed and the compatibility path could not be restored: \(promotionError.localizedDescription); rollback: \(rollbackError.localizedDescription)"
-                )
+            guard activeBackend.withLock({ $0 }) == .separateClock,
+                  separateClockBackend.activeOutputAndProfile() != nil else {
+                throw error
             }
             return .aggregateUnstable
         }
@@ -4418,6 +4430,28 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             attempts.append(saferFrameSize)
         }
         return attempts
+    }
+
+    static func combinedStartupFailureDisposition(
+        isSeparateClockHandoff: Bool,
+        isQualificationFailure: Bool,
+        hasAnotherAttempt: Bool
+    ) -> CombinedStartupFailureDisposition {
+        if isQualificationFailure, hasAnotherAttempt {
+            return isSeparateClockHandoff ? .restoreThenRetry : .retry
+        }
+        return isSeparateClockHandoff ? .restoreThenFail : .fail
+    }
+
+    static func restoreAfterCombinedStartupFailure(
+        preserving startupError: any Error,
+        restoration: () throws -> Void
+    ) throws {
+        do {
+            try restoration()
+        } catch {
+            throw startupError
+        }
     }
 
     static func startupQualificationTimeout(

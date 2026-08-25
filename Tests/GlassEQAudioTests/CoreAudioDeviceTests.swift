@@ -272,6 +272,43 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func finalCombinedHandoffQualificationFailureRestoresBeforeFailing() {
+        #expect(SystemTapAudioEngine.combinedStartupFailureDisposition(
+            isSeparateClockHandoff: true,
+            isQualificationFailure: true,
+            hasAnotherAttempt: false
+        ) == .restoreThenFail)
+    }
+
+    @Test
+    func nonQualificationCombinedHandoffFailureRestoresWithoutRetrying() {
+        #expect(SystemTapAudioEngine.combinedStartupFailureDisposition(
+            isSeparateClockHandoff: true,
+            isQualificationFailure: false,
+            hasAnotherAttempt: true
+        ) == .restoreThenFail)
+    }
+
+    @Test
+    func combinedHandoffRestorationFailurePreservesStartupError() {
+        let startupError = CoreAudioError(operation: "startup", status: -1)
+        let restorationError = CoreAudioError(operation: "restoration", status: -2)
+
+        do {
+            try SystemTapAudioEngine.restoreAfterCombinedStartupFailure(
+                preserving: startupError
+            ) {
+                throw restorationError
+            }
+            Issue.record("Expected handoff restoration to fail")
+        } catch let error as CoreAudioError {
+            #expect(error == startupError)
+        } catch {
+            Issue.record("Expected the startup error, got \(error)")
+        }
+    }
+
+    @Test
     func aggregateStartupTimeoutScalesForLongCallbacks() {
         #expect(SystemTapAudioEngine.startupQualificationTimeout(
             frameCount: 16,
