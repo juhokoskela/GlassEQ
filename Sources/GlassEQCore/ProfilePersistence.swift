@@ -219,35 +219,9 @@ public enum ProfilePersistence {
             return recoverInvalidStore(at: url, timestamp: timestamp)
         }
 
+        let decodedStore: ProfileStore
         do {
-            var store = try decodeRaw(data)
-            if store.schemaVersion > ProfileStore.currentSchemaVersion {
-                return ProfileStoreLoadResult(
-                    store: defaultStore(),
-                    status: .unsupportedSchemaVersion(
-                        version: store.schemaVersion,
-                        maximumSupported: ProfileStore.currentSchemaVersion
-                    )
-                )
-            }
-            let repairSummary = store.repairReferences()
-            do {
-                try validate(store)
-            } catch {
-                return repairInvalidDecodedStore(
-                    store,
-                    initialRepairSummary: repairSummary,
-                    at: url,
-                    timestamp: timestamp
-                )
-            }
-
-            if repairSummary.didRepair {
-                try save(store, to: url)
-                return ProfileStoreLoadResult(store: store, status: .repairedReferences(repairSummary))
-            }
-
-            return ProfileStoreLoadResult(store: store, status: .loaded)
+            decodedStore = try decodeRaw(data)
         } catch {
             if let repairable = try? decodeRepairableStore(data) {
                 if repairable.store.schemaVersion > ProfileStore.currentSchemaVersion {
@@ -270,6 +244,58 @@ public enum ProfilePersistence {
             }
             return recoverInvalidStore(at: url, timestamp: timestamp)
         }
+
+        var store = decodedStore
+        if store.schemaVersion > ProfileStore.currentSchemaVersion {
+            return ProfileStoreLoadResult(
+                store: defaultStore(),
+                status: .unsupportedSchemaVersion(
+                    version: store.schemaVersion,
+                    maximumSupported: ProfileStore.currentSchemaVersion
+                )
+            )
+        }
+        let repairSummary = store.repairReferences()
+        do {
+            try validate(store)
+        } catch {
+            return repairInvalidDecodedStore(
+                store,
+                initialRepairSummary: repairSummary,
+                at: url,
+                timestamp: timestamp
+            )
+        }
+
+        if repairSummary.didRepair {
+            var committedStore = store
+            committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+            do {
+                try save(committedStore, to: url)
+                return ProfileStoreLoadResult(
+                    store: committedStore,
+                    status: .repairedReferences(repairSummary)
+                )
+            } catch {
+                return ProfileStoreLoadResult(
+                    store: store,
+                    status: .repairedReferences(repairSummary)
+                )
+            }
+        }
+
+        if store.schemaVersion < ProfileStore.currentSchemaVersion {
+            var migratedStore = store
+            migratedStore.schemaVersion = ProfileStore.currentSchemaVersion
+            do {
+                try save(migratedStore, to: url)
+                return ProfileStoreLoadResult(store: migratedStore, status: .loaded)
+            } catch {
+                return ProfileStoreLoadResult(store: store, status: .loaded)
+            }
+        }
+
+        return ProfileStoreLoadResult(store: store, status: .loaded)
     }
 
     public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {
@@ -320,7 +346,9 @@ public enum ProfilePersistence {
 
     private static func encodeForCommit(_ store: ProfileStore) throws -> Data {
         try validate(store)
-        let data = try encode(store)
+        var committedStore = store
+        committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
         return data
     }
@@ -339,7 +367,7 @@ public enum ProfilePersistence {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
-                ?? ProfileStore.currentSchemaVersion
+                ?? ProfileStore.initialSchemaVersion
             outputMappings = try container.decode([OutputDeviceProfileMapping].self, forKey: .outputMappings)
             fallbackProfileID = try container.decode(UUID.self, forKey: .fallbackProfileID)
         }
