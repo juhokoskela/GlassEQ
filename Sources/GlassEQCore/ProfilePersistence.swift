@@ -36,6 +36,11 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
     case tooManyStereoFilters(profileID: UUID, count: Int, maximum: Int)
     case tooManyStereoActiveFilters(profileID: UUID, count: Int, maximum: Int)
     case invalidGraphicBandCount(profileID: UUID, channel: String, count: Int, expected: Int)
+    case missingConvolutionSource(profileID: UUID, channel: String)
+    case unexpectedConvolutionSource(profileID: UUID, channel: String)
+    case invalidMagnitudePointCount(profileID: UUID, channel: String, count: Int, allowed: ClosedRange<Int>)
+    case unsupportedSynthesisVersion(profileID: UUID, version: UInt16)
+    case duplicateMagnitudeFrequency(profileID: UUID, channel: String, frequency: Double)
 
     public var errorDescription: String? {
         switch self {
@@ -69,6 +74,16 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
             return "Profile store contains \(count) active stereo filters, which exceeds the \(maximum)-filter stereo limit."
         case let .invalidGraphicBandCount(_, channel, count, expected):
             return "Graphic profile contains \(count) active \(channel) bands; expected \(expected)."
+        case let .missingConvolutionSource(_, channel):
+            return "Convolution profile is missing its \(channel) source."
+        case let .unexpectedConvolutionSource(_, channel):
+            return "Non-convolution profile contains an unexpected \(channel) convolution source."
+        case let .invalidMagnitudePointCount(_, channel, count, allowed):
+            return "Convolution profile contains \(count) \(channel) magnitude points; expected \(allowed.lowerBound)...\(allowed.upperBound)."
+        case let .unsupportedSynthesisVersion(_, version):
+            return "Convolution profile uses unsupported synthesis version \(version)."
+        case let .duplicateMagnitudeFrequency(_, channel, frequency):
+            return "Convolution profile contains duplicate \(channel) frequency \(format(frequency))."
         }
     }
 
@@ -87,6 +102,7 @@ public enum ProfilePersistence {
     public static let maxStereoFilters = 256
     public static let maxActiveFiltersPerChannel = maxFiltersPerChannel
     public static let maxStereoActiveFilters = maxStereoFilters
+    public static let magnitudePointCountRange = 2...2_048
     public static let frequencyRange: ClosedRange<Double> = 1...24_000
     public static let gainRange: ClosedRange<Double> = -120...120
     public static let preampRange: ClosedRange<Double> = -120...120
@@ -435,6 +451,8 @@ public enum ProfilePersistence {
                 )
             }
         }
+
+        try validateConvolutionSources(profile)
     }
 
     private static func validateFilters(
@@ -502,6 +520,98 @@ public enum ProfilePersistence {
         }
     }
 
+    private static func validateConvolutionSources(_ profile: EQProfile) throws {
+        switch (profile.mode, profile.channelMode) {
+        case (.convolution, .linked):
+            guard let source = profile.convolution else {
+                throw ProfileStoreValidationError.missingConvolutionSource(
+                    profileID: profile.id,
+                    channel: "linked"
+                )
+            }
+            try validateConvolutionSource(source, channel: "linked", profileID: profile.id)
+            if let left = profile.leftConvolution {
+                try validateConvolutionSource(left, channel: "left", profileID: profile.id)
+            }
+            if let right = profile.rightConvolution {
+                try validateConvolutionSource(right, channel: "right", profileID: profile.id)
+            }
+        case (.convolution, .stereo):
+            guard let left = profile.leftConvolution else {
+                throw ProfileStoreValidationError.missingConvolutionSource(
+                    profileID: profile.id,
+                    channel: "left"
+                )
+            }
+            guard let right = profile.rightConvolution else {
+                throw ProfileStoreValidationError.missingConvolutionSource(
+                    profileID: profile.id,
+                    channel: "right"
+                )
+            }
+            try validateConvolutionSource(left, channel: "left", profileID: profile.id)
+            try validateConvolutionSource(right, channel: "right", profileID: profile.id)
+            if let linked = profile.convolution {
+                try validateConvolutionSource(linked, channel: "linked", profileID: profile.id)
+            }
+        case (_, _):
+            guard profile.convolution == nil,
+                  profile.leftConvolution == nil,
+                  profile.rightConvolution == nil else {
+                throw ProfileStoreValidationError.unexpectedConvolutionSource(
+                    profileID: profile.id,
+                    channel: "profile"
+                )
+            }
+        }
+    }
+
+    private static func validateConvolutionSource(
+        _ source: EQConvolutionSource,
+        channel: String,
+        profileID: UUID
+    ) throws {
+        switch source {
+        case .magnitudeCurve(let curve):
+            guard curve.synthesisVersion == MinimumPhaseFIRCompiler.synthesisVersion else {
+                throw ProfileStoreValidationError.unsupportedSynthesisVersion(
+                    profileID: profileID,
+                    version: curve.synthesisVersion
+                )
+            }
+            guard magnitudePointCountRange.contains(curve.points.count) else {
+                throw ProfileStoreValidationError.invalidMagnitudePointCount(
+                    profileID: profileID,
+                    channel: channel,
+                    count: curve.points.count,
+                    allowed: magnitudePointCountRange
+                )
+            }
+            var frequencies = Set<Double>()
+            for point in curve.points {
+                try validate(
+                    point.frequency,
+                    in: frequencyRange,
+                    field: "\(channel) magnitude frequency",
+                    profileID: profileID
+                )
+                try validate(
+                    point.gainDB,
+                    in: gainRange,
+                    field: "\(channel) magnitude gain",
+                    profileID: profileID
+                )
+                guard frequencies.insert(point.frequency).inserted else {
+                    throw ProfileStoreValidationError.duplicateMagnitudeFrequency(
+                        profileID: profileID,
+                        channel: channel,
+                        frequency: point.frequency
+                    )
+                }
+            }
+        }
+    }
+
     private static func graphicBandCount(for mode: EQMode) -> Int? {
         switch mode {
         case .parametric:
@@ -510,6 +620,8 @@ public enum ProfilePersistence {
             return 10
         case .graphic31:
             return 31
+        case .convolution:
+            return nil
         }
     }
 

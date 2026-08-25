@@ -2587,15 +2587,17 @@ struct GlassEQAppModelLifecycleTests {
 
         try model.createProfile(kind: .parametric)
         try model.createProfile(kind: .graphic10)
+        try model.createProfile(kind: .convolution)
         try? await Task.sleep(for: .milliseconds(20))
 
         #expect(!FileManager.default.fileExists(atPath: storeURL.path))
         #expect(await model.flushStoreBeforeQuit())
 
         let loaded = ProfilePersistence.load(from: storeURL).store
-        #expect(loaded.profiles.count == 3)
+        #expect(loaded.profiles.count == 4)
         #expect(loaded.profiles.contains { $0.name == "New Parametric" })
         #expect(loaded.profiles.contains { $0.name == "New 10-Band" })
+        #expect(loaded.profiles.contains { $0.name == "New Response Curve" })
     }
 
     @Test

@@ -267,6 +267,62 @@ public enum FrequencyResponse {
             .max() ?? preampDB
     }
 
+    public static func points(
+        for source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double = 48_000,
+        count: Int = 96
+    ) -> [FrequencyResponsePoint] {
+        let lower = log10(20.0)
+        let upperFrequency = max(
+            20,
+            EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
+        )
+        let upper = log10(upperFrequency)
+        let curve = magnitudePoints(from: source)
+        return (0..<max(count, 2)).map { index in
+            let fraction = Double(index) / Double(max(count - 1, 1))
+            let frequency = pow(10, lower + (upper - lower) * fraction)
+            return FrequencyResponsePoint(
+                frequency: frequency,
+                magnitudeDB: preampDB + MinimumPhaseFIRCompiler.interpolatedGainDB(
+                    frequency: frequency,
+                    points: curve
+                )
+            )
+        }
+    }
+
+    public static func peakMagnitudeDB(
+        for source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double = 48_000
+    ) -> Double {
+        let maximumFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
+            sampleRate: sampleRate
+        )
+        let curve = magnitudePoints(from: source)
+        let relevantGains = curve.lazy
+            .filter { $0.frequency <= maximumFrequency }
+            .map(\.gainDB)
+        let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
+            frequency: maximumFrequency,
+            points: curve
+        )
+        return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
+    }
+
+    private static func magnitudePoints(
+        from source: EQConvolutionSource?
+    ) -> [EQMagnitudePoint] {
+        switch source {
+        case .magnitudeCurve(let curve):
+            return curve.points.sorted { $0.frequency < $1.frequency }
+        case nil:
+            return []
+        }
+    }
+
     private static func enabledCoefficients(filters: [EQFilter], sampleRate: Double) -> [BiquadCoefficients] {
         Array(
             filters.lazy
@@ -319,11 +375,29 @@ public enum EQProfileAnalysis {
         let peaks: [Double]
         switch profile.channelMode {
         case .linked:
-            peaks = [FrequencyResponse.peakMagnitudeDB(for: profile.filters, preampDB: profile.preampDB, sampleRate: sampleRate)]
+            peaks = [peakMagnitudeDB(
+                mode: profile.mode,
+                filters: profile.filters,
+                source: profile.convolution,
+                preampDB: profile.preampDB,
+                sampleRate: sampleRate
+            )]
         case .stereo:
             peaks = [
-                FrequencyResponse.peakMagnitudeDB(for: profile.leftFilters, preampDB: profile.leftPreampDB, sampleRate: sampleRate),
-                FrequencyResponse.peakMagnitudeDB(for: profile.rightFilters, preampDB: profile.rightPreampDB, sampleRate: sampleRate)
+                peakMagnitudeDB(
+                    mode: profile.mode,
+                    filters: profile.leftFilters,
+                    source: profile.leftConvolution,
+                    preampDB: profile.leftPreampDB,
+                    sampleRate: sampleRate
+                ),
+                peakMagnitudeDB(
+                    mode: profile.mode,
+                    filters: profile.rightFilters,
+                    source: profile.rightConvolution,
+                    preampDB: profile.rightPreampDB,
+                    sampleRate: sampleRate
+                )
             ]
         }
         let peak = peaks.max() ?? 0
@@ -336,5 +410,26 @@ public enum EQProfileAnalysis {
         case .stereo:
             return min(profile.leftPreampDB, profile.rightPreampDB)
         }
+    }
+
+    private static func peakMagnitudeDB(
+        mode: EQMode,
+        filters: [EQFilter],
+        source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double
+    ) -> Double {
+        if mode == .convolution {
+            return FrequencyResponse.peakMagnitudeDB(
+                for: source,
+                preampDB: preampDB,
+                sampleRate: sampleRate
+            )
+        }
+        return FrequencyResponse.peakMagnitudeDB(
+            for: filters,
+            preampDB: preampDB,
+            sampleRate: sampleRate
+        )
     }
 }

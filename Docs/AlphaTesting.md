@@ -43,6 +43,9 @@ Run through this checklist with the exact downloaded build:
 - Toggle bypass and confirm audio still plays.
 - Change a 10-band or 31-band EQ setting and confirm the sound changes.
 - Import a small AutoEQ / EqualizerAPO profile if available.
+- Import an EqualizerAPO `GraphicEQ:` profile and confirm it opens as a Response Curve with editable frequency/gain points.
+- Preview and apply a Response Curve while music is playing. Confirm the old response remains uninterrupted during the roughly 341 ms history warm-up and the transition itself is click-free.
+- Start programme-loudness A/B from a Response Curve. Confirm Filters Off retains the profile preamp, matching eventually becomes ready, and returning to EQ is clean.
 - Switch the macOS default output device while audio is playing.
 - Test sleep/wake if practical.
 - Quit and reopen GlassEQ.
@@ -68,6 +71,8 @@ swift run GlassEQDiagnostics 2
 ```
 
 For installed-app testing, report the app status text and any visible callback metrics from the GlassEQ UI. If you can reproduce with the checkout diagnostic, include its full output in the bug report.
+
+For a CPU-contention torture test, reset metrics immediately before each run and use the same route, sample rate, buffer size, programme material, and external workload. Run one biquad profile and one Response Curve for long enough to collect well over 10,000 callbacks. Compare Callback Start Late first. If that distribution stays the same but FIR Head, FIR Tail, Total Render, or Completion Late grows, the convolution path is less tolerant of the poisoned deadline. If Callback Start Late itself grows under FIR, the extra DSP or cache footprint is affecting system scheduling. Tail Completion Slack and its miss count distinguish slow execution from an internal tail-scheduling failure.
 
 ## Known Alpha Issues
 

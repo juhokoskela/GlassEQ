@@ -16,6 +16,67 @@ public enum HeadsetAggregatePromotionResult: Equatable, Sendable {
     case promoted(AudioOutputDevice)
 }
 
+public struct AudioRenderTimingMetrics: Equatable, Sendable {
+    public var callbackStartLatenessObservations: UInt64
+    public var callbackStartLatenessP9999Nanoseconds: UInt64
+    public var maximumCallbackStartLatenessNanoseconds: UInt64
+    public var directHeadObservations: UInt64
+    public var directHeadP9999Nanoseconds: UInt64
+    public var maximumDirectHeadNanoseconds: UInt64
+    public var tailWorkObservations: UInt64
+    public var tailWorkP9999Nanoseconds: UInt64
+    public var maximumTailWorkNanoseconds: UInt64
+    public var totalRenderObservations: UInt64
+    public var totalRenderP9999Nanoseconds: UInt64
+    public var maximumTotalRenderNanoseconds: UInt64
+    public var completionLatenessObservations: UInt64
+    public var completionLatenessP9999Nanoseconds: UInt64
+    public var maximumCompletionLatenessNanoseconds: UInt64
+    public var tailCompletionObservations: UInt64
+    public var minimumTailCompletionSlackFrames: Int
+    public var tailDeadlineMisses: UInt64
+
+    public init(
+        callbackStartLatenessObservations: UInt64 = 0,
+        callbackStartLatenessP9999Nanoseconds: UInt64 = 0,
+        maximumCallbackStartLatenessNanoseconds: UInt64 = 0,
+        directHeadObservations: UInt64 = 0,
+        directHeadP9999Nanoseconds: UInt64 = 0,
+        maximumDirectHeadNanoseconds: UInt64 = 0,
+        tailWorkObservations: UInt64 = 0,
+        tailWorkP9999Nanoseconds: UInt64 = 0,
+        maximumTailWorkNanoseconds: UInt64 = 0,
+        totalRenderObservations: UInt64 = 0,
+        totalRenderP9999Nanoseconds: UInt64 = 0,
+        maximumTotalRenderNanoseconds: UInt64 = 0,
+        completionLatenessObservations: UInt64 = 0,
+        completionLatenessP9999Nanoseconds: UInt64 = 0,
+        maximumCompletionLatenessNanoseconds: UInt64 = 0,
+        tailCompletionObservations: UInt64 = 0,
+        minimumTailCompletionSlackFrames: Int = 0,
+        tailDeadlineMisses: UInt64 = 0
+    ) {
+        self.callbackStartLatenessObservations = callbackStartLatenessObservations
+        self.callbackStartLatenessP9999Nanoseconds = callbackStartLatenessP9999Nanoseconds
+        self.maximumCallbackStartLatenessNanoseconds = maximumCallbackStartLatenessNanoseconds
+        self.directHeadObservations = directHeadObservations
+        self.directHeadP9999Nanoseconds = directHeadP9999Nanoseconds
+        self.maximumDirectHeadNanoseconds = maximumDirectHeadNanoseconds
+        self.tailWorkObservations = tailWorkObservations
+        self.tailWorkP9999Nanoseconds = tailWorkP9999Nanoseconds
+        self.maximumTailWorkNanoseconds = maximumTailWorkNanoseconds
+        self.totalRenderObservations = totalRenderObservations
+        self.totalRenderP9999Nanoseconds = totalRenderP9999Nanoseconds
+        self.maximumTotalRenderNanoseconds = maximumTotalRenderNanoseconds
+        self.completionLatenessObservations = completionLatenessObservations
+        self.completionLatenessP9999Nanoseconds = completionLatenessP9999Nanoseconds
+        self.maximumCompletionLatenessNanoseconds = maximumCompletionLatenessNanoseconds
+        self.tailCompletionObservations = tailCompletionObservations
+        self.minimumTailCompletionSlackFrames = minimumTailCompletionSlackFrames
+        self.tailDeadlineMisses = tailDeadlineMisses
+    }
+}
+
 public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Sendable {
     public var outputDeviceUID: String
     public var nativeOutputStreamIndex: Int
@@ -67,6 +128,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
     public var renderDeadlineMisses: UInt64
+    public var callbackStartStarvations: UInt64
+    public var renderOverruns: UInt64
     public var playbackTimestampDiscontinuities: UInt64
     public var playbackBufferRenegotiations: UInt64
     public var adaptivePlaybackRenderFailures: UInt64
@@ -87,6 +150,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public var minimumOutputLeadNanoseconds: UInt64
     public var maximumOutputLeadNanoseconds: UInt64
     public var averageOutputLeadNanoseconds: Double
+    public var renderTiming: AudioRenderTimingMetrics
 
     public init(
         capturedFrames: UInt64 = 0,
@@ -117,6 +181,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
         renderDeadlineMisses: UInt64 = 0,
+        callbackStartStarvations: UInt64 = 0,
+        renderOverruns: UInt64 = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
         playbackBufferRenegotiations: UInt64 = 0,
         adaptivePlaybackRenderFailures: UInt64 = 0,
@@ -136,7 +202,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         averageInputAgeNanoseconds: Double = 0,
         minimumOutputLeadNanoseconds: UInt64 = 0,
         maximumOutputLeadNanoseconds: UInt64 = 0,
-        averageOutputLeadNanoseconds: Double = 0
+        averageOutputLeadNanoseconds: Double = 0,
+        renderTiming: AudioRenderTimingMetrics = AudioRenderTimingMetrics()
     ) {
         self.capturedFrames = capturedFrames
         self.playedFrames = playedFrames
@@ -166,6 +233,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
         self.renderDeadlineMisses = renderDeadlineMisses
+        self.callbackStartStarvations = callbackStartStarvations
+        self.renderOverruns = renderOverruns
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
         self.playbackBufferRenegotiations = playbackBufferRenegotiations
         self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
@@ -186,6 +255,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         self.minimumOutputLeadNanoseconds = minimumOutputLeadNanoseconds
         self.maximumOutputLeadNanoseconds = maximumOutputLeadNanoseconds
         self.averageOutputLeadNanoseconds = averageOutputLeadNanoseconds
+        self.renderTiming = renderTiming
     }
 }
 
@@ -401,6 +471,217 @@ struct RealtimeOutputFade: Sendable {
     }
 }
 
+struct RealtimeOutputDeclicker: Sendable {
+    static let durationSeconds = 64.0 / 48_000.0
+
+    private let correctionFrameCount: Int
+    private var lastSamples: [Float]
+    private var correctionAnchors: [Float]
+    private var hasLastSamples = false
+    private var correctionPending = false
+    private var completedCorrectionFrames = 0
+    private var remainingCorrectionFrames = 0
+
+    init(
+        sampleRate: Double,
+        channelCount: Int,
+        durationSeconds: Double = Self.durationSeconds
+    ) {
+        let validSampleRate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 48_000
+        let validDuration = durationSeconds.isFinite && durationSeconds > 0
+            ? durationSeconds
+            : Self.durationSeconds
+        self.correctionFrameCount = max(
+            Int((validSampleRate * validDuration).rounded()),
+            2
+        )
+        let channels = max(channelCount, 1)
+        self.lastSamples = Array(repeating: 0, count: channels)
+        self.correctionAnchors = Array(repeating: 0, count: channels)
+    }
+
+    mutating func markDiscontinuity() {
+        correctionPending = true
+    }
+
+    mutating func apply(
+        to samples: UnsafeMutableBufferPointer<Float>,
+        frameCount: Int,
+        channelCount: Int
+    ) {
+        guard channelCount == lastSamples.count else {
+            return
+        }
+        let availableFrames = min(max(frameCount, 0), samples.count / channelCount)
+        guard availableFrames > 0 else {
+            return
+        }
+
+        if correctionPending {
+            correctionPending = false
+            if hasLastSamples {
+                for channel in 0..<channelCount {
+                    correctionAnchors[channel] = lastSamples[channel]
+                }
+                completedCorrectionFrames = 0
+                remainingCorrectionFrames = correctionFrameCount
+            }
+        }
+
+        let framesToCorrect = min(availableFrames, remainingCorrectionFrames)
+        if framesToCorrect > 0 {
+            var sampleIndex = 0
+            for _ in 0..<framesToCorrect {
+                let progress = Float(completedCorrectionFrames)
+                    / Float(correctionFrameCount - 1)
+                let smoothedProgress = progress * progress * (3 - 2 * progress)
+                for channel in 0..<channelCount {
+                    let anchor = correctionAnchors[channel]
+                    samples[sampleIndex + channel] = anchor
+                        + (samples[sampleIndex + channel] - anchor) * smoothedProgress
+                }
+                completedCorrectionFrames += 1
+                remainingCorrectionFrames -= 1
+                sampleIndex += channelCount
+            }
+        }
+
+        let lastFrameIndex = (availableFrames - 1) * channelCount
+        for channel in 0..<channelCount {
+            lastSamples[channel] = samples[lastFrameIndex + channel]
+        }
+        hasLastSamples = true
+    }
+}
+
+struct ExtremeDurationSnapshot {
+    var observations: UInt64
+    var p9999Nanoseconds: UInt64
+    var maximumNanoseconds: UInt64
+}
+
+final class RealtimeExtremeDurationTracker: @unchecked Sendable {
+    private static let fineBucketCount = 256
+    private static let fineBucketWidthNanoseconds: UInt64 = 250
+    private static let coarseBucketCount = 256
+    private static let coarseBucketWidthNanoseconds: UInt64 = 4_000
+    private static let overflowBucket = fineBucketCount + coarseBucketCount
+    private static let bucketCount = overflowBucket + 1
+    private static let publishInterval: UInt64 = 1_024
+
+    private let requestedGeneration = Atomic<UInt64>(0)
+    private let publishedObservations = Atomic<UInt64>(0)
+    private let publishedP9999Nanoseconds = Atomic<UInt64>(0)
+    private let publishedMaximumNanoseconds = Atomic<UInt64>(0)
+    private var localGeneration: UInt64 = 0
+    private var bucketGenerations = [UInt64](repeating: .max, count: bucketCount)
+    private var bucketCounts = [UInt64](repeating: 0, count: bucketCount)
+    private var observations: UInt64 = 0
+    private var maximumNanoseconds: UInt64 = 0
+    private let publishPhase: UInt64
+
+    init(publishPhase: UInt64 = 0) {
+        self.publishPhase = publishPhase % Self.publishInterval
+    }
+
+    func record(_ nanoseconds: UInt64) {
+        adoptRequestedGeneration()
+        let bucket = Self.bucketIndex(for: nanoseconds)
+        if bucketGenerations[bucket] != localGeneration {
+            bucketGenerations[bucket] = localGeneration
+            bucketCounts[bucket] = 0
+        }
+        bucketCounts[bucket] &+= 1
+        observations &+= 1
+        if nanoseconds > maximumNanoseconds {
+            maximumNanoseconds = nanoseconds
+            publishedMaximumNanoseconds.store(nanoseconds, ordering: .relaxed)
+        }
+        if observations == 1
+            || (observations &+ publishPhase).isMultiple(of: Self.publishInterval) {
+            publish()
+        }
+    }
+
+    func reset() {
+        requestedGeneration.wrappingAdd(1, ordering: .releasing)
+        publishedObservations.store(0, ordering: .relaxed)
+        publishedP9999Nanoseconds.store(0, ordering: .relaxed)
+        publishedMaximumNanoseconds.store(0, ordering: .relaxed)
+    }
+
+    func snapshot() -> ExtremeDurationSnapshot {
+        ExtremeDurationSnapshot(
+            observations: publishedObservations.load(ordering: .relaxed),
+            p9999Nanoseconds: publishedP9999Nanoseconds.load(ordering: .relaxed),
+            maximumNanoseconds: publishedMaximumNanoseconds.load(ordering: .relaxed)
+        )
+    }
+
+    private func adoptRequestedGeneration() {
+        let requested = requestedGeneration.load(ordering: .acquiring)
+        guard requested != localGeneration else {
+            return
+        }
+        localGeneration = requested
+        observations = 0
+        maximumNanoseconds = 0
+    }
+
+    private func publish() {
+        let rank = max(
+            UInt64(ceil(Double(observations) * 0.9999)),
+            1
+        )
+        var cumulative: UInt64 = 0
+        var percentile = maximumNanoseconds
+        for bucket in 0..<Self.bucketCount
+        where bucketGenerations[bucket] == localGeneration {
+            cumulative &+= bucketCounts[bucket]
+            if cumulative >= rank {
+                percentile = min(
+                    Self.bucketUpperBound(
+                        bucket,
+                        maximumNanoseconds: maximumNanoseconds
+                    ),
+                    maximumNanoseconds
+                )
+                break
+            }
+        }
+        publishedMaximumNanoseconds.store(maximumNanoseconds, ordering: .relaxed)
+        publishedP9999Nanoseconds.store(percentile, ordering: .relaxed)
+        publishedObservations.store(observations, ordering: .releasing)
+    }
+
+    private static func bucketIndex(for nanoseconds: UInt64) -> Int {
+        let fineLimit = UInt64(fineBucketCount) * fineBucketWidthNanoseconds
+        if nanoseconds < fineLimit {
+            return Int(nanoseconds / fineBucketWidthNanoseconds)
+        }
+        let coarseOffset = nanoseconds - fineLimit
+        let coarseBucket = Int(coarseOffset / coarseBucketWidthNanoseconds)
+        return coarseBucket < coarseBucketCount
+            ? fineBucketCount + coarseBucket
+            : overflowBucket
+    }
+
+    private static func bucketUpperBound(
+        _ bucket: Int,
+        maximumNanoseconds: UInt64
+    ) -> UInt64 {
+        if bucket < fineBucketCount {
+            return UInt64(bucket + 1) * fineBucketWidthNanoseconds
+        }
+        if bucket < overflowBucket {
+            let fineLimit = UInt64(fineBucketCount) * fineBucketWidthNanoseconds
+            return fineLimit
+                + UInt64(bucket - fineBucketCount + 1) * coarseBucketWidthNanoseconds
+        }
+        return maximumNanoseconds
+    }
+}
+
 public final class SystemTapAudioEngine: @unchecked Sendable {
     private static let preferredAggregateBufferFrameSize: UInt32 = 16
     private static let maximumSupportedCallbackFrames = 8192
@@ -532,6 +813,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private var dspTransition: RealtimeEQTransition
         private var activeSystemSoundPreampGains: (left: Float, right: Float)
         private var outputFade: RealtimeOutputFade
+        private var outputDeclicker: RealtimeOutputDeclicker
         private var scratchSamples: [Float]
         private var inputTimestampState = TimestampContinuityState()
         private var outputTimestampState = TimestampContinuityState()
@@ -567,8 +849,18 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
         private let renderDeadlineMisses = Atomic<UInt64>(0)
+        private let callbackStartStarvations = Atomic<UInt64>(0)
+        private let renderOverruns = Atomic<UInt64>(0)
         private var previousRenderStartNanoseconds: UInt64?
         private var previousRenderFrameCount = 0
+        private let callbackStartLateness = RealtimeExtremeDurationTracker(publishPhase: 0)
+        private let directHeadDuration = RealtimeExtremeDurationTracker(publishPhase: 205)
+        private let tailWorkDuration = RealtimeExtremeDurationTracker(publishPhase: 410)
+        private let totalRenderDuration = RealtimeExtremeDurationTracker(publishPhase: 615)
+        private let completionLateness = RealtimeExtremeDurationTracker(publishPhase: 820)
+        private let tailCompletionObservations = Atomic<UInt64>(0)
+        private let minimumTailCompletionSlackFrames = Atomic<Int>(Int.max)
+        private let tailDeadlineMisses = Atomic<UInt64>(0)
         private let tapToOutputLatencyObservations = Atomic<UInt64>(0)
         private let minTapToOutputLatencyNanoseconds = Atomic<UInt64>(.max)
         private let maxTapToOutputLatencyNanoseconds = Atomic<UInt64>(0)
@@ -599,36 +891,30 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
 
         init(
-            profile: EQProfile,
-            sampleRate: Double,
-            channelCount: Int,
+            renderConfiguration: EQRenderConfiguration,
             inputChannelOffset: Int,
             systemSoundInputChannelOffset: Int,
             maxCallbackFrames: Int
         ) {
-            self.channelCount = max(channelCount, 1)
-            self.sampleRate = sampleRate
+            self.channelCount = max(renderConfiguration.configuration.channelCount, 1)
+            self.sampleRate = renderConfiguration.configuration.sampleRate
             self.inputChannelOffset = max(inputChannelOffset, 0)
             self.systemSoundInputChannelOffset = max(systemSoundInputChannelOffset, 0)
             self.maxCallbackFrames = maxCallbackFrames
-            self.outputFade = RealtimeOutputFade(sampleRate: sampleRate)
+            self.outputFade = RealtimeOutputFade(sampleRate: self.sampleRate)
+            self.outputDeclicker = RealtimeOutputDeclicker(
+                sampleRate: self.sampleRate,
+                channelCount: self.channelCount
+            )
             self.scratchSamples = Array(
                 repeating: 0,
                 count: maxCallbackFrames * self.channelCount
-            )
-            let renderConfiguration = EQRenderConfiguration(
-                profile: profile,
-                sampleRate: sampleRate,
-                channelCount: self.channelCount,
-                maximumUsableFrequency: EQRouteFrequencyPolicy.maximumUsableFrequency(
-                    sampleRate: sampleRate
-                )
             )
             self.dspTransition = RealtimeEQTransition(
                 activeProcessor: EQProcessor(renderConfiguration: renderConfiguration),
                 maximumFrameCount: maxCallbackFrames,
                 channelCount: self.channelCount,
-                sampleRate: sampleRate
+                sampleRate: self.sampleRate
             )
             self.activeSystemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: renderConfiguration
@@ -680,28 +966,98 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let inputFrameCount = min(mainInputFrameCount, systemSoundFrameCount)
 
             let renderStartNanoseconds = AudioConvertHostTimeToNanos(callbackHostTime)
-            let entryDeadlineMisses = previousRenderStartNanoseconds.map {
+            let previousRenderStart = previousRenderStartNanoseconds
+            let expectedEntryIntervalNanoseconds = previousRenderStart.map { _ in
+                SystemTapAudioEngine.renderPeriodNanoseconds(
+                    frameCount: previousRenderFrameCount,
+                    sampleRate: sampleRate
+                )
+            } ?? 0
+            let entryElapsedNanoseconds = previousRenderStart.map {
+                renderStartNanoseconds >= $0 ? renderStartNanoseconds - $0 : 0
+            } ?? 0
+            let callbackStartLatenessNanoseconds = entryElapsedNanoseconds
+                > expectedEntryIntervalNanoseconds
+                ? entryElapsedNanoseconds - expectedEntryIntervalNanoseconds
+                : 0
+            if previousRenderStart != nil {
+                callbackStartLateness.record(callbackStartLatenessNanoseconds)
+            }
+            let entryDeadlineMisses = previousRenderStart.map { _ in
                 SystemTapAudioEngine.missedRenderDeadlines(
-                    elapsedNanoseconds: renderStartNanoseconds >= $0
-                        ? renderStartNanoseconds - $0
-                        : 0,
+                    elapsedNanoseconds: entryElapsedNanoseconds,
                     frameCount: previousRenderFrameCount,
                     sampleRate: sampleRate
                 )
             } ?? 0
             previousRenderStartNanoseconds = renderStartNanoseconds
             previousRenderFrameCount = outputFrameCount
+            var renderWorkTiming = EQRenderWorkTiming()
             defer {
                 let renderEndNanoseconds = AudioConvertHostTimeToNanos(
                     AudioGetCurrentHostTime()
                 )
+                let totalRenderNanoseconds = renderEndNanoseconds >= renderStartNanoseconds
+                    ? renderEndNanoseconds - renderStartNanoseconds
+                    : 0
+                totalRenderDuration.record(totalRenderNanoseconds)
+                if previousRenderStart != nil {
+                    let currentPeriodNanoseconds = SystemTapAudioEngine.renderPeriodNanoseconds(
+                        frameCount: outputFrameCount,
+                        sampleRate: sampleRate
+                    )
+                    let completionElapsed = callbackStartLatenessNanoseconds
+                        .addingReportingOverflow(totalRenderNanoseconds)
+                    let completionElapsedNanoseconds = completionElapsed.overflow
+                        ? UInt64.max
+                        : completionElapsed.partialValue
+                    completionLateness.record(
+                        completionElapsedNanoseconds > currentPeriodNanoseconds
+                            ? completionElapsedNanoseconds - currentPeriodNanoseconds
+                            : 0
+                    )
+                }
+                if renderWorkTiming.directHeadHostTicks > 0 {
+                    directHeadDuration.record(
+                        AudioConvertHostTimeToNanos(renderWorkTiming.directHeadHostTicks)
+                    )
+                }
+                if renderWorkTiming.tailScheduledWorkHostTicks > 0 {
+                    tailWorkDuration.record(
+                        AudioConvertHostTimeToNanos(renderWorkTiming.tailScheduledWorkHostTicks)
+                    )
+                }
+                if renderWorkTiming.tailCompletionObservations > 0 {
+                    tailCompletionObservations.wrappingAdd(
+                        renderWorkTiming.tailCompletionObservations,
+                        ordering: .relaxed
+                    )
+                    updateMinimum(
+                        minimumTailCompletionSlackFrames,
+                        renderWorkTiming.minimumTailCompletionSlackFrames
+                    )
+                }
+                if renderWorkTiming.tailDeadlineMisses > 0 {
+                    tailDeadlineMisses.wrappingAdd(
+                        renderWorkTiming.tailDeadlineMisses,
+                        ordering: .relaxed
+                    )
+                }
                 let executionDeadlineMisses = SystemTapAudioEngine.missedRenderDeadlines(
-                    elapsedNanoseconds: renderEndNanoseconds >= renderStartNanoseconds
-                        ? renderEndNanoseconds - renderStartNanoseconds
-                        : 0,
+                    elapsedNanoseconds: totalRenderNanoseconds,
                     frameCount: outputFrameCount,
                     sampleRate: sampleRate
                 )
+                if entryDeadlineMisses > 0 {
+                    callbackStartStarvations.wrappingAdd(1, ordering: .relaxed)
+                }
+                if SystemTapAudioEngine.renderOverranPeriod(
+                    elapsedNanoseconds: totalRenderNanoseconds,
+                    frameCount: outputFrameCount,
+                    sampleRate: sampleRate
+                ) {
+                    renderOverruns.wrappingAdd(1, ordering: .relaxed)
+                }
                 let missedDeadlines = max(entryDeadlineMisses, executionDeadlineMisses)
                 if missedDeadlines > 0 {
                     renderDeadlineMisses.wrappingAdd(
@@ -771,6 +1127,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: frameCount,
                     channelCount: channelCount
                 )
+                renderWorkTiming = transitionResult.workTiming
                 if transitionResult.programmeComparison.isActive
                     || programmeComparisonActive.load(ordering: .relaxed) {
                     publishProgrammeComparisonSnapshot(
@@ -803,6 +1160,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 }
 
                 outputFade.apply(
+                    to: samples,
+                    frameCount: frameCount,
+                    channelCount: channelCount
+                )
+                outputDeclicker.apply(
                     to: samples,
                     frameCount: frameCount,
                     channelCount: channelCount
@@ -904,6 +1266,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
             renderDeadlineMisses.store(0, ordering: .relaxed)
+            callbackStartStarvations.store(0, ordering: .relaxed)
+            renderOverruns.store(0, ordering: .relaxed)
+            callbackStartLateness.reset()
+            directHeadDuration.reset()
+            tailWorkDuration.reset()
+            totalRenderDuration.reset()
+            completionLateness.reset()
+            tailCompletionObservations.store(0, ordering: .relaxed)
+            minimumTailCompletionSlackFrames.store(Int.max, ordering: .relaxed)
+            tailDeadlineMisses.store(0, ordering: .relaxed)
             tapToOutputLatencyObservations.store(0, ordering: .relaxed)
             minTapToOutputLatencyNanoseconds.store(.max, ordering: .relaxed)
             maxTapToOutputLatencyNanoseconds.store(0, ordering: .relaxed)
@@ -935,6 +1307,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let totalJumpInterval = totalTimestampJumpIntervalNanoseconds.load(
                 ordering: .relaxed
             )
+            let callbackStart = callbackStartLateness.snapshot()
+            let directHead = directHeadDuration.snapshot()
+            let tailWork = tailWorkDuration.snapshot()
+            let totalRender = totalRenderDuration.snapshot()
+            let completion = completionLateness.snapshot()
+            let tailCompletions = tailCompletionObservations.load(ordering: .relaxed)
+            let minimumTailSlack = minimumTailCompletionSlackFrames.load(ordering: .relaxed)
             return AudioEngineMetrics(
                 capturedFrames: capturedFrames.load(ordering: .relaxed),
                 playedFrames: playedFrames.load(ordering: .relaxed),
@@ -975,6 +1354,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
                 renderDeadlineMisses: renderDeadlineMisses.load(ordering: .relaxed),
+                callbackStartStarvations: callbackStartStarvations.load(ordering: .relaxed),
+                renderOverruns: renderOverruns.load(ordering: .relaxed),
                 tapToOutputLatencyObservations: latencyObservations,
                 minimumTapToOutputLatencyNanoseconds: latencyObservations == 0 || minimumLatency == .max
                     ? 0
@@ -999,7 +1380,30 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 maximumOutputLeadNanoseconds: maxOutputLeadNanoseconds.load(ordering: .relaxed),
                 averageOutputLeadNanoseconds: timingObservations == 0
                     ? 0
-                    : Double(totalOutputLead) / Double(timingObservations)
+                    : Double(totalOutputLead) / Double(timingObservations),
+                renderTiming: AudioRenderTimingMetrics(
+                    callbackStartLatenessObservations: callbackStart.observations,
+                    callbackStartLatenessP9999Nanoseconds: callbackStart.p9999Nanoseconds,
+                    maximumCallbackStartLatenessNanoseconds: callbackStart.maximumNanoseconds,
+                    directHeadObservations: directHead.observations,
+                    directHeadP9999Nanoseconds: directHead.p9999Nanoseconds,
+                    maximumDirectHeadNanoseconds: directHead.maximumNanoseconds,
+                    tailWorkObservations: tailWork.observations,
+                    tailWorkP9999Nanoseconds: tailWork.p9999Nanoseconds,
+                    maximumTailWorkNanoseconds: tailWork.maximumNanoseconds,
+                    totalRenderObservations: totalRender.observations,
+                    totalRenderP9999Nanoseconds: totalRender.p9999Nanoseconds,
+                    maximumTotalRenderNanoseconds: totalRender.maximumNanoseconds,
+                    completionLatenessObservations: completion.observations,
+                    completionLatenessP9999Nanoseconds: completion.p9999Nanoseconds,
+                    maximumCompletionLatenessNanoseconds: completion.maximumNanoseconds,
+                    tailCompletionObservations: tailCompletions,
+                    minimumTailCompletionSlackFrames:
+                        tailCompletions == 0 || minimumTailSlack == Int.max
+                            ? 0
+                            : minimumTailSlack,
+                    tailDeadlineMisses: tailDeadlineMisses.load(ordering: .relaxed)
+                )
             )
         }
 
@@ -1303,6 +1707,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 )
             }
             if inputJump != nil, outputJump != nil {
+                outputDeclicker.markDiscontinuity()
                 recordPairedTimestampJump(inputTime: inputTime, outputTime: outputTime)
                 if inputJump?.precededByStableSlope == true,
                    outputJump?.precededByStableSlope == true {
@@ -1598,6 +2003,24 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             updateMaximum(maxOutputLeadNanoseconds, timing.outputLead)
             totalOutputLeadNanoseconds.wrappingAdd(timing.outputLead, ordering: .relaxed)
             callbackTimingObservations.wrappingAdd(1, ordering: .relaxed)
+        }
+
+        private func updateMinimum(
+            _ counter: borrowing Atomic<Int>,
+            _ value: Int
+        ) {
+            var current = counter.load(ordering: .relaxed)
+            while value < current {
+                let result = counter.compareExchange(
+                    expected: current,
+                    desired: value,
+                    ordering: .relaxed
+                )
+                if result.exchanged {
+                    return
+                }
+                current = result.original
+            }
         }
 
         private func updateMinimum(
@@ -2039,10 +2462,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 )
             }
 
-            let preparedRuntime = AudioRuntime(
+            let renderConfiguration = try EQRenderConfiguration.prepare(
                 profile: profile,
                 sampleRate: aggregate.nominalSampleRate,
                 channelCount: mainTapChannelCount,
+                maximumUsableFrequency: EQRouteFrequencyPolicy.maximumUsableFrequency(
+                    sampleRate: aggregate.nominalSampleRate
+                )
+            )
+            let preparedRuntime = AudioRuntime(
+                renderConfiguration: renderConfiguration,
                 inputChannelOffset: tapInputChannelOffsets.main,
                 systemSoundInputChannelOffset: tapInputChannelOffsets.systemSounds,
                 maxCallbackFrames: Self.maximumSupportedCallbackFrames
@@ -2190,33 +2619,45 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         if activeBackend.withLock({ $0 }) == .separateClock {
             return separateClockBackend.updateDSP(profile: profile)
         }
-        return control.withLock { state in
+        guard let preparation = control.withLock({ state -> (AudioRuntime, EQProfile, Double)? in
             guard let runtime = state.runtime,
                   let activeProfile = state.activeProfile else {
-                return false
+                return nil
             }
             let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
                 sampleRate: runtime.sampleRate
             )
+            return (runtime, activeProfile, maximumUsableFrequency)
+        }) else {
+            return false
+        }
+        let (runtime, activeProfile, maximumUsableFrequency) = preparation
+        guard let preparedConfig = try? EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ), preparedConfig.isNumericallySafe else {
+            return false
+        }
+        return control.withLock { state in
+            guard state.runtime === runtime,
+                  state.activeProfile == activeProfile else {
+                return false
+            }
             guard Self.canHotSwapDSP(
                 from: activeProfile,
                 to: profile,
                 sampleRate: runtime.sampleRate,
                 channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
+                maximumUsableFrequency: maximumUsableFrequency,
+                preparedConfiguration: preparedConfig
             ) else {
                 return false
             }
             runtime.setProgrammeComparisonSelection(.equalized)
             runtime.drainDSPConfigBoxes()
-            runtime.publishPendingDSPConfig(
-                EQRenderConfiguration(
-                    profile: profile,
-                    sampleRate: runtime.sampleRate,
-                    channelCount: runtime.channelCount,
-                    maximumUsableFrequency: maximumUsableFrequency
-                )
-            )
+            runtime.publishPendingDSPConfig(preparedConfig)
             state.activeProfile = profile
             return true
         }
@@ -2230,27 +2671,38 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         if activeBackend.withLock({ $0 }) == .separateClock {
             return separateClockBackend.beginProgrammeComparison(profile: profile)
         }
-        return control.withLock { state in
-            guard let runtime = state.runtime else {
-                return false
+        guard let preparation = control.withLock({ state -> (AudioRuntime, EQProfile)? in
+            guard let runtime = state.runtime,
+                  let activeProfile = state.activeProfile else {
+                return nil
             }
-            let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
-                sampleRate: runtime.sampleRate
-            )
-            let equalizedConfig = EQRenderConfiguration(
-                profile: profile,
-                sampleRate: runtime.sampleRate,
-                channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
-            )
-            let referenceConfig = EQRenderConfiguration(
-                profile: profile.programmeComparisonReference,
-                sampleRate: runtime.sampleRate,
-                channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
-            )
-            guard equalizedConfig.isNumericallySafe,
-                  referenceConfig.isNumericallySafe else {
+            return (runtime, activeProfile)
+        }) else {
+            return false
+        }
+        let (runtime, activeProfile) = preparation
+        let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
+            sampleRate: runtime.sampleRate
+        )
+        guard let equalizedConfig = try? EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ),
+        let referenceConfig = try? EQRenderConfiguration.prepare(
+            profile: profile.programmeComparisonReference,
+            sampleRate: runtime.sampleRate,
+            channelCount: runtime.channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ),
+        equalizedConfig.isNumericallySafe,
+        referenceConfig.isNumericallySafe else {
+            return false
+        }
+        return control.withLock { state in
+            guard state.runtime === runtime,
+                  state.activeProfile == activeProfile else {
                 return false
             }
             runtime.setProgrammeComparisonSelection(.equalized)
@@ -3033,14 +3485,18 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         to nextProfile: EQProfile,
         sampleRate: Double,
         channelCount: Int,
-        maximumUsableFrequency: Double? = nil
+        maximumUsableFrequency: Double? = nil,
+        preparedConfiguration: EQRenderConfiguration? = nil
     ) -> Bool {
-        EQRenderConfiguration(
+        if let preparedConfiguration {
+            return preparedConfiguration.isNumericallySafe
+        }
+        return (try? EQRenderConfiguration.prepare(
             profile: nextProfile,
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ).isNumericallySafe
+        ))?.isNumericallySafe == true
     }
 
     static func supportedRuntimeChannelCount(
@@ -3543,16 +3999,41 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         frameCount: Int,
         sampleRate: Double
     ) -> UInt64 {
+        let expectedNanoseconds = renderPeriodNanoseconds(
+            frameCount: frameCount,
+            sampleRate: sampleRate
+        )
+        guard expectedNanoseconds > 0 else {
+            return 0
+        }
+        let elapsedPeriods = elapsedNanoseconds / expectedNanoseconds
+        return elapsedPeriods >= 2 ? elapsedPeriods - 1 : 0
+    }
+
+    static func renderOverranPeriod(
+        elapsedNanoseconds: UInt64,
+        frameCount: Int,
+        sampleRate: Double
+    ) -> Bool {
+        let expectedNanoseconds = renderPeriodNanoseconds(
+            frameCount: frameCount,
+            sampleRate: sampleRate
+        )
+        return expectedNanoseconds > 0 && elapsedNanoseconds > expectedNanoseconds
+    }
+
+    static func renderPeriodNanoseconds(
+        frameCount: Int,
+        sampleRate: Double
+    ) -> UInt64 {
         guard frameCount > 0,
               sampleRate.isFinite,
               sampleRate > 0 else {
             return 0
         }
-        let expectedNanoseconds = UInt64(
+        return UInt64(
             max((Double(frameCount) * 1_000_000_000 / sampleRate).rounded(), 1)
         )
-        let elapsedPeriods = elapsedNanoseconds / expectedNanoseconds
-        return elapsedPeriods >= 2 ? elapsedPeriods - 1 : 0
     }
 
     static func preferredBufferFrameSize(for _: AudioOutputDevice) -> UInt32 {

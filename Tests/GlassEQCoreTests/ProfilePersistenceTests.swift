@@ -457,6 +457,78 @@ struct ProfilePersistenceTests {
         )
     }
 
+    @Test
+    func convolutionProfileRoundTripsMagnitudeCurveSource() throws {
+        var profile = EQProfile.flatConvolution
+        profile.name = "Room Curve"
+        profile.preampDB = -5.5
+        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 4),
+            EQMagnitudePoint(frequency: 1_000, gainDB: -2),
+            EQMagnitudePoint(frequency: 20_000, gainDB: 1)
+        ]))
+        let store = ProfileStore(profiles: [profile], fallbackProfileID: profile.id)
+
+        let decoded = try ProfilePersistence.decode(ProfilePersistence.encode(store))
+
+        #expect(decoded == store)
+    }
+
+    @Test
+    func decodeRejectsConvolutionProfileWithoutSource() throws {
+        let profile = EQProfile(
+            name: "Missing Curve",
+            mode: .convolution,
+            filters: []
+        )
+
+        try expectValidationFailure(
+            ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
+            expected: .missingConvolutionSource(
+                profileID: profile.id,
+                channel: "linked"
+            )
+        )
+    }
+
+    @Test
+    func decodeRejectsUnsupportedConvolutionSynthesisVersion() throws {
+        var profile = EQProfile.flatConvolution
+        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(
+            synthesisVersion: MinimumPhaseFIRCompiler.synthesisVersion + 1,
+            points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 20_000, gainDB: 0)
+            ]
+        ))
+
+        try expectValidationFailure(
+            ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
+            expected: .unsupportedSynthesisVersion(
+                profileID: profile.id,
+                version: MinimumPhaseFIRCompiler.synthesisVersion + 1
+            )
+        )
+    }
+
+    @Test
+    func decodeRejectsConvolutionCurveWithDuplicateFrequency() throws {
+        var profile = EQProfile.flatConvolution
+        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 100, gainDB: 1),
+            EQMagnitudePoint(frequency: 100, gainDB: -1)
+        ]))
+
+        try expectValidationFailure(
+            ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
+            expected: .duplicateMagnitudeFrequency(
+                profileID: profile.id,
+                channel: "linked",
+                frequency: 100
+            )
+        )
+    }
+
     private func expectValidationFailure(
         _ store: ProfileStore,
         expected: ProfileStoreValidationError
