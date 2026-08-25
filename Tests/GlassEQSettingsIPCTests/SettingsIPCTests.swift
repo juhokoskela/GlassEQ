@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
@@ -370,6 +371,98 @@ struct SettingsIPCTests {
         let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
 
         #expect(decoded == message)
+    }
+
+    @Test
+    func pipeMessageRoundTripsCommandCancellation() throws {
+        let message = SettingsPipeMessage.request(
+            sessionToken: "token",
+            id: "command-request",
+            kind: .cancel,
+            command: nil
+        )
+
+        let encoded = try SettingsPipeCodec.encodeLine(message)
+        let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
+
+        #expect(decoded == message)
+    }
+
+    @Test @MainActor
+    func cancellingFileImportPanelAwaitClosesThePanel() async {
+        let panel = TestFileImportPanel()
+        let task = Task { @MainActor in
+            try await SettingsFileImportPicker.waitForPanelResponse(
+                begin: { completion in
+                    panel.begin(completion)
+                },
+                cancel: {
+                    panel.cancel()
+                }
+            )
+        }
+        for _ in 0..<100 where !panel.didBegin {
+            await Task.yield()
+        }
+
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await task.value
+        }
+        #expect(panel.cancelCallCount == 1)
+    }
+
+    @Test @MainActor
+    func settingsPipeClientCancellationSendsCancelForOriginalRequest() async throws {
+        let pipe = Pipe()
+        let recorder = SettingsPipePumpRecorder(expectedMessageCount: 2)
+        let readPump = SettingsPipeReadPump(
+            label: "com.glasseq.tests.settings-cancellation",
+            onMessages: recorder.record,
+            onEndOfFile: recorder.recordEndOfFile
+        )
+        readPump.install(on: pipe.fileHandleForReading)
+        let client = SettingsPipeClient(
+            testingToken: "token",
+            model: GlassEQSettingsViewModel(),
+            output: pipe.fileHandleForWriting
+        )
+        defer {
+            client.disconnect()
+            readPump.invalidate(handle: pipe.fileHandleForReading)
+        }
+        let requestTask = Task { @MainActor in
+            try await client.perform(.chooseImportFiles(mode: .single))
+        }
+        for _ in 0..<100 where recorder.snapshot().messages.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let commandMessage = try #require(recorder.snapshot().messages.first)
+        guard case let .request(_, requestID, .command, _) = commandMessage else {
+            Issue.record("Expected the file-picker command request")
+            return
+        }
+
+        requestTask.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await requestTask.value
+        }
+        for _ in 0..<100 where recorder.snapshot().messages.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let messages = recorder.snapshot().messages
+        #expect(messages.count >= 2)
+        if messages.count >= 2 {
+            #expect(messages[1] == .request(
+                sessionToken: "token",
+                id: requestID,
+                kind: .cancel,
+                command: nil
+            ))
+        }
+
     }
 
     @Test
@@ -1026,6 +1119,19 @@ struct SettingsIPCTests {
     }
 
     @Test
+    @MainActor
+    func cancelledCommandDoesNotBecomeAVisibleSettingsError() async {
+        let model = GlassEQSettingsViewModel(
+            client: CancellingSettingsCommandClient()
+        )
+
+        let response = await model.perform(.chooseImportFiles(mode: .single))
+
+        #expect(response == nil)
+        #expect(model.commandErrorMessage == nil)
+    }
+
+    @Test
     func settingsHostValidationChecksProcessParentAndBundleID() throws {
         let launchInfo = try #require(SettingsLaunchInfo(commandLineArguments: [
             "GlassEQSettings",
@@ -1265,6 +1371,13 @@ private final class FakeSettingsPipeClientFactory: SettingsPipeClientMaking {
 }
 
 @MainActor
+private final class CancellingSettingsCommandClient: SettingsCommanding {
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        throw CancellationError()
+    }
+}
+
+@MainActor
 private final class FakeSettingsPipeClient: SettingsPipeClientConnection, @unchecked Sendable {
     let token: String? = "fake-token"
     private let snapshot: SettingsSnapshotDTO
@@ -1347,6 +1460,25 @@ private final class SettingsPipePumpRecorder: @unchecked Sendable {
             lock.unlock()
         }
         return (messages, errorCount, endOfFileCount)
+    }
+}
+
+@MainActor
+private final class TestFileImportPanel {
+    private(set) var didBegin = false
+    private(set) var cancelCallCount = 0
+    private var completion: ((NSApplication.ModalResponse) -> Void)?
+
+    func begin(_ completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        didBegin = true
+        self.completion = completion
+    }
+
+    func cancel() {
+        cancelCallCount += 1
+        let completion = completion
+        self.completion = nil
+        completion?(.cancel)
     }
 }
 

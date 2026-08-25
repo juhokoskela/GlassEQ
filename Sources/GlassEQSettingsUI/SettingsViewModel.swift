@@ -111,6 +111,8 @@ public final class GlassEQSettingsViewModel {
             }
             commandErrorMessage = nil
             return response
+        } catch is CancellationError {
+            return nil
         } catch {
             commandErrorMessage = error.localizedDescription
             return nil
