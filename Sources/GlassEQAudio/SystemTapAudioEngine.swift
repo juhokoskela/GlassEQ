@@ -739,6 +739,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             Bool
         ) throws -> Void
         var waitBeforeRetry: () -> Void
+        var stopSeparateClockBackend: () -> Void = {}
     }
 
     final class AggregateCallbackFrameExpectation: @unchecked Sendable {
@@ -2579,6 +2580,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     )
                 } catch {
                     let restorationError = error
+                    if let testBoundary {
+                        testBoundary.stopSeparateClockBackend()
+                    } else {
+                        separateClockBackend.stop()
+                    }
+                    promotedHeadsetRoute.withLock { $0 = nil }
+                    deferredColdStartupRoute.withLock { $0 = nil }
+                    activeBackend.withLock { $0 = .combinedAggregate }
                     traceDiagnostic {
                         "combined handoff restoration failed error=\(restorationError)"
                     }

@@ -467,6 +467,7 @@ struct CoreAudioDeviceTests {
     @Test
     func combinedHandoffRestorationFailurePreservesStartupError() {
         var events: [String] = []
+        var compatibilityTapIsActive = true
         let output = output(
             id: 93,
             uid: "restoration-failure-output",
@@ -506,6 +507,10 @@ struct CoreAudioDeviceTests {
                     },
                     waitBeforeRetry: {
                         events.append("wait")
+                    },
+                    stopSeparateClockBackend: {
+                        events.append("stop")
+                        compatibilityTapIsActive = false
                     }
                 )
             )
@@ -517,7 +522,8 @@ struct CoreAudioDeviceTests {
             Issue.record("Expected the startup error, got \(error)")
         }
 
-        #expect(events == ["attempt 16", "restore", "escape"])
+        #expect(!compatibilityTapIsActive)
+        #expect(events == ["attempt 16", "restore", "stop", "escape"])
     }
 
     @Test
