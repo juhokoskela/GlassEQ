@@ -44,6 +44,9 @@ public final class GlassEQSettingsViewModel {
         if let isPreviewing = patch.isPreviewing {
             snapshot.isPreviewing = isPreviewing
         }
+        if let programmeComparison = patch.programmeComparison {
+            snapshot.programmeComparison = programmeComparison
+        }
         if let selectedProfileID = patch.selectedProfileID {
             snapshot.selectedProfileID = selectedProfileID
         }

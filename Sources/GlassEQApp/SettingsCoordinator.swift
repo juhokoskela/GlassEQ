@@ -493,6 +493,10 @@ final class SettingsCoordinator: NSObject {
             patch.isPreviewing = snapshot.isPreviewing
             didPatch = true
         }
+        if previous.programmeComparison != snapshot.programmeComparison {
+            patch.programmeComparison = snapshot.programmeComparison
+            didPatch = true
+        }
         if previous.selectedProfileID != snapshot.selectedProfileID {
             patch.selectedProfileID = snapshot.selectedProfileID
             didPatch = true
@@ -1057,6 +1061,19 @@ extension GlassEQAppModel {
 
         case .stopPreview:
             stopPreview()
+            return SettingsCommandResponse(snapshot: settingsSnapshot())
+
+        case .startProgrammeComparison(let profile):
+            try validateIncomingProfile(profile)
+            try startProgrammeComparison(profile: profile)
+            return SettingsCommandResponse(snapshot: settingsSnapshot())
+
+        case .selectProgrammeComparison(let selection):
+            selectProgrammeComparison(selection)
+            return SettingsCommandResponse(snapshot: settingsSnapshot())
+
+        case .stopProgrammeComparison:
+            stopProgrammeComparison()
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .resetDiagnostics:

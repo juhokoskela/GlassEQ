@@ -305,6 +305,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var isRunning: Bool?
     public var isPreviewing: Bool?
+    public var programmeComparison: EQProgrammeComparisonSnapshot?
     public var selectedProfileID: UUID?
     public var draftProfile: EQProfile?
     public var activeProfileID: UUID?
@@ -319,6 +320,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         statusMessage: String? = nil,
         isRunning: Bool? = nil,
         isPreviewing: Bool? = nil,
+        programmeComparison: EQProgrammeComparisonSnapshot? = nil,
         selectedProfileID: UUID? = nil,
         draftProfile: EQProfile? = nil,
         activeProfileID: UUID? = nil,
@@ -332,6 +334,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.statusMessage = statusMessage
         self.isRunning = isRunning
         self.isPreviewing = isPreviewing
+        self.programmeComparison = programmeComparison
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile
         self.activeProfileID = activeProfileID
@@ -362,6 +365,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var metrics: SettingsAudioMetricsDTO
     public var isRunning: Bool
     public var isPreviewing: Bool
+    public var programmeComparison: EQProgrammeComparisonSnapshot
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO
 
     private enum CodingKeys: String, CodingKey {
@@ -382,6 +386,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case metrics
         case isRunning
         case isPreviewing
+        case programmeComparison
         case profileStoreProtection
     }
 
@@ -403,6 +408,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         metrics: SettingsAudioMetricsDTO,
         isRunning: Bool,
         isPreviewing: Bool,
+        programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
         profileStoreProtection: SettingsProfileStoreProtectionDTO = .unprotected
     ) {
         self.profiles = profiles
@@ -422,6 +428,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.metrics = metrics
         self.isRunning = isRunning
         self.isPreviewing = isPreviewing
+        self.programmeComparison = programmeComparison
         self.profileStoreProtection = profileStoreProtection
     }
 
@@ -448,6 +455,10 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             metrics: try container.decode(SettingsAudioMetricsDTO.self, forKey: .metrics),
             isRunning: try container.decodeIfPresent(Bool.self, forKey: .isRunning) ?? false,
             isPreviewing: try container.decode(Bool.self, forKey: .isPreviewing),
+            programmeComparison: try container.decodeIfPresent(
+                EQProgrammeComparisonSnapshot.self,
+                forKey: .programmeComparison
+            ) ?? EQProgrammeComparisonSnapshot(),
             profileStoreProtection: try container.decode(
                 SettingsProfileStoreProtectionDTO.self,
                 forKey: .profileStoreProtection
@@ -475,6 +486,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             metrics: SettingsAudioMetricsDTO(),
             isRunning: false,
             isPreviewing: false,
+            programmeComparison: EQProgrammeComparisonSnapshot(),
             profileStoreProtection: .unprotected
         )
     }
@@ -490,6 +502,9 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case importProfile(format: SettingsImportFormat, name: String, text: String)
     case preview(EQProfile)
     case stopPreview
+    case startProgrammeComparison(EQProfile)
+    case selectProgrammeComparison(EQProgrammeComparisonSelection)
+    case stopProgrammeComparison
     case resetDiagnostics
     case setAggregateBufferMode(SettingsAggregateBufferMode)
     case retryAutomaticAggregateBuffer

@@ -256,6 +256,9 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32)
     func update(profile: EQProfile) throws
     @discardableResult func updateDSP(profile: EQProfile) -> Bool
+    @discardableResult func beginProgrammeComparison(profile: EQProfile) -> Bool
+    func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
+    func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
     func muteOutputForTransition()
     func stop()
     func snapshotMetrics() -> AudioEngineMetrics
@@ -267,6 +270,14 @@ protocol AudioEngineControlling: AnyObject, Sendable {
 }
 
 extension AudioEngineControlling {
+    func beginProgrammeComparison(profile _: EQProfile) -> Bool { false }
+
+    func setProgrammeComparisonSelection(_: EQProgrammeComparisonSelection) {}
+
+    func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+        EQProgrammeComparisonSnapshot()
+    }
+
     func setRuntimeFailureHandler(
         _: (@Sendable (AudioEngineFailure) -> Void)?
     ) {}
@@ -430,6 +441,8 @@ final class GlassEQAppModel {
     var importText = ""
     var engineMetrics = AudioEngineMetrics()
     var previewReturnProfile: EQProfile?
+    var programmeComparison = EQProgrammeComparisonSnapshot()
+    private var programmeComparisonReturnProfile: EQProfile?
     private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped
 
     private let engine: any AudioEngineControlling
@@ -442,6 +455,7 @@ final class GlassEQAppModel {
     private let saveDebounceDelay: Duration
     private var observer: (any DefaultOutputObserving)?
     private var metricsTask: Task<Void, Never>?
+    private var programmeComparisonTask: Task<Void, Never>?
     private var renderWatchdogTask: Task<Void, Never>?
     private var renderWatchdog: AudioRenderWatchdog
     private let renderWatchdogPollInterval: Duration
@@ -862,8 +876,18 @@ final class GlassEQAppModel {
             metrics: SettingsAudioMetricsDTO(engineMetrics),
             isRunning: isRunning,
             isPreviewing: previewReturnProfile != nil,
+            programmeComparison: settingsProgrammeComparisonSnapshot(),
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
+    }
+
+    private func settingsProgrammeComparisonSnapshot() -> EQProgrammeComparisonSnapshot {
+        guard programmeComparisonReturnProfile != nil else {
+            return EQProgrammeComparisonSnapshot()
+        }
+        var snapshot = programmeComparison
+        snapshot.isActive = true
+        return snapshot
     }
 
     private func aggregateBufferSnapshot() -> SettingsAggregateBufferDTO {
@@ -997,6 +1021,7 @@ final class GlassEQAppModel {
         renderWatchdog.reset()
         scheduleEngineStop(updateMetrics: true)
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         lifecycleState = .stopped
         isRunning = false
         statusMessage = localized("Stopped")
@@ -1202,6 +1227,9 @@ final class GlassEQAppModel {
     }
 
     func preview(profile: EQProfile) {
+        guard programmeComparisonReturnProfile == nil else {
+            return
+        }
         do {
             try ensureProfileStoreWritable()
         } catch {
@@ -1250,6 +1278,7 @@ final class GlassEQAppModel {
         }
         let rollback = profileRollback()
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
@@ -1264,6 +1293,103 @@ final class GlassEQAppModel {
             restartEngineWithActiveProfile(rollback: rollback)
         }
         notifyModelDidChange()
+    }
+
+    func startProgrammeComparison(profile: EQProfile) throws {
+        guard programmeComparisonReturnProfile == nil else {
+            return
+        }
+        guard previewReturnProfile == nil else {
+            throw SettingsCommandFailure(
+                message: localized("Stop the profile preview before starting A/B comparison.")
+            )
+        }
+        guard lifecycleState == .running,
+              isRunning,
+              engineStartTask == nil,
+              engineIsRunning else {
+            throw SettingsCommandFailure(
+                message: localized("Start GlassEQ before comparing the profile.")
+            )
+        }
+        guard !profile.isBypassed else {
+            throw SettingsCommandFailure(
+                message: localized("Enable the profile before comparing it.")
+            )
+        }
+
+        engine.setProgrammeComparisonSelection(.equalized)
+        guard engine.beginProgrammeComparison(profile: profile) else {
+            throw SettingsCommandFailure(
+                message: localized("The audio engine could not start A/B comparison.")
+            )
+        }
+
+        programmeComparisonReturnProfile = activeProfile
+        programmeComparison = EQProgrammeComparisonSnapshot(
+            isActive: true,
+            selection: .equalized
+        )
+        statusMessage = localized("Comparing EQ with filters off")
+        startProgrammeComparisonPolling()
+        notifyModelDidChange()
+    }
+
+    func selectProgrammeComparison(_ selection: EQProgrammeComparisonSelection) {
+        guard programmeComparisonReturnProfile != nil else {
+            return
+        }
+        programmeComparison.selection = selection
+        engine.setProgrammeComparisonSelection(selection)
+        notifyModelDidChange()
+    }
+
+    func stopProgrammeComparison() {
+        guard let returnProfile = programmeComparisonReturnProfile else {
+            return
+        }
+        engine.setProgrammeComparisonSelection(.equalized)
+        clearProgrammeComparisonSession()
+        if lifecycleState == .running,
+           isRunning,
+           engineStartTask == nil {
+            if engine.updateDSP(profile: returnProfile) {
+                statusMessage = processingStatus(
+                    outputName: currentOutputName,
+                    profileName: returnProfile.name
+                )
+            } else {
+                restartEngineWithActiveProfile()
+            }
+        }
+        notifyModelDidChange()
+    }
+
+    private func startProgrammeComparisonPolling() {
+        programmeComparisonTask?.cancel()
+        programmeComparisonTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self,
+                      self.programmeComparisonReturnProfile != nil else {
+                    return
+                }
+                var next = self.engine.snapshotProgrammeComparison()
+                next.isActive = true
+                guard next != self.programmeComparison else {
+                    continue
+                }
+                self.programmeComparison = next
+                self.notifyModelDidChange()
+            }
+        }
+    }
+
+    private func clearProgrammeComparisonSession() {
+        programmeComparisonTask?.cancel()
+        programmeComparisonTask = nil
+        programmeComparisonReturnProfile = nil
+        programmeComparison = EQProgrammeComparisonSnapshot()
     }
 
     func resetDiagnostics() {
@@ -1650,6 +1776,7 @@ final class GlassEQAppModel {
     }
 
     private func disableActiveProfileProcessing(updateMetrics: Bool) {
+        clearProgrammeComparisonSession()
         let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
@@ -2433,6 +2560,7 @@ final class GlassEQAppModel {
         selectedProfileID = activeProfile.id
         draftProfile = activeProfile
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         statusMessage = localized("Profiles reset for this GlassEQ version; previous store backed up to \(result.backupURL.lastPathComponent).")
         notifyModelDidChange()
     }
@@ -2756,6 +2884,7 @@ final class GlassEQAppModel {
         stopObserver()
         scheduleEngineStop(updateMetrics: false)
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         lifecycleState = .sleeping
         isRunning = false
         statusMessage = localized("Paused for system sleep")
@@ -2861,6 +2990,7 @@ final class GlassEQAppModel {
         metricsTask = nil
         stopObserver()
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         isRunning = false
         if shutdownSettings {
             settingsCoordinator.shutdown()

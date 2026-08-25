@@ -45,6 +45,9 @@ struct SettingsIPCTests {
 
         snapshot.isPreviewing = false
         #expect(settingsCanDeleteSelectedProfile(snapshot))
+
+        snapshot.programmeComparison.isActive = true
+        #expect(!settingsCanDeleteSelectedProfile(snapshot))
     }
 
     @Test
@@ -277,6 +280,28 @@ struct SettingsIPCTests {
         ]
 
         for message in messages {
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
+            #expect(decoded == message)
+        }
+    }
+
+    @Test
+    func programmeComparisonCommandsRoundTrip() throws {
+        let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
+        let commands: [SettingsCommand] = [
+            .startProgrammeComparison(profile),
+            .selectProgrammeComparison(.filtersOff),
+            .stopProgrammeComparison
+        ]
+
+        for (index, command) in commands.enumerated() {
+            let message = SettingsPipeMessage.request(
+                sessionToken: "token",
+                id: "comparison-\(index)",
+                kind: .command,
+                command: command
+            )
             let encoded = try SettingsPipeCodec.encodeLine(message)
             let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
             #expect(decoded == message)
@@ -653,6 +678,12 @@ struct SettingsIPCTests {
         let patch = SettingsSnapshotPatchDTO(
             statusMessage: "Running",
             isRunning: true,
+            programmeComparison: EQProgrammeComparisonSnapshot(
+                isActive: true,
+                isReady: true,
+                selection: .filtersOff,
+                equalizedAttenuationDB: -2.5
+            ),
             activeProfileID: profileID,
             activeProfileName: "Flat",
             currentOutput: SettingsOutputDTO(
@@ -683,6 +714,7 @@ struct SettingsIPCTests {
         let encoded = try JSONEncoder().encode(snapshot)
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "isRunning")
+        object.removeValue(forKey: "programmeComparison")
 
         let decoded = try JSONDecoder().decode(
             SettingsSnapshotDTO.self,
@@ -690,6 +722,7 @@ struct SettingsIPCTests {
         )
 
         #expect(!decoded.isRunning)
+        #expect(decoded.programmeComparison == EQProgrammeComparisonSnapshot())
     }
 
     @Test
