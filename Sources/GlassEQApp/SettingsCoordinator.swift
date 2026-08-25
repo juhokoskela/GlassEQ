@@ -1167,19 +1167,16 @@ private final class InProcessSettingsClient: SettingsCommanding {
 func fileImportPickerResponse(
     for command: SettingsCommand,
     model: GlassEQAppModel,
-    picker: @MainActor (SettingsFileImportMode, Double) async throws -> SettingsFileImportSelectionDTO? = { mode, expectedSampleRate in
-        try await SettingsFileImportPicker.choose(
-            mode: mode,
-            expectedSampleRate: expectedSampleRate
-        )
+    picker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
+        try await SettingsFileImportPicker.choose(mode: mode)
     }
 ) async throws -> SettingsCommandResponse? {
-    guard case let .chooseImportFiles(mode, expectedSampleRate) = command else {
+    guard case let .chooseImportFiles(mode) = command else {
         return nil
     }
     try model.beginSettingsCommand()
     defer {
         model.finishSettingsCommand()
     }
-    return SettingsCommandResponse(fileImportSelection: try await picker(mode, expectedSampleRate))
+    return SettingsCommandResponse(fileImportSelection: try await picker(mode))
 }

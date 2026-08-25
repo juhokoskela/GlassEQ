@@ -420,10 +420,7 @@ public struct SettingsView: View {
     }
 
     private func chooseImportFiles(_ mode: SettingsFileImportMode) async -> SettingsFileImportChoice {
-        let response = await model.perform(.chooseImportFiles(
-            mode: mode,
-            expectedSampleRate: snapshot.currentOutputSampleRate
-        ))
+        let response = await model.perform(.chooseImportFiles(mode: mode))
         return SettingsFileImportChoice(
             selection: response?.fileImportSelection,
             errorMessage: response == nil ? model.commandErrorMessage : nil

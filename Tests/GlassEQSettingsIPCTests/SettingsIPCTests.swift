@@ -503,8 +503,8 @@ struct SettingsIPCTests {
             ))
         )
         let commands: [SettingsCommand] = [
-            .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
-            .chooseImportFiles(mode: .stereoPair, expectedSampleRate: 96_000)
+            .chooseImportFiles(mode: .single),
+            .chooseImportFiles(mode: .stereoPair)
         ]
         let selections: [SettingsFileImportSelectionDTO] = [
             .text(

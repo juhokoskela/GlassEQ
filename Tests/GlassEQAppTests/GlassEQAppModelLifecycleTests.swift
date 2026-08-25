@@ -3255,9 +3255,9 @@ struct GlassEQAppModelLifecycleTests {
 
         await #expect(throws: SettingsCommandFailure.self) {
             _ = try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
+                for: .chooseImportFiles(mode: .single),
                 model: model,
-                picker: { _, _ in
+                picker: { _ in
                     pickerCallCount += 1
                     return nil
                 }
@@ -3275,9 +3275,9 @@ struct GlassEQAppModelLifecycleTests {
 
         let pickerTask = Task { @MainActor in
             try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
+                for: .chooseImportFiles(mode: .single),
                 model: model,
-                picker: picker.choose(mode:expectedSampleRate:)
+                picker: picker.choose(mode:)
             )
         }
         await waitUntil {
@@ -3917,8 +3917,7 @@ private final class BlockingSettingsFileImportPicker {
     private var continuation: CheckedContinuation<SettingsFileImportSelectionDTO?, Never>?
 
     func choose(
-        mode: SettingsFileImportMode,
-        expectedSampleRate: Double
+        mode: SettingsFileImportMode
     ) async -> SettingsFileImportSelectionDTO? {
         hasEntered = true
         return await withCheckedContinuation { continuation in

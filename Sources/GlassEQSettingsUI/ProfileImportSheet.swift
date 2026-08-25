@@ -1019,8 +1019,7 @@ private extension EQMode {
 public enum SettingsFileImportPicker {
     @MainActor
     public static func choose(
-        mode: SettingsFileImportMode,
-        expectedSampleRate: Double
+        mode: SettingsFileImportMode
     ) async throws -> SettingsFileImportSelectionDTO? {
         let previousApplication = NSWorkspace.shared.frontmostApplication
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -1072,8 +1071,7 @@ public enum SettingsFileImportPicker {
             try Task.checkCancellation()
             let selection = try loadSelection(
                 mode: mode,
-                urls: urls,
-                expectedSampleRate: expectedSampleRate
+                urls: urls
             )
             try Task.checkCancellation()
             return selection
@@ -1089,17 +1087,13 @@ public enum SettingsFileImportPicker {
 
     static func loadSelection(
         mode: SettingsFileImportMode,
-        urls: [URL],
-        expectedSampleRate: Double
+        urls: [URL]
     ) throws -> SettingsFileImportSelectionDTO {
         switch mode {
         case .single:
             let url = urls[0]
             if url.pathExtension.lowercased() == "wav" {
-                return impulseResponseSelection(try ImpulseResponseWAVImporter.load(
-                    from: url,
-                    expectedSampleRate: expectedSampleRate
-                ))
+                return impulseResponseSelection(try ImpulseResponseWAVImporter.load(from: url))
             }
             return .text(
                 suggestedName: url.deletingPathExtension().lastPathComponent,
@@ -1118,8 +1112,7 @@ public enum SettingsFileImportPicker {
             if leftIsWAV {
                 return impulseResponseSelection(try ImpulseResponseWAVImporter.loadStereoPair(
                     leftURL: leftURL,
-                    rightURL: rightURL,
-                    expectedSampleRate: expectedSampleRate
+                    rightURL: rightURL
                 ))
             }
             let imported = try StereoTextPairImporter.load(

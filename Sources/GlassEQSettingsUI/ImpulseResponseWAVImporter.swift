@@ -7,7 +7,6 @@ enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     case unsupportedChannelCount(Int)
     case tooManyFrames(count: Int, maximum: Int)
     case invalidSampleRate(Double)
-    case sampleRateMismatch(file: Double, output: Double)
     case separateFilesMustBeMono(leftChannels: Int, rightChannels: Int)
     case channelSampleRateMismatch(left: Double, right: Double)
     case unreadableSamples
@@ -23,8 +22,6 @@ enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
             "The impulse response has \(count) taps. GlassEQ currently supports up to \(maximum) taps per channel."
         case .invalidSampleRate(let sampleRate):
             "The WAV file has an invalid sample rate (\(sampleRate) Hz)."
-        case let .sampleRateMismatch(file, output):
-            "This impulse response is \(Self.rateLabel(file)); the current output is \(Self.rateLabel(output)). Export a matching WAV from REW."
         case let .separateFilesMustBeMono(leftChannels, rightChannels):
             "Separate left and right imports require two mono WAV files. The selected files have \(leftChannels) and \(rightChannels) channels."
         case let .channelSampleRateMismatch(left, right):
@@ -76,10 +73,7 @@ struct ImportedImpulseResponse: Equatable, Sendable {
 }
 
 enum ImpulseResponseWAVImporter {
-    static func load(
-        from url: URL,
-        expectedSampleRate: Double? = nil
-    ) throws -> ImportedImpulseResponse {
+    static func load(from url: URL) throws -> ImportedImpulseResponse {
         let hasAccess = url.startAccessingSecurityScopedResource()
         defer {
             if hasAccess {
@@ -102,15 +96,6 @@ enum ImpulseResponseWAVImporter {
         guard sampleRate.isFinite,
               ProfilePersistence.impulseSampleRateRange.contains(sampleRate) else {
             throw ImpulseResponseWAVImportError.invalidSampleRate(sampleRate)
-        }
-        if let expectedSampleRate,
-           expectedSampleRate.isFinite,
-           expectedSampleRate > 0,
-           abs(sampleRate - expectedSampleRate) >= 0.5 {
-            throw ImpulseResponseWAVImportError.sampleRateMismatch(
-                file: sampleRate,
-                output: expectedSampleRate
-            )
         }
 
         guard file.length > 0 else {
@@ -194,17 +179,10 @@ enum ImpulseResponseWAVImporter {
 
     static func loadStereoPair(
         leftURL: URL,
-        rightURL: URL,
-        expectedSampleRate: Double? = nil
+        rightURL: URL
     ) throws -> ImportedImpulseResponse {
-        let left = try load(
-            from: leftURL,
-            expectedSampleRate: expectedSampleRate
-        )
-        let right = try load(
-            from: rightURL,
-            expectedSampleRate: expectedSampleRate
-        )
+        let left = try load(from: leftURL)
+        let right = try load(from: rightURL)
         guard left.channelCount == 1,
               right.channelCount == 1 else {
             throw ImpulseResponseWAVImportError.separateFilesMustBeMono(
