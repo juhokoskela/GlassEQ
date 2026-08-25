@@ -2259,6 +2259,30 @@ final class GlassEQAppModel {
                     return
                 }
                 let metrics = self.engine.snapshotMetrics()
+                let nextCount = metrics.qualifyingPairedTimestampDiscontinuities
+                if nextCount > qualifyingBaseline {
+                    let occurrenceCount = nextCount - qualifyingBaseline
+                    qualifyingBaseline = nextCount
+                    sessionHadQualifyingInterruption = true
+                    if self.engine.isUsingPromotedHeadsetAggregate {
+                        if self.handleQualifyingAggregateInterruption(
+                            on: route,
+                            occurrences: occurrenceCount
+                        ) {
+                            return
+                        }
+                    } else if selection.mode == .automatic {
+                        if self.handleQualifyingAggregateInterruption(
+                            on: route,
+                            occurrences: occurrenceCount
+                        ) {
+                            return
+                        }
+                    }
+                } else if nextCount < qualifyingBaseline {
+                    qualifyingBaseline = nextCount
+                }
+
                 let nextDeadlineCount = metrics.renderDeadlineMisses
                 if selection.mode != .automatic {
                     if nextDeadlineCount > deadlineBaseline {
@@ -2273,21 +2297,6 @@ final class GlassEQAppModel {
                         deadlineBurstDetector.reset()
                     }
                     continue
-                }
-
-                let nextCount = metrics.qualifyingPairedTimestampDiscontinuities
-                if nextCount > qualifyingBaseline {
-                    let occurrenceCount = nextCount - qualifyingBaseline
-                    qualifyingBaseline = nextCount
-                    sessionHadQualifyingInterruption = true
-                    if self.handleQualifyingAggregateInterruption(
-                        on: route,
-                        occurrences: occurrenceCount
-                    ) {
-                        return
-                    }
-                } else if nextCount < qualifyingBaseline {
-                    qualifyingBaseline = nextCount
                 }
 
                 if !cleanSessionRecorded,
@@ -2399,7 +2408,6 @@ final class GlassEQAppModel {
               headsetPromotionAttemptedOutputGeneration != outputChangeGeneration else {
             return
         }
-        headsetPromotionAttemptedOutputGeneration = outputChangeGeneration
         let engineGeneration = engineStartGeneration
         let outputGeneration = outputChangeGeneration
         let delay = headsetAggregatePromotionDelay
@@ -2419,6 +2427,12 @@ final class GlassEQAppModel {
             }
             self.statusMessage = localized("Testing the low-latency headset path...")
             self.notifyModelDidChange()
+            guard !Task.isCancelled,
+                  self.engineStartGeneration == engineGeneration,
+                  self.outputChangeGeneration == outputGeneration else {
+                return
+            }
+            self.headsetPromotionAttemptedOutputGeneration = outputGeneration
             let engine = self.engine
             let work = self.engineWorkExecutor.enqueue(priority: .userInitiated) {
                 do {

@@ -265,6 +265,93 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func fixedBufferPromotedHeadsetRouteStillFallsBackAfterAClockJump() async throws {
+        let output = makeOutput(
+            uid: "fixed-headset-demotion",
+            name: "Fixed AirPods Headset",
+            nominalSampleRate: 24_000,
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        engine.headsetPromotionCandidateUIDs = [output.uid]
+        engine.headsetAggregatePromotionResult = .promoted(output)
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            headsetAggregatePromotionDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.headsetAggregatePromotionAttemptCount == 1
+                && engine.isUsingPromotedHeadsetAggregate
+        }
+
+        try model.setAggregateBufferMode(.frames32)
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.isUsingPromotedHeadsetAggregate
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 1
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.isUsingTransitionalHeadsetBackend
+        }
+
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames32)
+        #expect(model.statusMessage.contains("compatibility mode"))
+    }
+
+    @Test
+    func cancelledHeadsetPromotionDelayCanRetryInTheSameOutputGeneration() async {
+        let active = makeProfile(name: "Headset Active")
+        let preview = makeProfile(name: "Headset Preview")
+        let output = makeOutput(
+            uid: "cancelled-headset-promotion",
+            name: "Cancelled AirPods Headset",
+            nominalSampleRate: 24_000,
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        engine.headsetPromotionCandidateUIDs = [output.uid]
+        engine.headsetAggregatePromotionResult = .clockUnstable
+        engine.updateDSPResult = false
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active, preview], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            headsetAggregatePromotionDelay: .milliseconds(200)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        model.preview(profile: preview)
+        await waitUntil {
+            engine.updateCalls.count == 1 && model.lifecycleState == .running
+        }
+        await waitUntil {
+            engine.headsetAggregatePromotionAttemptCount == 1
+        }
+
+        #expect(engine.headsetAggregatePromotionAttemptCount == 1)
+    }
+
+    @Test
     func automaticAggregateBufferClimbsToSixtyFourAfterQualifyingInterruptions() async {
         let output = makeOutput(uid: "adaptive-aggregate", name: "Adaptive Aggregate")
         let engine = FakeAudioEngine()
@@ -4076,6 +4163,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _headsetAggregatePromotionAttemptCount = 0
     private var _isUsingTransitionalHeadsetBackend = false
     private var _isUsingPromotedHeadsetAggregate = false
+    private var _promotedHeadsetOutputUID: String?
     private var _coldStartupPromotionCandidateUIDs: Set<String> = []
     private var _coldStartupAggregatePromotionResult = ColdStartupAggregatePromotionResult.notApplicable
     private var _coldStartupAggregatePromotionAttemptCount = 0
@@ -4306,8 +4394,14 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 activeOutput.bufferFrameSize = _preferredAggregateBufferFrameSize
             }
             _state = .running(output: activeOutput)
-            _isUsingTransitionalHeadsetBackend = _headsetPromotionCandidateUIDs.contains(output.uid)
-            _isUsingPromotedHeadsetAggregate = false
+            let remainsPromoted = _isUsingPromotedHeadsetAggregate
+                && _promotedHeadsetOutputUID == output.uid
+            _isUsingTransitionalHeadsetBackend = !remainsPromoted
+                && _headsetPromotionCandidateUIDs.contains(output.uid)
+            _isUsingPromotedHeadsetAggregate = remainsPromoted
+            if !remainsPromoted {
+                _promotedHeadsetOutputUID = nil
+            }
             _isDeferringColdStartupAggregate = _coldStartupPromotionCandidateUIDs.contains(output.uid)
         }
     }
@@ -4333,6 +4427,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 _state = .running(output: output)
                 _isUsingTransitionalHeadsetBackend = false
                 _isUsingPromotedHeadsetAggregate = true
+                _promotedHeadsetOutputUID = output.uid
             }
             return result
         }
@@ -4341,6 +4436,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     func rejectHeadsetAggregatePromotion() {
         withLock {
             _isUsingPromotedHeadsetAggregate = false
+            _promotedHeadsetOutputUID = nil
         }
     }
 
