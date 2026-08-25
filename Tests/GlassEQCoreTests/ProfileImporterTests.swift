@@ -99,7 +99,7 @@ struct ProfileImporterTests {
 
         #expect(profile.channelMode == .stereo)
         #expect(profile.preampDB == -4)
-        #expect(profile.leftPreampDB == -5)
+        #expect(profile.leftPreampDB == -9)
         #expect(profile.rightPreampDB == -4)
         guard case .magnitudeCurve = profile.leftConvolution,
               case .magnitudeCurve = profile.rightConvolution else {
@@ -137,7 +137,7 @@ struct ProfileImporterTests {
 
         #expect(imported.mode == .convolution)
         #expect(imported.channelMode == .stereo)
-        #expect(imported.preampDB == -4)
+        #expect(imported.preampDB == 0)
         #expect(imported.leftPreampDB == -5)
         #expect(imported.rightPreampDB == -6)
         guard case .magnitudeCurve(let importedLeft) = imported.leftConvolution,
@@ -259,8 +259,8 @@ struct ProfileImporterTests {
 
         #expect(profile.channelMode == .stereo)
         #expect(profile.preampDB == -1)
-        #expect(profile.leftPreampDB == -3)
-        #expect(profile.rightPreampDB == -4)
+        #expect(profile.leftPreampDB == -4)
+        #expect(profile.rightPreampDB == -5)
         #expect(profile.filters.isEmpty)
         #expect(profile.leftFilters.isEmpty)
         #expect(profile.rightFilters.isEmpty)
@@ -283,11 +283,134 @@ struct ProfileImporterTests {
 
         #expect(profile.channelMode == .stereo)
         #expect(profile.preampDB == -1)
-        #expect(profile.leftPreampDB == -3)
-        #expect(profile.rightPreampDB == -4)
+        #expect(profile.leftPreampDB == -4)
+        #expect(profile.rightPreampDB == -5)
         #expect(profile.filters.count == 1)
         #expect(profile.leftFilters == profile.filters)
         #expect(profile.rightFilters == profile.filters)
+    }
+
+    @Test
+    func accumulatesGlobalEqualizerAPOCommandsIntoSelectedChannels() throws {
+        let text = """
+        Preamp: -6 dB
+        Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+        Channel: L
+        Preamp: -5 dB
+        Filter 2: ON PK Fc 200 Hz Gain 3 dB Q 2
+        """
+
+        let profile = try EQProfileTextImporter.importAutoEQ(text)
+
+        #expect(profile.channelMode == .stereo)
+        #expect(profile.preampDB == -6)
+        #expect(profile.leftPreampDB == -11)
+        #expect(profile.rightPreampDB == -6)
+        #expect(profile.filters.map(\.frequency) == [100])
+        #expect(profile.leftFilters.map(\.frequency) == [100, 200])
+        #expect(profile.rightFilters.map(\.frequency) == [100])
+    }
+
+    @Test(arguments: ["L R", "1 2"])
+    func importsLeftAndRightSelectorsWithoutChangingFallback(_ selectors: String) throws {
+        let profile = try EQProfileTextImporter.importAutoEQ("""
+        Channel: \(selectors)
+        Preamp: -3 dB
+        Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+        """)
+
+        #expect(profile.channelMode == .stereo)
+        #expect(profile.preampDB == 0)
+        #expect(profile.leftPreampDB == -3)
+        #expect(profile.rightPreampDB == -3)
+        #expect(profile.filters.isEmpty)
+        #expect(profile.leftFilters.map(\.frequency) == [100])
+        #expect(profile.rightFilters.map(\.frequency) == [100])
+    }
+
+    @Test
+    func importsAllChannelSelectorAsLinkedFallback() throws {
+        let profile = try EQProfileTextImporter.importAutoEQ("""
+        Channel: all
+        Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+        """)
+
+        #expect(profile.channelMode == .linked)
+        #expect(profile.filters.map(\.frequency) == [100])
+    }
+
+    @Test
+    func rejectsUnsupportedEqualizerAPOChannelSelectors() throws {
+        #expect(throws: ProfileImportError.unsupportedEqualizerAPOChannel(
+            line: 1,
+            selectors: "C"
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ("""
+            Channel: C
+            Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+            """)
+        }
+    }
+
+    @Test
+    func rejectsMultipleGraphicEQStagesOnOneChannel() throws {
+        #expect(throws: ProfileImportError.multipleEqualizerAPOGraphicEQ(
+            line: 3,
+            channel: "left"
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ("""
+            GraphicEQ: 20 0; 20000 0
+            Channel: L
+            GraphicEQ: 20 1; 20000 1
+            """)
+        }
+    }
+
+    @Test
+    func importsOneSidedGraphicEQWithIdentityOnTheOtherChannel() throws {
+        let profile = try EQProfileTextImporter.importAutoEQ("""
+        Channel: L
+        GraphicEQ: 20 2; 20000 -1
+        """)
+
+        #expect(profile.channelMode == .stereo)
+        #expect(profile.convolution == nil)
+        guard case .magnitudeCurve(let left) = profile.leftConvolution,
+              case .magnitudeCurve(let right) = profile.rightConvolution else {
+            Issue.record("Expected stereo magnitude curves")
+            return
+        }
+        #expect(left.points.map(\.gainDB) == [2, -1])
+        #expect(right.points.map(\.gainDB) == [0, 0])
+    }
+
+    @Test
+    func stereoParametricExportPreservesEffectiveChannelPreamps() throws {
+        let left = EQFilter(kind: .peak, frequency: 100, gainDB: 2, q: 1)
+        let right = EQFilter(kind: .peak, frequency: 200, gainDB: -3, q: 2)
+        let profile = EQProfile(
+            name: "Stereo Parametric",
+            mode: .parametric,
+            channelMode: .stereo,
+            preampDB: -4,
+            filters: [],
+            leftPreampDB: -5,
+            leftFilters: [left],
+            rightPreampDB: -6,
+            rightFilters: [right]
+        )
+
+        let exported = try EQProfileTextExporter.exportEqualizerAPO(profile)
+        let imported = try EQProfileTextImporter.importAutoEQ(exported)
+
+        #expect(!exported.contains("Preamp: -4.00 dB"))
+        #expect(imported.channelMode == .stereo)
+        #expect(imported.leftPreampDB == -5)
+        #expect(imported.rightPreampDB == -6)
+        #expect(imported.leftFilters.map(\.frequency) == [left.frequency])
+        #expect(imported.leftFilters.map(\.gainDB) == [left.gainDB])
+        #expect(imported.rightFilters.map(\.frequency) == [right.frequency])
+        #expect(imported.rightFilters.map(\.gainDB) == [right.gainDB])
     }
 
     @Test
