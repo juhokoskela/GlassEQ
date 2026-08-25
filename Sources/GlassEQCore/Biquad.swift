@@ -273,21 +273,41 @@ public enum FrequencyResponse {
         sampleRate: Double = 48_000,
         count: Int = 96
     ) -> [FrequencyResponsePoint] {
+        points(
+            for: source,
+            preampDB: preampDB,
+            sampleRate: sampleRate,
+            count: count,
+            cancellationCheck: {}
+        )
+    }
+
+    @_spi(GlassEQSettingsUI)
+    public static func points(
+        for source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double = 48_000,
+        count: Int = 96,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> [FrequencyResponsePoint] {
+        try cancellationCheck()
         let lower = log10(20.0)
         let upperFrequency = max(
             20,
             EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         )
         let upper = log10(upperFrequency)
-        return (0..<max(count, 2)).map { index in
+        return try (0..<max(count, 2)).map { index in
+            try cancellationCheck()
             let fraction = Double(index) / Double(max(count - 1, 1))
             let frequency = pow(10, lower + (upper - lower) * fraction)
             return FrequencyResponsePoint(
                 frequency: frequency,
-                magnitudeDB: preampDB + convolutionMagnitudeDB(
+                magnitudeDB: preampDB + (try convolutionMagnitudeDB(
                     source: source,
-                    frequency: frequency
-                )
+                    frequency: frequency,
+                    cancellationCheck: cancellationCheck
+                ))
             )
         }
     }
@@ -325,8 +345,9 @@ public enum FrequencyResponse {
 
     private static func convolutionMagnitudeDB(
         source: EQConvolutionSource?,
-        frequency: Double
-    ) -> Double {
+        frequency: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> Double {
         switch source {
         case .magnitudeCurve(let curve):
             return MinimumPhaseFIRCompiler.interpolatedGainDB(
@@ -339,6 +360,9 @@ public enum FrequencyResponse {
             var real = 0.0
             var imaginary = 0.0
             for (index, sample) in impulse.samples.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cancellationCheck()
+                }
                 let phase = -omega * Double(index)
                 real += Double(sample) * cos(phase)
                 imaginary += Double(sample) * sin(phase)

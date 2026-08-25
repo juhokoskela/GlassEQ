@@ -1,5 +1,5 @@
 import AppKit
-import GlassEQCore
+@_spi(GlassEQSettingsUI) import GlassEQCore
 import GlassEQSettingsIPC
 import SwiftUI
 
@@ -803,11 +803,43 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
     var rightPoints: [FrequencyResponsePoint]
 
     init(profile: EQProfile, sampleRate: Double) {
+        self.init(
+            profile: profile,
+            sampleRate: sampleRate,
+            cancellationCheck: {}
+        )
+    }
+
+    @concurrent
+    static func analyze(
+        profile: EQProfile,
+        sampleRate: Double,
+        cancellationCheck: @Sendable () throws -> Void = { try Task.checkCancellation() }
+    ) async throws -> Self {
+        try Self(
+            profile: profile,
+            sampleRate: sampleRate,
+            cancellationCheck: cancellationCheck
+        )
+    }
+
+    private init(
+        profile: EQProfile,
+        sampleRate: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows {
+        try cancellationCheck()
         let sampleRate = EQAnalysisSignature.effectiveSampleRate(sampleRate)
         self.signature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
         self.channelMode = profile.channelMode
-        self.recommendedPreampDB = EQProfileAnalysis.recommendedPreampDB(profile: profile, sampleRate: sampleRate)
-        self.maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
+        self.recommendedPreampDB = EQProfileAnalysis.recommendedPreampDB(
+            profile: profile,
+            sampleRate: sampleRate
+        )
+        try cancellationCheck()
+        self.maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
+            sampleRate: sampleRate
+        )
         self.inactiveEnabledFilterCount = EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
             profile: profile,
             sampleRate: sampleRate
@@ -815,32 +847,36 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
 
         switch profile.channelMode {
         case .linked:
-            self.linkedPoints = Self.responsePoints(
+            self.linkedPoints = try Self.responsePoints(
                 mode: profile.mode,
                 filters: profile.filters,
                 source: profile.convolution,
                 preampDB: profile.preampDB,
-                sampleRate: sampleRate
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
             )
             self.leftPoints = []
             self.rightPoints = []
         case .stereo:
             self.linkedPoints = []
-            self.leftPoints = Self.responsePoints(
+            self.leftPoints = try Self.responsePoints(
                 mode: profile.mode,
                 filters: profile.leftFilters,
                 source: profile.leftConvolution,
                 preampDB: profile.leftPreampDB,
-                sampleRate: sampleRate
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
             )
-            self.rightPoints = Self.responsePoints(
+            self.rightPoints = try Self.responsePoints(
                 mode: profile.mode,
                 filters: profile.rightFilters,
                 source: profile.rightConvolution,
                 preampDB: profile.rightPreampDB,
-                sampleRate: sampleRate
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
             )
         }
+        try cancellationCheck()
     }
 
     private static func responsePoints(
@@ -848,20 +884,25 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         filters: [EQFilter],
         source: EQConvolutionSource?,
         preampDB: Double,
-        sampleRate: Double
-    ) -> [FrequencyResponsePoint] {
+        sampleRate: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> [FrequencyResponsePoint] {
         if mode == .convolution {
-            return FrequencyResponse.points(
+            return try FrequencyResponse.points(
                 for: source,
                 preampDB: preampDB,
-                sampleRate: sampleRate
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
             )
         }
-        return FrequencyResponse.points(
+        try cancellationCheck()
+        let points = FrequencyResponse.points(
             for: filters,
             preampDB: preampDB,
             sampleRate: sampleRate
         )
+        try cancellationCheck()
+        return points
     }
 
     var accessibilitySummary: String {
@@ -1364,20 +1405,8 @@ private struct EditorTab: View {
     var sampleRate: Double
     var draftEditGeneration: Int
     @State private var editChannel = EQEditChannel.left
-    @State private var analysis: EQAnalysisSnapshot
-    @State private var analysisTask: Task<Void, Never>?
-
-    init(draftProfile: Binding<EQProfile>, sampleRate: Double, draftEditGeneration: Int) {
-        self._draftProfile = draftProfile
-        self.sampleRate = sampleRate
-        self.draftEditGeneration = draftEditGeneration
-        self._analysis = State(
-            initialValue: EQAnalysisSnapshot(
-                profile: draftProfile.wrappedValue,
-                sampleRate: sampleRate
-            )
-        )
-    }
+    @State private var analysis: EQAnalysisSnapshot?
+    @State private var lastRequestedAnalysisSignature: EQAnalysisSignature?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1452,7 +1481,14 @@ private struct EditorTab: View {
                         .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
                 }
 
-                HeadroomRow(profile: $draftProfile, recommendedPreampDB: analysis.recommendedPreampDB)
+                if let analysis = currentAnalysis {
+                    HeadroomRow(
+                        profile: $draftProfile,
+                        recommendedPreampDB: analysis.recommendedPreampDB
+                    )
+                } else {
+                    PendingHeadroomRow()
+                }
             }
             .cardPanel(padding: 16)
 
@@ -1466,15 +1502,27 @@ private struct EditorTab: View {
                         GraphLegendItem(color: .orange, title: localized("Right"))
                     }
                 }
-                FrequencyResponseGraph(analysis: analysis)
-                    .frame(height: 165)
-                    .accessibilityLabel(Text(localized("Frequency response graph")))
-                    .accessibilityValue(Text(analysis.accessibilitySummary))
-                    .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
-                if let inactiveFilterSummary = analysis.inactiveFilterSummary {
-                    Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                if let analysis = currentAnalysis {
+                    FrequencyResponseGraph(analysis: analysis)
+                        .frame(height: 165)
+                        .accessibilityLabel(Text(localized("Frequency response graph")))
+                        .accessibilityValue(Text(analysis.accessibilitySummary))
+                        .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
+                    if let inactiveFilterSummary = analysis.inactiveFilterSummary {
+                        Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } else {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(localized("Analyzing frequency response…"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 165)
+                    .accessibilityElement(children: .combine)
                 }
             }
             .cardPanel(padding: 16)
@@ -1500,14 +1548,8 @@ private struct EditorTab: View {
             }
 
         }
-        .onAppear {
-            refreshAnalysisIfNeeded(debounced: false)
-        }
-        .onChange(of: analysisSignature) { _, _ in
-            refreshAnalysisIfNeeded(debounced: true)
-        }
-        .onDisappear {
-            analysisTask?.cancel()
+        .task(id: analysisSignature) {
+            await refreshAnalysis()
         }
     }
 
@@ -1515,35 +1557,42 @@ private struct EditorTab: View {
         EQAnalysisSignature(profile: draftProfile, sampleRate: sampleRate)
     }
 
-    private func refreshAnalysisIfNeeded(debounced: Bool) {
+    private var currentAnalysis: EQAnalysisSnapshot? {
+        guard analysis?.signature == analysisSignature else {
+            return nil
+        }
+        return analysis
+    }
+
+    private func refreshAnalysis() async {
         let profile = draftProfile
         let sampleRate = sampleRate
         let signature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
-        guard analysis.signature != signature else {
+        guard analysis?.signature != signature else {
             return
         }
 
-        analysisTask?.cancel()
-        let shouldDebounce = debounced
-            && analysis.signature.mode == signature.mode
-            && analysis.signature.channelMode == signature.channelMode
-        analysisTask = Task { @MainActor in
+        let previousSignature = lastRequestedAnalysisSignature ?? analysis?.signature
+        lastRequestedAnalysisSignature = signature
+        let shouldDebounce = previousSignature?.mode == signature.mode
+            && previousSignature?.channelMode == signature.channelMode
+
+        do {
             if shouldDebounce {
-                try? await Task.sleep(for: .milliseconds(50))
+                try await Task.sleep(for: .milliseconds(50))
             }
-            guard !Task.isCancelled else {
-                return
-            }
+            let nextAnalysis = try await EQAnalysisSnapshot.analyze(
+                profile: profile,
+                sampleRate: sampleRate
+            )
+            try Task.checkCancellation()
 
-            let nextAnalysis = await Task.detached(priority: .userInitiated) {
-                EQAnalysisSnapshot(profile: profile, sampleRate: sampleRate)
-            }.value
-
-            guard !Task.isCancelled,
-                  EQAnalysisSignature(profile: draftProfile, sampleRate: sampleRate) == nextAnalysis.signature else {
+            guard analysisSignature == nextAnalysis.signature else {
                 return
             }
             analysis = nextAnalysis
+        } catch {
+            return
         }
     }
 
@@ -1882,6 +1931,24 @@ private struct HeadroomRow: View {
             profile.leftPreampDB = min(profile.leftPreampDB, value)
             profile.rightPreampDB = min(profile.rightPreampDB, value)
         }
+    }
+}
+
+private struct PendingHeadroomRow: View {
+    var body: some View {
+        HStack {
+            Text(localized("Headroom"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 88, alignment: .leading)
+            ProgressView()
+                .controlSize(.small)
+            Text(localized("Analyzing…"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
