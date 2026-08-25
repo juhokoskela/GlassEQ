@@ -519,6 +519,53 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func automaticCleanSessionsRetryBelowTheAcceptedRuntimeRung() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let output = makeOutput(uid: "accepted-clean-rung", name: "Accepted Clean Rung")
+        let engine = FakeAudioEngine()
+        engine.forcedAppliedAggregateBufferFrameSize = 64
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            storeURL: storeURL,
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateCleanSessionDuration: .milliseconds(100)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.count == 1
+                && model.settingsSnapshot().currentOutputBufferFrameSize == 64
+        }
+
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 2
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 32
+        }
+
+        for expectedStartCount in 3...4 {
+            try? await Task.sleep(for: .milliseconds(350))
+            try model.setAggregateBufferMode(.automatic)
+            await waitUntil {
+                engine.startCalls.count == expectedStartCount
+            }
+        }
+        await waitUntil {
+            engine.startCalls.count == 5
+        }
+
+        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [16, 32, 32, 32, 32])
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 64)
+    }
+
+    @Test
     func aggregateBufferControlsAreUnavailableDuringARebuild() async throws {
         let output = makeOutput(uid: "rebuilding-aggregate", name: "Rebuilding Aggregate")
         let engine = FakeAudioEngine()
@@ -4023,6 +4070,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _preferredAggregateBufferFrameSize: UInt32 = 16
     private var _nativeOutputStreamIndex = 0
     private var _reflectPreferredAggregateBufferFrameSize = false
+    private var _forcedAppliedAggregateBufferFrameSize: UInt32?
     private var _headsetPromotionCandidateUIDs: Set<String> = []
     private var _headsetAggregatePromotionResult = HeadsetAggregatePromotionResult.notApplicable
     private var _headsetAggregatePromotionAttemptCount = 0
@@ -4146,6 +4194,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _reflectPreferredAggregateBufferFrameSize = newValue } }
     }
 
+    var forcedAppliedAggregateBufferFrameSize: UInt32? {
+        get { withLock { _forcedAppliedAggregateBufferFrameSize } }
+        set { withLock { _forcedAppliedAggregateBufferFrameSize = newValue } }
+    }
+
     var headsetPromotionCandidateUIDs: Set<String> {
         get { withLock { _headsetPromotionCandidateUIDs } }
         set { withLock { _headsetPromotionCandidateUIDs = newValue } }
@@ -4247,7 +4300,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
         withLock {
             var activeOutput = output
-            if _reflectPreferredAggregateBufferFrameSize {
+            if let forcedAppliedAggregateBufferFrameSize = _forcedAppliedAggregateBufferFrameSize {
+                activeOutput.bufferFrameSize = forcedAppliedAggregateBufferFrameSize
+            } else if _reflectPreferredAggregateBufferFrameSize {
                 activeOutput.bufferFrameSize = _preferredAggregateBufferFrameSize
             }
             _state = .running(output: activeOutput)

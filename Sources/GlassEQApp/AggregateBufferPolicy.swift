@@ -172,11 +172,12 @@ final class AggregateBufferPolicyStore {
 
     @discardableResult
     func recordCleanAutomaticSession(
-        for route: AggregateAudioRouteFingerprint
+        for route: AggregateAudioRouteFingerprint,
+        runtimeFrameSize: UInt32
     ) throws -> UInt32? {
         let selection = selection(for: route)
         guard selection.mode == .automatic,
-              selection.automaticFrameSize > 16 else {
+              runtimeFrameSize > 16 else {
             return nil
         }
         var resultingFrameSize: UInt32?
@@ -186,7 +187,7 @@ final class AggregateBufferPolicyStore {
             record.cleanSessionCount += 1
             guard record.cleanSessionCount >= Self.cleanSessionsBeforeRetry,
                   let previousFrameSize = Self.previousAutomaticFrameSize(
-                      before: record.automaticFrameSize
+                      before: runtimeFrameSize
                   ) else {
                 return
             }

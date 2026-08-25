@@ -2651,7 +2651,10 @@ final class GlassEQAppModel {
         }
         do {
             guard let nextFrameSize = try aggregateBufferPolicyStore
-                .recordCleanAutomaticSession(for: route) else {
+                .recordCleanAutomaticSession(
+                    for: route,
+                    runtimeFrameSize: output.bufferFrameSize
+                ) else {
                 return false
             }
             pendingAggregateBufferIncrease = nil
