@@ -3040,7 +3040,7 @@ final class GlassEQAppModel {
 
     func resetUnsupportedProfileStore() async throws {
         guard profilePersistenceMode.isProtected else {
-            throw SettingsCommandFailure(message: localized("Profile store reset is only available for stores written by a newer GlassEQ."))
+            throw SettingsCommandFailure(message: localized("Profile store reset is only available while the current store is protected."))
         }
         pendingSaveTask?.cancel()
         await pendingSaveTask?.value
