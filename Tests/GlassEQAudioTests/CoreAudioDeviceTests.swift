@@ -275,6 +275,21 @@ struct CoreAudioDeviceTests {
     func finalCombinedHandoffQualificationFailureRestoresOutputBeforeEscaping() {
         var events: [String] = []
         var compatibilityOutputIsActive = true
+        let output = output(
+            id: 91,
+            uid: "qualification-output",
+            channelCount: 2,
+            bufferFrameSize: 16
+        )
+        let profile = EQProfile(
+            name: "Qualification handoff",
+            mode: .parametric,
+            filters: []
+        )
+        let engine = SystemTapAudioEngine(
+            restorationStoreURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("qualification-handoff-\(UUID()).json")
+        )
         let startupError = SystemTapAudioEngine.AggregateStartupQualificationError(
             expectedFrameCount: 32,
             snapshot: .init(
@@ -285,24 +300,33 @@ struct CoreAudioDeviceTests {
         )
 
         do {
-            try SystemTapAudioEngine.runCombinedStartupAttempts(
-                frameSizes: [16, 16, 32],
-                isSeparateClockHandoff: true,
-                attempt: { frameSize in
-                    #expect(compatibilityOutputIsActive)
-                    events.append("attempt \(frameSize)")
-                    compatibilityOutputIsActive = false
-                    throw startupError
-                },
-                restoreSeparateClockOutput: {
-                    #expect(!compatibilityOutputIsActive)
-                    events.append("restore")
-                    compatibilityOutputIsActive = true
-                },
-                waitBeforeRetry: {
-                    #expect(compatibilityOutputIsActive)
-                    events.append("wait")
-                }
+            try engine.startCombinedAggregateHandoffForTesting(
+                output: output,
+                profile: profile,
+                preserveStagingOutputBuffer: true,
+                boundary: .init(
+                    attempt: { frameSize in
+                        #expect(compatibilityOutputIsActive)
+                        events.append("attempt \(frameSize)")
+                        compatibilityOutputIsActive = false
+                        throw startupError
+                    },
+                    restoreSeparateClockBackend: {
+                        restoredOutput,
+                        restoredProfile,
+                        preserveOutputBuffer in
+                        #expect(!compatibilityOutputIsActive)
+                        #expect(restoredOutput == output)
+                        #expect(restoredProfile == profile)
+                        #expect(preserveOutputBuffer)
+                        events.append("restore")
+                        compatibilityOutputIsActive = true
+                    },
+                    waitBeforeRetry: {
+                        #expect(compatibilityOutputIsActive)
+                        events.append("wait")
+                    }
+                )
             )
             Issue.record("Expected final qualification failure")
         } catch let error as SystemTapAudioEngine.AggregateStartupQualificationError {
@@ -324,26 +348,50 @@ struct CoreAudioDeviceTests {
     func nonQualificationCombinedHandoffFailureRestoresOutputBeforeEscaping() {
         var events: [String] = []
         var compatibilityOutputIsActive = true
+        let output = output(
+            id: 92,
+            uid: "arbitrary-failure-output",
+            channelCount: 2,
+            bufferFrameSize: 16
+        )
+        let profile = EQProfile(
+            name: "Arbitrary failure handoff",
+            mode: .parametric,
+            filters: []
+        )
+        let engine = SystemTapAudioEngine(
+            restorationStoreURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("arbitrary-handoff-\(UUID()).json")
+        )
         let startupError = HandoffStartupTestError()
 
         do {
-            try SystemTapAudioEngine.runCombinedStartupAttempts(
-                frameSizes: [16, 16, 32],
-                isSeparateClockHandoff: true,
-                attempt: { frameSize in
-                    #expect(compatibilityOutputIsActive)
-                    events.append("attempt \(frameSize)")
-                    compatibilityOutputIsActive = false
-                    throw startupError
-                },
-                restoreSeparateClockOutput: {
-                    #expect(!compatibilityOutputIsActive)
-                    events.append("restore")
-                    compatibilityOutputIsActive = true
-                },
-                waitBeforeRetry: {
-                    events.append("wait")
-                }
+            try engine.startCombinedAggregateHandoffForTesting(
+                output: output,
+                profile: profile,
+                preserveStagingOutputBuffer: false,
+                boundary: .init(
+                    attempt: { frameSize in
+                        #expect(compatibilityOutputIsActive)
+                        events.append("attempt \(frameSize)")
+                        compatibilityOutputIsActive = false
+                        throw startupError
+                    },
+                    restoreSeparateClockBackend: {
+                        restoredOutput,
+                        restoredProfile,
+                        preserveOutputBuffer in
+                        #expect(!compatibilityOutputIsActive)
+                        #expect(restoredOutput == output)
+                        #expect(restoredProfile == profile)
+                        #expect(!preserveOutputBuffer)
+                        events.append("restore")
+                        compatibilityOutputIsActive = true
+                    },
+                    waitBeforeRetry: {
+                        events.append("wait")
+                    }
+                )
             )
             Issue.record("Expected non-qualification startup failure")
         } catch let error as HandoffStartupTestError {
@@ -360,23 +408,47 @@ struct CoreAudioDeviceTests {
     @Test
     func combinedHandoffRestorationFailurePreservesStartupError() {
         var events: [String] = []
+        let output = output(
+            id: 93,
+            uid: "restoration-failure-output",
+            channelCount: 2,
+            bufferFrameSize: 16
+        )
+        let profile = EQProfile(
+            name: "Restoration failure handoff",
+            mode: .parametric,
+            filters: []
+        )
+        let engine = SystemTapAudioEngine(
+            restorationStoreURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("restoration-failure-\(UUID()).json")
+        )
         let startupError = HandoffStartupTestError()
 
         do {
-            try SystemTapAudioEngine.runCombinedStartupAttempts(
-                frameSizes: [16],
-                isSeparateClockHandoff: true,
-                attempt: { frameSize in
-                    events.append("attempt \(frameSize)")
-                    throw startupError
-                },
-                restoreSeparateClockOutput: {
-                    events.append("restore")
-                    throw HandoffRestorationTestError()
-                },
-                waitBeforeRetry: {
-                    events.append("wait")
-                }
+            try engine.startCombinedAggregateHandoffForTesting(
+                output: output,
+                profile: profile,
+                preserveStagingOutputBuffer: true,
+                boundary: .init(
+                    attempt: { frameSize in
+                        events.append("attempt \(frameSize)")
+                        throw startupError
+                    },
+                    restoreSeparateClockBackend: {
+                        restoredOutput,
+                        restoredProfile,
+                        preserveOutputBuffer in
+                        #expect(restoredOutput == output)
+                        #expect(restoredProfile == profile)
+                        #expect(preserveOutputBuffer)
+                        events.append("restore")
+                        throw HandoffRestorationTestError()
+                    },
+                    waitBeforeRetry: {
+                        events.append("wait")
+                    }
+                )
             )
             Issue.record("Expected handoff restoration to fail")
         } catch let error as HandoffStartupTestError {
