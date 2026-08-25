@@ -21,21 +21,25 @@ Bluetooth routes at 24 kHz or below initially use a separate-clock compatibility
 
 ## Real-Time Rules
 
-The audio render path must not allocate, lock, touch disk, log, parse text, mutate SwiftUI state, or use Combine. UI and import work build a complete candidate processor bank outside the callback. The callback warms that bank for 20 ms, then blends from the active bank with a sample-accurate 10 ms smoothstep ramp. This permits filter-count, mode, and channel-mode changes without rebuilding the Core Audio graph. Only the newest queued edit is retained, and retired banks are released outside the callback.
+The audio render path must not allocate, lock, touch disk, log, parse text, mutate SwiftUI state, or use Combine. UI and import work build and prewarm a complete candidate processor bank outside the callback. Biquad banks receive the normal 20 ms live-input warm-up. A new convolution bank receives 16,383 live frames so its complete impulse history is valid before the same sample-accurate 10 ms smoothstep blend begins. This permits filter-count, profile-type, and channel-mode changes without rebuilding the Core Audio graph or exposing a cold filter tail. Only the newest queued edit is retained, and retired banks are released outside the callback.
+
+Response Curve profiles compile log-frequency, linear-dB magnitude points into a 16,384-tap minimum-phase impulse. The compiler constructs the full even log-magnitude spectrum, performs the exact even-length real-cepstrum lift, and persists a synthesis version with the source points; generated samples are not stored. Rendering uses a 512-tap vectorized direct head and 62 vectorized 256-frame tail partitions with 512-point real FFTs. Tail work is scheduled against absolute sample-frame deadlines rather than callback count, so irregular and 480-frame callback sequences can cross internal block boundaries safely. Every Accelerate path and mutable buffer is exercised and detached before publication to the callback.
+
+The direct head produces tap zero immediately, while the partitioned tail is computed before the corresponding output frames become due. Response Curve processing therefore adds computation but no fixed buffering or tap-to-output latency. The fixed tap count provides 2.93 Hz bins and 341 ms support at 48 kHz, 5.86 Hz and 171 ms at 96 kHz, and 11.72 Hz and 85 ms at 192 kHz. The last case is an explicit bass-resolution limit for future room-correction work.
 
 A watchdog observes render progress outside the callback. One three-second steady-state stall stops the engine before rebuilding it once. Another stall within 60 seconds leaves GlassEQ stopped, restoring direct system audio until the user explicitly retries.
 
 The render callback also counts callbacks that arrive or finish at least one complete callback period late. After the route has settled, three misses within one second form a deadline burst. Automatic mode continues to use its persisted route-specific reliability policy. A fixed mode rebuilds once at the selected size, then temporarily climbs through 32 and 64 frames if bursts recur within 60 seconds. The fixed preference is never overwritten. The temporary rung lasts until the route session ends or the user retries the fixed size. Another burst at 64 frames stops processing.
 
-Programme-loudness A/B comparison is another transient render mode, not a profile mutation. The renderer runs the draft profile and a filters-off reference in parallel; the reference retains the same linked or per-channel preamp gains. Both branches pass through BS.1770 K-weighting and a shared three-second rolling gate so they are measured over the same programme passages. GlassEQ attenuates only the louder branch, smooths match changes over 500 ms, and crossfades A/B selection over 10 ms. Starting and stopping the comparison reuse the whole-bank warm-up and transition path, including a gain restoration before returning to the saved active profile. The measured gains, selected branch, and filters-off reference are never persisted.
+Programme-loudness A/B comparison is another transient render mode, not a profile mutation. The renderer runs the draft profile and a filters-off reference in parallel; the reference retains the same linked or per-channel preamp gains. “Filters off” removes either the biquad bank or the convolution curve. Both branches pass through BS.1770 K-weighting and a shared three-second rolling gate so they are measured over the same programme passages. GlassEQ attenuates only the louder branch, smooths match changes over 500 ms, and crossfades A/B selection over 10 ms. Starting and stopping the comparison reuse the whole-bank warm-up and transition path, including a gain restoration before returning to the saved active profile. The measured gains, selected branch, and filters-off reference are never persisted.
 
 ## Current Implementation Status
 
-This repository contains the SwiftPM project, DSP engine, importers, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
+This repository contains the SwiftPM project, biquad and minimum-phase convolution DSP engines, EqualizerAPO ParametricEQ and GraphicEQ importers, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
 
 ## Clocking And Routing
 
-On normal-rate routes, the selected physical output is the aggregate's main subdevice and therefore owns the render clock. The process tap captures the device stream containing the output's preferred stereo pair and is an aggregate subtap with high-quality Core Audio drift compensation enabled. The engine has one `AudioDeviceIOProcID`: each callback receives the tapped system mix, runs the biquad cascade, and writes directly to the physical output buffers. There is no application-level queue or asynchronous sample-rate converter on this path.
+On normal-rate routes, the selected physical output is the aggregate's main subdevice and therefore owns the render clock. The process tap captures the device stream containing the output's preferred stereo pair and is an aggregate subtap with high-quality Core Audio drift compensation enabled. The engine has one `AudioDeviceIOProcID`: each callback receives the tapped system mix, runs the active biquad or convolution bank, and writes directly to the physical output buffers. There is no application-level queue or asynchronous sample-rate converter on this path.
 
 GlassEQ measures tap-to-output latency as the host-time difference between the first tapped input frame acquired for an I/O cycle and the first rendered output frame scheduled for hardware. Diagnostics report the observed average and range. This does not include latency before the system tap or after the output reaches the hardware.
 
@@ -65,12 +69,25 @@ The command prints output device metadata and post-run callback metrics:
 - Input frames dropped because a callback exposed more input than output capacity.
 - Peak capture and output callback sizes.
 - Render callbacks that missed at least one complete callback period.
+- Callback-start lateness, total render time, and completion lateness at p99.99 and maximum. Start lateness compares callback entry with the previous callback's expected period. Completion lateness adds render time to that delay and reports the amount beyond the next period.
+- Convolution-only direct-head and scheduled-tail work at p99.99 and maximum.
+- The smallest sample-frame margin observed when a 256-frame tail job completed, plus any tail jobs that missed their internal due frame.
 - Average and range of tap-to-output latency from Core Audio's I/O timestamps.
 - Samples that reached the soft clipper.
+
+The p99.99 values come from fixed, callback-owned histograms. Normal timings use 0.25 microsecond buckets, timings above 64 microseconds use 4 microsecond buckets, and maxima remain exact. GlassEQ publishes one histogram roughly every 1,024 callbacks and staggers the five scans so the measurement work does not land in one callback. Resetting metrics changes a generation counter; it does not clear histogram storage on the realtime thread.
 
 The separate-clock fallback reports its additional bridge diagnostics instead: buffered frames, occupancy-derived bridge latency, clock correction, output timing gaps, sample-rate conversion, and reservoir target. Its bridge-latency number is not the same measurement as the combined path's timestamp-derived tap-to-output latency.
 
 The diagnostic follows the current macOS output device and does not switch outputs itself.
+
+The release DSP benchmark accepts an optional EqualizerAPO GraphicEQ file so the convolution path can be measured with a real response:
+
+```sh
+swift run -c release GlassEQDiagnostics dsp-benchmark /path/to/GraphicEQ.txt
+```
+
+It reports average, p99.9, p99.99, and maximum callback work for the 16,384-tap cases at 48, 96, and 192 kHz, plus dual-bank transition cost. It measures DSP execution only, not Core Audio latency.
 
 Diagnostics print full local device names, UIDs, and transport identifiers:
 
@@ -87,3 +104,4 @@ Profile data belongs to the main app sandbox and is migrated by the main app thr
 ## Backlog
 
 - Support preferred stereo pairs inside native output streams wider than two channels without enabling Core Audio tap mixdown. The first version should still process only the preferred pair, preserve the device-scoped native stream format, map the tapped channels and aggregate buffers explicitly, keep physical inputs disabled, and verify that the wider stream does not restore the 43.5 ms mixdown latency.
+- Import arbitrary impulse-response audio assets, starting with REW WAV exports, and preserve the phase and samples supplied by the user instead of running minimum-phase synthesis.

@@ -37,6 +37,7 @@ public enum SettingsProfileKind: String, Codable, Sendable {
     case graphic10
     case graphic31
     case parametric
+    case convolution
 }
 
 public enum SettingsAggregateBufferMode: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -94,6 +95,67 @@ public struct SettingsAggregateBufferDTO: Codable, Equatable, Sendable {
     }
 }
 
+public struct SettingsAudioRenderTimingDTO: Codable, Equatable, Sendable {
+    public var callbackStartLatenessObservations: UInt64
+    public var callbackStartLatenessP9999Nanoseconds: UInt64
+    public var maximumCallbackStartLatenessNanoseconds: UInt64
+    public var directHeadObservations: UInt64
+    public var directHeadP9999Nanoseconds: UInt64
+    public var maximumDirectHeadNanoseconds: UInt64
+    public var tailWorkObservations: UInt64
+    public var tailWorkP9999Nanoseconds: UInt64
+    public var maximumTailWorkNanoseconds: UInt64
+    public var totalRenderObservations: UInt64
+    public var totalRenderP9999Nanoseconds: UInt64
+    public var maximumTotalRenderNanoseconds: UInt64
+    public var completionLatenessObservations: UInt64
+    public var completionLatenessP9999Nanoseconds: UInt64
+    public var maximumCompletionLatenessNanoseconds: UInt64
+    public var tailCompletionObservations: UInt64
+    public var minimumTailCompletionSlackFrames: Int
+    public var tailDeadlineMisses: UInt64
+
+    public init(
+        callbackStartLatenessObservations: UInt64 = 0,
+        callbackStartLatenessP9999Nanoseconds: UInt64 = 0,
+        maximumCallbackStartLatenessNanoseconds: UInt64 = 0,
+        directHeadObservations: UInt64 = 0,
+        directHeadP9999Nanoseconds: UInt64 = 0,
+        maximumDirectHeadNanoseconds: UInt64 = 0,
+        tailWorkObservations: UInt64 = 0,
+        tailWorkP9999Nanoseconds: UInt64 = 0,
+        maximumTailWorkNanoseconds: UInt64 = 0,
+        totalRenderObservations: UInt64 = 0,
+        totalRenderP9999Nanoseconds: UInt64 = 0,
+        maximumTotalRenderNanoseconds: UInt64 = 0,
+        completionLatenessObservations: UInt64 = 0,
+        completionLatenessP9999Nanoseconds: UInt64 = 0,
+        maximumCompletionLatenessNanoseconds: UInt64 = 0,
+        tailCompletionObservations: UInt64 = 0,
+        minimumTailCompletionSlackFrames: Int = 0,
+        tailDeadlineMisses: UInt64 = 0
+    ) {
+        self.callbackStartLatenessObservations = callbackStartLatenessObservations
+        self.callbackStartLatenessP9999Nanoseconds = callbackStartLatenessP9999Nanoseconds
+        self.maximumCallbackStartLatenessNanoseconds = maximumCallbackStartLatenessNanoseconds
+        self.directHeadObservations = directHeadObservations
+        self.directHeadP9999Nanoseconds = directHeadP9999Nanoseconds
+        self.maximumDirectHeadNanoseconds = maximumDirectHeadNanoseconds
+        self.tailWorkObservations = tailWorkObservations
+        self.tailWorkP9999Nanoseconds = tailWorkP9999Nanoseconds
+        self.maximumTailWorkNanoseconds = maximumTailWorkNanoseconds
+        self.totalRenderObservations = totalRenderObservations
+        self.totalRenderP9999Nanoseconds = totalRenderP9999Nanoseconds
+        self.maximumTotalRenderNanoseconds = maximumTotalRenderNanoseconds
+        self.completionLatenessObservations = completionLatenessObservations
+        self.completionLatenessP9999Nanoseconds = completionLatenessP9999Nanoseconds
+        self.maximumCompletionLatenessNanoseconds = maximumCompletionLatenessNanoseconds
+        self.tailCompletionObservations = tailCompletionObservations
+        self.minimumTailCompletionSlackFrames = minimumTailCompletionSlackFrames
+        self.tailDeadlineMisses = tailDeadlineMisses
+    }
+}
+
 public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var capturedFrames: UInt64
     public var playedFrames: UInt64
@@ -110,9 +172,12 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var playbackBufferObservations: UInt64
     public var inputTimestampDiscontinuities: UInt64
     public var outputTimestampDiscontinuities: UInt64
+    public var pairedTimestampDiscontinuities: UInt64
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
     public var renderDeadlineMisses: UInt64
+    public var callbackStartStarvations: UInt64
+    public var renderOverruns: UInt64
     public var playbackTimestampDiscontinuities: UInt64
     public var playbackBufferRenegotiations: UInt64
     public var adaptivePlaybackRenderFailures: UInt64
@@ -126,6 +191,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var minimumTapToOutputLatencyNanoseconds: UInt64
     public var maximumTapToOutputLatencyNanoseconds: UInt64
     public var averageTapToOutputLatencyNanoseconds: Double
+    public var renderTiming: SettingsAudioRenderTimingDTO
 
     private enum CodingKeys: String, CodingKey {
         case capturedFrames
@@ -143,9 +209,12 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case playbackBufferObservations
         case inputTimestampDiscontinuities
         case outputTimestampDiscontinuities
+        case pairedTimestampDiscontinuities
         case maximumCaptureCallbackFrames
         case maximumPlaybackCallbackFrames
         case renderDeadlineMisses
+        case callbackStartStarvations
+        case renderOverruns
         case playbackTimestampDiscontinuities
         case playbackBufferRenegotiations
         case adaptivePlaybackRenderFailures
@@ -159,6 +228,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case minimumTapToOutputLatencyNanoseconds
         case maximumTapToOutputLatencyNanoseconds
         case averageTapToOutputLatencyNanoseconds
+        case renderTiming
     }
 
     public init(
@@ -177,9 +247,12 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         playbackBufferObservations: UInt64 = 0,
         inputTimestampDiscontinuities: UInt64 = 0,
         outputTimestampDiscontinuities: UInt64 = 0,
+        pairedTimestampDiscontinuities: UInt64 = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
         renderDeadlineMisses: UInt64 = 0,
+        callbackStartStarvations: UInt64 = 0,
+        renderOverruns: UInt64 = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
         playbackBufferRenegotiations: UInt64 = 0,
         adaptivePlaybackRenderFailures: UInt64 = 0,
@@ -192,7 +265,8 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         tapToOutputLatencyObservations: UInt64 = 0,
         minimumTapToOutputLatencyNanoseconds: UInt64 = 0,
         maximumTapToOutputLatencyNanoseconds: UInt64 = 0,
-        averageTapToOutputLatencyNanoseconds: Double = 0
+        averageTapToOutputLatencyNanoseconds: Double = 0,
+        renderTiming: SettingsAudioRenderTimingDTO = SettingsAudioRenderTimingDTO()
     ) {
         self.capturedFrames = capturedFrames
         self.playedFrames = playedFrames
@@ -209,9 +283,12 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.playbackBufferObservations = playbackBufferObservations
         self.inputTimestampDiscontinuities = inputTimestampDiscontinuities
         self.outputTimestampDiscontinuities = outputTimestampDiscontinuities
+        self.pairedTimestampDiscontinuities = pairedTimestampDiscontinuities
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
         self.renderDeadlineMisses = renderDeadlineMisses
+        self.callbackStartStarvations = callbackStartStarvations
+        self.renderOverruns = renderOverruns
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
         self.playbackBufferRenegotiations = playbackBufferRenegotiations
         self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
@@ -225,6 +302,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.minimumTapToOutputLatencyNanoseconds = minimumTapToOutputLatencyNanoseconds
         self.maximumTapToOutputLatencyNanoseconds = maximumTapToOutputLatencyNanoseconds
         self.averageTapToOutputLatencyNanoseconds = averageTapToOutputLatencyNanoseconds
+        self.renderTiming = renderTiming
     }
 
     public init(from decoder: any Decoder) throws {
@@ -245,9 +323,12 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             playbackBufferObservations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferObservations) ?? 0,
             inputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .inputTimestampDiscontinuities) ?? 0,
             outputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .outputTimestampDiscontinuities) ?? 0,
+            pairedTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .pairedTimestampDiscontinuities) ?? 0,
             maximumCaptureCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumCaptureCallbackFrames) ?? 0,
             maximumPlaybackCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumPlaybackCallbackFrames) ?? 0,
             renderDeadlineMisses: try container.decodeIfPresent(UInt64.self, forKey: .renderDeadlineMisses) ?? 0,
+            callbackStartStarvations: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartStarvations) ?? 0,
+            renderOverruns: try container.decodeIfPresent(UInt64.self, forKey: .renderOverruns) ?? 0,
             playbackTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
             playbackBufferRenegotiations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferRenegotiations) ?? 0,
             adaptivePlaybackRenderFailures: try container.decodeIfPresent(UInt64.self, forKey: .adaptivePlaybackRenderFailures) ?? 0,
@@ -260,7 +341,11 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             tapToOutputLatencyObservations: try container.decodeIfPresent(UInt64.self, forKey: .tapToOutputLatencyObservations) ?? 0,
             minimumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumTapToOutputLatencyNanoseconds) ?? 0,
             maximumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTapToOutputLatencyNanoseconds) ?? 0,
-            averageTapToOutputLatencyNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageTapToOutputLatencyNanoseconds) ?? 0
+            averageTapToOutputLatencyNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageTapToOutputLatencyNanoseconds) ?? 0,
+            renderTiming: try container.decodeIfPresent(
+                SettingsAudioRenderTimingDTO.self,
+                forKey: .renderTiming
+            ) ?? SettingsAudioRenderTimingDTO()
         )
     }
 }

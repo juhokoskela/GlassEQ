@@ -355,9 +355,12 @@ extension SettingsAudioMetricsDTO {
             playbackBufferObservations: metrics.playbackBufferObservations,
             inputTimestampDiscontinuities: metrics.inputTimestampDiscontinuities,
             outputTimestampDiscontinuities: metrics.outputTimestampDiscontinuities,
+            pairedTimestampDiscontinuities: metrics.pairedTimestampDiscontinuities,
             maximumCaptureCallbackFrames: metrics.maximumCaptureCallbackFrames,
             maximumPlaybackCallbackFrames: metrics.maximumPlaybackCallbackFrames,
             renderDeadlineMisses: metrics.renderDeadlineMisses,
+            callbackStartStarvations: metrics.callbackStartStarvations,
+            renderOverruns: metrics.renderOverruns,
             playbackTimestampDiscontinuities: metrics.playbackTimestampDiscontinuities,
             playbackBufferRenegotiations: metrics.playbackBufferRenegotiations,
             adaptivePlaybackRenderFailures: metrics.adaptivePlaybackRenderFailures,
@@ -370,7 +373,34 @@ extension SettingsAudioMetricsDTO {
             tapToOutputLatencyObservations: metrics.tapToOutputLatencyObservations,
             minimumTapToOutputLatencyNanoseconds: metrics.minimumTapToOutputLatencyNanoseconds,
             maximumTapToOutputLatencyNanoseconds: metrics.maximumTapToOutputLatencyNanoseconds,
-            averageTapToOutputLatencyNanoseconds: metrics.averageTapToOutputLatencyNanoseconds
+            averageTapToOutputLatencyNanoseconds: metrics.averageTapToOutputLatencyNanoseconds,
+            renderTiming: SettingsAudioRenderTimingDTO(
+                callbackStartLatenessObservations:
+                    metrics.renderTiming.callbackStartLatenessObservations,
+                callbackStartLatenessP9999Nanoseconds:
+                    metrics.renderTiming.callbackStartLatenessP9999Nanoseconds,
+                maximumCallbackStartLatenessNanoseconds:
+                    metrics.renderTiming.maximumCallbackStartLatenessNanoseconds,
+                directHeadObservations: metrics.renderTiming.directHeadObservations,
+                directHeadP9999Nanoseconds: metrics.renderTiming.directHeadP9999Nanoseconds,
+                maximumDirectHeadNanoseconds: metrics.renderTiming.maximumDirectHeadNanoseconds,
+                tailWorkObservations: metrics.renderTiming.tailWorkObservations,
+                tailWorkP9999Nanoseconds: metrics.renderTiming.tailWorkP9999Nanoseconds,
+                maximumTailWorkNanoseconds: metrics.renderTiming.maximumTailWorkNanoseconds,
+                totalRenderObservations: metrics.renderTiming.totalRenderObservations,
+                totalRenderP9999Nanoseconds: metrics.renderTiming.totalRenderP9999Nanoseconds,
+                maximumTotalRenderNanoseconds: metrics.renderTiming.maximumTotalRenderNanoseconds,
+                completionLatenessObservations:
+                    metrics.renderTiming.completionLatenessObservations,
+                completionLatenessP9999Nanoseconds:
+                    metrics.renderTiming.completionLatenessP9999Nanoseconds,
+                maximumCompletionLatenessNanoseconds:
+                    metrics.renderTiming.maximumCompletionLatenessNanoseconds,
+                tailCompletionObservations: metrics.renderTiming.tailCompletionObservations,
+                minimumTailCompletionSlackFrames:
+                    metrics.renderTiming.minimumTailCompletionSlackFrames,
+                tailDeadlineMisses: metrics.renderTiming.tailDeadlineMisses
+            )
         )
     }
 }
@@ -1164,6 +1194,14 @@ final class GlassEQAppModel {
         }
     }
 
+    func createConvolutionProfile() {
+        do {
+            try createProfile(kind: .convolution)
+        } catch {
+            reportProfileActionFailure(error)
+        }
+    }
+
     func duplicateSelectedProfile() {
         do {
             try duplicateProfile(id: selectedProfileID)
@@ -1466,6 +1504,12 @@ final class GlassEQAppModel {
                 EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)
             ]
             try addProfile(profile, name: localized("New Parametric"), status: localized("Created New Parametric"))
+        case .convolution:
+            try addProfile(
+                .flatConvolution,
+                name: localized("New Response Curve"),
+                status: localized("Created New Response Curve")
+            )
         }
     }
 

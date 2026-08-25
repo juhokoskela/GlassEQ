@@ -30,6 +30,8 @@ public struct EQConfiguration: Equatable, Sendable {
     public var preampLinearGain: Float
     public var coefficients: [BiquadCoefficients]
     public var channelConfigurations: [EQChannelConfiguration]
+    public var convolutionSources: [EQConvolutionSource?]
+    public var usesConvolution: Bool
     public var isBypassed: Bool
 
     public init(
@@ -59,6 +61,11 @@ public struct EQConfiguration: Equatable, Sendable {
             channelCount: self.channelCount,
             linkedConfiguration: linkedConfiguration
         )
+        self.convolutionSources = Self.makeConvolutionSources(
+            profile: profile,
+            channelCount: self.channelCount
+        )
+        self.usesConvolution = profile.mode == .convolution
         self.isBypassed = profile.isBypassed
     }
 
@@ -97,14 +104,38 @@ public struct EQConfiguration: Equatable, Sendable {
             }
         }
     }
+
+    private static func makeConvolutionSources(
+        profile: EQProfile,
+        channelCount: Int
+    ) -> [EQConvolutionSource?] {
+        guard profile.mode == .convolution else {
+            return Array(repeating: nil, count: channelCount)
+        }
+        guard profile.channelMode == .stereo else {
+            return Array(repeating: profile.convolution, count: channelCount)
+        }
+        return (0..<channelCount).map { channel in
+            switch channel {
+            case 0:
+                profile.leftConvolution
+            case 1:
+                profile.rightConvolution
+            default:
+                profile.convolution
+            }
+        }
+    }
 }
 
-public struct EQRenderConfiguration: Equatable, Sendable {
+public struct EQRenderConfiguration: Sendable {
     public var configuration: EQConfiguration
     var coefficients: [RenderBiquadCoefficients]
     var channelStarts: [Int]
     var channelFilterCounts: [Int]
     var preampLinearGains: [Float]
+    var convolvers: [RealtimeHybridConvolver?]
+    private var preparationSucceeded: Bool
 
     public init(
         profile: EQProfile,
@@ -121,26 +152,100 @@ public struct EQRenderConfiguration: Equatable, Sendable {
     }
 
     public init(configuration: EQConfiguration) {
+        do {
+            try self.init(preparing: configuration)
+        } catch {
+            self.init(unprepared: configuration)
+        }
+    }
+
+    public static func prepare(
+        profile: EQProfile,
+        sampleRate: Double,
+        channelCount: Int,
+        maximumUsableFrequency: Double? = nil
+    ) throws -> EQRenderConfiguration {
+        try EQRenderConfiguration(preparing: EQConfiguration(
+            profile: profile,
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            maximumUsableFrequency: maximumUsableFrequency
+        ))
+    }
+
+    private init(preparing configuration: EQConfiguration) throws {
         self.configuration = configuration
         let renderLayout = EQProcessor.makeRenderLayout(configuration: configuration)
         self.coefficients = renderLayout.coefficients
         self.channelStarts = renderLayout.channelStarts
         self.channelFilterCounts = renderLayout.channelFilterCounts
         self.preampLinearGains = renderLayout.preampLinearGains
+        self.convolvers = try Self.makeConvolvers(configuration: configuration)
+        self.preparationSucceeded = true
+    }
+
+    private init(unprepared configuration: EQConfiguration) {
+        self.configuration = configuration
+        let renderLayout = EQProcessor.makeRenderLayout(configuration: configuration)
+        self.coefficients = renderLayout.coefficients
+        self.channelStarts = renderLayout.channelStarts
+        self.channelFilterCounts = renderLayout.channelFilterCounts
+        self.preampLinearGains = renderLayout.preampLinearGains
+        self.convolvers = Array(repeating: nil, count: configuration.channelCount)
+        self.preparationSucceeded = !configuration.usesConvolution
     }
 
     public func hasRealtimeCompatibleTopology(with other: EQRenderConfiguration) -> Bool {
         configuration.sampleRate == other.configuration.sampleRate
             && configuration.channelCount == other.configuration.channelCount
+            && configuration.usesConvolution == other.configuration.usesConvolution
             && channelFilterCounts == other.channelFilterCounts
     }
 
     public var isNumericallySafe: Bool {
-        configuration.sampleRate.isFinite
+        preparationSucceeded
+            && configuration.sampleRate.isFinite
             && configuration.sampleRate > 0
             && configuration.channelCount > 0
             && preampLinearGains.allSatisfy { $0.isFinite && $0 >= 0 }
             && coefficients.allSatisfy(Self.isNumericallySafe)
+            && (!configuration.usesConvolution
+                || convolvers.count == configuration.channelCount
+                    && convolvers.allSatisfy { $0 != nil })
+    }
+
+    private static func makeConvolvers(
+        configuration: EQConfiguration
+    ) throws -> [RealtimeHybridConvolver?] {
+        guard configuration.usesConvolution else {
+            return Array(repeating: nil, count: configuration.channelCount)
+        }
+
+        var preparedSources: [(source: EQConvolutionSource, kernel: PreparedConvolutionKernel)] = []
+        return try configuration.convolutionSources.map { source in
+            guard let source else {
+                throw MinimumPhaseFIRCompilerError.insufficientPoints
+            }
+            let kernel: PreparedConvolutionKernel
+            if let prepared = preparedSources.first(where: { $0.source == source }) {
+                kernel = prepared.kernel
+            } else {
+                switch source {
+                case .magnitudeCurve(let curve):
+                    guard curve.synthesisVersion == MinimumPhaseFIRCompiler.synthesisVersion else {
+                        throw MinimumPhaseFIRCompilerError.invalidPoint
+                    }
+                    kernel = try PreparedConvolutionKernel(
+                        impulseResponse: MinimumPhaseFIRCompiler.compile(
+                            points: curve.points,
+                            sampleRate: configuration.sampleRate
+                        )
+                    )
+                }
+                preparedSources.append((source, kernel))
+            }
+            return try RealtimeHybridConvolver(kernel: kernel)
+        }
     }
 
     private static func isNumericallySafe(_ coefficients: RenderBiquadCoefficients) -> Bool {
@@ -172,11 +277,55 @@ public struct EQRenderConfiguration: Equatable, Sendable {
     }
 }
 
+public struct EQRenderWorkTiming: Equatable, Sendable {
+    public var directHeadHostTicks: UInt64
+    public var tailScheduledWorkHostTicks: UInt64
+    public var tailCompletionObservations: UInt64
+    public var minimumTailCompletionSlackFrames: Int
+    public var tailDeadlineMisses: UInt64
+
+    public init(
+        directHeadHostTicks: UInt64 = 0,
+        tailScheduledWorkHostTicks: UInt64 = 0,
+        tailCompletionObservations: UInt64 = 0,
+        minimumTailCompletionSlackFrames: Int = 0,
+        tailDeadlineMisses: UInt64 = 0
+    ) {
+        self.directHeadHostTicks = directHeadHostTicks
+        self.tailScheduledWorkHostTicks = tailScheduledWorkHostTicks
+        self.tailCompletionObservations = tailCompletionObservations
+        self.minimumTailCompletionSlackFrames = minimumTailCompletionSlackFrames
+        self.tailDeadlineMisses = tailDeadlineMisses
+    }
+
+    mutating func merge(_ other: EQRenderWorkTiming) {
+        directHeadHostTicks &+= other.directHeadHostTicks
+        tailScheduledWorkHostTicks &+= other.tailScheduledWorkHostTicks
+        tailDeadlineMisses &+= other.tailDeadlineMisses
+        if other.tailCompletionObservations > 0 {
+            if tailCompletionObservations == 0 {
+                minimumTailCompletionSlackFrames = other.minimumTailCompletionSlackFrames
+            } else {
+                minimumTailCompletionSlackFrames = min(
+                    minimumTailCompletionSlackFrames,
+                    other.minimumTailCompletionSlackFrames
+                )
+            }
+            tailCompletionObservations &+= other.tailCompletionObservations
+        }
+    }
+}
+
 struct EQLinearRenderDiagnostics: Equatable, Sendable {
     var nonFiniteSamples: UInt64
+    var workTiming: EQRenderWorkTiming
 
-    init(nonFiniteSamples: UInt64 = 0) {
+    init(
+        nonFiniteSamples: UInt64 = 0,
+        workTiming: EQRenderWorkTiming = EQRenderWorkTiming()
+    ) {
         self.nonFiniteSamples = nonFiniteSamples
+        self.workTiming = workTiming
     }
 }
 
@@ -187,6 +336,13 @@ public struct EQProcessor: Sendable {
     private var channelStarts: [Int]
     private var channelFilterCounts: [Int]
     private var preampLinearGains: [Float]
+    private var convolvers: [RealtimeHybridConvolver?]
+
+    public var requiredWarmupFrames: Int {
+        configuration.usesConvolution && !configuration.isBypassed
+            ? PreparedConvolutionKernel.tapCount - 1
+            : 0
+    }
 
     public init(configuration: EQConfiguration) {
         self.init(renderConfiguration: EQRenderConfiguration(configuration: configuration))
@@ -199,6 +355,8 @@ public struct EQProcessor: Sendable {
         self.channelStarts = renderConfiguration.channelStarts
         self.channelFilterCounts = renderConfiguration.channelFilterCounts
         self.preampLinearGains = renderConfiguration.preampLinearGains
+        self.convolvers = renderConfiguration.convolvers
+        resetConvolversForExclusiveRenderOwnership()
     }
 
     public mutating func update(configuration: EQConfiguration) {
@@ -216,6 +374,8 @@ public struct EQProcessor: Sendable {
         channelStarts = renderConfiguration.channelStarts
         channelFilterCounts = renderConfiguration.channelFilterCounts
         preampLinearGains = renderConfiguration.preampLinearGains
+        convolvers = renderConfiguration.convolvers
+        resetConvolversForExclusiveRenderOwnership()
 
         if needsStateReset {
             states = Array(repeating: BiquadState(), count: renderConfiguration.coefficients.count)
@@ -236,6 +396,12 @@ public struct EQProcessor: Sendable {
 
         for index in nextCoefficients.indices where previousCoefficients[index] != nextCoefficients[index] {
             states[index] = BiquadState()
+        }
+    }
+
+    private mutating func resetConvolversForExclusiveRenderOwnership() {
+        for index in convolvers.indices {
+            convolvers[index]?.reset()
         }
     }
 
@@ -271,6 +437,19 @@ public struct EQProcessor: Sendable {
         let availableFrames = min(frameCount, samples.count / sourceChannelCount)
         guard availableFrames > 0 else {
             return 0
+        }
+
+        if configuration.usesConvolution {
+            let diagnostics = processConvolutionInterleavedLinearly(
+                samples,
+                frameCount: availableFrames,
+                channelCount: sourceChannelCount
+            )
+            return diagnostics.nonFiniteSamples &+ Self.protectInterleavedWithDiagnostics(
+                samples,
+                frameCount: availableFrames,
+                channelCount: sourceChannelCount
+            )
         }
 
         if sourceChannelCount == 2, channelStarts.count >= 2 {
@@ -331,6 +510,14 @@ public struct EQProcessor: Sendable {
             )
         }
 
+        if configuration.usesConvolution {
+            return processConvolutionInterleavedLinearly(
+                samples,
+                frameCount: availableFrames,
+                channelCount: sourceChannelCount
+            )
+        }
+
         return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
             var diagnostics = EQLinearRenderDiagnostics()
             let channels = min(sourceChannelCount, channelStartBuffer.count)
@@ -380,6 +567,18 @@ public struct EQProcessor: Sendable {
             return
         }
 
+        if configuration.usesConvolution {
+            for channelIndex in channels.indices {
+                for sampleIndex in channels[channelIndex].indices {
+                    channels[channelIndex][sampleIndex] = processSample(
+                        channels[channelIndex][sampleIndex],
+                        channel: channelIndex
+                    )
+                }
+            }
+            return
+        }
+
         withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
             for channelIndex in channels.indices {
                 guard channelIndex < channelStartBuffer.count else {
@@ -411,6 +610,20 @@ public struct EQProcessor: Sendable {
 
         guard channel >= 0, channel < channelStarts.count else {
             return (input, false)
+        }
+        if configuration.usesConvolution {
+            guard channel < convolvers.count,
+                  convolvers[channel] != nil else {
+                return (0, true)
+            }
+            let processed = convolvers[channel]!.processSample(
+                input * preampLinearGains[channel]
+            )
+            let protected = Self.saturate(processed.sample)
+            return (
+                protected.sample,
+                processed.encounteredNonFinite || protected.saturated
+            )
         }
         return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
             Self.processSampleWithDiagnosticsUnchecked(
@@ -451,6 +664,36 @@ public struct EQProcessor: Sendable {
                 }
             }
         }
+    }
+
+    private mutating func processConvolutionInterleavedLinearly(
+        _ samples: UnsafeMutableBufferPointer<Float>,
+        frameCount: Int,
+        channelCount: Int
+    ) -> EQLinearRenderDiagnostics {
+        var diagnostics = EQLinearRenderDiagnostics()
+        let channels = min(channelCount, convolvers.count)
+        for channel in 0..<channels {
+            guard convolvers[channel] != nil else {
+                diagnostics.nonFiniteSamples += UInt64(frameCount)
+                var sampleIndex = channel
+                for _ in 0..<frameCount {
+                    samples[sampleIndex] = 0
+                    sampleIndex += channelCount
+                }
+                continue
+            }
+            let channelDiagnostics = convolvers[channel]!.processInterleavedChannel(
+                samples,
+                frameCount: frameCount,
+                channel: channel,
+                channelCount: channelCount,
+                preampLinearGain: preampLinearGains[channel]
+            )
+            diagnostics.nonFiniteSamples &+= channelDiagnostics.nonFiniteSamples
+            diagnostics.workTiming.merge(channelDiagnostics.workTiming)
+        }
+        return diagnostics
     }
 
     private static func processStereoInterleaved(
