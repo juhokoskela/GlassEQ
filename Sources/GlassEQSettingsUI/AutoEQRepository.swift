@@ -138,15 +138,27 @@ struct AutoEQRepositoryClient: Sendable {
     )!
     private static let resultRoot =
         "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
-    private static let maximumCatalogueBytes = 2_000_000
-    private static let maximumProfileBytes = 1_048_576
+    private static let defaultMaximumCatalogueBytes = 2_000_000
+    private static let defaultMaximumProfileBytes = 1_048_576
 
-    var session: URLSession = .shared
+    private let session: URLSession
+    private let maximumCatalogueBytes: Int
+    private let maximumProfileBytes: Int
+
+    init(
+        session: URLSession = .shared,
+        maximumCatalogueBytes: Int = Self.defaultMaximumCatalogueBytes,
+        maximumProfileBytes: Int = Self.defaultMaximumProfileBytes
+    ) {
+        self.session = session
+        self.maximumCatalogueBytes = maximumCatalogueBytes
+        self.maximumProfileBytes = maximumProfileBytes
+    }
 
     func catalogue() async throws -> [AutoEQCatalogueEntry] {
         let data = try await download(
             Self.catalogueURL,
-            maximumBytes: Self.maximumCatalogueBytes,
+            maximumBytes: maximumCatalogueBytes,
             tooLargeError: .catalogueTooLarge
         )
         guard let markdown = String(data: data, encoding: .utf8) else {
@@ -162,7 +174,7 @@ struct AutoEQRepositoryClient: Sendable {
         let url = try Self.profileURL(for: entry, kind: kind)
         let data = try await download(
             url,
-            maximumBytes: Self.maximumProfileBytes,
+            maximumBytes: maximumProfileBytes,
             tooLargeError: .profileTooLarge
         )
         guard let text = String(data: data, encoding: .utf8) else {
@@ -210,13 +222,25 @@ struct AutoEQRepositoryClient: Sendable {
             timeoutInterval: 20
         )
         request.setValue("text/plain, text/markdown", forHTTPHeaderField: "Accept")
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse,
               response.statusCode == 200 else {
             throw AutoEQRepositoryError.invalidResponse
         }
-        guard data.count <= maximumBytes else {
-            throw tooLargeError
+
+        var data = Data()
+        if response.expectedContentLength > 0 {
+            data.reserveCapacity(min(
+                maximumBytes,
+                Int(clamping: response.expectedContentLength)
+            ))
+        }
+        for try await byte in bytes {
+            guard data.count < maximumBytes else {
+                throw tooLargeError
+            }
+            data.append(byte)
         }
         return data
     }
