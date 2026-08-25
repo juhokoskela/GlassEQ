@@ -74,7 +74,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 ### Security & privacy
 
 - Sandboxed: audio capture is the only privacy permission GlassEQ requests. A file chosen through the import panel is readable only through that user action.
-- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. The helper can download profiles from the official AutoEq repository but has no shared profile storage.
+- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. AutoEq downloads normally run in the helper; if GlassEQ falls back to an in-process settings window, the main app performs them instead. The helper has no shared profile storage.
 - No telemetry, no analytics, no cloud sync. Diagnostics run locally and print device details only to your terminal.
 
 ## Known limitations
