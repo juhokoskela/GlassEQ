@@ -464,6 +464,11 @@ public enum EQProfileTextImporter {
                 continue
             }
 
+            guard tokens.count > 1,
+                  Int(tokens[1]) != nil else {
+                continue
+            }
+
             let enabled = !tokens.contains { $0.caseInsensitiveCompare("None") == .orderedSame }
             guard enabled else {
                 continue

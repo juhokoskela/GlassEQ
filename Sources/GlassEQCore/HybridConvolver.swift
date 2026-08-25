@@ -4,6 +4,7 @@ import Foundation
 
 enum HybridConvolverError: Error, Equatable, Sendable {
     case invalidImpulseResponse
+    case sampleRateMismatch(source: Double, destination: Double)
     case transformSetupFailed
 }
 

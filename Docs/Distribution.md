@@ -56,6 +56,9 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 - Swift language mode: Swift 6.
 - App Sandbox: enabled.
 - Audio input entitlement: enabled for Core Audio system/process tap permission.
+- Outgoing network entitlement: enabled for the built-in AutoEq browser.
+- User-selected read-only file entitlement: enabled for guided text-profile and WAV impulse-response import.
+- The settings helper repeats the user-selected read-only entitlement because Powerbox checks the helper's own signature when it presents an open panel.
 - Info.plist: use `Sources/GlassEQApp/Info.plist`.
 - Entitlements: use `GlassEQ.entitlements`.
 - Signing for alpha: ad hoc.
@@ -87,6 +90,6 @@ codesign -d --entitlements :- .build/release-app/GlassEQ.app
 spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 ```
 
-`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox` and `com.apple.security.device.audio-input`, both set to `true`. `spctl` should reject the ad hoc-signed alpha because it is not Developer ID signed or notarized.
+`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. `spctl` should reject the ad hoc-signed alpha because it is not Developer ID signed or notarized.
 
 For manual sandbox verification, launch the packaged app and open Activity Monitor, then enable the `Sandbox` column. GlassEQ should show `Yes`.

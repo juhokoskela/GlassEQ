@@ -1256,6 +1256,16 @@ final class GlassEQAppModel {
         }
     }
 
+    func importParsedProfile(_ profile: EQProfile) throws -> Bool {
+        try ensureProfileStoreWritable()
+        try addProfile(
+            profile,
+            name: profile.name,
+            status: localized("Imported \(profile.name)")
+        )
+        return true
+    }
+
     func setFallbackToDraft() {
         do {
             try setFallback(profile: draftProfile)
