@@ -485,6 +485,59 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func failedPromotedHeadsetDemotionStopsTheRejectedGraph() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let output = makeOutput(
+            uid: "failed-fixed-headset-demotion",
+            name: "Failed Fixed AirPods Headset",
+            nominalSampleRate: 24_000,
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        engine.headsetPromotionCandidateUIDs = [output.uid]
+        engine.headsetAggregatePromotionResult = .promoted(output)
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            storeURL: storeURL,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            headsetAggregatePromotionDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.headsetAggregatePromotionAttemptCount == 1
+                && engine.isUsingPromotedHeadsetAggregate
+        }
+
+        try model.setAggregateBufferMode(.frames32)
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.isUsingPromotedHeadsetAggregate
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+
+        engine.startError = TestAudioError.startFailed
+        engine.startErrorPreservesRunningState = true
+        var metrics = engine.metrics
+        metrics.qualifyingPairedTimestampDiscontinuities = 1
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.stopCallCount == 1
+                && model.lifecycleState == .stopped
+        }
+
+        #expect(!model.isRunning)
+        #expect(engine.state == .stopped)
+        #expect(!engine.isUsingPromotedHeadsetAggregate)
+    }
+
+    @Test
     func cancelledHeadsetPromotionDelayCanRetryInTheSameOutputGeneration() async {
         let active = makeProfile(name: "Headset Active")
         let preview = makeProfile(name: "Headset Preview")

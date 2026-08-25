@@ -743,12 +743,18 @@ final class GlassEQAppModel {
         }
     }
 
+    private enum EngineStartFailurePolicy: Sendable {
+        case preserveRunningGraph
+        case stopRunningGraph
+    }
+
     private enum EngineWork: Sendable {
         case start(
             output: AudioOutputDevice,
             profile: EQProfile,
             rollback: ProfileRollback?,
-            aggregateBufferFrameSize: UInt32
+            aggregateBufferFrameSize: UInt32,
+            failurePolicy: EngineStartFailurePolicy
         )
         case restart(profile: EQProfile, rollback: ProfileRollback?)
         case recoverRenderStall(
@@ -759,7 +765,7 @@ final class GlassEQAppModel {
 
         var profile: EQProfile {
             switch self {
-            case .start(_, let profile, _, _),
+            case .start(_, let profile, _, _, _),
                  .restart(let profile, _),
                  .recoverRenderStall(_, let profile, _):
                 return profile
@@ -768,7 +774,7 @@ final class GlassEQAppModel {
 
         var rollback: ProfileRollback? {
             switch self {
-            case .start(_, _, let rollback, _), .restart(_, let rollback):
+            case .start(_, _, let rollback, _, _), .restart(_, let rollback):
                 return rollback
             case .recoverRenderStall:
                 return nil
@@ -1887,7 +1893,7 @@ final class GlassEQAppModel {
         coldStartupAggregatePromotionTask = nil
         engineStartTask?.cancel()
         switch work {
-        case .start(let output, _, _, _):
+        case .start(let output, _, _, _, _):
             pendingEngineStartOutput = output
         case .restart:
             pendingEngineStartOutput = nil
@@ -1935,7 +1941,8 @@ final class GlassEQAppModel {
         output: AudioOutputDevice,
         profile: EQProfile,
         rollback: ProfileRollback?,
-        aggregateBufferFrameSize requestedFrameSize: UInt32? = nil
+        aggregateBufferFrameSize requestedFrameSize: UInt32? = nil,
+        failurePolicy: EngineStartFailurePolicy = .preserveRunningGraph
     ) {
         let route = try? engine.aggregateRouteFingerprint(for: output)
         let frameSize = requestedFrameSize
@@ -1945,7 +1952,8 @@ final class GlassEQAppModel {
             output: output,
             profile: profile,
             rollback: rollback,
-            aggregateBufferFrameSize: frameSize
+            aggregateBufferFrameSize: frameSize,
+            failurePolicy: failurePolicy
         ))
     }
 
@@ -2100,7 +2108,8 @@ final class GlassEQAppModel {
                 let requestedOutput,
                 let profile,
                 let rollback,
-                let aggregateBufferFrameSize
+                let aggregateBufferFrameSize,
+                let failurePolicy
             ):
                 guard !Task.isCancelled else {
                     confirmedState.recordCancelledAttempt(failedAttempt)
@@ -2112,6 +2121,11 @@ final class GlassEQAppModel {
                     try engine.start(output: requestedOutput, profile: profile)
                 } catch {
                     if case .running(let activeOutput) = engine.state {
+                        if failurePolicy == .stopRunningGraph {
+                            engine.stop()
+                            confirmedState.clear()
+                            throw error
+                        }
                         return .profileChangeNotApplied(
                             error,
                             activeOutput,
@@ -2715,7 +2729,8 @@ final class GlassEQAppModel {
             scheduleEngineStart(
                 output: output,
                 profile: activeProfile,
-                rollback: nil
+                rollback: nil,
+                failurePolicy: .stopRunningGraph
             )
             return true
         }
