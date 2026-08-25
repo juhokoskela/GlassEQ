@@ -134,27 +134,49 @@ public struct EQRenderConfiguration: Equatable, Sendable {
             && configuration.channelCount == other.configuration.channelCount
             && channelFilterCounts == other.channelFilterCounts
     }
+
+    public var isNumericallySafe: Bool {
+        configuration.sampleRate.isFinite
+            && configuration.sampleRate > 0
+            && configuration.channelCount > 0
+            && preampLinearGains.allSatisfy { $0.isFinite && $0 >= 0 }
+            && coefficients.allSatisfy(Self.isNumericallySafe)
+    }
+
+    private static func isNumericallySafe(_ coefficients: RenderBiquadCoefficients) -> Bool {
+        let values = [
+            coefficients.b0,
+            coefficients.b1,
+            coefficients.b2,
+            coefficients.a1,
+            coefficients.a2
+        ]
+        guard values.allSatisfy(\.isFinite) else {
+            return false
+        }
+
+        let a1 = Double(coefficients.a1)
+        let a2 = Double(coefficients.a2)
+        let discriminant = a1 * a1 - 4 * a2
+        let maximumPoleMagnitude: Double
+        if discriminant >= 0 {
+            let root = sqrt(discriminant)
+            maximumPoleMagnitude = max(
+                abs((-a1 + root) / 2),
+                abs((-a1 - root) / 2)
+            )
+        } else {
+            maximumPoleMagnitude = sqrt(max(a2, 0))
+        }
+        return maximumPoleMagnitude <= 1.000_001
+    }
 }
 
-public struct EQProcessorRetiredRenderStorage: Sendable {
-    private let configuration: EQConfiguration
-    private let coefficients: [RenderBiquadCoefficients]
-    private let channelStarts: [Int]
-    private let channelFilterCounts: [Int]
-    private let preampLinearGains: [Float]
+struct EQLinearRenderDiagnostics: Equatable, Sendable {
+    var nonFiniteSamples: UInt64
 
-    fileprivate init(
-        configuration: EQConfiguration,
-        coefficients: [RenderBiquadCoefficients],
-        channelStarts: [Int],
-        channelFilterCounts: [Int],
-        preampLinearGains: [Float]
-    ) {
-        self.configuration = configuration
-        self.coefficients = coefficients
-        self.channelStarts = channelStarts
-        self.channelFilterCounts = channelFilterCounts
-        self.preampLinearGains = preampLinearGains
+    init(nonFiniteSamples: UInt64 = 0) {
+        self.nonFiniteSamples = nonFiniteSamples
     }
 }
 
@@ -185,7 +207,6 @@ public struct EQProcessor: Sendable {
 
     public mutating func applyPreparedConfiguration(_ renderConfiguration: EQRenderConfiguration) {
         let previousCoefficients = coefficients
-        // Keep this comparison allocation-free; audio callbacks use it for same-topology DSP swaps.
         let needsStateReset = renderConfiguration.configuration.channelCount != self.configuration.channelCount
             || renderConfiguration.channelFilterCounts != channelFilterCounts
             || renderConfiguration.configuration.sampleRate != self.configuration.sampleRate
@@ -201,43 +222,6 @@ public struct EQProcessor: Sendable {
         } else {
             resetChangedFilterStates(previousCoefficients: previousCoefficients, nextCoefficients: renderConfiguration.coefficients)
         }
-    }
-
-    public mutating func applyRealtimeCompatiblePreparedConfiguration(
-        _ renderConfiguration: EQRenderConfiguration
-    ) -> EQProcessorRetiredRenderStorage? {
-        guard renderConfiguration.configuration.sampleRate == configuration.sampleRate,
-              renderConfiguration.configuration.channelCount == configuration.channelCount,
-              renderConfiguration.channelFilterCounts == channelFilterCounts,
-              renderConfiguration.coefficients.count == coefficients.count,
-              renderConfiguration.channelStarts.count == channelStarts.count,
-              renderConfiguration.preampLinearGains.count == preampLinearGains.count,
-              states.count == coefficients.count else {
-            return nil
-        }
-
-        let retiredStorage = EQProcessorRetiredRenderStorage(
-            configuration: configuration,
-            coefficients: coefficients,
-            channelStarts: channelStarts,
-            channelFilterCounts: channelFilterCounts,
-            preampLinearGains: preampLinearGains
-        )
-        let previousCoefficients = coefficients
-
-        configuration = renderConfiguration.configuration
-        coefficients = renderConfiguration.coefficients
-        channelStarts = renderConfiguration.channelStarts
-        channelFilterCounts = renderConfiguration.channelFilterCounts
-        preampLinearGains = renderConfiguration.preampLinearGains
-
-        for index in coefficients.indices {
-            if previousCoefficients[index] != coefficients[index] {
-                states[index] = BiquadState()
-            }
-        }
-
-        return retiredStorage
     }
 
     private mutating func resetChangedFilterStates(
@@ -327,6 +311,68 @@ public struct EQProcessor: Sendable {
             }
             return saturatedSamples
         }
+    }
+
+    mutating func processInterleavedLinearlyWithDiagnostics(
+        _ samples: UnsafeMutableBufferPointer<Float>,
+        frameCount: Int,
+        channelCount: Int
+    ) -> EQLinearRenderDiagnostics {
+        let sourceChannelCount = max(channelCount, 1)
+        let availableFrames = min(frameCount, samples.count / sourceChannelCount)
+        guard availableFrames > 0 else {
+            return EQLinearRenderDiagnostics()
+        }
+
+        if configuration.isBypassed {
+            return Self.scanLinearSamples(
+                UnsafeBufferPointer(samples),
+                sampleCount: availableFrames * sourceChannelCount
+            )
+        }
+
+        return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
+            var diagnostics = EQLinearRenderDiagnostics()
+            let channels = min(sourceChannelCount, channelStartBuffer.count)
+            var sampleIndex = 0
+            for _ in 0..<availableFrames {
+                for channel in 0..<channels {
+                    let processed = Self.processLinearSampleWithDiagnosticsUnchecked(
+                        samples[sampleIndex + channel],
+                        channel: channel,
+                        states: stateBuffer,
+                        coefficients: coefficientBuffer,
+                        channelStarts: channelStartBuffer,
+                        channelFilterCounts: channelFilterCountBuffer,
+                        preampLinearGains: preampLinearGainBuffer
+                    )
+                    samples[sampleIndex + channel] = processed.sample
+                    if processed.encounteredNonFinite {
+                        diagnostics.nonFiniteSamples += 1
+                    }
+                }
+                sampleIndex += sourceChannelCount
+            }
+            return diagnostics
+        }
+    }
+
+    static func protectInterleavedWithDiagnostics(
+        _ samples: UnsafeMutableBufferPointer<Float>,
+        frameCount: Int,
+        channelCount: Int
+    ) -> UInt64 {
+        let channels = max(channelCount, 1)
+        let sampleCount = min(max(frameCount, 0) * channels, samples.count)
+        var saturatedSamples: UInt64 = 0
+        for index in 0..<sampleCount {
+            let protected = saturate(samples[index])
+            samples[index] = protected.sample
+            if protected.saturated {
+                saturatedSamples += 1
+            }
+        }
+        return saturatedSamples
     }
 
     public mutating func processNonInterleaved(_ channels: inout [[Float]]) {
@@ -474,6 +520,53 @@ public struct EQProcessor: Sendable {
         }
 
         return Self.saturate(value)
+    }
+
+    private static func processLinearSampleWithDiagnosticsUnchecked(
+        _ input: Float,
+        channel: Int,
+        states: UnsafeMutableBufferPointer<BiquadState>,
+        coefficients: UnsafeBufferPointer<RenderBiquadCoefficients>,
+        channelStarts: UnsafeBufferPointer<Int>,
+        channelFilterCounts: UnsafeBufferPointer<Int>,
+        preampLinearGains: UnsafeBufferPointer<Float>
+    ) -> (sample: Float, encounteredNonFinite: Bool) {
+        guard channel >= 0, channel < channelStarts.count else {
+            return (input.isFinite ? input : 0, !input.isFinite)
+        }
+        let start = channelStarts[channel]
+        let count = channelFilterCounts[channel]
+        var value = input * preampLinearGains[channel]
+        var encounteredNonFinite = !value.isFinite
+        if encounteredNonFinite {
+            value = 0
+        }
+
+        for filterOffset in 0..<count {
+            let index = start + filterOffset
+            let processed = states[index].processWithDiagnostics(
+                value,
+                coefficients: coefficients[index]
+            )
+            value = processed.sample
+            encounteredNonFinite = encounteredNonFinite || processed.encounteredNonFinite
+        }
+
+        return (value, encounteredNonFinite)
+    }
+
+    private static func scanLinearSamples(
+        _ samples: UnsafeBufferPointer<Float>,
+        sampleCount: Int
+    ) -> EQLinearRenderDiagnostics {
+        var diagnostics = EQLinearRenderDiagnostics()
+        for index in 0..<min(max(sampleCount, 0), samples.count) {
+            let sample = samples[index]
+            if !sample.isFinite {
+                diagnostics.nonFiniteSamples += 1
+            }
+        }
+        return diagnostics
     }
 
     private static func saturate(_ value: Float) -> (sample: Float, saturated: Bool) {

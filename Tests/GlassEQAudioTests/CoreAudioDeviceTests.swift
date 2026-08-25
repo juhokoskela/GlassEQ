@@ -170,6 +170,27 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func systemSoundPreampUsesUnityGainForBypassedProfile() {
+        var profile = EQProfile(
+            name: "Bypassed",
+            mode: .parametric,
+            preampDB: -24,
+            filters: []
+        )
+        profile.isBypassed = true
+        let configuration = EQRenderConfiguration(
+            profile: profile,
+            sampleRate: 48_000,
+            channelCount: 2
+        )
+
+        let gains = SystemTapAudioEngine.systemSoundPreampGains(for: configuration)
+
+        #expect(gains.left == 1)
+        #expect(gains.right == 1)
+    }
+
+    @Test
     func metadataValidationRejectsInvalidScalarValues() throws {
         expectInvalidMetadata {
             _ = try CoreAudioDeviceQuery.validatedSampleRate(.infinity, objectID: 42)
@@ -841,7 +862,7 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func dspHotSwapRejectsTopologyChangingProfiles() {
+    func dspHotSwapAllowsWholeBankTopologyChanges() {
         let graphic = EQProfile(
             name: "Graphic",
             mode: .graphic10,
@@ -850,7 +871,7 @@ struct CoreAudioDeviceTests {
 
         var disabledBand = graphic
         disabledBand.filters[0].isEnabled = false
-        #expect(!SystemTapAudioEngine.canHotSwapDSP(
+        #expect(SystemTapAudioEngine.canHotSwapDSP(
             from: graphic,
             to: disabledBand,
             sampleRate: 48_000,
@@ -864,7 +885,7 @@ struct CoreAudioDeviceTests {
         )
         var addedFilter = parametric
         addedFilter.filters.append(EQFilter(kind: .peak, frequency: 2_000, gainDB: 0, q: 1))
-        #expect(!SystemTapAudioEngine.canHotSwapDSP(
+        #expect(SystemTapAudioEngine.canHotSwapDSP(
             from: parametric,
             to: addedFilter,
             sampleRate: 48_000,
@@ -876,7 +897,7 @@ struct CoreAudioDeviceTests {
             mode: .parametric,
             filters: graphic.filters
         )
-        #expect(!SystemTapAudioEngine.canHotSwapDSP(
+        #expect(SystemTapAudioEngine.canHotSwapDSP(
             from: graphic,
             to: modeSwitch,
             sampleRate: 48_000,
@@ -885,9 +906,23 @@ struct CoreAudioDeviceTests {
 
         var stereoSwitch = graphic
         stereoSwitch.channelMode = .stereo
-        #expect(!SystemTapAudioEngine.canHotSwapDSP(
+        #expect(SystemTapAudioEngine.canHotSwapDSP(
             from: graphic,
             to: stereoSwitch,
+            sampleRate: 48_000,
+            channelCount: 2
+        ))
+    }
+
+    @Test
+    func dspHotSwapRejectsNumericallyUnsafeBank() {
+        let active = EQProfile.flatParametric
+        var unsafe = active
+        unsafe.preampDB = .nan
+
+        #expect(!SystemTapAudioEngine.canHotSwapDSP(
+            from: active,
+            to: unsafe,
             sampleRate: 48_000,
             channelCount: 2
         ))

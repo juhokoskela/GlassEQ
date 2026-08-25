@@ -161,10 +161,23 @@ public struct BiquadState: Sendable {
     public init() {}
 
     mutating func process(_ input: Float, coefficients c: RenderBiquadCoefficients) -> Float {
+        processWithDiagnostics(input, coefficients: c).sample
+    }
+
+    mutating func processWithDiagnostics(
+        _ input: Float,
+        coefficients c: RenderBiquadCoefficients
+    ) -> (sample: Float, encounteredNonFinite: Bool) {
         let y = c.b0 * input + z1
-        z1 = Self.flushDenormal(c.b1 * input - c.a1 * y + z2)
-        z2 = Self.flushDenormal(c.b2 * input - c.a2 * y)
-        return Self.flushDenormal(y)
+        let nextZ1 = c.b1 * input - c.a1 * y + z2
+        let nextZ2 = c.b2 * input - c.a2 * y
+        let encounteredNonFinite = !input.isFinite
+            || !y.isFinite
+            || !nextZ1.isFinite
+            || !nextZ2.isFinite
+        z1 = Self.flushDenormal(nextZ1)
+        z2 = Self.flushDenormal(nextZ2)
+        return (Self.flushDenormal(y), encounteredNonFinite)
     }
 
     public mutating func process(_ input: Float, coefficients c: BiquadCoefficients) -> Float {

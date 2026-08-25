@@ -478,13 +478,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private final class PreparedDSPConfigBox: @unchecked Sendable {
-        let config: EQRenderConfiguration
+        var processor: EQProcessor?
         let systemSoundPreampGains: (left: Float, right: Float)
-        var retiredStorage: EQProcessorRetiredRenderStorage?
+        var retiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
         init(config: EQRenderConfiguration) {
-            self.config = config
+            self.processor = EQProcessor(renderConfiguration: config)
             self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: config
             )
@@ -511,11 +511,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let inputChannelOffset: Int
         private let systemSoundInputChannelOffset: Int
         private let maxCallbackFrames: Int
-        private var processor: EQProcessor
+        private var dspTransition: RealtimeEQTransition
         private var activeSystemSoundPreampGains: (left: Float, right: Float)
         private var outputFade: RealtimeOutputFade
-        private var dspTransitionInProgress = false
-        private var activeBypassEnabled: Bool
         private var scratchSamples: [Float]
         private var inputTimestampState = TimestampContinuityState()
         private var outputTimestampState = TimestampContinuityState()
@@ -529,6 +527,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private var timestampProbeSequence: UInt64 = 0
         private let capturedFrames = Atomic<UInt64>(0)
         private let playedFrames = Atomic<UInt64>(0)
+        #if DEBUG
+        private let freezePlayedFramesForTesting = Atomic<Bool>(false)
+        #endif
         private let playbackUnderrunFrames = Atomic<UInt64>(0)
         private let droppedInputFrames = Atomic<UInt64>(0)
         private let saturatedSamples = Atomic<UInt64>(0)
@@ -558,11 +559,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let minOutputLeadNanoseconds = Atomic<UInt64>(.max)
         private let maxOutputLeadNanoseconds = Atomic<UInt64>(0)
         private let totalOutputLeadNanoseconds = Atomic<UInt64>(0)
-        private let requestedBypassEnabled: Atomic<Bool>
         private let outputMutedForTransition = Atomic<Bool>(true)
         private let outputIsMuted = Atomic<Bool>(true)
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
+        private var activeDSPConfigPointer: UInt = 0
         private let stopping = Atomic<Bool>(false)
         private let inCallback = Atomic<Bool>(false)
         private let playbackChannelPair = Atomic<UInt64>(
@@ -583,28 +584,32 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             self.systemSoundInputChannelOffset = max(systemSoundInputChannelOffset, 0)
             self.maxCallbackFrames = maxCallbackFrames
             self.outputFade = RealtimeOutputFade(sampleRate: sampleRate)
-            self.activeBypassEnabled = profile.isBypassed
             self.scratchSamples = Array(
                 repeating: 0,
                 count: maxCallbackFrames * self.channelCount
             )
             let renderConfiguration = EQRenderConfiguration(
-                profile: SystemTapAudioEngine.dspProfile(from: profile),
+                profile: profile,
                 sampleRate: sampleRate,
                 channelCount: self.channelCount,
                 maximumUsableFrequency: EQRouteFrequencyPolicy.maximumUsableFrequency(
                     sampleRate: sampleRate
                 )
             )
-            self.processor = EQProcessor(renderConfiguration: renderConfiguration)
+            self.dspTransition = RealtimeEQTransition(
+                activeProcessor: EQProcessor(renderConfiguration: renderConfiguration),
+                maximumFrameCount: maxCallbackFrames,
+                channelCount: self.channelCount,
+                sampleRate: sampleRate
+            )
             self.activeSystemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: renderConfiguration
             )
-            self.requestedBypassEnabled = Atomic(profile.isBypassed)
         }
 
         deinit {
             drainDSPConfigBoxes()
+            releaseDSPConfigBox(activeDSPConfigPointer)
         }
 
         func render(
@@ -696,15 +701,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     sourceChannelOffset: inputChannelOffset
                 )
 
-                if !activeBypassEnabled {
-                    let saturated = processor.processInterleavedWithDiagnostics(
-                        samples,
-                        frameCount: frameCount,
-                        channelCount: channelCount
+                let transitionResult = dspTransition.processInterleavedWithDiagnostics(
+                    samples,
+                    frameCount: frameCount,
+                    channelCount: channelCount
+                )
+                if transitionResult.saturatedSamples > 0 {
+                    saturatedSamples.wrappingAdd(
+                        transitionResult.saturatedSamples,
+                        ordering: .relaxed
                     )
-                    if saturated > 0 {
-                        saturatedSamples.wrappingAdd(saturated, ordering: .relaxed)
-                    }
                 }
 
                 let systemSoundSaturated = SystemTapAudioEngine.mixInputSamples(
@@ -713,10 +719,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: frameCount,
                     channelCount: channelCount,
                     sourceChannelOffset: systemSoundInputChannelOffset,
-                    preampGains: activeBypassEnabled
-                        ? (left: 1, right: 1)
-                        : activeSystemSoundPreampGains
+                    preampGains: activeSystemSoundPreampGains,
+                    incomingPreampGains: incomingSystemSoundPreampGains(),
+                    transition: transitionResult
                 )
+                finishDSPTransition(transitionResult)
                 if systemSoundSaturated > 0 {
                     saturatedSamples.wrappingAdd(
                         systemSoundSaturated,
@@ -745,8 +752,20 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     to: outputBuffers
                 )
             }
+            #if DEBUG
+            if !freezePlayedFramesForTesting.load(ordering: .relaxed) {
+                playedFrames.wrappingAdd(UInt64(frameCount), ordering: .relaxed)
+            }
+            #else
             playedFrames.wrappingAdd(UInt64(frameCount), ordering: .relaxed)
+            #endif
         }
+
+        #if DEBUG
+        func simulateRenderStallForTesting() {
+            freezePlayedFramesForTesting.store(true, ordering: .releasing)
+        }
+        #endif
 
         func activate() {
             outputMutedForTransition.store(false, ordering: .releasing)
@@ -780,10 +799,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                   DispatchTime.now().uptimeNanoseconds < timeout {
                 Thread.sleep(forTimeInterval: 0.001)
             }
-        }
-
-        func setBypassed(_ isBypassed: Bool) {
-            requestedBypassEnabled.store(isBypassed, ordering: .releasing)
         }
 
         func muteOutputForTransition() {
@@ -959,7 +974,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
         }
 
-        private func applyPendingDSPConfig() {
+        private func beginPendingDSPTransitionIfPossible() {
+            guard activeDSPConfigPointer == 0,
+                  !dspTransition.isTransitioning else {
+                return
+            }
             let rawPointer = pendingDSPConfigPointer.exchange(
                 0,
                 ordering: .acquiringAndReleasing
@@ -972,31 +991,45 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
-            box.retiredStorage = processor.applyRealtimeCompatiblePreparedConfiguration(
-                box.config
-            )
+            guard let processor = box.processor,
+                  dspTransition.beginTransition(to: processor) else {
+                pushRetiredDSPConfigBox(rawPointer)
+                return
+            }
+            box.processor = nil
+            activeDSPConfigPointer = rawPointer
+        }
+
+        private func finishDSPTransition(_ result: EQTransitionRenderResult) {
+            guard result.completedTransition,
+                  activeDSPConfigPointer != 0,
+                  let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer) else {
+                return
+            }
+            let rawPointer = activeDSPConfigPointer
+            activeDSPConfigPointer = 0
+            let box = Unmanaged<PreparedDSPConfigBox>
+                .fromOpaque(pointer)
+                .takeUnretainedValue()
+            box.retiredProcessor = result.retiredProcessor
             activeSystemSoundPreampGains = box.systemSoundPreampGains
             pushRetiredDSPConfigBox(rawPointer)
         }
 
+        private func incomingSystemSoundPreampGains() -> (left: Float, right: Float)? {
+            guard activeDSPConfigPointer != 0,
+                  let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer) else {
+                return nil
+            }
+            return Unmanaged<PreparedDSPConfigBox>
+                .fromOpaque(pointer)
+                .takeUnretainedValue()
+                .systemSoundPreampGains
+        }
+
         private func prepareDSPAndOutputFade() {
-            let requestedBypass = requestedBypassEnabled.load(ordering: .acquiring)
-            if pendingDSPConfigPointer.load(ordering: .acquiring) != 0
-                || requestedBypass != activeBypassEnabled {
-                dspTransitionInProgress = true
-            }
-
-            if dspTransitionInProgress, outputFade.isMuted {
-                // Changed biquads reset state. Apply them only while the output is silent.
-                applyPendingDSPConfig()
-                activeBypassEnabled = requestedBypassEnabled.load(ordering: .acquiring)
-                dspTransitionInProgress = pendingDSPConfigPointer.load(ordering: .acquiring) != 0
-                    || requestedBypassEnabled.load(ordering: .acquiring) != activeBypassEnabled
-            }
-
-            let shouldMute = outputMutedForTransition.load(ordering: .acquiring)
-                || dspTransitionInProgress
-            outputFade.setMuted(shouldMute)
+            beginPendingDSPTransitionIfPossible()
+            outputFade.setMuted(outputMutedForTransition.load(ordering: .acquiring))
         }
 
         private func pushRetiredDSPConfigBox(_ rawPointer: UInt) {
@@ -1727,6 +1760,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 }
             }
 
+            if let installedTaps {
+                prepareTapSetForDirectPlayback(installedTaps)
+            }
+            let installedTapsMatch = installedTaps?.main == taps?.main
+                && installedTaps?.systemSounds == taps?.systemSounds
+            if let taps, !installedTapsMatch {
+                prepareTapSetForDirectPlayback(taps)
+            }
             if let preparedAggregate {
                 _ = disposeDetachedCombinedAggregate(
                     DetachedCombinedAggregate(
@@ -1747,8 +1788,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if let installedTaps {
                 destroyTapSet(installedTaps)
             }
-            let installedTapsMatch = installedTaps?.main == taps?.main
-                && installedTaps?.systemSounds == taps?.systemSounds
             if let taps, !installedTapsMatch {
                 destroyTapSet(taps)
             }
@@ -2023,26 +2062,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             runtime.drainDSPConfigBoxes()
             runtime.publishPendingDSPConfig(
                 EQRenderConfiguration(
-                    profile: Self.dspProfile(from: profile),
+                    profile: profile,
                     sampleRate: runtime.sampleRate,
                     channelCount: runtime.channelCount,
                     maximumUsableFrequency: maximumUsableFrequency
                 )
             )
-            runtime.setBypassed(profile.isBypassed)
             state.activeProfile = profile
             return true
-        }
-    }
-
-    public func setBypassed(_ isBypassed: Bool) {
-        if activeBackend.withLock({ $0 }) == .separateClock {
-            separateClockBackend.setBypassed(isBypassed)
-            return
-        }
-        control.withLock { state in
-            state.runtime?.setBypassed(isBypassed)
-            state.activeProfile?.isBypassed = isBypassed
         }
     }
 
@@ -2069,7 +2096,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         topologyOperation.withLock { _ in
             promotedHeadsetRoute.withLock { $0 = nil }
             separateClockBackend.stop()
-            stopCombinedResourcesSerialized()
+            stopCombinedResourcesSerialized(restoringDirectPlayback: true)
             activeBackend.withLock { $0 = .combinedAggregate }
         }
     }
@@ -2119,7 +2146,19 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         separateClockBackend.setRuntimeFailureHandler(handler)
     }
 
-    private func stopCombinedResourcesSerialized() {
+    #if DEBUG
+    public func simulateRenderStallForTesting() {
+        if activeBackend.withLock({ $0 }) == .separateClock {
+            separateClockBackend.simulateRenderStallForTesting()
+            return
+        }
+        control.withLock { $0.runtime }?.simulateRenderStallForTesting()
+    }
+    #endif
+
+    private func stopCombinedResourcesSerialized(
+        restoringDirectPlayback: Bool = false
+    ) {
         var detachedAggregate: DetachedCombinedAggregate?
         var detachedTaps: CombinedTapSet?
         control.withLock { state in
@@ -2129,8 +2168,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             state.state = .stopped
             state.status = .stopped
         }
+        // Once the IOProc stops reading a mutedWhenTapped tap, HAL resumes the source's
+        // direct route. Do this before dismantling the aggregate so active clients do not
+        // have to recover from an unread, always-muted tap.
+        if restoringDirectPlayback, let detachedTaps {
+            prepareTapSetForDirectPlayback(detachedTaps)
+        }
         if let detachedAggregate {
-            let records = disposeDetachedCombinedAggregate(detachedAggregate)
+            let records = disposeDetachedCombinedAggregate(
+                detachedAggregate,
+                fadeOut: !restoringDirectPlayback
+            )
             control.withLock { state in
                 state.lastTimestampProbeRecords = records
             }
@@ -2161,9 +2209,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func disposeDetachedCombinedAggregate(
-        _ detached: DetachedCombinedAggregate
+        _ detached: DetachedCombinedAggregate,
+        fadeOut: Bool = true
     ) -> [AudioTimestampProbeRecord] {
-        detached.runtime?.fadeOutForStop()
+        if fadeOut {
+            detached.runtime?.fadeOutForStop()
+        }
         detached.runtime?.markStopping()
         if detached.deviceID != kAudioObjectUnknown, let ioProcID = detached.ioProcID {
             _ = AudioDeviceStop(detached.deviceID, ioProcID)
@@ -2175,6 +2226,21 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
         detached.runtime?.drainDSPConfigBoxes()
         return records
+    }
+
+    private func prepareTapSetForDirectPlayback(_ taps: CombinedTapSet) {
+        if taps.main != kAudioObjectUnknown {
+            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
+                .mutedWhenTapped,
+                tapID: taps.main
+            )
+        }
+        if taps.systemSounds != kAudioObjectUnknown {
+            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
+                .mutedWhenTapped,
+                tapID: taps.systemSounds
+            )
+        }
     }
 
     private func detachTapSetLocked(_ state: inout ControlState) -> CombinedTapSet? {
@@ -2709,15 +2775,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return processID
     }
 
-    private static func dspProfile(from profile: EQProfile) -> EQProfile {
-        var profile = profile
-        profile.isBypassed = false
-        return profile
-    }
-
     static func systemSoundPreampGains(
         for configuration: EQRenderConfiguration
     ) -> (left: Float, right: Float) {
+        guard !configuration.configuration.isBypassed else {
+            return (left: 1, right: 1)
+        }
         let channels = configuration.configuration.channelConfigurations
         let left = channels.first?.preampLinearGain
             ?? configuration.configuration.preampLinearGain
@@ -2756,29 +2819,18 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     static func canHotSwapDSP(
-        from activeProfile: EQProfile,
+        from _: EQProfile,
         to nextProfile: EQProfile,
         sampleRate: Double,
         channelCount: Int,
         maximumUsableFrequency: Double? = nil
     ) -> Bool {
-        guard activeProfile.mode == nextProfile.mode,
-              activeProfile.channelMode == nextProfile.channelMode else {
-            return false
-        }
-        return EQRenderConfiguration(
-            profile: dspProfile(from: nextProfile),
+        EQRenderConfiguration(
+            profile: nextProfile,
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ).hasRealtimeCompatibleTopology(
-            with: EQRenderConfiguration(
-                profile: dspProfile(from: activeProfile),
-                sampleRate: sampleRate,
-                channelCount: channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
-            )
-        )
+        ).isNumericallySafe
     }
 
     static func supportedRuntimeChannelCount(
@@ -3016,7 +3068,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         frameCount: Int,
         channelCount: Int,
         sourceChannelOffset: Int,
-        preampGains: (left: Float, right: Float)
+        preampGains: (left: Float, right: Float),
+        incomingPreampGains: (left: Float, right: Float)? = nil,
+        transition: EQTransitionRenderResult = EQTransitionRenderResult()
     ) -> UInt64 {
         guard frameCount > 0,
               channelCount > 0,
@@ -3026,10 +3080,18 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
 
         var saturatedSamples: UInt64 = 0
+        let targetPreampGains = incomingPreampGains ?? preampGains
         for frame in 0..<frameCount {
             let sampleBase = frame * channelCount
+            let incomingWeight = incomingPreampGains == nil
+                ? 0
+                : transition.incomingBlendWeight(frameOffset: frame)
+            let leftGain = preampGains.left
+                + (targetPreampGains.left - preampGains.left) * incomingWeight
+            let rightGain = preampGains.right
+                + (targetPreampGains.right - preampGains.right) * incomingWeight
             for channel in 0..<channelCount {
-                let gain = channel == 1 ? preampGains.right : preampGains.left
+                let gain = channel == 1 ? rightGain : leftGain
                 let additionalSample = inputSample(
                     from: buffers,
                     frame: frame,
