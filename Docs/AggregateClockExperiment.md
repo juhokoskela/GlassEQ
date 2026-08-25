@@ -200,6 +200,55 @@ GlassEQ now leaves the physical device's buffer-frame property alone and request
 
 HAL still owns any internal work needed to connect the aggregate to its subdevice, but GlassEQ no longer mutates shared physical-device state. Waiting for `DeviceIsRunningSomewhere == 0` remains a diagnostic reset procedure, not product behavior.
 
+### Digital silence does not make an active client safe to migrate
+
+Later cold-start testing found a second, distinct Firefox failure. Starting in the separate-clock compatibility backend kept an already-playing YouTube stream clean. Firefox continued to report itself as an active Core Audio output process after the video was paused, however, so the conservative promotion gate did not open.
+
+We tested whether the tapped signal itself could provide a more useful boundary. The compatibility backend required two continuous seconds below a `1e-6` sample threshold, stopped GlassEQ's direct physical-output IOProc while retaining the capture mute guard, waited at least two physical-device cycles, and then constructed the combined aggregate.
+
+The experiment produced a precise negative result on the D10s:
+
+- `17:56:01.785`: GlassEQ's direct D10s IOProc stopped.
+- `17:56:01.863`: HAL activated the combined aggregate, 78 ms later.
+- `17:56:01.876`: Core Audio attributed a safety violation to `org.mozilla.firefox`, 13 ms after aggregate activation.
+- The reported gap was 163 frames, or 3.396 ms at 48 kHz, on Firefox's 512-frame I/O path.
+- Resuming the paused video produced the same robotic audio as the original bad startup.
+
+The direct path had ample time to stop, so overlap between GlassEQ's compatibility output and combined output was not the cause. Firefox was digitally silent but still owned a live HAL output client. Attaching the physical device to the aggregate disrupted that client and left its resumed stream in a bad timing state.
+
+The early-quiesce experiment was removed. Digital silence remains an invalid handoff signal: it says nothing about whether the client still owns a running HAL IO context.
+
+### Physical-first live tap attachment avoids the disruption
+
+Follow-up isolation showed that attaching the tap and physical output in one aggregate creation was the disruptive operation on the tested D10s route, not stopping GlassEQ's compatibility output:
+
+- Stopping the compatibility output IOProc without creating an aggregate left Firefox clean and produced no safety violation.
+- Creating and destroying a physical-only aggregate, with no IOProc, tap, or start, also left Firefox clean.
+- Creating the exact tap-plus-physical aggregate caused a Firefox safety violation before GlassEQ created or started its IOProc. Repeating the test at Firefox's incumbent 512-frame size did not prevent it.
+- Starting an aggregate containing the taps installed HAL's muter for Firefox even when GlassEQ disabled every aggregate input stream for that IOProc. Stream usage therefore does not defer tap ownership.
+
+macOS 26 exposes a supported alternative through `AudioHardwareAggregateDevice.setSubtaps(_:)`. GlassEQ now creates a physical-only private aggregate at the incumbent buffer size, starts its output IOProc, attaches the already-created `mutedWhenTapped` taps to the running aggregate, verifies their published order and channel layout, and only then changes the private aggregate from 512 to 16 frames. HAL briefly restarted GlassEQ's aggregate IO context when the taps were attached, but it did not re-anchor the physical device or report a safety violation.
+
+The live composition readback contained only each tap's UID. It contained neither `kAudioSubTapDriftCompensationKey` nor `kAudioSubTapDriftCompensationQualityKey`. Apple's `setSubtaps` contract promises membership, not those settings. GlassEQ therefore does not rewrite the composition after attachment and does not claim high-quality drift compensation for the physical-first path. The complete-composition startup path still requests and validates it.
+
+On macOS 26.6 with Firefox playing through a 48 kHz D10s, this ordering passed a raw passthrough probe, the production EQ runtime in debug and release builds, and the packaged sandboxed release app. It also passed the original paused-client case: Firefox remained `runningOutput=true` while paused, GlassEQ started at 16 frames, and resumed Firefox playback was clean. The release runtime reported zero underruns, dropped frames, saturation, and output timestamp jumps, with 2.5 ms steady tap-to-output latency. Three consecutive packaged-app start/stop cycles produced only a very faint transition crackle and tiny cutover, both considered acceptable for now, and no safety violation, overload, or timeline re-anchor.
+
+This is evidence for the D10s and tested macOS build, not a guarantee for every driver. If live tap attachment or callback qualification fails, GlassEQ retains the separate-clock compatibility backend as a safe fallback. Low-rate Bluetooth headset routes still need that backend while their physical clock settles.
+
+### Route switch with an explicitly routed incumbent
+
+A separate diagnostic client stayed bound directly to the Scarlett while Firefox followed the default output from the D10s to the Scarlett. The first surrogate was invalid: its raw device IOProc had not disabled Scarlett's input stream. It activated the microphone indicator and coincided with severe output latency. After the surrogate set and verified an all-disabled input-stream usage mask, the microphone indicator stayed off and the latency disappeared. The original result therefore cannot be attributed to aggregate ordering.
+
+With the corrected surrogate, both switch orderings passed:
+
+- The normal complete-composition rebuild produced clean Firefox audio, normal subjective latency, no microphone indicator, no HAL safety violation or re-anchor, and 2.500 ms steady tap-to-output latency. GlassEQ recorded one paired 832-frame timestamp jump, but no underrun, dropped input, or audible fault.
+- The physical-first rebuild was also clean at 2.500 ms steady latency. It recorded one input-only 992-frame jump and no output or paired jump. One transition observation reached 23.167 ms while the physical-only aggregate changed from 512- to 16-frame callbacks.
+- Across both switches, the explicitly routed Scarlett client received 11,621 consecutive 512-frame callbacks with zero sample-time discontinuities.
+
+GlassEQ therefore retains the complete-composition ordering when rebuilding an already-running combined backend. That path publishes and validates high-quality drift compensation, and the requested explicit-route control did not show client disruption. Physical-first ordering remains the cold-start solution for a route that already has external clients.
+
+The packaged release app then passed a broader hardware handoff on the same macOS build. The AirPods output route was stereo at 48 kHz while macOS separately listed the AirPods input side at 24 kHz. With Firefox active, GlassEQ cold-started the 48 kHz AirPods output through physical-first attachment: audio and latency were normal, there was no long dropout or microphone indicator, and HAL logged no safety violation or re-anchor. AirPods-to-Scarlett and Scarlett-to-AirPods switches both remained audibly clean on the normal complete-composition rebuild. The reverse switch logged one skipped GlassEQ cycle during the cutover, but it was inaudible and produced no safety violation or re-anchor.
+
 ## AirPods also accept 16-frame aggregate callbacks
 
 We removed the Bluetooth-specific 64-frame preference and started the release app on an active AirPods Pro route at 48 kHz. Core Audio accepted the request rather than clamping it:
