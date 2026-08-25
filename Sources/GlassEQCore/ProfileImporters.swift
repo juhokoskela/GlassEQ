@@ -49,6 +49,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
     case noSupportedFilters
     case mixedEqualizerAPOFormats(graphicEQLine: Int, filterLine: Int)
     case unsupportedEqualizerAPOFilter(line: Int, kind: String?)
+    case unsupportedREWFilter(line: Int, kind: String?)
+    case unsupportedFilterParameters(line: Int, format: String, parameters: String)
     case unsupportedEqualizerAPOChannel(line: Int, selectors: String?)
     case multipleEqualizerAPOGraphicEQ(line: Int, channel: String)
     case inputTooLarge(byteCount: Int, maximum: Int)
@@ -72,6 +74,13 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
                 return "Line \(line) uses unsupported enabled EqualizerAPO filter kind \(kind)."
             }
             return "Line \(line) is missing a supported enabled EqualizerAPO filter kind."
+        case let .unsupportedREWFilter(line, kind):
+            if let kind {
+                return "Line \(line) uses unsupported enabled REW filter kind \(kind)."
+            }
+            return "Line \(line) is missing a supported enabled REW filter kind."
+        case let .unsupportedFilterParameters(line, format, parameters):
+            return "Line \(line) uses unsupported \(format) filter parameters: \(parameters)."
         case let .unsupportedEqualizerAPOChannel(line, selectors):
             if let selectors {
                 return "Line \(line) selects unsupported EqualizerAPO channels \(selectors)."
@@ -213,6 +222,16 @@ public enum EQProfileTextImporter {
                 throw ProfileImportError.unsupportedEqualizerAPOFilter(
                     line: lineNumber,
                     kind: kindToken
+                )
+            }
+            if let parameters = unsupportedFilterParameters(
+                in: tokens,
+                kindToken: kindToken
+            ) {
+                throw ProfileImportError.unsupportedFilterParameters(
+                    line: lineNumber,
+                    format: "EqualizerAPO",
+                    parameters: parameters
                 )
             }
 
@@ -675,12 +694,32 @@ public enum EQProfileTextImporter {
                 continue
             }
 
-            let enabled = !tokens.contains { $0.caseInsensitiveCompare("None") == .orderedSame }
+            let enabled = !tokens.contains {
+                $0.caseInsensitiveCompare("None") == .orderedSame
+                    || $0.caseInsensitiveCompare("OFF") == .orderedSame
+            }
             guard enabled else {
                 continue
             }
 
-            let kind = parseREWKind(in: tokens)
+            let kindToken = value(afterAnyOf: ["ON"], in: tokens)
+            guard let kindToken,
+                  let kind = parseREWKind(kindToken) else {
+                throw ProfileImportError.unsupportedREWFilter(
+                    line: lineNumber,
+                    kind: kindToken
+                )
+            }
+            if let parameters = unsupportedFilterParameters(
+                in: tokens,
+                kindToken: kindToken
+            ) {
+                throw ProfileImportError.unsupportedFilterParameters(
+                    line: lineNumber,
+                    format: "REW",
+                    parameters: parameters
+                )
+            }
 
             guard let frequency = try requiredValue(afterAnyOf: ["Fc", "F"], in: tokens, field: "frequency", line: lineNumber) ??
                 firstNumberFollowingFrequencyUnit(in: tokens, line: lineNumber) else {
@@ -728,16 +767,34 @@ public enum EQProfileTextImporter {
         }
     }
 
-    private static func parseREWKind(in tokens: [String]) -> FilterKind {
-        if tokens.contains(where: { $0.caseInsensitiveCompare("Modal") == .orderedSame }) {
+    private static func parseREWKind(_ token: String) -> FilterKind? {
+        if token.caseInsensitiveCompare("Modal") == .orderedSame {
             return .peak
         }
-        for token in tokens {
-            if let kind = parseEqualizerAPOKind(token) {
-                return kind
-            }
+        return parseEqualizerAPOKind(token)
+    }
+
+    private static func unsupportedFilterParameters(
+        in tokens: [String],
+        kindToken: String
+    ) -> String? {
+        if tokens.contains(where: { $0.caseInsensitiveCompare("BW") == .orderedSame })
+            || tokens.contains(where: { $0.caseInsensitiveCompare("Oct") == .orderedSame }) {
+            return "BW Oct"
         }
-        return .peak
+
+        guard let kindIndex = tokens.firstIndex(where: {
+            $0.caseInsensitiveCompare(kindToken) == .orderedSame
+        }),
+        let frequencyIndex = tokens[(kindIndex + 1)...].firstIndex(where: {
+            $0.caseInsensitiveCompare("Fc") == .orderedSame
+                || $0.caseInsensitiveCompare("F") == .orderedSame
+        }),
+        frequencyIndex > kindIndex + 1 else {
+            return nil
+        }
+
+        return tokens[(kindIndex + 1)..<frequencyIndex].joined(separator: " ")
     }
 
     private static func optionalValue(after label: String, in tokens: [String], field: String, line: Int) throws -> Double? {

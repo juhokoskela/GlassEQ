@@ -198,6 +198,19 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func rejectsEqualizerAPOBandwidthParametersThatWouldChangeTheResponse() throws {
+        #expect(throws: ProfileImportError.unsupportedFilterParameters(
+            line: 1,
+            format: "EqualizerAPO",
+            parameters: "BW Oct"
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(
+                "Filter 1: ON PK Fc 1000 Hz Gain 6 dB BW Oct 1"
+            )
+        }
+    }
+
+    @Test
     func rejectsImpulseResponseEqualizerAPOExport() throws {
         let profile = EQProfile(
             name: "Imported IR",
@@ -426,6 +439,71 @@ struct ProfileImporterTests {
         #expect(profile.filters[0].frequency == 45)
         #expect(profile.filters[0].gainDB == -4.5)
         #expect(profile.filters[0].q == 3.2)
+    }
+
+    @Test
+    func ignoresDisabledREWFilters() throws {
+        let text = """
+        Filter 1: OFF BP Fc 1000 Hz Gain 6 dB Q 1
+        Filter 2: None
+        Filter 3: ON PK Fc 2000 Hz Gain 3 dB Q 1
+        """
+
+        let profile = try EQProfileTextImporter.importREW(text)
+
+        #expect(profile.filters.count == 1)
+        #expect(profile.filters[0].frequency == 2_000)
+    }
+
+    @Test
+    func rejectsUnsupportedEnabledREWFiltersWithoutPartialImport() throws {
+        let text = """
+        Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
+        Filter 2: ON NO Fc 1000 Hz Gain 6 dB Q 1
+        """
+
+        #expect(throws: ProfileImportError.unsupportedREWFilter(
+            line: 2,
+            kind: "NO"
+        )) {
+            _ = try EQProfileTextImporter.importREW(text)
+        }
+    }
+
+    @Test
+    func rejectsEnabledREWFilterWithoutKind() throws {
+        #expect(throws: ProfileImportError.unsupportedREWFilter(
+            line: 1,
+            kind: nil
+        )) {
+            _ = try EQProfileTextImporter.importREW("Filter 1: ON")
+        }
+    }
+
+    @Test
+    func rejectsREWBandwidthParametersThatWouldChangeTheResponse() throws {
+        #expect(throws: ProfileImportError.unsupportedFilterParameters(
+            line: 1,
+            format: "REW",
+            parameters: "BW Oct"
+        )) {
+            _ = try EQProfileTextImporter.importREW(
+                "Filter 1: ON PK Fc 1000 Hz Gain 6 dB BW Oct 1"
+            )
+        }
+    }
+
+    @Test
+    func rejectsREWShelfSlopeParametersThatWouldChangeTheResponse() throws {
+        #expect(throws: ProfileImportError.unsupportedFilterParameters(
+            line: 1,
+            format: "REW",
+            parameters: "10.8 dB"
+        )) {
+            _ = try EQProfileTextImporter.importREW(
+                "Filter 1: ON LSC 10.8 dB Fc 100 Hz Gain 6 dB"
+            )
+        }
     }
 
     @Test
