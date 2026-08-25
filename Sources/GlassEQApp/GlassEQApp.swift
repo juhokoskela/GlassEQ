@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import GlassEQAudio
 import GlassEQCore
 import GlassEQSettingsIPC
@@ -246,8 +247,11 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     var state: AudioEngineState { get }
     var isUsingTransitionalHeadsetBackend: Bool { get }
     var isUsingPromotedHeadsetAggregate: Bool { get }
+    var isDeferringColdStartupAggregate: Bool { get }
 
     func start(output: AudioOutputDevice, profile: EQProfile) throws
+    func attemptColdStartupAggregatePromotion() throws
+        -> ColdStartupAggregatePromotionResult
     func attemptHeadsetAggregatePromotion() throws -> HeadsetAggregatePromotionResult
     func rejectHeadsetAggregatePromotion()
     func aggregateRouteFingerprint(
@@ -492,6 +496,7 @@ final class GlassEQAppModel {
     private let renderWatchdogPollInterval: Duration
     private var aggregateStabilityTask: Task<Void, Never>?
     private var headsetAggregatePromotionTask: Task<Void, Never>?
+    private var coldStartupAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
     private var engineStartTask: Task<Void, Never>?
     private var activeSettingsCommandCount = 0
@@ -499,6 +504,7 @@ final class GlassEQAppModel {
     private var settingsCommandDrainWaiters: [CheckedContinuation<Void, Never>] = []
     private var pendingSaveTask: Task<Void, Never>?
     private var lifecycleObserverTokens: [NSObjectProtocol] = []
+    private var lastHandledDefaultOutputConfiguration: DefaultOutputConfiguration?
     private var wasRunningBeforeSleep = false
     private var wakeReconnectAttempts = 0
     private var observerCallbackGeneration = 0
@@ -510,6 +516,7 @@ final class GlassEQAppModel {
     private let aggregateStabilitySettlingDelay: Duration
     private let aggregateCleanSessionDuration: Duration
     private let headsetAggregatePromotionDelay: Duration
+    private let coldStartupAggregatePromotionPollInterval: Duration
     private var headsetPromotionAttemptedOutputGeneration: Int?
     private let aggregateBufferNotifier: any AggregateBufferChangeNotifying
     private var pendingAggregateBufferIncrease: PendingAggregateBufferIncrease?
@@ -533,6 +540,24 @@ final class GlassEQAppModel {
                 return true
             }
             return false
+        }
+    }
+
+    private struct DefaultOutputConfiguration: Equatable {
+        var id: AudioObjectID
+        var uid: String
+        var nominalSampleRate: Double
+        var outputChannelCount: Int
+        var bufferFrameSize: UInt32
+        var transportType: UInt32?
+
+        init(_ output: AudioOutputDevice) {
+            id = output.id
+            uid = output.uid
+            nominalSampleRate = output.nominalSampleRate
+            outputChannelCount = output.outputChannelCount
+            bufferFrameSize = output.bufferFrameSize
+            transportType = output.transportType
         }
     }
 
@@ -753,6 +778,11 @@ final class GlassEQAppModel {
         case failure(String)
     }
 
+    private enum ColdStartupPromotionWorkResult: Sendable {
+        case success(ColdStartupAggregatePromotionResult)
+        case failure(String)
+    }
+
     private struct EngineWorkFailure: Error, LocalizedError, Sendable {
         var message: String
 
@@ -779,6 +809,7 @@ final class GlassEQAppModel {
         aggregateStabilitySettlingDelay: Duration = .seconds(2),
         aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
         headsetAggregatePromotionDelay: Duration = .seconds(6),
+        coldStartupAggregatePromotionPollInterval: Duration = .seconds(1),
         renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
         renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
         renderWatchdogPollInterval: Duration = .milliseconds(500),
@@ -831,6 +862,7 @@ final class GlassEQAppModel {
         self.aggregateStabilitySettlingDelay = aggregateStabilitySettlingDelay
         self.aggregateCleanSessionDuration = aggregateCleanSessionDuration
         self.headsetAggregatePromotionDelay = headsetAggregatePromotionDelay
+        self.coldStartupAggregatePromotionPollInterval = coldStartupAggregatePromotionPollInterval
         self.renderWatchdog = AudioRenderWatchdog(
             stallThreshold: renderWatchdogStallThreshold,
             repeatedFailureWindow: renderWatchdogRepeatedFailureWindow
@@ -940,9 +972,14 @@ final class GlassEQAppModel {
             return SettingsAggregateBufferDTO()
         }
         let selection = aggregateBufferPolicyStore.selection(for: activeAggregateRoute)
+        let activeAutomaticFrameSize = selection.mode == .automatic
+            && lifecycleState == .running
+            && currentOutputBufferFrameSize > 0
+            ? currentOutputBufferFrameSize
+            : selection.automaticFrameSize
         return SettingsAggregateBufferDTO(
             mode: selection.mode,
-            automaticFrameSize: selection.automaticFrameSize,
+            automaticFrameSize: activeAutomaticFrameSize,
             isAvailable: lifecycleState == .running
                 && isRunning
                 && engineStartTask == nil
@@ -1624,6 +1661,11 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        if case .success(let output) = result,
+           lastHandledDefaultOutputConfiguration == DefaultOutputConfiguration(output),
+           isRunning || engineStartTask != nil {
+            return
+        }
 
         outputChangeGeneration += 1
         let generation = outputChangeGeneration
@@ -1665,7 +1707,7 @@ final class GlassEQAppModel {
 
         return output.uid != currentOutputUID
             || output.nominalSampleRate != currentOutputSampleRate
-            || output.bufferFrameSize != currentOutputBufferFrameSize
+            || output.outputChannelCount != currentOutputChannelCount
     }
 
     private func outputChangeStatusMessage(for result: Result<AudioOutputDevice, Error>) -> String {
@@ -1707,6 +1749,7 @@ final class GlassEQAppModel {
         previewReturnProfile = nil
         switch result {
         case .success(let output):
+            lastHandledDefaultOutputConfiguration = DefaultOutputConfiguration(output)
             refreshCurrentOutputMetadata(from: output)
             activeProfile = profileStore.profile(forOutputUID: output.uid)
             selectedProfileID = activeProfile.id
@@ -1718,6 +1761,7 @@ final class GlassEQAppModel {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
         case .failure(let error):
+            lastHandledDefaultOutputConfiguration = nil
             if lifecycleState == .waking {
                 scheduleWakeReconnectRetry(status: localized("Waiting for audio output after wake: \(error.localizedDescription)"))
                 return
@@ -1746,6 +1790,8 @@ final class GlassEQAppModel {
         aggregateStabilityTask = nil
         headsetAggregatePromotionTask?.cancel()
         headsetAggregatePromotionTask = nil
+        coldStartupAggregatePromotionTask?.cancel()
+        coldStartupAggregatePromotionTask = nil
         engineStartTask?.cancel()
         switch work {
         case .start(let output, _, _, _):
@@ -2090,7 +2136,11 @@ final class GlassEQAppModel {
             isRunning = true
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
-            if engine.isUsingTransitionalHeadsetBackend,
+            if engine.isDeferringColdStartupAggregate {
+                statusMessage = localized(
+                    "Processing \(output.name) in compatibility mode until active playback releases the output"
+                )
+            } else if engine.isUsingTransitionalHeadsetBackend,
                headsetPromotionAttemptedOutputGeneration == outputChangeGeneration {
                 statusMessage = localized(
                     "Processing \(output.name) with \(activeProfile.name) in compatibility mode"
@@ -2103,6 +2153,7 @@ final class GlassEQAppModel {
             }
             completePendingAggregateBufferIncreaseIfNeeded(output: output)
             startAggregateStabilityMonitoring()
+            startColdStartupAggregatePromotionIfNeeded()
             startHeadsetAggregatePromotionIfNeeded()
         case .profileChangeNotApplied(_, let output, let reconciliation):
             refreshCurrentOutputMetadata(from: output)
@@ -2241,6 +2292,96 @@ final class GlassEQAppModel {
                 }
             }
         }
+    }
+
+    private func startColdStartupAggregatePromotionIfNeeded() {
+        coldStartupAggregatePromotionTask?.cancel()
+        coldStartupAggregatePromotionTask = nil
+        guard engine.isDeferringColdStartupAggregate else {
+            return
+        }
+        let engineGeneration = engineStartGeneration
+        let outputGeneration = outputChangeGeneration
+        let pollInterval = coldStartupAggregatePromotionPollInterval
+        coldStartupAggregatePromotionTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: pollInterval)
+                guard let self,
+                      !Task.isCancelled,
+                      self.lifecycleState == .running,
+                      self.isRunning,
+                      self.engineStartGeneration == engineGeneration,
+                      self.outputChangeGeneration == outputGeneration,
+                      self.engine.isDeferringColdStartupAggregate else {
+                    return
+                }
+                let engine = self.engine
+                let work = self.engineWorkExecutor.enqueue(priority: .userInitiated) {
+                    do {
+                        return ColdStartupPromotionWorkResult.success(
+                            try engine.attemptColdStartupAggregatePromotion()
+                        )
+                    } catch {
+                        return ColdStartupPromotionWorkResult.failure(
+                            error.localizedDescription
+                        )
+                    }
+                }
+                let result = await work.value
+                guard !Task.isCancelled,
+                      self.lifecycleState == .running,
+                      self.engineStartGeneration == engineGeneration,
+                      self.outputChangeGeneration == outputGeneration else {
+                    return
+                }
+                if case .success(.clientsActive) = result {
+                    continue
+                }
+                self.coldStartupAggregatePromotionTask = nil
+                self.completeColdStartupAggregatePromotion(result)
+                return
+            }
+        }
+    }
+
+    private func completeColdStartupAggregatePromotion(
+        _ workResult: ColdStartupPromotionWorkResult
+    ) {
+        switch workResult {
+        case .success(.promoted(let output)):
+            refreshCurrentOutputMetadata(from: output)
+            activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            engineMetrics = engine.snapshotMetrics()
+            statusMessage = processingStatus(
+                outputName: output.name,
+                profileName: activeProfile.name
+            )
+            startAggregateStabilityMonitoring()
+        case .success(.clientsActive):
+            return
+        case .success(.aggregateUnstable):
+            activeAggregateRoute = nil
+            statusMessage = localized(
+                "The low-latency startup path was unstable; compatibility mode remains active."
+            )
+        case .success(.notApplicable):
+            statusMessage = processingStatus(
+                outputName: currentOutputName,
+                profileName: activeProfile.name
+            )
+        case .failure(let message):
+            activeAggregateRoute = nil
+            if case .running = engine.state {
+                statusMessage = localized(
+                    "Could not enter the low-latency path; compatibility mode remains active: \(message)"
+                )
+            } else {
+                lifecycleState = .stopped
+                isRunning = false
+                statusMessage = localized("Audio engine failed: \(message)")
+            }
+        }
+        notifyModelDidChange()
     }
 
     private func startHeadsetAggregatePromotionIfNeeded() {
@@ -3069,6 +3210,8 @@ final class GlassEQAppModel {
         aggregateStabilityTask = nil
         headsetAggregatePromotionTask?.cancel()
         headsetAggregatePromotionTask = nil
+        coldStartupAggregatePromotionTask?.cancel()
+        coldStartupAggregatePromotionTask = nil
         engineStartTask?.cancel()
         engineStartTask = nil
         pendingEngineStartOutput = nil

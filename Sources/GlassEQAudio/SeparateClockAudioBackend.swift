@@ -24,6 +24,11 @@ private struct SeparateClockAudioEngineInternalError: Error, LocalizedError {
 }
 
 public final class SeparateClockAudioBackend: @unchecked Sendable {
+    private enum OutputBufferPolicy {
+        case adaptiveLowLatency
+        case preserveCurrent
+    }
+
     private static let preferredBufferFrameSize: UInt32 = 64
     private static let preferredBluetoothBufferFrameSize: UInt32 = 64
     private static let preferredBluetoothPlaybackTargetFrames = 128
@@ -81,6 +86,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         var preparedOutputHandoff: PreparedOutputHandoff?
         var activeOutput: AudioOutputDevice?
         var activeProfile: EQProfile?
+        var activeOutputBufferPolicy = OutputBufferPolicy.adaptiveLowLatency
         var profileRevision: UInt64 = 0
         var bufferFrameSizeRestorations: [String: BufferFrameSizeRestoration] = [:]
         var sampleRateRestorations: [String: SampleRateRestoration] = [:]
@@ -102,6 +108,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         var tapSampleRate: Double
         var originalBufferFrameSize: UInt32
         var profileRevision: UInt64
+        var outputBufferPolicy: OutputBufferPolicy
     }
 
     private struct PreparedOutputHandoff {
@@ -1420,6 +1427,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private let control = Mutex(ControlState())
     private let playbackBufferRenegotiationHandler = Mutex<(@Sendable (PlaybackBufferRenegotiation) -> Void)?>(nil)
     private let runtimeFailureHandler = Mutex<(@Sendable (AudioEngineFailure) -> Void)?>(nil)
+    private let diagnosticTrace = Mutex<AudioEngineDiagnosticTrace?>(nil)
     private let restorationStoreURL: URL
     private let playbackBufferCalibrationStoreURL: URL
     private let playbackBufferAdaptationQueue = DispatchQueue(
@@ -1465,6 +1473,20 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250), leeway: .milliseconds(50))
     }
 
+    func setDiagnosticTrace(_ trace: AudioEngineDiagnosticTrace?) {
+        diagnosticTrace.withLock { $0 = trace }
+    }
+
+    private func traceDiagnostic(
+        hostTimeNanoseconds: UInt64? = nil,
+        _ message: () -> String
+    ) {
+        guard let trace = diagnosticTrace.withLock({ $0 }) else {
+            return
+        }
+        trace(hostTimeNanoseconds, message())
+    }
+
     deinit {
         stop()
         playbackBufferAdaptationTimer.setEventHandler {}
@@ -1478,7 +1500,24 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     public func start(output: AudioOutputDevice, profile: EQProfile) throws {
-        try start(output: output, profile: profile, expectation: nil)
+        try start(
+            output: output,
+            profile: profile,
+            expectation: nil,
+            outputBufferPolicy: .adaptiveLowLatency
+        )
+    }
+
+    func startForCombinedStartupStaging(
+        output: AudioOutputDevice,
+        profile: EQProfile
+    ) throws {
+        try start(
+            output: output,
+            profile: profile,
+            expectation: nil,
+            outputBufferPolicy: .preserveCurrent
+        )
     }
 
     func prepareOutputForHandoff(
@@ -1505,7 +1544,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     &state,
                     output: output,
                     profile: profile,
-                    profileRevision: state.profileRevision
+                    profileRevision: state.profileRevision,
+                    outputBufferPolicy: .adaptiveLowLatency
                 )
             }
             let refreshedOutput = try CoreAudioDeviceQuery.outputDevice(id: preparation.output.id)
@@ -1590,6 +1630,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     func quiesceOutputForCombinedHandoff() {
+        traceDiagnostic { "compatibility quiesce begin" }
         pausePlaybackBufferAdaptation()
         control.withLock { state in
             state.runtime?.muteOutputForTransition()
@@ -1597,6 +1638,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             state.state = .stopped
             state.status = .starting
         }
+        traceDiagnostic { "compatibility quiesce end" }
     }
 
     func completeCombinedHandoff() {
@@ -1609,7 +1651,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func start(
         output: AudioOutputDevice,
         profile: EQProfile,
-        expectation: OutputRebuildExpectation?
+        expectation: OutputRebuildExpectation?,
+        outputBufferPolicy: OutputBufferPolicy = .adaptiveLowLatency
     ) throws {
         pausePlaybackBufferAdaptation()
         defer {
@@ -1648,7 +1691,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     &state,
                     output: output,
                     profile: requestedProfile,
-                    profileRevision: state.profileRevision
+                    profileRevision: state.profileRevision,
+                    outputBufferPolicy: outputBufferPolicy
                 )
             }
             let refreshedOutput = try CoreAudioDeviceQuery.outputDevice(id: preparation.output.id)
@@ -2050,6 +2094,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     private func createCaptureHalfLocked(_ state: inout ControlState, profile: EQProfile) throws {
+        traceDiagnostic { "compatibility capture create begin" }
         let tapID = try createSystemTap()
         state.tapID = tapID
 
@@ -2070,10 +2115,22 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         state.aggregateDeviceID = try createPrivateAggregateDevice(tapID: tapID)
         // Ask the capture aggregate for small callbacks to cut latency. The write is best-effort,
         // so size the initial playback reservoir from the value the aggregate actually reports.
-        try? CoreAudioDeviceQuery.setBufferFrameSize(
-            Self.preferredCaptureBufferFrameSize,
-            objectID: state.aggregateDeviceID
-        )
+        traceDiagnostic {
+            "set compatibility capture buffer begin device=\(state.aggregateDeviceID) requested=\(Self.preferredCaptureBufferFrameSize)"
+        }
+        do {
+            try CoreAudioDeviceQuery.setBufferFrameSize(
+                Self.preferredCaptureBufferFrameSize,
+                objectID: state.aggregateDeviceID
+            )
+            traceDiagnostic {
+                "set compatibility capture buffer return status=0 device=\(state.aggregateDeviceID)"
+            }
+        } catch {
+            traceDiagnostic {
+                "set compatibility capture buffer failed device=\(state.aggregateDeviceID) error=\(error)"
+            }
+        }
         let reportedCaptureCallbackFrames = try? CoreAudioDeviceQuery.getUInt32Property(
             objectID: state.aggregateDeviceID,
             selector: kAudioDevicePropertyBufferFrameSize,
@@ -2099,11 +2156,16 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         state.activeProfile = profile
 
         state.captureIOProcID = try createCaptureIOProc(deviceID: state.aggregateDeviceID, runtime: runtime)
-        try checkOSStatus(
-            AudioDeviceStart(state.aggregateDeviceID, state.captureIOProcID),
-            operation: "AudioDeviceStart(capture tap)"
-        )
+        traceDiagnostic {
+            "AudioDeviceStart(compatibility capture) begin device=\(state.aggregateDeviceID) buffer=\(captureCallbackFrames)"
+        }
+        let startStatus = AudioDeviceStart(state.aggregateDeviceID, state.captureIOProcID)
+        traceDiagnostic {
+            "AudioDeviceStart(compatibility capture) return status=\(startStatus) device=\(state.aggregateDeviceID)"
+        }
+        try checkOSStatus(startStatus, operation: "AudioDeviceStart(capture tap)")
         state.captureRunning = true
+        traceDiagnostic { "compatibility capture create end device=\(state.aggregateDeviceID)" }
     }
 
     private func stopCaptureHalfLocked(
@@ -2148,7 +2210,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         _ state: inout ControlState,
         output: AudioOutputDevice,
         profile: EQProfile,
-        profileRevision: UInt64
+        profileRevision: UInt64,
+        outputBufferPolicy: OutputBufferPolicy
     ) throws -> OutputRebuildPreparation {
         guard let runtime = state.runtime else {
             throw CoreAudioError(operation: "rebuildOutputHalf(missing runtime)", status: kAudioHardwareNotRunningError)
@@ -2165,7 +2228,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             runtime: runtime,
             tapSampleRate: state.tapSampleRate,
             originalBufferFrameSize: originalBufferFrameSize,
-            profileRevision: profileRevision
+            profileRevision: profileRevision,
+            outputBufferPolicy: outputBufferPolicy
         )
     }
 
@@ -2201,7 +2265,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             activeProfileRevision: state.profileRevision
         )
         _ = try Self.supportedRuntimeChannelCount(for: matchedOutput)
-        if state.bufferFrameSizeRestorations[output.uid] == nil {
+        if preparation.outputBufferPolicy == .adaptiveLowLatency,
+           state.bufferFrameSizeRestorations[output.uid] == nil {
             let restoration = BufferFrameSizeRestoration(
                 uid: output.uid,
                 originalFrameSize: preparation.originalBufferFrameSize
@@ -2280,10 +2345,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
         let runtime = preparation.runtime
         do {
-            try checkOSStatus(
-                AudioDeviceStart(handoff.output.id, handoff.ioProcID),
-                operation: "AudioDeviceStart(default output)"
-            )
+            traceDiagnostic {
+                "AudioDeviceStart(physical output) begin device=\(handoff.output.id) buffer=\(handoff.output.bufferFrameSize)"
+            }
+            let status = AudioDeviceStart(handoff.output.id, handoff.ioProcID)
+            traceDiagnostic {
+                "AudioDeviceStart(physical output) return status=\(status) device=\(handoff.output.id)"
+            }
+            try checkOSStatus(status, operation: "AudioDeviceStart(default output)")
         } catch {
             _ = AudioDeviceDestroyIOProcID(handoff.output.id, handoff.ioProcID)
             throw error
@@ -2292,12 +2361,19 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         // Keep IOProc ownership paired with its device so failure cleanup can stop it.
         state.activeOutput = handoff.output
 
-        // Now that our output owns the device, apply the low-latency buffer size. The stream
-        // restart it triggers happens under our muted IOProc, so it plays silence, not dry audio.
-        let tunedOutput = tuneBufferFrameSize(
-            for: handoff.output,
-            tapSampleRate: runtime.sampleRate
-        )
+        // Compatibility mode applies its low-latency setting only after claiming the device.
+        // Cold-start staging instead preserves the setting used by active clients; changing a
+        // shared device buffer here can destabilize an already-running 512-frame client before
+        // the combined aggregate takes ownership.
+        let tunedOutput = switch preparation.outputBufferPolicy {
+        case .adaptiveLowLatency:
+            tuneBufferFrameSize(
+                for: handoff.output,
+                tapSampleRate: runtime.sampleRate
+            )
+        case .preserveCurrent:
+            handoff.output
+        }
         try Self.validatePlaybackCallbackCapacity(for: tunedOutput)
         try Self.validatePlaybackConversionCapacity(
             for: tunedOutput,
@@ -2305,6 +2381,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             captureCallbackFrames: runtime.maximumKnownCaptureCallbackFrames()
         )
         state.activeOutput = tunedOutput
+        state.activeOutputBufferPolicy = preparation.outputBufferPolicy
         let targetFrames = preferredPlaybackTargetFrames(
             for: tunedOutput,
             tapSampleRate: runtime.sampleRate,
@@ -2315,11 +2392,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             instabilityGeneration: runtime.playbackInstabilitySnapshot().generation,
             timestampDiscontinuities: runtime.playbackTimestampDiscontinuityCount()
         )
-        state.playbackBufferCalibrationProbe = playbackBufferCalibrationProbe(
-            for: tunedOutput,
-            tapSampleRate: runtime.sampleRate,
-            targetFrames: targetFrames
-        )
+        state.playbackBufferCalibrationProbe = preparation.outputBufferPolicy == .adaptiveLowLatency
+            ? playbackBufferCalibrationProbe(
+                for: tunedOutput,
+                tapSampleRate: runtime.sampleRate,
+                targetFrames: targetFrames
+            )
+            : nil
         state.playbackBufferStableSince = state.playbackBufferCalibrationProbe == nil
             ? ContinuousClock().now
             : nil
@@ -2334,16 +2413,41 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func stopOutputHalfLocked(_ state: inout ControlState) {
         state.outputRebuildGeneration += 1
         if let prepared = state.preparedOutputHandoff {
-            _ = AudioDeviceDestroyIOProcID(prepared.output.id, prepared.ioProcID)
+            traceDiagnostic {
+                "AudioDeviceDestroyIOProcID(prepared physical output) begin device=\(prepared.output.id)"
+            }
+            let status = AudioDeviceDestroyIOProcID(prepared.output.id, prepared.ioProcID)
+            traceDiagnostic {
+                "AudioDeviceDestroyIOProcID(prepared physical output) return status=\(status) device=\(prepared.output.id)"
+            }
             state.preparedOutputHandoff = nil
         }
         if let output = state.activeOutput, let outputIOProcID = state.outputIOProcID {
-            _ = AudioDeviceStop(output.id, outputIOProcID)
-            _ = AudioDeviceDestroyIOProcID(output.id, outputIOProcID)
+            traceDiagnostic {
+                "AudioDeviceStop(physical output) begin device=\(output.id) buffer=\(output.bufferFrameSize)"
+            }
+            let stopStatus = AudioDeviceStop(output.id, outputIOProcID)
+            traceDiagnostic {
+                "AudioDeviceStop(physical output) return status=\(stopStatus) device=\(output.id)"
+            }
+            traceDiagnostic {
+                "AudioDeviceDestroyIOProcID(physical output) begin device=\(output.id)"
+            }
+            let destroyStatus = AudioDeviceDestroyIOProcID(output.id, outputIOProcID)
+            traceDiagnostic {
+                "AudioDeviceDestroyIOProcID(physical output) return status=\(destroyStatus) device=\(output.id)"
+            }
         }
         state.outputIOProcID = nil
+        traceDiagnostic {
+            "restore compatibility device settings begin sampleRateRecords=\(state.sampleRateRestorations.count) bufferRecords=\(state.bufferFrameSizeRestorations.count)"
+        }
         restoreDeviceSettingsIfNeeded(&state)
+        traceDiagnostic {
+            "restore compatibility device settings end sampleRateRecords=\(state.sampleRateRestorations.count) bufferRecords=\(state.bufferFrameSizeRestorations.count)"
+        }
         state.activeOutput = nil
+        state.activeOutputBufferPolicy = .adaptiveLowLatency
         state.playbackBufferCalibrationProbe = nil
     }
 
@@ -2893,6 +2997,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func updatePlaybackBufferAdaptationTimer() {
         let shouldRun = control.withLock { state in
             guard case .running = state.state,
+                  state.activeOutputBufferPolicy == .adaptiveLowLatency,
                   let output = state.activeOutput else {
                 return false
             }
@@ -2927,6 +3032,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         guard let action = control.withLock({ state -> PlaybackBufferAdaptationAction? in
             guard let runtime = state.runtime,
                   let output = state.activeOutput,
+                  state.activeOutputBufferPolicy == .adaptiveLowLatency,
                   Self.shouldAdaptPlaybackBuffer(for: output) else {
                 return nil
             }
@@ -3843,21 +3949,23 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func createSystemTap(name: String = "GlassEQ System Output Tap") throws -> AudioObjectID {
         let ownProcess = try currentAudioProcessObjectID()
-        // Global tap (not bound to a device): one muted tap removes the dry system mix from
-        // every output device and survives default-output switches without rebuild, so dry
-        // audio never leaks to a newly selected device during the route handoff. Verified on
-        // hardware across built-in / USB / Bluetooth / HDMI and 44.1k–192k device rates.
+        // Global tap (not bound to a device): once its IOProc starts reading, one tap removes
+        // the dry system mix from every output device and survives default-output switches.
+        // This prevents dry audio from leaking during handoff without muting active clients
+        // while the replacement output path is still being constructed.
         let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [ownProcess])
         description.name = name
         description.uuid = UUID()
         description.isPrivate = true
-        description.muteBehavior = CATapMuteBehavior.muted
+        description.muteBehavior = CATapMuteBehavior.mutedWhenTapped
 
         var tapID = AudioObjectID(kAudioObjectUnknown)
-        try checkOSStatus(
-            AudioHardwareCreateProcessTap(description, &tapID),
-            operation: "AudioHardwareCreateProcessTap"
-        )
+        traceDiagnostic { "AudioHardwareCreateProcessTap(compatibility) begin" }
+        let status = AudioHardwareCreateProcessTap(description, &tapID)
+        traceDiagnostic {
+            "AudioHardwareCreateProcessTap(compatibility) return status=\(status) tap=\(tapID)"
+        }
+        try checkOSStatus(status, operation: "AudioHardwareCreateProcessTap")
         return tapID
     }
 
@@ -3897,23 +4005,33 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         ]
 
         var deviceID = AudioObjectID(kAudioObjectUnknown)
-        try checkOSStatus(
-            AudioHardwareCreateAggregateDevice(description as CFDictionary, &deviceID),
-            operation: "AudioHardwareCreateAggregateDevice"
-        )
+        traceDiagnostic { "AudioHardwareCreateAggregateDevice(compatibility capture) begin" }
+        let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &deviceID)
+        traceDiagnostic {
+            "AudioHardwareCreateAggregateDevice(compatibility capture) return status=\(status) device=\(deviceID)"
+        }
+        try checkOSStatus(status, operation: "AudioHardwareCreateAggregateDevice")
         return deviceID
     }
 
     private func createCaptureIOProc(deviceID: AudioObjectID, runtime: AudioRuntime) throws -> AudioDeviceIOProcID? {
         var ioProcID: AudioDeviceIOProcID?
 
-        try checkOSStatus(
-            AudioDeviceCreateIOProcIDWithBlock(&ioProcID, deviceID, nil) { _, inputData, _, outputData, _ in
-                runtime.capture(inputData: inputData)
-                runtime.clear(outputData: outputData)
-            },
-            operation: "AudioDeviceCreateIOProcIDWithBlock(capture)"
-        )
+        traceDiagnostic {
+            "AudioDeviceCreateIOProcIDWithBlock(compatibility capture) begin device=\(deviceID)"
+        }
+        let status = AudioDeviceCreateIOProcIDWithBlock(
+            &ioProcID,
+            deviceID,
+            nil
+        ) { _, inputData, _, outputData, _ in
+            runtime.capture(inputData: inputData)
+            runtime.clear(outputData: outputData)
+        }
+        traceDiagnostic {
+            "AudioDeviceCreateIOProcIDWithBlock(compatibility capture) return status=\(status) device=\(deviceID)"
+        }
+        try checkOSStatus(status, operation: "AudioDeviceCreateIOProcIDWithBlock(capture)")
 
         return ioProcID
     }
@@ -3934,18 +4052,26 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func createOutputIOProc(deviceID: AudioObjectID, runtime: AudioRuntime) throws -> AudioDeviceIOProcID? {
         var ioProcID: AudioDeviceIOProcID?
 
-        try checkOSStatus(
-            AudioDeviceCreateIOProcIDWithBlock(&ioProcID, deviceID, nil) { _, _, _, outputData, outputTime in
-                let outputTimestamp = outputTime.pointee
-                let sampleTime: Double? = if outputTimestamp.mFlags.contains(.sampleTimeValid) {
-                    outputTimestamp.mSampleTime
-                } else {
-                    nil
-                }
-                runtime.playback(outputData: outputData, outputSampleTime: sampleTime)
-            },
-            operation: "AudioDeviceCreateIOProcIDWithBlock(output)"
-        )
+        traceDiagnostic {
+            "AudioDeviceCreateIOProcIDWithBlock(physical output) begin device=\(deviceID)"
+        }
+        let status = AudioDeviceCreateIOProcIDWithBlock(
+            &ioProcID,
+            deviceID,
+            nil
+        ) { _, _, _, outputData, outputTime in
+            let outputTimestamp = outputTime.pointee
+            let sampleTime: Double? = if outputTimestamp.mFlags.contains(.sampleTimeValid) {
+                outputTimestamp.mSampleTime
+            } else {
+                nil
+            }
+            runtime.playback(outputData: outputData, outputSampleTime: sampleTime)
+        }
+        traceDiagnostic {
+            "AudioDeviceCreateIOProcIDWithBlock(physical output) return status=\(status) device=\(deviceID)"
+        }
+        try checkOSStatus(status, operation: "AudioDeviceCreateIOProcIDWithBlock(output)")
 
         return ioProcID
     }

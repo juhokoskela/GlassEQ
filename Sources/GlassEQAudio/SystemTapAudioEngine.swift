@@ -16,6 +16,19 @@ public enum HeadsetAggregatePromotionResult: Equatable, Sendable {
     case promoted(AudioOutputDevice)
 }
 
+public enum ColdStartupAggregatePromotionResult: Equatable, Sendable {
+    case notApplicable
+    case clientsActive
+    case aggregateUnstable
+    case promoted(AudioOutputDevice)
+}
+
+@_spi(GlassEQDiagnostics)
+public typealias AudioEngineDiagnosticTrace = @Sendable (
+    _ hostTimeNanoseconds: UInt64?,
+    _ message: String
+) -> Void
+
 public struct AudioRenderTimingMetrics: Equatable, Sendable {
     public var callbackStartLatenessObservations: UInt64
     public var callbackStartLatenessP9999Nanoseconds: UInt64
@@ -685,6 +698,8 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
 public final class SystemTapAudioEngine: @unchecked Sendable {
     private static let preferredAggregateBufferFrameSize: UInt32 = 16
     private static let maximumSupportedCallbackFrames = 8192
+    private static let startupQualificationCallbacks: UInt64 = 32
+    private static let startupProbationCallbacks: UInt64 = 8
     private static let systemSoundServerBundleID = "systemsoundserverd"
     private static let headsetClockProbeDuration: TimeInterval = 0.5
     private static let headsetAggregateValidationDuration: TimeInterval = 0.75
@@ -695,7 +710,33 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         case separateClock
     }
 
+    private struct StartupQualificationSnapshot {
+        var validCallbackStreak: UInt64
+        var observedCallbacks: UInt64
+        var rejectedCallbacks: UInt64
+    }
+
+    private struct AggregateStartupQualificationError: Error,
+        LocalizedError,
+        CustomStringConvertible {
+        var expectedFrameCount: Int
+        var snapshot: StartupQualificationSnapshot
+
+        var errorDescription: String? {
+            "Core Audio did not deliver stable \(expectedFrameCount)-frame callbacks while starting the output."
+        }
+
+        var description: String {
+            errorDescription ?? "Core Audio callbacks did not settle during startup."
+        }
+    }
+
     private struct PromotedHeadsetRoute: Equatable {
+        var outputUID: String
+        var nominalSampleRate: Int64
+    }
+
+    private struct DeferredColdStartupRoute: Equatable {
         var outputUID: String
         var nominalSampleRate: Int64
     }
@@ -753,6 +794,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var runtime: AudioRuntime
         var output: AudioOutputDevice
         var profile: EQProfile
+        var ioStarted: Bool
     }
 
     private struct CombinedAggregateCreation {
@@ -809,6 +851,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         private let inputChannelOffset: Int
         private let systemSoundInputChannelOffset: Int
+        private let expectedCallbackFrames: Int
         private let maxCallbackFrames: Int
         private var dspTransition: RealtimeEQTransition
         private var activeSystemSoundPreampGains: (left: Float, right: Float)
@@ -838,6 +881,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let pairedTimestampDiscontinuities = Atomic<UInt64>(0)
         private let qualifyingPairedTimestampDiscontinuities = Atomic<UInt64>(0)
         private let renderCallbackObservations = Atomic<UInt64>(0)
+        private let firstRenderCallbackHostTimeNanoseconds = Atomic<UInt64>(0)
+        private let startupValidCallbackStreak = Atomic<UInt64>(0)
+        private let startupRejectedCallbacks = Atomic<UInt64>(0)
         private let lastInputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastOutputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastInputHostIntervalErrorNanoseconds = Atomic<Int64>(0)
@@ -894,12 +940,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             renderConfiguration: EQRenderConfiguration,
             inputChannelOffset: Int,
             systemSoundInputChannelOffset: Int,
+            expectedCallbackFrames: Int,
             maxCallbackFrames: Int
         ) {
             self.channelCount = max(renderConfiguration.configuration.channelCount, 1)
             self.sampleRate = renderConfiguration.configuration.sampleRate
             self.inputChannelOffset = max(inputChannelOffset, 0)
             self.systemSoundInputChannelOffset = max(systemSoundInputChannelOffset, 0)
+            self.expectedCallbackFrames = max(expectedCallbackFrames, 1)
             self.maxCallbackFrames = maxCallbackFrames
             self.outputFade = RealtimeOutputFade(sampleRate: self.sampleRate)
             self.outputDeclicker = RealtimeOutputDeclicker(
@@ -966,6 +1014,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let inputFrameCount = min(mainInputFrameCount, systemSoundFrameCount)
 
             let renderStartNanoseconds = AudioConvertHostTimeToNanos(callbackHostTime)
+            _ = firstRenderCallbackHostTimeNanoseconds.compareExchange(
+                expected: 0,
+                desired: renderStartNanoseconds,
+                ordering: .relaxed
+            )
             let previousRenderStart = previousRenderStartNanoseconds
             let expectedEntryIntervalNanoseconds = previousRenderStart.map { _ in
                 SystemTapAudioEngine.renderPeriodNanoseconds(
@@ -993,6 +1046,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             previousRenderStartNanoseconds = renderStartNanoseconds
             previousRenderFrameCount = outputFrameCount
             var renderWorkTiming = EQRenderWorkTiming()
+            var startupCallbackCandidate = false
             defer {
                 let renderEndNanoseconds = AudioConvertHostTimeToNanos(
                     AudioGetCurrentHostTime()
@@ -1048,6 +1102,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: outputFrameCount,
                     sampleRate: sampleRate
                 )
+                recordStartupCallback(
+                    isValid: startupCallbackCandidate
+                        && entryDeadlineMisses == 0
+                        && executionDeadlineMisses == 0
+                )
                 if entryDeadlineMisses > 0 {
                     callbackStartStarvations.wrappingAdd(1, ordering: .relaxed)
                 }
@@ -1067,11 +1126,18 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 }
             }
 
-            recordTimestampContinuity(
+            let timestampsAreStable = recordTimestampContinuity(
                 inputTime: inputTime,
                 inputFrameCount: inputFrameCount,
                 outputTime: outputTime,
                 outputFrameCount: outputFrameCount
+            )
+            startupCallbackCandidate = SystemTapAudioEngine.startupCallbackIsValid(
+                mainInputFrameCount: mainInputFrameCount,
+                systemSoundInputFrameCount: rawSystemSoundFrameCount,
+                outputFrameCount: outputFrameCount,
+                expectedFrameCount: expectedCallbackFrames,
+                timestampsAreStable: timestampsAreStable
             )
             renderCallbackObservations.wrappingAdd(1, ordering: .relaxed)
 
@@ -1204,17 +1270,35 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             outputMutedForTransition.store(false, ordering: .releasing)
         }
 
-        func waitForSilentWarmUp(
-            minimumCallbacks: UInt64,
+        func waitForQualifiedStartup(
+            minimumConsecutiveCallbacks: UInt64,
             timeout: TimeInterval
-        ) {
-            let initialCallbacks = renderCallbackObservations.load(ordering: .acquiring)
+        ) -> StartupQualificationSnapshot {
             let deadline = DispatchTime.now().uptimeNanoseconds
                 + UInt64(max(timeout, 0) * 1_000_000_000)
-            while renderCallbackObservations.load(ordering: .acquiring)
-                    < initialCallbacks + minimumCallbacks,
+            while startupValidCallbackStreak.load(ordering: .acquiring)
+                    < minimumConsecutiveCallbacks,
                   DispatchTime.now().uptimeNanoseconds < deadline {
                 Thread.sleep(forTimeInterval: 0.001)
+            }
+            return StartupQualificationSnapshot(
+                validCallbackStreak: startupValidCallbackStreak.load(ordering: .acquiring),
+                observedCallbacks: renderCallbackObservations.load(ordering: .acquiring),
+                rejectedCallbacks: startupRejectedCallbacks.load(ordering: .acquiring)
+            )
+        }
+
+        func firstRenderCallbackHostTime() -> UInt64? {
+            let value = firstRenderCallbackHostTimeNanoseconds.load(ordering: .acquiring)
+            return value == 0 ? nil : value
+        }
+
+        private func recordStartupCallback(isValid: Bool) {
+            if isValid {
+                startupValidCallbackStreak.wrappingAdd(1, ordering: .releasing)
+            } else {
+                startupValidCallbackStreak.store(0, ordering: .releasing)
+                startupRejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
             }
         }
 
@@ -1672,7 +1756,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             inputFrameCount: Int,
             outputTime: AudioTimeStamp,
             outputFrameCount: Int
-        ) {
+        ) -> Bool {
             let inputJump = recordTimestampContinuity(
                 time: inputTime,
                 frameCount: inputFrameCount,
@@ -1727,6 +1811,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     outputJump: outputJump
                 )
             }
+            return inputJump == nil
+                && outputJump == nil
+                && inputTimestampState.stableSlopeObservations >= 8
+                && outputTimestampState.stableSlopeObservations >= 8
         }
 
         private func recordTimestampContinuity(
@@ -2072,6 +2160,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private let topologyOperation = Mutex(())
     private let activeBackend = Mutex(ActiveBackend.combinedAggregate)
     private let promotedHeadsetRoute = Mutex<PromotedHeadsetRoute?>(nil)
+    private let deferredColdStartupRoute = Mutex<DeferredColdStartupRoute?>(nil)
+    private let diagnosticTrace = Mutex<AudioEngineDiagnosticTrace?>(nil)
     private let separateClockBackend: SeparateClockAudioBackend
 
     public var state: AudioEngineState {
@@ -2100,6 +2190,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return Self.shouldUseSeparateClockBackend(for: output)
     }
 
+    public var isDeferringColdStartupAggregate: Bool {
+        guard activeBackend.withLock({ $0 }) == .separateClock,
+              case .running(let output) = separateClockBackend.state else {
+            return false
+        }
+        return deferredColdStartupRoute.withLock { route in
+            route == Self.deferredColdStartupRoute(for: output)
+        }
+    }
+
     public var isUsingPromotedHeadsetAggregate: Bool {
         guard activeBackend.withLock({ $0 }) == .combinedAggregate,
               let output = control.withLock({ $0.activeOutput }) else {
@@ -2121,6 +2221,88 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         Self.restorePersistedDeviceSettings(at: restorationStoreURL)
     }
 
+    @_spi(GlassEQDiagnostics)
+    public func setDiagnosticTrace(_ trace: AudioEngineDiagnosticTrace?) {
+        diagnosticTrace.withLock { $0 = trace }
+        separateClockBackend.setDiagnosticTrace(trace)
+    }
+
+    @_spi(GlassEQDiagnostics)
+    public func startDiagnosticCompatibilityPath(
+        output: AudioOutputDevice,
+        profile: EQProfile
+    ) throws {
+        try topologyOperation.withLock { _ in
+            deferredColdStartupRoute.withLock { $0 = nil }
+            promotedHeadsetRoute.withLock { $0 = nil }
+            traceDiagnostic {
+                "diagnostic compatibility start output=\(output.id) buffer=\(output.bufferFrameSize)"
+            }
+            try startSeparateClockBackendForColdStartup(output: output, profile: profile)
+        }
+    }
+
+    @_spi(GlassEQDiagnostics)
+    public func quiesceDiagnosticCompatibilityOutput() throws {
+        try topologyOperation.withLock { _ in
+            guard activeBackend.withLock({ $0 }) == .separateClock,
+                  separateClockBackend.activeOutputAndProfile() != nil else {
+                throw AudioEngineInternalError(
+                    message: "The diagnostic compatibility output is not running."
+                )
+            }
+            separateClockBackend.quiesceOutputForCombinedHandoff()
+        }
+    }
+
+    @_spi(GlassEQDiagnostics)
+    public func restoreDiagnosticCompatibilityOutput(
+        output: AudioOutputDevice,
+        profile: EQProfile
+    ) throws {
+        try topologyOperation.withLock { _ in
+            traceDiagnostic { "diagnostic compatibility restore begin output=\(output.id)" }
+            try restoreSeparateClockBackend(
+                afterRejectedPromotion: (output, profile),
+                preserveOutputBuffer: true
+            )
+            traceDiagnostic { "diagnostic compatibility restore end output=\(output.id)" }
+        }
+    }
+
+    @_spi(GlassEQDiagnostics)
+    public func startDiagnosticCombinedPath(
+        output: AudioOutputDevice,
+        profile: EQProfile,
+        targetFrameSize: UInt32
+    ) throws {
+        try topologyOperation.withLock { _ in
+            deferredColdStartupRoute.withLock { $0 = nil }
+            promotedHeadsetRoute.withLock { $0 = nil }
+            let isSeparateClockHandoff = activeBackend.withLock { $0 == .separateClock }
+            traceDiagnostic {
+                "diagnostic combined start output=\(output.id) physicalBuffer=\(output.bufferFrameSize) targetAggregateBuffer=\(targetFrameSize)"
+            }
+            try startCombinedAggregateAttempt(
+                output: output,
+                profile: profile,
+                targetFrameSize: targetFrameSize,
+                isSeparateClockHandoff: isSeparateClockHandoff,
+                usePhysicalFirstOrdering: false
+            )
+        }
+    }
+
+    private func traceDiagnostic(
+        hostTimeNanoseconds: UInt64? = nil,
+        _ message: () -> String
+    ) {
+        guard let trace = diagnosticTrace.withLock({ $0 }) else {
+            return
+        }
+        trace(hostTimeNanoseconds, message())
+    }
+
     deinit {
         stop()
     }
@@ -2128,9 +2310,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public func aggregateRouteFingerprint(
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
+        guard activeBackend.withLock({ $0 }) == .combinedAggregate else {
+            return nil
+        }
         if Self.shouldUseSeparateClockBackend(for: output) {
-            let isActivePromotedRoute = activeBackend.withLock { $0 } == .combinedAggregate
-                && control.withLock { state in
+            let isActivePromotedRoute = control.withLock { state in
                     state.activeOutput?.uid == output.uid
                         && state.activeOutput?.nominalSampleRate == output.nominalSampleRate
                 }
@@ -2177,6 +2361,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 route == Self.promotedHeadsetRoute(for: output)
             }
         if shouldUseSeparateClock {
+            deferredColdStartupRoute.withLock { $0 = nil }
             try startSeparateClockBackend(output: output, profile: profile)
             return
         }
@@ -2185,7 +2370,46 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             promotedHeadsetRoute.withLock { $0 = nil }
         }
 
+        let shouldConsiderColdStartupDeferral = Self.shouldConsiderColdStartupDeferral(
+            activeBackendIsSeparate: activeBackend.withLock { $0 == .separateClock },
+            combinedState: control.withLock { $0.state }
+        )
+        if shouldConsiderColdStartupDeferral,
+           (try? hasActiveExternalOutputProcess(on: output)) != false {
+            do {
+                deferredColdStartupRoute.withLock { $0 = nil }
+                try startCombinedAggregate(
+                    output: output,
+                    profile: profile,
+                    usePhysicalFirstOrdering: true
+                )
+                return
+            } catch {
+                traceDiagnostic {
+                    "physical-first combined startup failed; falling back to compatibility error=\(error)"
+                }
+                try startSeparateClockBackendForColdStartup(
+                    output: output,
+                    profile: profile
+                )
+                deferredColdStartupRoute.withLock {
+                    $0 = Self.deferredColdStartupRoute(for: output)
+                }
+                return
+            }
+        }
+
+        deferredColdStartupRoute.withLock { $0 = nil }
         try startCombinedAggregate(output: output, profile: profile)
+    }
+
+    private func hasActiveExternalOutputProcess(
+        on output: AudioOutputDevice
+    ) throws -> Bool {
+        try CoreAudioDeviceQuery.hasActiveOutputProcess(
+            using: output.id,
+            excluding: [try currentAudioProcessObjectID()]
+        )
     }
 
     private func startSeparateClockBackend(
@@ -2215,11 +2439,77 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         _ = try separateClockBackend.activatePreparedOutputHandoff()
     }
 
-    private func startCombinedAggregate(
+    private func startSeparateClockBackendForColdStartup(
         output: AudioOutputDevice,
         profile: EQProfile
     ) throws {
+        stopCombinedResourcesSerialized()
+        activeBackend.withLock { $0 = .separateClock }
+        try separateClockBackend.startForCombinedStartupStaging(
+            output: output,
+            profile: profile
+        )
+    }
+
+    private func startCombinedAggregate(
+        output: AudioOutputDevice,
+        profile: EQProfile,
+        preserveStagingOutputBuffer: Bool = false,
+        usePhysicalFirstOrdering: Bool = false
+    ) throws {
         let isSeparateClockHandoff = activeBackend.withLock { $0 } == .separateClock
+        let requestedFrameSize = control.withLock { $0.preferredAggregateBufferFrameSize }
+        let attemptFrameSizes = Self.startupAttemptFrameSizes(
+            requestedFrameSize: requestedFrameSize
+        )
+        var lastStartupError: AggregateStartupQualificationError?
+
+        for (index, frameSize) in attemptFrameSizes.enumerated() {
+            do {
+                try startCombinedAggregateAttempt(
+                    output: output,
+                    profile: profile,
+                    targetFrameSize: frameSize,
+                    isSeparateClockHandoff: isSeparateClockHandoff,
+                    usePhysicalFirstOrdering: usePhysicalFirstOrdering
+                )
+                return
+            } catch let error as AggregateStartupQualificationError {
+                lastStartupError = error
+                guard index + 1 < attemptFrameSizes.count else {
+                    throw error
+                }
+                if isSeparateClockHandoff {
+                    do {
+                        try restoreSeparateClockBackend(
+                            afterRejectedPromotion: (output, profile),
+                            preserveOutputBuffer: preserveStagingOutputBuffer
+                        )
+                    } catch let rollbackError {
+                        throw AudioEngineInternalError(
+                            message: "Aggregate startup failed and the staging path could not be restored: \(error.localizedDescription); rollback: \(rollbackError.localizedDescription)"
+                        )
+                    }
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+        }
+
+        if let lastStartupError {
+            throw lastStartupError
+        }
+    }
+
+    private func startCombinedAggregateAttempt(
+        output: AudioOutputDevice,
+        profile: EQProfile,
+        targetFrameSize: UInt32,
+        isSeparateClockHandoff: Bool,
+        usePhysicalFirstOrdering: Bool
+    ) throws {
+        traceDiagnostic {
+            "combined attempt begin output=\(output.id) physicalBuffer=\(output.bufferFrameSize) targetAggregateBuffer=\(targetFrameSize) handoff=\(isSeparateClockHandoff) physicalFirst=\(usePhysicalFirstOrdering)"
+        }
         control.withLock { state in
             state.status = .starting
         }
@@ -2229,7 +2519,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         do {
             let route = try prepareCombinedRoute(output: output)
-            let targetFrameSize = control.withLock { $0.preferredAggregateBufferFrameSize }
+            traceDiagnostic {
+                "combined route prepared output=\(route.output.id) physicalBuffer=\(route.output.bufferFrameSize) streamIndex=\(route.outputStreamIndex)"
+            }
             var detachedAggregate: DetachedCombinedAggregate?
             var staleTaps: CombinedTapSet?
 
@@ -2279,23 +2571,84 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 throw AudioEngineInternalError(message: "Core Audio did not create the process taps.")
             }
 
-            let prepared = try prepareCombinedAggregate(
-                taps: taps,
-                route: route,
-                profile: profile,
-                targetFrameSize: targetFrameSize
-            )
+            let prepared = if usePhysicalFirstOrdering {
+                try preparePhysicalFirstCombinedAggregate(
+                    taps: taps,
+                    route: route,
+                    profile: profile,
+                    targetFrameSize: targetFrameSize
+                )
+            } else {
+                try prepareCombinedAggregate(
+                    taps: taps,
+                    route: route,
+                    profile: profile,
+                    targetFrameSize: targetFrameSize
+                )
+            }
             preparedAggregate = prepared
 
-            if isSeparateClockHandoff {
-                separateClockBackend.quiesceOutputForCombinedHandoff()
+            if !prepared.ioStarted {
+                if isSeparateClockHandoff {
+                    traceDiagnostic { "combined handoff quiesce requested" }
+                    separateClockBackend.quiesceOutputForCombinedHandoff()
+                }
+                traceDiagnostic {
+                    "AudioDeviceStart(combined aggregate) begin device=\(prepared.deviceID) buffer=\(prepared.output.bufferFrameSize)"
+                }
+                let startStatus = AudioDeviceStart(prepared.deviceID, prepared.ioProcID)
+                traceDiagnostic {
+                    "AudioDeviceStart(combined aggregate) return status=\(startStatus) device=\(prepared.deviceID)"
+                }
+                try checkOSStatus(
+                    startStatus,
+                    operation: "AudioDeviceStart(combined aggregate)"
+                )
             }
-            try checkOSStatus(
-                AudioDeviceStart(prepared.deviceID, prepared.ioProcID),
-                operation: "AudioDeviceStart(combined aggregate)"
+            let qualificationCallbacks = Self.startupQualificationCallbacks
+            let qualificationTimeout = Self.startupQualificationTimeout(
+                frameCount: Int(prepared.output.bufferFrameSize),
+                sampleRate: prepared.output.nominalSampleRate,
+                minimumConsecutiveCallbacks: qualificationCallbacks
             )
-            prepared.runtime.waitForSilentWarmUp(minimumCallbacks: 32, timeout: 0.1)
+            let qualification = prepared.runtime.waitForQualifiedStartup(
+                minimumConsecutiveCallbacks: qualificationCallbacks,
+                timeout: qualificationTimeout
+            )
+            if let firstCallbackHostTime = prepared.runtime.firstRenderCallbackHostTime() {
+                traceDiagnostic(hostTimeNanoseconds: firstCallbackHostTime) {
+                    "combined first callback device=\(prepared.deviceID)"
+                }
+            }
+            traceDiagnostic {
+                "combined startup qualification validStreak=\(qualification.validCallbackStreak) observed=\(qualification.observedCallbacks) rejected=\(qualification.rejectedCallbacks)"
+            }
+            guard qualification.validCallbackStreak >= qualificationCallbacks else {
+                throw AggregateStartupQualificationError(
+                    expectedFrameCount: Int(prepared.output.bufferFrameSize),
+                    snapshot: qualification
+                )
+            }
             prepared.runtime.activate()
+            let probationCallbacks = qualificationCallbacks
+                + Self.startupProbationCallbacks
+            let probation = prepared.runtime.waitForQualifiedStartup(
+                minimumConsecutiveCallbacks: probationCallbacks,
+                timeout: Self.startupQualificationTimeout(
+                    frameCount: Int(prepared.output.bufferFrameSize),
+                    sampleRate: prepared.output.nominalSampleRate,
+                    minimumConsecutiveCallbacks: Self.startupProbationCallbacks
+                )
+            )
+            traceDiagnostic {
+                "combined startup probation validStreak=\(probation.validCallbackStreak) observed=\(probation.observedCallbacks) rejected=\(probation.rejectedCallbacks)"
+            }
+            guard probation.validCallbackStreak >= probationCallbacks else {
+                throw AggregateStartupQualificationError(
+                    expectedFrameCount: Int(prepared.output.bufferFrameSize),
+                    snapshot: probation
+                )
+            }
 
             control.withLock { state in
                 state.tapID = prepared.taps.main
@@ -2315,7 +2668,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if isSeparateClockHandoff {
                 separateClockBackend.completeCombinedHandoff()
             }
+            traceDiagnostic {
+                "combined attempt running device=\(prepared.deviceID) buffer=\(prepared.output.bufferFrameSize)"
+            }
         } catch {
+            traceDiagnostic { "combined attempt failed error=\(error)" }
             let failure = audioEngineFailure(from: error)
             var failedStateAggregate: DetachedCombinedAggregate?
             var installedTaps: CombinedTapSet?
@@ -2408,6 +2765,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var runtime: AudioRuntime?
 
         do {
+            traceDiagnostic {
+                "prepare combined aggregate begin physicalDevice=\(route.output.id) targetBuffer=\(targetFrameSize)"
+            }
             let aggregateCreation = try createCombinedAggregateDevice(
                 tapID: taps.main,
                 systemSoundTapID: taps.systemSounds,
@@ -2415,6 +2775,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
             aggregateDeviceID = aggregateCreation.deviceID
             try waitUntilAggregateIsAlive(aggregateDeviceID)
+            traceDiagnostic {
+                "verify aggregate composition begin device=\(aggregateDeviceID)"
+            }
             let tapUIDOrder = try verifyAggregateComposition(
                 aggregateDeviceID,
                 output: route.output,
@@ -2423,11 +2786,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     aggregateCreation.systemSoundTapUID: true
                 ]
             )
+            traceDiagnostic {
+                "verify aggregate composition end device=\(aggregateDeviceID)"
+            }
 
             let aggregate = try tuneAggregateBufferFrameSize(
                 deviceID: aggregateDeviceID,
                 targetFrameSize: targetFrameSize
             )
+            traceDiagnostic {
+                "aggregate buffer ready device=\(aggregateDeviceID) requested=\(targetFrameSize) actual=\(aggregate.bufferFrameSize)"
+            }
             try Self.validatePlaybackCallbackCapacity(for: aggregate)
             let mainTapChannelCount = try tapChannelCount(taps.main)
             let systemSoundTapChannelCount = try tapChannelCount(taps.systemSounds)
@@ -2474,6 +2843,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 renderConfiguration: renderConfiguration,
                 inputChannelOffset: tapInputChannelOffsets.main,
                 systemSoundInputChannelOffset: tapInputChannelOffsets.systemSounds,
+                expectedCallbackFrames: Int(aggregate.bufferFrameSize),
                 maxCallbackFrames: Self.maximumSupportedCallbackFrames
             )
             runtime = preparedRuntime
@@ -2492,6 +2862,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 )
             }
             ioProcID = preparedIOProcID
+            traceDiagnostic {
+                "set aggregate IOProc stream usage begin device=\(aggregateDeviceID)"
+            }
             try configureInputStreamUsage(
                 deviceID: aggregateDeviceID,
                 ioProcID: preparedIOProcID,
@@ -2501,6 +2874,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ),
                 tapChannelCount: mainTapChannelCount + systemSoundTapChannelCount
             )
+            traceDiagnostic {
+                "set aggregate IOProc stream usage end device=\(aggregateDeviceID)"
+            }
 
             var activeOutput = route.output
             activeOutput.bufferFrameSize = aggregate.bufferFrameSize
@@ -2510,10 +2886,214 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioProcID: preparedIOProcID,
                 runtime: preparedRuntime,
                 output: activeOutput,
-                profile: profile
+                profile: profile,
+                ioStarted: false
             )
         } catch {
             if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
+                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
+            }
+            if aggregateDeviceID != kAudioObjectUnknown {
+                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            }
+            runtime?.drainDSPConfigBoxes()
+            throw error
+        }
+    }
+
+    private func preparePhysicalFirstCombinedAggregate(
+        taps: CombinedTapSet,
+        route: CombinedRoutePreparation,
+        profile: EQProfile,
+        targetFrameSize: UInt32
+    ) throws -> PreparedCombinedAggregate {
+        var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
+        var ioProcID: AudioDeviceIOProcID?
+        var runtime: AudioRuntime?
+        var ioStarted = false
+
+        do {
+            traceDiagnostic {
+                "prepare physical-first aggregate begin physicalDevice=\(route.output.id) incumbentBuffer=\(route.output.bufferFrameSize) targetBuffer=\(targetFrameSize)"
+            }
+            aggregateDeviceID = try createPhysicalOnlyAggregateDevice(output: route.output)
+            try waitUntilAggregateIsAlive(aggregateDeviceID)
+            let initialAggregate = try CoreAudioDeviceQuery.outputDevice(id: aggregateDeviceID)
+            traceDiagnostic {
+                "physical-first aggregate alive device=\(aggregateDeviceID) buffer=\(initialAggregate.bufferFrameSize)"
+            }
+            try Self.validatePlaybackCallbackCapacity(for: initialAggregate)
+
+            let mainTapChannelCount = try tapChannelCount(taps.main)
+            let systemSoundTapChannelCount = try tapChannelCount(taps.systemSounds)
+            guard mainTapChannelCount == route.outputStreamChannelCounts[route.outputStreamIndex],
+                  systemSoundTapChannelCount == mainTapChannelCount else {
+                throw AudioEngineInternalError(
+                    message: "The process-tap formats do not match the selected output stream."
+                )
+            }
+            let physicalInputChannelCount = try CoreAudioDeviceQuery.getChannelCount(
+                objectID: route.output.id,
+                scope: kAudioDevicePropertyScopeInput
+            )
+            let expectedAggregateInputChannelCount = physicalInputChannelCount
+                + mainTapChannelCount
+                + systemSoundTapChannelCount
+            guard let expectedTapInputChannelOffsets = Self.tapInputChannelOffsets(
+                physicalInputChannelCount: physicalInputChannelCount,
+                aggregateInputChannelCount: expectedAggregateInputChannelCount,
+                mainTapChannelCount: mainTapChannelCount,
+                systemSoundTapChannelCount: systemSoundTapChannelCount
+            ) else {
+                throw AudioEngineInternalError(
+                    message: "The anticipated physical-first aggregate input layout is invalid."
+                )
+            }
+
+            let renderConfiguration = try EQRenderConfiguration.prepare(
+                profile: profile,
+                sampleRate: initialAggregate.nominalSampleRate,
+                channelCount: mainTapChannelCount,
+                maximumUsableFrequency: EQRouteFrequencyPolicy.maximumUsableFrequency(
+                    sampleRate: initialAggregate.nominalSampleRate
+                )
+            )
+            let preparedRuntime = AudioRuntime(
+                renderConfiguration: renderConfiguration,
+                inputChannelOffset: expectedTapInputChannelOffsets.main,
+                systemSoundInputChannelOffset: expectedTapInputChannelOffsets.systemSounds,
+                expectedCallbackFrames: Int(targetFrameSize),
+                maxCallbackFrames: Self.maximumSupportedCallbackFrames
+            )
+            runtime = preparedRuntime
+            preparedRuntime.setPlaybackChannelPair(
+                left: route.channelPair.left,
+                right: route.channelPair.right
+            )
+            guard let preparedIOProcID = try createCombinedIOProc(
+                deviceID: aggregateDeviceID,
+                runtime: preparedRuntime
+            ) else {
+                throw CoreAudioError(
+                    operation: "AudioDeviceCreateIOProcIDWithBlock(physical-first aggregate) returned nil",
+                    status: kAudioHardwareUnspecifiedError
+                )
+            }
+            ioProcID = preparedIOProcID
+
+            traceDiagnostic {
+                "disable physical-first aggregate input streams begin device=\(aggregateDeviceID)"
+            }
+            try disableAllInputStreams(
+                deviceID: aggregateDeviceID,
+                ioProcID: preparedIOProcID
+            )
+            traceDiagnostic {
+                "disable physical-first aggregate input streams end device=\(aggregateDeviceID)"
+            }
+
+            traceDiagnostic {
+                "AudioDeviceStart(physical-first aggregate) begin device=\(aggregateDeviceID) buffer=\(initialAggregate.bufferFrameSize)"
+            }
+            let startStatus = AudioDeviceStart(aggregateDeviceID, preparedIOProcID)
+            traceDiagnostic {
+                "AudioDeviceStart(physical-first aggregate) return status=\(startStatus) device=\(aggregateDeviceID)"
+            }
+            try checkOSStatus(
+                startStatus,
+                operation: "AudioDeviceStart(physical-first aggregate)"
+            )
+            ioStarted = true
+
+            // The running physical-only IOProc keeps the hardware timebase stable. Its physical
+            // input streams are disabled above; setSubtaps publishes only the tap inputs below.
+            // Activating the runtime now lets the first tapped samples replace the direct route
+            // as soon as HAL installs its muter, avoiding a deliberate qualification gap.
+            preparedRuntime.activate()
+            let aggregateCreation = try attachTapsToRunningAggregate(
+                taps: taps,
+                aggregateDeviceID: aggregateDeviceID
+            )
+            try waitUntilAggregateHasSubtaps(
+                aggregateDeviceID,
+                expectedTapIDs: [taps.main, taps.systemSounds]
+            )
+            let tapUIDOrder = try verifyPhysicalFirstAggregateComposition(
+                aggregateDeviceID,
+                output: route.output,
+                expectedTapUIDOrder: [
+                    aggregateCreation.mainTapUID,
+                    aggregateCreation.systemSoundTapUID
+                ]
+            )
+            let aggregateInputChannelCount = try CoreAudioDeviceQuery.getChannelCount(
+                objectID: aggregateDeviceID,
+                scope: kAudioDevicePropertyScopeInput
+            )
+            guard let mainTapIndex = tapUIDOrder.firstIndex(
+                of: aggregateCreation.mainTapUID
+            ),
+                  let systemSoundTapIndex = tapUIDOrder.firstIndex(
+                    of: aggregateCreation.systemSoundTapUID
+                  ),
+                  let actualTapInputChannelOffsets = Self.tapInputChannelOffsets(
+                    physicalInputChannelCount: physicalInputChannelCount,
+                    aggregateInputChannelCount: aggregateInputChannelCount,
+                    mainTapChannelCount: mainTapChannelCount,
+                    systemSoundTapChannelCount: systemSoundTapChannelCount,
+                    mainTapIndex: mainTapIndex,
+                    systemSoundTapIndex: systemSoundTapIndex
+                  ),
+                  actualTapInputChannelOffsets.main == expectedTapInputChannelOffsets.main,
+                  actualTapInputChannelOffsets.systemSounds
+                    == expectedTapInputChannelOffsets.systemSounds else {
+                throw AudioEngineInternalError(
+                    message: "The live aggregate tap layout does not match the prepared audio runtime."
+                )
+            }
+
+            traceDiagnostic {
+                "set physical-first aggregate IOProc stream usage begin device=\(aggregateDeviceID)"
+            }
+            try configureInputStreamUsage(
+                deviceID: aggregateDeviceID,
+                ioProcID: preparedIOProcID,
+                tapInputChannelOffset: min(
+                    actualTapInputChannelOffsets.main,
+                    actualTapInputChannelOffsets.systemSounds
+                ),
+                tapChannelCount: mainTapChannelCount + systemSoundTapChannelCount
+            )
+            traceDiagnostic {
+                "set physical-first aggregate IOProc stream usage end device=\(aggregateDeviceID)"
+            }
+
+            let aggregate = try tuneAggregateBufferFrameSize(
+                deviceID: aggregateDeviceID,
+                targetFrameSize: targetFrameSize
+            )
+            traceDiagnostic {
+                "physical-first aggregate buffer ready device=\(aggregateDeviceID) requested=\(targetFrameSize) actual=\(aggregate.bufferFrameSize)"
+            }
+            try Self.validatePlaybackCallbackCapacity(for: aggregate)
+
+            var activeOutput = route.output
+            activeOutput.bufferFrameSize = aggregate.bufferFrameSize
+            return PreparedCombinedAggregate(
+                taps: taps,
+                deviceID: aggregateDeviceID,
+                ioProcID: preparedIOProcID,
+                runtime: preparedRuntime,
+                output: activeOutput,
+                profile: profile,
+                ioStarted: true
+            )
+        } catch {
+            runtime?.markStopping()
+            if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
+                if ioStarted {
+                    _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
+                }
                 _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
             }
             if aggregateDeviceID != kAudioObjectUnknown {
@@ -2528,6 +3108,57 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         try topologyOperation.withLock { _ in
             try attemptHeadsetAggregatePromotionSerialized()
         }
+    }
+
+    public func attemptColdStartupAggregatePromotion() throws
+        -> ColdStartupAggregatePromotionResult {
+        try topologyOperation.withLock { _ in
+            try attemptColdStartupAggregatePromotionSerialized()
+        }
+    }
+
+    private func attemptColdStartupAggregatePromotionSerialized() throws
+        -> ColdStartupAggregatePromotionResult {
+        guard activeBackend.withLock({ $0 }) == .separateClock,
+              let context = separateClockBackend.activeOutputAndProfile(),
+              deferredColdStartupRoute.withLock({ route in
+                  route == Self.deferredColdStartupRoute(for: context.output)
+              }) else {
+            return .notApplicable
+        }
+        let currentDefault = try CoreAudioDeviceQuery.defaultOutputDevice()
+        guard Self.deferredColdStartupRoute(for: currentDefault)
+                == Self.deferredColdStartupRoute(for: context.output) else {
+            deferredColdStartupRoute.withLock { $0 = nil }
+            return .notApplicable
+        }
+        if try hasActiveExternalOutputProcess(on: currentDefault) {
+            return .clientsActive
+        }
+
+        do {
+            try startCombinedAggregate(
+                output: currentDefault,
+                profile: context.profile,
+                preserveStagingOutputBuffer: true
+            )
+        } catch {
+            let promotionError = error
+            do {
+                try restoreSeparateClockBackend(
+                    afterRejectedPromotion: context,
+                    preserveOutputBuffer: true
+                )
+            } catch let rollbackError {
+                throw AudioEngineInternalError(
+                    message: "Aggregate startup failed and the compatibility path could not be restored: \(promotionError.localizedDescription); rollback: \(rollbackError.localizedDescription)"
+                )
+            }
+            return .aggregateUnstable
+        }
+
+        deferredColdStartupRoute.withLock { $0 = nil }
+        return .promoted(currentDefault)
     }
 
     private func attemptHeadsetAggregatePromotionSerialized() throws
@@ -2578,17 +3209,26 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func restoreSeparateClockBackend(
-        afterRejectedPromotion context: (output: AudioOutputDevice, profile: EQProfile)
+        afterRejectedPromotion context: (output: AudioOutputDevice, profile: EQProfile),
+        preserveOutputBuffer: Bool = false
     ) throws {
         promotedHeadsetRoute.withLock { $0 = nil }
         if activeBackend.withLock({ $0 }) == .separateClock,
            separateClockBackend.activeOutputAndProfile() != nil {
             return
         }
-        try startSeparateClockBackend(
-            output: CoreAudioDeviceQuery.outputDevice(id: context.output.id),
-            profile: context.profile
-        )
+        let output = try CoreAudioDeviceQuery.outputDevice(id: context.output.id)
+        if preserveOutputBuffer {
+            try startSeparateClockBackendForColdStartup(
+                output: output,
+                profile: context.profile
+            )
+        } else {
+            try startSeparateClockBackend(
+                output: output,
+                profile: context.profile
+            )
+        }
     }
 
     public func rejectHeadsetAggregatePromotion() {
@@ -2757,6 +3397,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public func stop() {
         topologyOperation.withLock { _ in
             promotedHeadsetRoute.withLock { $0 = nil }
+            deferredColdStartupRoute.withLock { $0 = nil }
             separateClockBackend.stop()
             stopCombinedResourcesSerialized(restoringDirectPlayback: true)
             activeBackend.withLock { $0 = .combinedAggregate }
@@ -2949,14 +3590,26 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
 
         var mainTapID = AudioObjectID(kAudioObjectUnknown)
-        try checkOSStatus(
-            AudioHardwareCreateProcessTap(mainDescription, &mainTapID),
-            operation: "AudioHardwareCreateProcessTap(main)"
-        )
+        traceDiagnostic { "AudioHardwareCreateProcessTap(main) begin output=\(output.id)" }
+        let mainStatus = AudioHardwareCreateProcessTap(mainDescription, &mainTapID)
+        traceDiagnostic {
+            "AudioHardwareCreateProcessTap(main) return status=\(mainStatus) tap=\(mainTapID)"
+        }
+        try checkOSStatus(mainStatus, operation: "AudioHardwareCreateProcessTap(main)")
         do {
             var systemSoundTapID = AudioObjectID(kAudioObjectUnknown)
+            traceDiagnostic {
+                "AudioHardwareCreateProcessTap(system sounds) begin output=\(output.id)"
+            }
+            let systemSoundStatus = AudioHardwareCreateProcessTap(
+                systemSoundDescription,
+                &systemSoundTapID
+            )
+            traceDiagnostic {
+                "AudioHardwareCreateProcessTap(system sounds) return status=\(systemSoundStatus) tap=\(systemSoundTapID)"
+            }
             try checkOSStatus(
-                AudioHardwareCreateProcessTap(systemSoundDescription, &systemSoundTapID),
+                systemSoundStatus,
                 operation: "AudioHardwareCreateProcessTap(system sounds)"
             )
             return (mainTapID, systemSoundTapID)
@@ -2979,7 +3632,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         description.name = "GlassEQ System Output Tap"
         description.uuid = UUID()
         description.isPrivate = true
-        description.muteBehavior = .muted
+        description.muteBehavior = .mutedWhenTapped
         description.isMixdown = false
         description.bundleIDs = [Self.systemSoundServerBundleID]
         description.isProcessRestoreEnabled = true
@@ -2998,11 +3651,74 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         description.name = "GlassEQ System Sounds Tap"
         description.uuid = UUID()
         description.isPrivate = true
-        description.muteBehavior = .muted
+        description.muteBehavior = .mutedWhenTapped
         description.isMixdown = false
         description.bundleIDs = [Self.systemSoundServerBundleID]
         description.isProcessRestoreEnabled = true
         return description
+    }
+
+    private func createPhysicalOnlyAggregateDevice(
+        output: AudioOutputDevice
+    ) throws -> AudioObjectID {
+        let description: [String: Any] = [
+            kAudioAggregateDeviceNameKey: "GlassEQ Private Output Device",
+            kAudioAggregateDeviceUIDKey: "com.glasseq.aggregate.\(UUID().uuidString)",
+            kAudioAggregateDeviceIsPrivateKey: true,
+            kAudioAggregateDeviceMainSubDeviceKey: output.uid,
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [
+                    kAudioSubDeviceUIDKey: output.uid,
+                    kAudioSubDeviceInputChannelsKey: 0,
+                    kAudioSubDeviceOutputChannelsKey: output.outputChannelCount,
+                    kAudioSubDeviceDriftCompensationKey: false
+                ]
+            ]
+        ]
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        traceDiagnostic {
+            "AudioHardwareCreateAggregateDevice(physical-first) begin physicalDevice=\(output.id) physicalBuffer=\(output.bufferFrameSize)"
+        }
+        let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &deviceID)
+        traceDiagnostic {
+            "AudioHardwareCreateAggregateDevice(physical-first) return status=\(status) device=\(deviceID)"
+        }
+        try checkOSStatus(
+            status,
+            operation: "AudioHardwareCreateAggregateDevice(physical-first)"
+        )
+        return deviceID
+    }
+
+    private func attachTapsToRunningAggregate(
+        taps: CombinedTapSet,
+        aggregateDeviceID: AudioObjectID
+    ) throws -> CombinedAggregateCreation {
+        let mainTapUID = try CoreAudioDeviceQuery.getStringProperty(
+            objectID: taps.main,
+            selector: kAudioTapPropertyUID,
+            scope: kAudioObjectPropertyScopeGlobal
+        )
+        let systemSoundTapUID = try CoreAudioDeviceQuery.getStringProperty(
+            objectID: taps.systemSounds,
+            selector: kAudioTapPropertyUID,
+            scope: kAudioObjectPropertyScopeGlobal
+        )
+        traceDiagnostic {
+            "AudioHardwareAggregateDevice.setSubtaps begin device=\(aggregateDeviceID) taps=[\(taps.main), \(taps.systemSounds)]"
+        }
+        try AudioHardwareAggregateDevice(id: aggregateDeviceID).setSubtaps([
+            AudioHardwareTap(id: taps.main),
+            AudioHardwareTap(id: taps.systemSounds)
+        ])
+        traceDiagnostic {
+            "AudioHardwareAggregateDevice.setSubtaps return device=\(aggregateDeviceID)"
+        }
+        return CombinedAggregateCreation(
+            deviceID: aggregateDeviceID,
+            mainTapUID: mainTapUID,
+            systemSoundTapUID: systemSoundTapUID
+        )
     }
 
     private func createCombinedAggregateDevice(
@@ -3051,10 +3767,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ]
 
         var deviceID = AudioObjectID(kAudioObjectUnknown)
-        try checkOSStatus(
-            AudioHardwareCreateAggregateDevice(description as CFDictionary, &deviceID),
-            operation: "AudioHardwareCreateAggregateDevice(combined)"
-        )
+        traceDiagnostic {
+            "AudioHardwareCreateAggregateDevice(combined) begin physicalDevice=\(output.id) physicalBuffer=\(output.bufferFrameSize)"
+        }
+        let status = AudioHardwareCreateAggregateDevice(description as CFDictionary, &deviceID)
+        traceDiagnostic {
+            "AudioHardwareCreateAggregateDevice(combined) return status=\(status) device=\(deviceID)"
+        }
+        try checkOSStatus(status, operation: "AudioHardwareCreateAggregateDevice(combined)")
         return CombinedAggregateCreation(
             deviceID: deviceID,
             mainTapUID: tapUID,
@@ -3097,11 +3817,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func waitUntilAggregateIsAlive(_ deviceID: AudioObjectID) throws {
+        traceDiagnostic { "wait aggregate alive begin device=\(deviceID)" }
         let deadline = Date().addingTimeInterval(3)
         var lastError: Error?
         repeat {
             do {
                 if try CoreAudioDeviceQuery.isDeviceAlive(id: deviceID) {
+                    traceDiagnostic { "wait aggregate alive end device=\(deviceID) alive=true" }
                     return
                 }
             } catch {
@@ -3119,6 +3841,40 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
     }
 
+    private func waitUntilAggregateHasSubtaps(
+        _ deviceID: AudioObjectID,
+        expectedTapIDs: [AudioObjectID]
+    ) throws {
+        traceDiagnostic {
+            "wait aggregate subtaps begin device=\(deviceID) expected=\(expectedTapIDs)"
+        }
+        let aggregate = AudioHardwareAggregateDevice(id: deviceID)
+        let deadline = Date().addingTimeInterval(3)
+        var lastError: Error?
+        repeat {
+            do {
+                let tapIDs = try aggregate.subtaps.map(\.id)
+                if tapIDs == expectedTapIDs {
+                    traceDiagnostic {
+                        "wait aggregate subtaps end device=\(deviceID) active=\(tapIDs)"
+                    }
+                    return
+                }
+            } catch {
+                lastError = error
+            }
+            Thread.sleep(forTimeInterval: 0.001)
+        } while Date() < deadline
+
+        if let lastError {
+            throw lastError
+        }
+        throw CoreAudioError(
+            operation: "combined aggregate did not publish its process taps",
+            status: kAudioHardwareNotRunningError
+        )
+    }
+
     private func tuneAggregateBufferFrameSize(
         deviceID: AudioObjectID,
         targetFrameSize: UInt32
@@ -3126,14 +3882,23 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var aggregate = try CoreAudioDeviceQuery.outputDevice(id: deviceID)
         let range = try CoreAudioDeviceQuery.bufferFrameSizeRangeValue(objectID: deviceID)
         let requested = min(max(targetFrameSize, range.minimum), range.maximum)
+        traceDiagnostic {
+            "aggregate buffer inspect device=\(deviceID) current=\(aggregate.bufferFrameSize) target=\(targetFrameSize) clamped=\(requested) range=\(range.minimum)...\(range.maximum)"
+        }
         guard aggregate.bufferFrameSize != requested else {
             return aggregate
         }
         do {
+            traceDiagnostic {
+                "set aggregate buffer begin device=\(deviceID) requested=\(requested)"
+            }
             try CoreAudioDeviceQuery.setBufferFrameSize(requested, objectID: deviceID)
             for attempt in 0..<3 {
                 aggregate = try CoreAudioDeviceQuery.outputDevice(id: deviceID)
                 if aggregate.bufferFrameSize == requested {
+                    traceDiagnostic {
+                        "set aggregate buffer end device=\(deviceID) actual=\(aggregate.bufferFrameSize)"
+                    }
                     return aggregate
                 }
                 if attempt < 2 {
@@ -3141,7 +3906,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 }
             }
         } catch {
+            traceDiagnostic {
+                "set aggregate buffer failed device=\(deviceID) actual=\(aggregate.bufferFrameSize) error=\(error)"
+            }
             return aggregate
+        }
+        traceDiagnostic {
+            "set aggregate buffer not applied device=\(deviceID) actual=\(aggregate.bufferFrameSize)"
         }
         return aggregate
     }
@@ -3174,6 +3945,53 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             ) else {
             throw AudioEngineInternalError(
                 message: "Core Audio returned an invalid process-tap composition."
+            )
+        }
+        return tapUIDOrder
+    }
+
+    private func verifyPhysicalFirstAggregateComposition(
+        _ deviceID: AudioObjectID,
+        output: AudioOutputDevice,
+        expectedTapUIDOrder: [String]
+    ) throws -> [String] {
+        let mainUID = try CoreAudioDeviceQuery.getStringProperty(
+            objectID: deviceID,
+            selector: kAudioAggregateDevicePropertyMainSubDevice,
+            scope: kAudioObjectPropertyScopeGlobal
+        )
+        guard mainUID == output.uid else {
+            throw AudioEngineInternalError(
+                message: "The aggregate clock source does not match the selected output."
+            )
+        }
+        let composition = try dictionaryProperty(
+            objectID: deviceID,
+            selector: kAudioAggregateDevicePropertyComposition
+        )
+        guard let tapEntries = composition[kAudioAggregateDeviceTapListKey]
+            as? [NSDictionary] else {
+            throw AudioEngineInternalError(
+                message: "Core Audio did not publish the live process-tap composition."
+            )
+        }
+        let publishedDriftMetadata = tapEntries.map { entry in
+            let uid = entry[kAudioSubTapUIDKey] as? String ?? "unknown"
+            let drift = (entry[kAudioSubTapDriftCompensationKey] as? NSNumber)?
+                .uint32Value
+            let quality = (entry[kAudioSubTapDriftCompensationQualityKey] as? NSNumber)?
+                .uint32Value
+            return "\(uid):drift=\(drift.map(String.init) ?? "unset"),quality=\(quality.map(String.init) ?? "unset")"
+        }
+        traceDiagnostic {
+            "physical-first published tap drift metadata [\(publishedDriftMetadata.joined(separator: ", "))]"
+        }
+        let tapUIDOrder = tapEntries.compactMap {
+            $0[kAudioSubTapUIDKey] as? String
+        }
+        guard tapUIDOrder == expectedTapUIDOrder else {
+            throw AudioEngineInternalError(
+                message: "Core Audio changed the live process-tap membership or order."
             )
         }
         return tapUIDOrder
@@ -3215,19 +4033,26 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         runtime: AudioRuntime
     ) throws -> AudioDeviceIOProcID? {
         var ioProcID: AudioDeviceIOProcID?
+        traceDiagnostic {
+            "AudioDeviceCreateIOProcIDWithBlock(combined aggregate) begin device=\(deviceID)"
+        }
+        let status = AudioDeviceCreateIOProcIDWithBlock(
+            &ioProcID,
+            deviceID,
+            nil
+        ) { _, inputData, inputTime, outputData, outputTime in
+            runtime.render(
+                inputData: inputData,
+                inputTime: inputTime.pointee,
+                outputData: outputData,
+                outputTime: outputTime.pointee
+            )
+        }
+        traceDiagnostic {
+            "AudioDeviceCreateIOProcIDWithBlock(combined aggregate) return status=\(status) device=\(deviceID)"
+        }
         try checkOSStatus(
-            AudioDeviceCreateIOProcIDWithBlock(
-                &ioProcID,
-                deviceID,
-                nil
-            ) { _, inputData, inputTime, outputData, outputTime in
-                runtime.render(
-                    inputData: inputData,
-                    inputTime: inputTime.pointee,
-                    outputData: outputData,
-                    outputTime: outputTime.pointee
-                )
-            },
+            status,
             operation: "AudioDeviceCreateIOProcIDWithBlock(combined aggregate)"
         )
         return ioProcID
@@ -3265,6 +4090,35 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         guard appliedUsage == usage else {
             throw AudioEngineInternalError(
                 message: "Core Audio did not disable the aggregate's physical input streams."
+            )
+        }
+    }
+
+    private func disableAllInputStreams(
+        deviceID: AudioObjectID,
+        ioProcID: AudioDeviceIOProcID
+    ) throws {
+        let streamCount = try CoreAudioDeviceQuery.streamChannelCounts(
+            objectID: deviceID,
+            scope: kAudioDevicePropertyScopeInput
+        ).count
+        guard streamCount > 0 else {
+            return
+        }
+        let usage = Array(repeating: UInt32(0), count: streamCount)
+        try setIOProcStreamUsage(
+            usage,
+            deviceID: deviceID,
+            ioProcID: ioProcID
+        )
+        let appliedUsage = try ioProcStreamUsage(
+            streamCount: streamCount,
+            deviceID: deviceID,
+            ioProcID: ioProcID
+        )
+        guard appliedUsage == usage else {
+            throw AudioEngineInternalError(
+                message: "Core Audio did not disable the physical-first aggregate's input streams."
             )
         }
     }
@@ -3524,6 +4378,64 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 maximum: UInt32(maximumSupportedCallbackFrames)
             )
         }
+    }
+
+    static func startupCallbackIsValid(
+        mainInputFrameCount: Int,
+        systemSoundInputFrameCount: Int,
+        outputFrameCount: Int,
+        expectedFrameCount: Int,
+        timestampsAreStable: Bool
+    ) -> Bool {
+        expectedFrameCount > 0
+            && mainInputFrameCount == expectedFrameCount
+            && (systemSoundInputFrameCount == 0
+                || systemSoundInputFrameCount == expectedFrameCount)
+            && outputFrameCount == expectedFrameCount
+            && timestampsAreStable
+    }
+
+    static func shouldConsiderColdStartupDeferral(
+        activeBackendIsSeparate: Bool,
+        combinedState: AudioEngineState
+    ) -> Bool {
+        guard !activeBackendIsSeparate else {
+            return false
+        }
+        switch combinedState {
+        case .stopped, .failed:
+            return true
+        case .running:
+            return false
+        }
+    }
+
+    static func startupAttemptFrameSizes(requestedFrameSize: UInt32) -> [UInt32] {
+        var attempts = [requestedFrameSize, requestedFrameSize]
+        if let saferFrameSize = [UInt32(16), 32, 64].first(where: {
+            $0 > requestedFrameSize
+        }) {
+            attempts.append(saferFrameSize)
+        }
+        return attempts
+    }
+
+    static func startupQualificationTimeout(
+        frameCount: Int,
+        sampleRate: Double,
+        minimumConsecutiveCallbacks: UInt64
+    ) -> TimeInterval {
+        guard frameCount > 0,
+              sampleRate.isFinite,
+              sampleRate > 0 else {
+            return 0.25
+        }
+        let callbacksIncludingSlopeAcquisition = Double(
+            minimumConsecutiveCallbacks + 10
+        )
+        let expectedDuration = callbacksIncludingSlopeAcquisition
+            * Double(frameCount) / sampleRate
+        return min(max(expectedDuration * 2, 0.25), 3)
     }
 
     static func playbackStereoPair(
@@ -4141,6 +5053,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         for output: AudioOutputDevice
     ) -> PromotedHeadsetRoute {
         PromotedHeadsetRoute(
+            outputUID: output.uid,
+            nominalSampleRate: Int64(output.nominalSampleRate.rounded())
+        )
+    }
+
+    private static func deferredColdStartupRoute(
+        for output: AudioOutputDevice
+    ) -> DeferredColdStartupRoute {
+        DeferredColdStartupRoute(
             outputUID: output.uid,
             nominalSampleRate: Int64(output.nominalSampleRate.rounded())
         )

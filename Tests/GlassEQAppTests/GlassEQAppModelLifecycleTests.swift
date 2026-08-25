@@ -191,6 +191,38 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func coldStartupCompatibilityWaitsForActivePlaybackBeforePromotion() async {
+        let output = makeOutput(uid: "cold-start-promotion", name: "D10s")
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .clientsActive
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.coldStartupAggregatePromotionAttemptCount > 0
+                && model.statusMessage.contains("until active playback releases the output")
+        }
+
+        engine.coldStartupAggregatePromotionResult = .promoted(output)
+        await waitUntil {
+            !engine.isDeferringColdStartupAggregate
+                && model.statusMessage.contains("Processing D10s")
+        }
+
+        #expect(engine.startCalls.count == 1)
+        #expect(engine.coldStartupAggregatePromotionAttemptCount >= 2)
+    }
+
+    @Test
     func promotedHeadsetRouteFallsBackAfterOneSteadyStateJump() async {
         let output = makeOutput(
             uid: "headset-demotion",
@@ -424,6 +456,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.startCalls.count == 5
                 && engine.startCalls[4].aggregateBufferFrameSize == 16
+                && model.settingsSnapshot().currentOutputBufferFrameSize == 16
         }
 
         #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 16)
@@ -1350,6 +1383,84 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
+        #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
+    }
+
+    @Test
+    func redundantRunningOutputNotificationDoesNotMuteOrRebuild() async {
+        let output = makeOutput(
+            uid: "stable-output",
+            name: "USB DAC",
+            id: 201,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        observer.emit(.success(output))
+        await settleAsyncWork()
+
+        #expect(engine.muteOutputCallCount == 0)
+        #expect(engine.startCalls.map(\.output) == [output])
+        #expect(model.lifecycleState == .running)
+    }
+
+    @Test
+    func physicalBufferChangeRebuildsWithoutMutingBeforeSettlement() async {
+        let initialOutput = makeOutput(
+            uid: "buffer-change-output",
+            name: "USB DAC",
+            id: 202,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 256
+        )
+        let changedOutput = makeOutput(
+            uid: "buffer-change-output",
+            name: "USB DAC",
+            id: 202,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(initialOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(changedOutput)
+        observer.emit(.success(changedOutput))
+        await waitUntil {
+            engine.startCalls.count == 2
+        }
+
+        #expect(engine.muteOutputCallCount == 0)
+        #expect(engine.startCalls.map(\.output) == [initialOutput, changedOutput])
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
     }
 
@@ -3216,6 +3327,7 @@ private func makeModel(
     aggregateStabilityDelay: Duration = .zero,
     aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
     headsetAggregatePromotionDelay: Duration = .seconds(6),
+    coldStartupAggregatePromotionPollInterval: Duration = .seconds(1),
     renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
     renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
     renderWatchdogPollInterval: Duration = .milliseconds(500),
@@ -3241,6 +3353,7 @@ private func makeModel(
         aggregateStabilitySettlingDelay: aggregateStabilityDelay,
         aggregateCleanSessionDuration: aggregateCleanSessionDuration,
         headsetAggregatePromotionDelay: headsetAggregatePromotionDelay,
+        coldStartupAggregatePromotionPollInterval: coldStartupAggregatePromotionPollInterval,
         renderWatchdogStallThreshold: renderWatchdogStallThreshold,
         renderWatchdogRepeatedFailureWindow: renderWatchdogRepeatedFailureWindow,
         renderWatchdogPollInterval: renderWatchdogPollInterval,
@@ -3757,6 +3870,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _headsetAggregatePromotionAttemptCount = 0
     private var _isUsingTransitionalHeadsetBackend = false
     private var _isUsingPromotedHeadsetAggregate = false
+    private var _coldStartupPromotionCandidateUIDs: Set<String> = []
+    private var _coldStartupAggregatePromotionResult = ColdStartupAggregatePromotionResult.notApplicable
+    private var _coldStartupAggregatePromotionAttemptCount = 0
+    private var _isDeferringColdStartupAggregate = false
     private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
 
     var state: AudioEngineState {
@@ -3770,6 +3887,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     var isUsingPromotedHeadsetAggregate: Bool {
         withLock { _isUsingPromotedHeadsetAggregate }
+    }
+
+    var isDeferringColdStartupAggregate: Bool {
+        withLock { _isDeferringColdStartupAggregate }
     }
 
     var startError: Error? {
@@ -3881,6 +4002,20 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         withLock { _headsetAggregatePromotionAttemptCount }
     }
 
+    var coldStartupPromotionCandidateUIDs: Set<String> {
+        get { withLock { _coldStartupPromotionCandidateUIDs } }
+        set { withLock { _coldStartupPromotionCandidateUIDs = newValue } }
+    }
+
+    var coldStartupAggregatePromotionResult: ColdStartupAggregatePromotionResult {
+        get { withLock { _coldStartupAggregatePromotionResult } }
+        set { withLock { _coldStartupAggregatePromotionResult = newValue } }
+    }
+
+    var coldStartupAggregatePromotionAttemptCount: Int {
+        withLock { _coldStartupAggregatePromotionAttemptCount }
+    }
+
     var events: [String] {
         withLock { _events }
     }
@@ -3960,6 +4095,20 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _state = .running(output: activeOutput)
             _isUsingTransitionalHeadsetBackend = _headsetPromotionCandidateUIDs.contains(output.uid)
             _isUsingPromotedHeadsetAggregate = false
+            _isDeferringColdStartupAggregate = _coldStartupPromotionCandidateUIDs.contains(output.uid)
+        }
+    }
+
+    func attemptColdStartupAggregatePromotion() throws
+        -> ColdStartupAggregatePromotionResult {
+        withLock {
+            _coldStartupAggregatePromotionAttemptCount += 1
+            let result = _coldStartupAggregatePromotionResult
+            if case .promoted(let output) = result {
+                _state = .running(output: output)
+                _isDeferringColdStartupAggregate = false
+            }
+            return result
         }
     }
 
@@ -3986,7 +4135,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
         withLock {
-            if _isUsingTransitionalHeadsetBackend {
+            if _isUsingTransitionalHeadsetBackend || _isDeferringColdStartupAggregate {
                 return nil
             }
             return AggregateAudioRouteFingerprint(
@@ -4097,6 +4246,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _state = .stopped
             _isUsingTransitionalHeadsetBackend = false
             _isUsingPromotedHeadsetAggregate = false
+            _isDeferringColdStartupAggregate = false
         }
     }
 

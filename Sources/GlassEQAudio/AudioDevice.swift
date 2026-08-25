@@ -282,26 +282,87 @@ public enum CoreAudioDeviceQuery {
     }
 
     static func audioDeviceIDs() throws -> [AudioObjectID] {
+        try audioObjectIDs(
+            objectID: AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyDevices,
+            scope: kAudioObjectPropertyScopeGlobal,
+            description: "devices"
+        )
+    }
+
+    static func hasActiveOutputProcess(
+        using deviceID: AudioObjectID,
+        excluding excludedProcessObjectIDs: Set<AudioObjectID>,
+        processObjectIDs: () throws -> [AudioObjectID] = audioProcessObjectIDs,
+        isRunningOutput: (AudioObjectID) throws -> Bool = isProcessRunningOutput,
+        outputDeviceIDs: (AudioObjectID) throws -> [AudioObjectID] = processOutputDeviceIDs
+    ) throws -> Bool {
+        for processObjectID in try processObjectIDs()
+        where !excludedProcessObjectIDs.contains(processObjectID) {
+            guard try isRunningOutput(processObjectID) else {
+                continue
+            }
+            if try outputDeviceIDs(processObjectID).contains(deviceID) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func audioProcessObjectIDs() throws -> [AudioObjectID] {
+        try audioObjectIDs(
+            objectID: AudioObjectID(kAudioObjectSystemObject),
+            selector: kAudioHardwarePropertyProcessObjectList,
+            scope: kAudioObjectPropertyScopeGlobal,
+            description: "audio processes"
+        )
+    }
+
+    private static func isProcessRunningOutput(_ processObjectID: AudioObjectID) throws -> Bool {
+        try getUInt32Property(
+            objectID: processObjectID,
+            selector: kAudioProcessPropertyIsRunningOutput,
+            scope: kAudioObjectPropertyScopeGlobal
+        ) != 0
+    }
+
+    private static func processOutputDeviceIDs(
+        _ processObjectID: AudioObjectID
+    ) throws -> [AudioObjectID] {
+        try audioObjectIDs(
+            objectID: processObjectID,
+            selector: kAudioProcessPropertyDevices,
+            scope: kAudioObjectPropertyScopeOutput,
+            description: "process output devices"
+        )
+    }
+
+    private static func audioObjectIDs(
+        objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope,
+        description: String
+    ) throws -> [AudioObjectID] {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
+            mSelector: selector,
+            mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
         var size = UInt32(0)
         try checkOSStatus(
-            AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size),
-            operation: "AudioObjectGetPropertyDataSize(devices)"
+            AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size),
+            operation: "AudioObjectGetPropertyDataSize(\(description))"
         )
         guard size % UInt32(MemoryLayout<AudioObjectID>.size) == 0 else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
-                AudioObjectID(kAudioObjectSystemObject),
-                "device list returned \(size) bytes; expected a multiple of \(MemoryLayout<AudioObjectID>.size)"
+                objectID,
+                "\(description) returned \(size) bytes; expected a multiple of \(MemoryLayout<AudioObjectID>.size)"
             )
         }
         guard size <= maxStreamConfigurationBytes else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
-                AudioObjectID(kAudioObjectSystemObject),
-                "device list is too large (\(size) bytes)"
+                objectID,
+                "\(description) is too large (\(size) bytes)"
             )
         }
 
@@ -314,14 +375,14 @@ public enum CoreAudioDeviceQuery {
         try deviceIDs.withUnsafeMutableBufferPointer { buffer in
             try checkOSStatus(
                 AudioObjectGetPropertyData(
-                    AudioObjectID(kAudioObjectSystemObject),
+                    objectID,
                     &address,
                     0,
                     nil,
                     &size,
                     buffer.baseAddress!
                 ),
-                operation: "AudioObjectGetPropertyData(devices)"
+                operation: "AudioObjectGetPropertyData(\(description))"
             )
         }
         return deviceIDs.filter { $0 != kAudioObjectUnknown }
