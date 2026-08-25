@@ -32,6 +32,54 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func renderWatchdogStopsTapBeforeOneAutomaticRebuild() async {
+        let output = makeOutput(uid: "watchdog-rebuild", name: "Watchdog Rebuild")
+        let engine = FakeAudioEngine()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            renderWatchdogStallThreshold: .milliseconds(50),
+            renderWatchdogRepeatedFailureWindow: .seconds(1),
+            renderWatchdogPollInterval: .milliseconds(5)
+        )
+
+        model.retryAudioEngine()
+        await waitUntil {
+            engine.startCalls.count == 2 && model.lifecycleState == .running
+        }
+
+        #expect(engine.events.prefix(3) == [
+            "start:\(output.uid)",
+            "stop",
+            "start:\(output.uid)"
+        ])
+        model.stop()
+    }
+
+    @Test
+    func repeatedRenderStallFailsOpenAndLeavesRetryAvailable() async {
+        let output = makeOutput(uid: "watchdog-stop", name: "Watchdog Stop")
+        let engine = FakeAudioEngine()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            renderWatchdogStallThreshold: .milliseconds(20),
+            renderWatchdogRepeatedFailureWindow: .seconds(1),
+            renderWatchdogPollInterval: .milliseconds(5)
+        )
+
+        model.retryAudioEngine()
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.stopCallCount == 2
+                && model.lifecycleState == .stopped
+        }
+
+        #expect(!model.isRunning)
+        #expect(model.statusMessage.contains("stalled again"))
+    }
+
+    @Test
     func runtimeFailureDoesNotCancelNewerPendingRouteStart() async {
         let firstOutput = makeOutput(uid: "runtime-first", name: "Runtime First", id: 200)
         let secondOutput = makeOutput(uid: "runtime-second", name: "Runtime Second", id: 300)
@@ -1733,7 +1781,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.previewReturnProfile == nil)
         #expect(engine.updateCalls.isEmpty)
         #expect(engine.updateDSPCalls.isEmpty)
-        #expect(engine.setBypassedCalls.isEmpty)
         #expect(model.profileStore.profile(forOutputUID: output.uid).id == mapped.id)
 
         engine.unblockStart(for: output.uid)
@@ -1930,7 +1977,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.profileStore.profiles.first { $0.id == active.id }?.isBypassed == true)
         #expect(model.profileStore.profiles.first { $0.id == draft.id }?.isBypassed == false)
         #expect(engine.updateDSPCalls.isEmpty)
-        #expect(engine.setBypassedCalls.isEmpty)
         #expect(engine.stopCallCount == 1)
         #expect(!model.isRunning)
         #expect(model.lifecycleState == .stopped)
@@ -1962,7 +2008,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.draftProfile.isBypassed)
         #expect(model.profileStore.profiles.first { $0.id == active.id }?.isBypassed == true)
         #expect(engine.updateDSPCalls.isEmpty)
-        #expect(engine.setBypassedCalls.isEmpty)
         #expect(engine.stopCallCount == 1)
         #expect(!model.isRunning)
         #expect(model.lifecycleState == .stopped)
@@ -3021,6 +3066,9 @@ private func makeModel(
     aggregateStabilityDelay: Duration = .zero,
     aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
     headsetAggregatePromotionDelay: Duration = .seconds(6),
+    renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
+    renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
+    renderWatchdogPollInterval: Duration = .milliseconds(500),
     aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil
 ) -> GlassEQAppModel {
     let store = normalizedStore(store ?? ProfileStore(profiles: [makeProfile(name: "Fallback")]))
@@ -3043,6 +3091,9 @@ private func makeModel(
         aggregateStabilitySettlingDelay: aggregateStabilityDelay,
         aggregateCleanSessionDuration: aggregateCleanSessionDuration,
         headsetAggregatePromotionDelay: headsetAggregatePromotionDelay,
+        renderWatchdogStallThreshold: renderWatchdogStallThreshold,
+        renderWatchdogRepeatedFailureWindow: renderWatchdogRepeatedFailureWindow,
+        renderWatchdogPollInterval: renderWatchdogPollInterval,
         aggregateBufferNotifier: aggregateBufferNotifier
     )
 }
@@ -3542,7 +3593,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateDSPCalls: [EQProfile] = []
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
-    private var _setBypassedCalls: [Bool] = []
     private var _metrics = AudioEngineMetrics()
     private var _events: [String] = []
     private var _preferredAggregateBufferFrameSize: UInt32 = 16
@@ -3631,11 +3681,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var muteOutputCallCount: Int {
         get { withLock { _muteOutputCallCount } }
         set { withLock { _muteOutputCallCount = newValue } }
-    }
-
-    private(set) var setBypassedCalls: [Bool] {
-        get { withLock { _setBypassedCalls } }
-        set { withLock { _setBypassedCalls = newValue } }
     }
 
     var metrics: AudioEngineMetrics {
@@ -3815,13 +3860,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _events.append("updateDSP:\(profile.id)")
             _updateDSPCalls.append(profile)
             return _updateDSPResult
-        }
-    }
-
-    func setBypassed(_ isBypassed: Bool) {
-        withLock {
-            _events.append("bypass:\(isBypassed)")
-            _setBypassedCalls.append(isBypassed)
         }
     }
 
