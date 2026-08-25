@@ -42,6 +42,9 @@ struct GlassEQAppModelLifecycleTests {
         await settleAsyncWork()
         #expect(model.currentOutputBufferFrameSize == 480)
 
+        var renegotiatedOutput = output
+        renegotiatedOutput.bufferFrameSize = 256
+        engine.state = .running(output: renegotiatedOutput)
         engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
             outputName: output.name,
             outputUID: output.uid,
@@ -57,6 +60,58 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 256)
+    }
+
+    @Test
+    func staleSameUIDRenegotiationCannotOverwriteNewOutputFormatMetadata() async {
+        let initialOutput = makeOutput(
+            uid: "changing-adaptive-output",
+            name: "Changing Adaptive Output",
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 480
+        )
+        let changedOutput = makeOutput(
+            uid: initialOutput.uid,
+            name: initialOutput.name,
+            nominalSampleRate: 96_000,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(initialOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(changedOutput)
+        observers.observers[0].emit(.success(changedOutput))
+        await waitUntil {
+            engine.startCalls.count == 2
+                && model.currentOutputSampleRate == changedOutput.nominalSampleRate
+                && model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize
+        }
+
+        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
+            outputName: initialOutput.name,
+            outputUID: initialOutput.uid,
+            sampleRate: initialOutput.nominalSampleRate,
+            previousFrameSize: initialOutput.bufferFrameSize,
+            frameSize: 128,
+            playbackTargetFrames: 512,
+            cause: .stableDecay
+        ))
+        await settleAsyncWork()
+
+        #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
+        #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
     }
 
     @Test

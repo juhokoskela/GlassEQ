@@ -3207,10 +3207,14 @@ final class GlassEQAppModel {
     private func processPlaybackBufferRenegotiation(
         _ renegotiation: PlaybackBufferRenegotiation
     ) {
-        guard renegotiation.outputUID == currentOutputUID else {
+        guard case .running(let output) = engine.state,
+              output.uid == renegotiation.outputUID,
+              output.uid == currentOutputUID,
+              abs(output.nominalSampleRate - renegotiation.sampleRate) < 0.5,
+              abs(output.nominalSampleRate - currentOutputSampleRate) < 0.5 else {
             return
         }
-        currentOutputBufferFrameSize = renegotiation.frameSize
+        refreshCurrentOutputMetadata(from: output)
         notifyModelDidChange()
     }
 
