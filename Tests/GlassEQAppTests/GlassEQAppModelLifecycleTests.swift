@@ -316,6 +316,8 @@ struct GlassEQAppModelLifecycleTests {
 
     @Test
     func fixedBufferPromotedHeadsetRouteStillFallsBackAfterAClockJump() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let output = makeOutput(
             uid: "fixed-headset-demotion",
             name: "Fixed AirPods Headset",
@@ -327,6 +329,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.headsetAggregatePromotionResult = .promoted(output)
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
+            storeURL: storeURL,
             engine: engine,
             lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
@@ -340,6 +343,8 @@ struct GlassEQAppModelLifecycleTests {
             engine.headsetAggregatePromotionAttemptCount == 1
                 && engine.isUsingPromotedHeadsetAggregate
         }
+        let route = try engine.aggregateRouteFingerprint(for: output)
+        let aggregateRoute = try #require(route)
 
         try model.setAggregateBufferMode(.frames32)
         await waitUntil {
@@ -354,10 +359,14 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.startCalls.count == 3
                 && engine.isUsingTransitionalHeadsetBackend
+                && model.statusMessage.hasPrefix("Processing")
+                && model.statusMessage.contains("compatibility mode")
         }
 
-        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames32)
-        #expect(model.statusMessage.contains("compatibility mode"))
+        let policyURL = storeURL.deletingPathExtension()
+            .appendingPathExtension("aggregate-buffer-policy.json")
+        let selection = AggregateBufferPolicyStore(url: policyURL).selection(for: aggregateRoute)
+        #expect(selection.mode == .frames32)
     }
 
     @Test
