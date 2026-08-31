@@ -2201,12 +2201,78 @@ struct GlassEQAppModelLifecycleTests {
         engine.state = .running(output: output)
         engine.processingSampleRate = 48_000
         let model = makeModel(engine: engine)
+        model.currentOutputUID = output.uid
         model.currentOutputSampleRate = output.nominalSampleRate
 
         let snapshot = model.settingsSnapshot()
 
         #expect(snapshot.currentOutputSampleRate == 24_000)
         #expect(snapshot.currentProcessingSampleRate == 48_000)
+    }
+
+    @Test
+    func settingsSnapshotPreservesTheDSPRateWhileTheSameRouteIsStopped() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
+
+        engine.state = .stopped
+        engine.processingSampleRate = nil
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
+
+        model.currentOutputSampleRate = 44_100
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func settingsSnapshotDoesNotSubstituteAnUnknownDSPRate() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let model = makeModel(engine: FakeAudioEngine())
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        let snapshot = model.settingsSnapshot()
+
+        #expect(snapshot.currentOutputSampleRate == 24_000)
+        #expect(snapshot.currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func settingsSnapshotDoesNotAssociateAStaleRuntimeWithANewRoute() {
+        let oldOutput = makeOutput(
+            uid: "old-output",
+            name: "Speakers",
+            nominalSampleRate: 48_000
+        )
+        let newOutput = makeOutput(
+            uid: "new-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: oldOutput)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = newOutput.uid
+        model.currentOutputSampleRate = newOutput.nominalSampleRate
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
     }
 
     @Test
@@ -3598,6 +3664,47 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(engine.startCalls[0].profile == impulse)
         #expect(model.profileStore.outputMappings == store.outputMappings)
+    }
+
+    @Test
+    func compatibleMappedImpulseResponseStartsOnAColdSeparateClockRoute() async {
+        let fallback = makeProfile(name: "Fallback")
+        let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
+        let output = makeOutput(
+            uid: "cold-headset-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: output.uid,
+                    profileID: impulse.id
+                )
+            ],
+            fallbackProfileID: fallback.id
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        #expect(engine.startCalls.first?.profile == impulse)
+        #expect(model.activeProfile == impulse)
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
     }
 
     @Test

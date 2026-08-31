@@ -570,6 +570,11 @@ final class GlassEQAppModel {
     private var coldStartupAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
     private var engineStartTask: Task<Void, Never>?
+    @ObservationIgnored private var lastProcessingSampleRate: (
+        outputUID: String,
+        outputSampleRate: Int64,
+        processingSampleRate: Double
+    )?
     private var activeSettingsCommandCount = 0
     private var acceptsSettingsCommands = true
     private var settingsCommandDrainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1045,7 +1050,7 @@ final class GlassEQAppModel {
             currentOutputName: currentOutputName,
             currentOutputUID: currentOutputUID,
             currentOutputSampleRate: currentOutputSampleRate,
-            currentProcessingSampleRate: engine.processingSampleRate ?? currentOutputSampleRate,
+            currentProcessingSampleRate: processingSampleRateForSettings(),
             currentOutputChannelCount: currentOutputChannelCount,
             currentOutputBufferFrameSize: currentOutputBufferFrameSize,
             currentOutputMappedProfileID: currentOutputMappedProfileID,
@@ -1058,6 +1063,53 @@ final class GlassEQAppModel {
             programmeComparison: settingsProgrammeComparisonSnapshot(),
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
+    }
+
+    private func processingSampleRateForSettings() -> Double {
+        guard !currentOutputUID.isEmpty,
+              currentOutputSampleRate.isFinite,
+              currentOutputSampleRate > 0 else {
+            return 0
+        }
+
+        let outputSampleRate = Int64(currentOutputSampleRate.rounded())
+        if case .running(let activeOutput) = engine.state,
+           activeOutput.uid == currentOutputUID,
+           Int64(activeOutput.nominalSampleRate.rounded()) == outputSampleRate,
+           let processingSampleRate = engine.processingSampleRate,
+           processingSampleRate.isFinite,
+           processingSampleRate > 0 {
+            lastProcessingSampleRate = (
+                currentOutputUID,
+                outputSampleRate,
+                processingSampleRate
+            )
+            return processingSampleRate
+        }
+
+        if let lastProcessingSampleRate,
+           lastProcessingSampleRate.outputUID == currentOutputUID,
+           lastProcessingSampleRate.outputSampleRate == outputSampleRate {
+            return lastProcessingSampleRate.processingSampleRate
+        }
+
+        guard let configuration = lastHandledDefaultOutputConfiguration,
+              configuration.uid == currentOutputUID,
+              Int64(configuration.nominalSampleRate.rounded()) == outputSampleRate else {
+            return 0
+        }
+        let output = AudioOutputDevice(
+            id: configuration.id,
+            uid: configuration.uid,
+            name: currentOutputName,
+            nominalSampleRate: configuration.nominalSampleRate,
+            outputChannelCount: configuration.outputChannelCount,
+            bufferFrameSize: configuration.bufferFrameSize,
+            transportType: configuration.transportType
+        )
+        return SystemTapAudioEngine.shouldUseSeparateClockBackend(for: output)
+            ? 0
+            : currentOutputSampleRate
     }
 
     private func settingsProgrammeComparisonSnapshot() -> EQProgrammeComparisonSnapshot {
@@ -1139,7 +1191,7 @@ final class GlassEQAppModel {
         let latency = diagnosticsLatencyMetadata
         let processingSampleRate = engineMetrics.playbackBufferSampleRate > 0
             ? engineMetrics.playbackBufferSampleRate
-            : currentOutputSampleRate
+            : processingSampleRateForSettings()
         return SettingsAudioDiagnosticsDTO(
             status: SettingsAudioStatusDTO(
                 health: health,
@@ -1901,7 +1953,7 @@ final class GlassEQAppModel {
     }
 
     private func ensureCompatibleWithCurrentOutput(_ profile: EQProfile) throws {
-        let processingSampleRate = engine.processingSampleRate ?? currentOutputSampleRate
+        let processingSampleRate = processingSampleRateForSettings()
         guard let mismatch = impulseResponseSampleRateMismatch(
             profile: profile,
             processingSampleRate: processingSampleRate,
@@ -1979,7 +2031,7 @@ final class GlassEQAppModel {
             return
         }
 
-        let processingSampleRate = engine.processingSampleRate ?? currentOutputSampleRate
+        let processingSampleRate = processingSampleRateForSettings()
         if let mismatch = impulseResponseSampleRateMismatch(
             profile: activeProfile,
             processingSampleRate: processingSampleRate,
@@ -2109,7 +2161,7 @@ final class GlassEQAppModel {
                 disableActiveProfileProcessing(updateMetrics: false)
             } else if let mismatch = impulseResponseSampleRateMismatch(
                 profile: activeProfile,
-                processingSampleRate: output.nominalSampleRate,
+                processingSampleRate: processingSampleRateForSettings(),
                 outputChannelCount: output.outputChannelCount
             ) {
                 disableActiveProfileProcessing(updateMetrics: false)
@@ -2258,7 +2310,7 @@ final class GlassEQAppModel {
             return
         }
 
-        let processingSampleRate = engine.processingSampleRate ?? currentOutputSampleRate
+        let processingSampleRate = processingSampleRateForSettings()
         if let mismatch = impulseResponseSampleRateMismatch(
             profile: activeProfile,
             processingSampleRate: processingSampleRate,
