@@ -383,49 +383,53 @@ struct GlassEQAppModelLifecycleTests {
 
     @Test
     func automaticAggregateBufferRetriesLowerRungAfterThreeCleanRuns() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let output = makeOutput(uid: "clean-aggregate", name: "Clean Aggregate")
+        let route = AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: 0,
+            nominalSampleRate: output.nominalSampleRate
+        )
+        let policyStoreURL = storeURL.deletingPathExtension()
+            .appendingPathExtension("aggregate-buffer-policy.json")
+        let policyStore = AggregateBufferPolicyStore(url: policyStoreURL)
+        #expect(try policyStore.recordAutomaticFailure(
+            for: route,
+            occurrences: 2
+        ) == 32)
+        #expect(try policyStore.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try policyStore.recordCleanAutomaticSession(for: route) == nil)
+        #expect(AggregateBufferPolicyStore(url: policyStoreURL).selection(for: route).frameSize == 32)
+
         let engine = FakeAudioEngine()
+        #expect(try engine.aggregateRouteFingerprint(for: output) == route)
         engine.reflectPreferredAggregateBufferFrameSize = true
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
+            storeURL: storeURL,
             engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
             outputDelay: .zero,
-            aggregateCleanSessionDuration: .milliseconds(100)
+            aggregateCleanSessionDuration: .zero
         )
 
         model.start()
         observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 2
-        engine.metrics = metrics
-        await waitUntil {
+        let scheduledRetry = await waitUntil(maxAttempts: 500) {
             engine.startCalls.count == 2
-                && engine.startCalls[1].aggregateBufferFrameSize == 32
+        }
+        let completedRetry = await waitUntil(maxAttempts: 500) {
+            model.settingsSnapshot().currentOutputBufferFrameSize == 16
         }
 
-        try? await Task.sleep(for: .milliseconds(350))
-        try model.setAggregateBufferMode(.automatic)
-        await waitUntil {
-            engine.startCalls.count == 3
-                && engine.startCalls[2].aggregateBufferFrameSize == 32
-        }
-
-        try? await Task.sleep(for: .milliseconds(350))
-        try model.setAggregateBufferMode(.automatic)
-        await waitUntil {
-            engine.startCalls.count == 4
-                && engine.startCalls[3].aggregateBufferFrameSize == 32
-        }
-        await waitUntil {
-            engine.startCalls.count == 5
-                && engine.startCalls[4].aggregateBufferFrameSize == 16
-        }
-
+        #expect(scheduledRetry)
+        #expect(completedRetry)
+        #expect(engine.startCalls.count == 2)
+        #expect(engine.startCalls.first?.aggregateBufferFrameSize == 32)
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 16)
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 16)
         #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 16)
     }
 
@@ -3434,13 +3438,18 @@ private func settleAsyncWork() async {
 }
 
 @MainActor
-private func waitUntil(_ predicate: @MainActor () -> Bool) async {
-    for _ in 0..<100 {
+@discardableResult
+private func waitUntil(
+    maxAttempts: Int = 100,
+    _ predicate: @MainActor () -> Bool
+) async -> Bool {
+    for _ in 0..<maxAttempts {
         if predicate() {
-            return
+            return true
         }
         try? await Task.sleep(for: .milliseconds(10))
     }
+    return predicate()
 }
 
 private enum TestAudioError: Error, Equatable {
