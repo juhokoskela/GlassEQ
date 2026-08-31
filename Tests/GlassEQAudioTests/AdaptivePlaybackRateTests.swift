@@ -211,6 +211,32 @@ struct AdaptivePlaybackRateTests {
     }
 
     @Test
+    func learnedPlaybackBufferStoreRejectsOversizedFilesAndInvalidNumbers() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("LearnedPlaybackBuffers.json")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(
+            repeating: 0x20,
+            count: PersistedPlaybackBufferCalibrationStore.maximumStoreBytes + 1
+        ).write(to: url)
+
+        #expect(PersistedPlaybackBufferCalibrationStore.load(from: url).isEmpty)
+
+        try PersistedPlaybackBufferCalibrationStore.recordStable(
+            outputUID: "invalid-rate",
+            sampleRate: .infinity,
+            frameSize: 128,
+            targetFrames: 256,
+            at: url
+        )
+        #expect(PersistedPlaybackBufferCalibrationStore.load(from: url).isEmpty)
+    }
+
+    @Test
     func callbackOnlyCalibrationDocumentsAcquireServoTargetsWithoutResetting() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)

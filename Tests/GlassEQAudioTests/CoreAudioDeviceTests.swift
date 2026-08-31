@@ -1200,6 +1200,45 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func persistedDeviceRestorationRejectsOversizedAndInvalidStores() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        try Data(
+            repeating: 0x20,
+            count: PersistedAudioDeviceRestorationStore.maximumStoreBytes + 1
+        ).write(to: url)
+        #expect(PersistedAudioDeviceRestorationStore.load(from: url).isEmpty)
+
+        let invalidRecords = [
+            PersistedAudioDeviceRestorationRecord(
+                uid: String(repeating: "x", count: 513),
+                originalSampleRate: 48_000
+            ),
+            PersistedAudioDeviceRestorationRecord(
+                uid: "invalid-rate",
+                originalSampleRate: .infinity
+            ),
+            PersistedAudioDeviceRestorationRecord(
+                uid: "invalid-buffer",
+                originalBufferFrameSize: UInt32.max
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.nonConformingFloatEncodingStrategy = .convertToString(
+            positiveInfinity: "Infinity",
+            negativeInfinity: "-Infinity",
+            nan: "NaN"
+        )
+        try encoder.encode(invalidRecords).write(to: url)
+
+        #expect(PersistedAudioDeviceRestorationStore.load(from: url).isEmpty)
+    }
+
+    @Test
     func monoRuntimeOutputDownmixesStereoInsteadOfUsingLeftOnly() {
         let samples: [Float] = [
             1, 3,

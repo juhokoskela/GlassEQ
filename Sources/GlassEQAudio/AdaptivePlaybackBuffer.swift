@@ -315,31 +315,47 @@ enum PlaybackBufferAdaptationPolicy {
 }
 
 enum PersistedPlaybackBufferCalibrationStore {
+    static let maximumStoreBytes = 1_048_576
+    static let maximumRecordCount = 256
+    static let maximumOutputUIDUTF8Bytes = 512
+    static let maximumOperatingPointCount = 32
+    static let maximumDecodedEventCount = 64
+
+    private enum PersistenceError: Error {
+        case storeTooLarge
+        case tooManyRecords
+        case tooManyNestedValues
+    }
+
     static func defaultURL(nextTo restorationStoreURL: URL) -> URL {
         restorationStoreURL.deletingLastPathComponent()
             .appendingPathComponent("LearnedPlaybackBuffers.json", isDirectory: false)
     }
 
     static func load(from url: URL) -> [PersistedPlaybackBufferCalibration] {
-        guard let data = try? Data(contentsOf: url) else {
+        guard let data = try? readBoundedData(from: url) else {
             return []
         }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let document = try? decoder.decode(PersistedPlaybackBufferCalibrationDocument.self, from: data),
-           document.schemaVersion == PersistedPlaybackBufferCalibrationDocument.currentSchemaVersion {
+           document.schemaVersion == PersistedPlaybackBufferCalibrationDocument.currentSchemaVersion,
+           hasBoundedCollections(document.calibrations) {
             return normalized(document.calibrations)
         }
 
         // Schema 2 persisted callback growth caused by timestamp reanchors. Do not migrate that
         // contaminated evidence; legacy and schema 1 records predate that escalation path.
         if let document = try? decoder.decode(PersistedPlaybackBufferCalibrationDocumentV1.self, from: data),
-           document.schemaVersion == 1 {
+           document.schemaVersion == 1,
+           document.calibrations.count <= maximumRecordCount,
+           document.calibrations.allSatisfy({ $0.events.count <= maximumDecodedEventCount }) {
             return normalized(document.calibrations.map(migrateV1Calibration))
         }
 
-        guard let legacyRecords = try? JSONDecoder().decode([LegacyPersistedPlaybackBufferSize].self, from: data) else {
+        guard let legacyRecords = try? JSONDecoder().decode([LegacyPersistedPlaybackBufferSize].self, from: data),
+              legacyRecords.count <= maximumRecordCount else {
             return []
         }
         return normalized(legacyRecords.map {
@@ -391,7 +407,7 @@ enum PersistedPlaybackBufferCalibrationStore {
         targetFrames: Int,
         at url: URL
     ) throws {
-        guard frameSize > 0, targetFrames > 0 else {
+        guard isValidFrameSize(frameSize), isValidTargetFrames(targetFrames) else {
             return
         }
         try updateCalibration(
@@ -419,8 +435,10 @@ enum PersistedPlaybackBufferCalibrationStore {
         timestamp: Date = Date(),
         at url: URL
     ) throws {
-        guard previousFrameSize > 0, resultingFrameSize > 0,
-              previousTargetFrames > 0, resultingTargetFrames > 0 else {
+        guard isValidFrameSize(previousFrameSize),
+              isValidFrameSize(resultingFrameSize),
+              isValidTargetFrames(previousTargetFrames),
+              isValidTargetFrames(resultingTargetFrames) else {
             return
         }
         guard reason == .underrun else {
@@ -482,7 +500,7 @@ enum PersistedPlaybackBufferCalibrationStore {
         timestamp: Date = Date(),
         at url: URL
     ) throws {
-        guard frameSize > 0, targetFrames > 0 else {
+        guard isValidFrameSize(frameSize), isValidTargetFrames(targetFrames) else {
             return
         }
         try updateCalibration(
@@ -517,7 +535,9 @@ enum PersistedPlaybackBufferCalibrationStore {
         update: (inout PersistedPlaybackBufferCalibration) -> Void
     ) throws {
         let tapSampleRate = tapSampleRate ?? sampleRate
-        guard !outputUID.isEmpty, sampleRate > 0, tapSampleRate > 0 else {
+        guard isValidOutputUID(outputUID),
+              isValidSampleRate(sampleRate),
+              isValidSampleRate(tapSampleRate) else {
             return
         }
 
@@ -531,6 +551,9 @@ enum PersistedPlaybackBufferCalibrationStore {
         }) {
             index = existingIndex
         } else {
+            guard calibrations.count < maximumRecordCount else {
+                throw PersistenceError.tooManyRecords
+            }
             calibrations.append(PersistedPlaybackBufferCalibration(
                 outputUID: outputUID,
                 sampleRate: sampleRate,
@@ -555,6 +578,12 @@ enum PersistedPlaybackBufferCalibrationStore {
     }
 
     private static func write(_ calibrations: [PersistedPlaybackBufferCalibration], to url: URL) throws {
+        guard calibrations.count <= maximumRecordCount else {
+            throw PersistenceError.tooManyRecords
+        }
+        guard hasBoundedCollections(calibrations) else {
+            throw PersistenceError.tooManyNestedValues
+        }
         let document = PersistedPlaybackBufferCalibrationDocument(
             schemaVersion: PersistedPlaybackBufferCalibrationDocument.currentSchemaVersion,
             calibrations: normalized(calibrations)
@@ -563,6 +592,9 @@ enum PersistedPlaybackBufferCalibrationStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(document)
+        guard data.count <= maximumStoreBytes else {
+            throw PersistenceError.storeTooLarge
+        }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -574,13 +606,21 @@ enum PersistedPlaybackBufferCalibrationStore {
         _ calibrations: [PersistedPlaybackBufferCalibration]
     ) -> [PersistedPlaybackBufferCalibration] {
         var uniqueRecords: [String: PersistedPlaybackBufferCalibration] = [:]
-        for var calibration in calibrations where !calibration.outputUID.isEmpty && calibration.sampleRate > 0 {
-            calibration.stableFrameSize = calibration.stableFrameSize.flatMap { $0 > 0 ? $0 : nil }
-            calibration.probingFrameSize = calibration.probingFrameSize.flatMap { $0 > 0 ? $0 : nil }
+        for var calibration in calibrations where isValidCalibrationIdentity(calibration) {
+            guard calibration.operatingPoints.count <= maximumOperatingPointCount,
+                  calibration.events.count <= maximumDecodedEventCount else {
+                continue
+            }
+            calibration.stableFrameSize = calibration.stableFrameSize.flatMap {
+                isValidFrameSize($0) ? $0 : nil
+            }
+            calibration.probingFrameSize = calibration.probingFrameSize.flatMap {
+                isValidFrameSize($0) ? $0 : nil
+            }
             calibration.operatingPoints = normalizedOperatingPoints(calibration.operatingPoints)
             calibration.events = Array(
                 calibration.events
-                    .filter { $0.resultingFrameSize > 0 }
+                    .filter(isValidEvent)
                     .sorted { $0.timestamp < $1.timestamp }
                     .suffix(PlaybackBufferCalibrationPolicy.maximumEventCount)
             )
@@ -612,11 +652,15 @@ enum PersistedPlaybackBufferCalibrationStore {
         _ operatingPoints: [PersistedPlaybackBufferOperatingPoint]
     ) -> [PersistedPlaybackBufferOperatingPoint] {
         var pointsByFrameSize: [UInt32: PersistedPlaybackBufferOperatingPoint] = [:]
-        for var operatingPoint in operatingPoints where operatingPoint.frameSize > 0 {
-            operatingPoint.stableTargetFrames = operatingPoint.stableTargetFrames.flatMap { $0 > 0 ? $0 : nil }
-            operatingPoint.probingTargetFrames = operatingPoint.probingTargetFrames.flatMap { $0 > 0 ? $0 : nil }
+        for var operatingPoint in operatingPoints where isValidFrameSize(operatingPoint.frameSize) {
+            operatingPoint.stableTargetFrames = operatingPoint.stableTargetFrames.flatMap {
+                isValidTargetFrames($0) ? $0 : nil
+            }
+            operatingPoint.probingTargetFrames = operatingPoint.probingTargetFrames.flatMap {
+                isValidTargetFrames($0) ? $0 : nil
+            }
             operatingPoint.unstableThroughTargetFrames = operatingPoint.unstableThroughTargetFrames.flatMap {
-                $0 > 0 ? $0 : nil
+                isValidTargetFrames($0) ? $0 : nil
             }
             guard operatingPoint.stableTargetFrames != nil
                     || operatingPoint.probingTargetFrames != nil
@@ -703,7 +747,74 @@ enum PersistedPlaybackBufferCalibrationStore {
     }
 
     private static func normalizedSampleRate(_ sampleRate: Double) -> Int {
-        Int(sampleRate.rounded())
+        guard isValidSampleRate(sampleRate) else {
+            return 0
+        }
+        return Int(sampleRate.rounded())
+    }
+
+    private static func hasBoundedCollections(
+        _ calibrations: [PersistedPlaybackBufferCalibration]
+    ) -> Bool {
+        calibrations.count <= maximumRecordCount
+            && calibrations.allSatisfy {
+                $0.operatingPoints.count <= maximumOperatingPointCount
+                    && $0.events.count <= maximumDecodedEventCount
+            }
+    }
+
+    private static func isValidCalibrationIdentity(
+        _ calibration: PersistedPlaybackBufferCalibration
+    ) -> Bool {
+        isValidOutputUID(calibration.outputUID)
+            && isValidSampleRate(calibration.sampleRate)
+            && (calibration.tapSampleRate.map(isValidSampleRate) ?? true)
+    }
+
+    private static func isValidOutputUID(_ outputUID: String) -> Bool {
+        !outputUID.isEmpty && outputUID.utf8.count <= maximumOutputUIDUTF8Bytes
+    }
+
+    private static func isValidSampleRate(_ sampleRate: Double) -> Bool {
+        sampleRate.isFinite
+            && sampleRate > 0
+            && sampleRate <= CoreAudioDeviceQuery.maxSampleRate
+    }
+
+    private static func isValidFrameSize(_ frameSize: UInt32) -> Bool {
+        frameSize > 0 && frameSize <= CoreAudioDeviceQuery.maxBufferFrameSize
+    }
+
+    private static func isValidTargetFrames(_ targetFrames: UInt32) -> Bool {
+        targetFrames > 0 && targetFrames <= CoreAudioDeviceQuery.maxBufferFrameSize
+    }
+
+    private static func isValidTargetFrames(_ targetFrames: Int) -> Bool {
+        targetFrames > 0 && targetFrames <= Int(CoreAudioDeviceQuery.maxBufferFrameSize)
+    }
+
+    private static func isValidEvent(_ event: PlaybackBufferCalibrationEvent) -> Bool {
+        isValidFrameSize(event.resultingFrameSize)
+            && (event.previousFrameSize.map(isValidFrameSize) ?? true)
+            && (event.resultingTargetFrames.map(isValidTargetFrames) ?? true)
+            && (event.previousTargetFrames.map(isValidTargetFrames) ?? true)
+    }
+
+    private static func readBoundedData(from url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = Data()
+        while data.count <= maximumStoreBytes {
+            let remaining = maximumStoreBytes + 1 - data.count
+            guard let chunk = try handle.read(upToCount: remaining), !chunk.isEmpty else {
+                break
+            }
+            data.append(chunk)
+        }
+        guard data.count <= maximumStoreBytes else {
+            throw PersistenceError.storeTooLarge
+        }
+        return data
     }
 }
 

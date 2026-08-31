@@ -222,6 +222,40 @@ struct AggregateBufferPolicyTests {
         #expect(store.selection(for: fixed).frameSize == 32)
     }
 
+    @Test
+    func persistedPolicyRejectsOversizedFilesAndRecordAmplification() throws {
+        let url = temporaryPolicyURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let route = fingerprint(uid: "route-0", stream: 0, sampleRate: 48_000)
+
+        try Data(
+            repeating: 0x20,
+            count: AggregateBufferPolicyStore.maximumStoreBytes + 1
+        ).write(to: url)
+        #expect(AggregateBufferPolicyStore(url: url).selection(for: route).frameSize == 16)
+
+        let records: [[String: Any]] = (0...AggregateBufferPolicyStore.maximumRecordCount).map { index in
+            [
+                "automaticFrameSize": 64,
+                "mode": "automatic",
+                "route": [
+                    "nativeOutputStreamIndex": 0,
+                    "nominalSampleRate": 48_000,
+                    "outputDeviceUID": "route-\(index)"
+                ]
+            ]
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "records": records,
+            "schemaVersion": 2
+        ])
+        try data.write(to: url)
+
+        #expect(AggregateBufferPolicyStore(url: url).selection(for: route).frameSize == 16)
+    }
+
     private func fingerprint(
         uid: String,
         stream: Int,
