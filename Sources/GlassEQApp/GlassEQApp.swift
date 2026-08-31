@@ -1375,6 +1375,7 @@ final class GlassEQAppModel {
         }
         do {
             try ensureProfileStoreWritable()
+            try ensureCompatibleWithCurrentOutput(profile)
         } catch {
             reportProfileActionFailure(error)
             return
