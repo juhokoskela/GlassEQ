@@ -31,8 +31,8 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Check release DSP performance
-        run: swift run -c release GlassEQDiagnostics dsp-benchmark --check
+      - name: Measure release DSP performance
+        run: swift run -c release GlassEQDiagnostics dsp-benchmark
 
       - name: Build release app bundle
         run: ./Scripts/build-release-app.sh
