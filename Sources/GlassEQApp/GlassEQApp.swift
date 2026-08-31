@@ -500,6 +500,11 @@ final class GlassEQAppModel {
     private var coldStartupAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
     private var engineStartTask: Task<Void, Never>?
+    @ObservationIgnored private var lastProcessingSampleRate: (
+        outputUID: String,
+        outputSampleRate: Int64,
+        processingSampleRate: Double
+    )?
     private var activeSettingsCommandCount = 0
     private var acceptsSettingsCommands = true
     private var settingsCommandDrainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -945,7 +950,7 @@ final class GlassEQAppModel {
             currentOutputName: currentOutputName,
             currentOutputUID: currentOutputUID,
             currentOutputSampleRate: currentOutputSampleRate,
-            currentProcessingSampleRate: engine.processingSampleRate ?? currentOutputSampleRate,
+            currentProcessingSampleRate: processingSampleRateForSettings(),
             currentOutputChannelCount: currentOutputChannelCount,
             currentOutputBufferFrameSize: currentOutputBufferFrameSize,
             currentOutputMappedProfileID: currentOutputMappedProfileID,
@@ -958,6 +963,33 @@ final class GlassEQAppModel {
             programmeComparison: settingsProgrammeComparisonSnapshot(),
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
+    }
+
+    private func processingSampleRateForSettings() -> Double {
+        guard !currentOutputUID.isEmpty,
+              currentOutputSampleRate.isFinite,
+              currentOutputSampleRate > 0 else {
+            return 0
+        }
+
+        let outputSampleRate = Int64(currentOutputSampleRate.rounded())
+        if let processingSampleRate = engine.processingSampleRate,
+           processingSampleRate.isFinite,
+           processingSampleRate > 0 {
+            lastProcessingSampleRate = (
+                currentOutputUID,
+                outputSampleRate,
+                processingSampleRate
+            )
+            return processingSampleRate
+        }
+
+        guard let lastProcessingSampleRate,
+              lastProcessingSampleRate.outputUID == currentOutputUID,
+              lastProcessingSampleRate.outputSampleRate == outputSampleRate else {
+            return 0
+        }
+        return lastProcessingSampleRate.processingSampleRate
     }
 
     private func settingsProgrammeComparisonSnapshot() -> EQProgrammeComparisonSnapshot {

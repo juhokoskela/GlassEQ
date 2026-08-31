@@ -1577,12 +1577,54 @@ struct GlassEQAppModelLifecycleTests {
         engine.state = .running(output: output)
         engine.processingSampleRate = 48_000
         let model = makeModel(engine: engine)
+        model.currentOutputUID = output.uid
         model.currentOutputSampleRate = output.nominalSampleRate
 
         let snapshot = model.settingsSnapshot()
 
         #expect(snapshot.currentOutputSampleRate == 24_000)
         #expect(snapshot.currentProcessingSampleRate == 48_000)
+    }
+
+    @Test
+    func settingsSnapshotPreservesTheDSPRateWhileTheSameRouteIsStopped() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
+
+        engine.processingSampleRate = nil
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
+
+        model.currentOutputSampleRate = 44_100
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func settingsSnapshotDoesNotSubstituteAnUnknownDSPRate() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let model = makeModel(engine: FakeAudioEngine())
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        let snapshot = model.settingsSnapshot()
+
+        #expect(snapshot.currentOutputSampleRate == 24_000)
+        #expect(snapshot.currentProcessingSampleRate == 0)
     }
 
     @Test
