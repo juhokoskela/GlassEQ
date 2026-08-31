@@ -3014,6 +3014,8 @@ final class GlassEQAppModel {
 
     func stopAcceptingSettingsCommandsAndWait() async {
         acceptsSettingsCommands = false
+        await settingsCoordinator.cancelPendingFileImportPickers()
+        await inProcessSettingsViewModelStorage?.cancelPendingFileImportPickers()
         guard activeSettingsCommandCount > 0 else {
             return
         }

@@ -1187,6 +1187,7 @@ struct SettingsIPCTests {
         let model = GlassEQSettingsViewModel(
             client: CancellingSettingsCommandClient()
         )
+        model.commandErrorMessage = "Earlier command failed."
 
         let response = await model.perform(.chooseImportFiles(mode: .single))
 

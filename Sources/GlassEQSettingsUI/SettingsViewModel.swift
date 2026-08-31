@@ -16,6 +16,7 @@ public final class GlassEQSettingsViewModel {
     public var commandErrorMessage: String?
 
     private var client: (any SettingsCommanding)?
+    private var fileImportCommandTasks: [UUID: Task<SettingsCommandResponse, Error>] = [:]
 
     public init(snapshot: SettingsSnapshotDTO = .disconnected, client: (any SettingsCommanding)? = nil) {
         self.snapshot = snapshot
@@ -91,6 +92,14 @@ public final class GlassEQSettingsViewModel {
         snapshotVersion += 1
     }
 
+    public func cancelPendingFileImportPickers() async {
+        let tasks = Array(fileImportCommandTasks.values)
+        tasks.forEach { $0.cancel() }
+        for task in tasks {
+            _ = try? await task.value
+        }
+    }
+
     @discardableResult
     public func perform(_ command: SettingsCommand) async -> SettingsCommandResponse? {
         guard let client else {
@@ -105,17 +114,44 @@ public final class GlassEQSettingsViewModel {
         }
 
         do {
-            let response = try await client.perform(command)
+            let response: SettingsCommandResponse
+            if case .chooseImportFiles = command {
+                response = try await performFileImportCommand(command, using: client)
+            } else {
+                response = try await client.perform(command)
+            }
             if let snapshot = response.snapshot {
                 accept(snapshot: snapshot)
             }
             commandErrorMessage = nil
             return response
         } catch is CancellationError {
+            commandErrorMessage = nil
             return nil
         } catch {
             commandErrorMessage = error.localizedDescription
             return nil
+        }
+    }
+
+    private func performFileImportCommand(
+        _ command: SettingsCommand,
+        using client: any SettingsCommanding
+    ) async throws -> SettingsCommandResponse {
+        let commandID = UUID()
+        let task = Task { @MainActor in
+            try await client.perform(command)
+        }
+        fileImportCommandTasks[commandID] = task
+        defer {
+            fileImportCommandTasks[commandID] = nil
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.fileImportCommandTasks[commandID]?.cancel()
+            }
         }
     }
 }

@@ -82,6 +82,7 @@ struct DefaultSettingsHelperLaunchValidator: SettingsHelperLaunchValidating {
 final class SettingsCoordinator: NSObject {
     private struct ActiveCommand {
         var token: UUID
+        var isFileImportPicker: Bool
         var task: Task<Void, Never>
     }
 
@@ -167,6 +168,21 @@ final class SettingsCoordinator: NSObject {
     func shutdownAndWait() async {
         send(.shutdown)
         await cleanupSessionAndWait(terminateHelper: true)
+    }
+
+    func cancelPendingFileImportPickers() async {
+        let commands = commandTasks.filter(\.value.isFileImportPicker)
+        for (requestID, command) in commands {
+            guard commandTasks[requestID]?.token == command.token else {
+                continue
+            }
+            commandTasks[requestID] = nil
+            command.task.cancel()
+            sendError("GlassEQ is shutting down.", requestID: requestID)
+        }
+        for command in commands.values {
+            await command.task.value
+        }
     }
 
     func modelDidChange() {
@@ -465,6 +481,12 @@ final class SettingsCoordinator: NSObject {
             return
         }
         let commandToken = UUID()
+        let isFileImportPicker: Bool
+        if case .chooseImportFiles = command {
+            isFileImportPicker = true
+        } else {
+            isFileImportPicker = false
+        }
         let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
@@ -518,7 +540,11 @@ final class SettingsCoordinator: NSObject {
                 sendError(error.localizedDescription, requestID: requestID)
             }
         }
-        commandTasks[requestID] = ActiveCommand(token: commandToken, task: task)
+        commandTasks[requestID] = ActiveCommand(
+            token: commandToken,
+            isFileImportPicker: isFileImportPicker,
+            task: task
+        )
     }
 
     private func cancelCommand(requestID: String) {

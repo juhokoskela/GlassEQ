@@ -3,6 +3,7 @@ import Foundation
 import GlassEQAudio
 import GlassEQCore
 import GlassEQSettingsIPC
+import GlassEQSettingsUI
 import Testing
 @testable import GlassEQApp
 
@@ -3629,6 +3630,84 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func quittingCancelsAnInFlightHelperFilePickerBeforeDrainingCommands() async throws {
+        let model = makeModel()
+        let launcher = ControllableSettingsHelperLauncher()
+        let picker = CancellableSettingsFileImportPicker()
+        let coordinator = SettingsCoordinator(
+            model: model,
+            helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") },
+            fileImportPicker: picker.choose(mode:)
+        )
+        model.settingsCoordinator = coordinator
+
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "quit-file-picker",
+            kind: .command,
+            command: .chooseImportFiles(mode: .single)
+        ))
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        await model.stopAcceptingSettingsCommandsAndWait()
+
+        #expect(picker.wasCancelled)
+        await waitUntil {
+            launcher.receivedAppMessages.contains { message in
+                if case let .response(_, "quit-file-picker", _, error) = message {
+                    return error == "GlassEQ is shutting down."
+                }
+                return false
+            }
+        }
+        let pickerResponses = launcher.receivedAppMessages.filter { message in
+            if case .response(_, "quit-file-picker", _, _) = message {
+                return true
+            }
+            return false
+        }
+        #expect(pickerResponses.count == 1)
+        #expect(pickerResponses.contains { message in
+            if case let .response(_, "quit-file-picker", _, error) = message {
+                return error == "GlassEQ is shutting down."
+            }
+            return false
+        })
+        model.resumeSettingsCommandsAfterCancelledQuit()
+        coordinator.shutdown()
+    }
+
+    @Test
+    func quittingCancelsAnInFlightInProcessFilePickerBeforeDrainingCommands() async {
+        let model = makeModel()
+        let picker = CancellableSettingsFileImportPicker()
+        let client = CancellableInProcessSettingsClient(
+            model: model,
+            picker: picker
+        )
+        let settingsModel = GlassEQSettingsViewModel(client: client)
+        model.inProcessSettingsViewModelStorage = settingsModel
+        let pickerTask = Task { @MainActor in
+            await settingsModel.perform(.chooseImportFiles(mode: .single))
+        }
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        await model.stopAcceptingSettingsCommandsAndWait()
+
+        #expect(picker.wasCancelled)
+        #expect(await pickerTask.value == nil)
+        #expect(settingsModel.commandErrorMessage == nil)
+        model.resumeSettingsCommandsAfterCancelledQuit()
+    }
+
+    @Test
     func settingsHelperDisconnectCancelsItsInFlightFilePicker() async throws {
         let model = makeModel()
         let launcher = ControllableSettingsHelperLauncher()
@@ -4317,6 +4396,31 @@ private final class CancellableSettingsFileImportPicker {
             wasCancelled = true
             throw CancellationError()
         }
+    }
+}
+
+@MainActor
+private final class CancellableInProcessSettingsClient: SettingsCommanding {
+    private weak var model: GlassEQAppModel?
+    private let picker: CancellableSettingsFileImportPicker
+
+    init(model: GlassEQAppModel, picker: CancellableSettingsFileImportPicker) {
+        self.model = model
+        self.picker = picker
+    }
+
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        guard let model else {
+            throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
+        }
+        if let response = try await fileImportPickerResponse(
+            for: command,
+            model: model,
+            picker: picker.choose(mode:)
+        ) {
+            return response
+        }
+        return try await model.performSettingsCommand(command)
     }
 }
 
