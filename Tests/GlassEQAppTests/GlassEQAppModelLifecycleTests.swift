@@ -1197,6 +1197,108 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func outputChangeClearsProgrammeComparisonWithoutRestoringThePreviousRouteProfile() async throws {
+        let firstProfile = makeProfile(name: "First Route")
+        let secondProfile = makeProfile(name: "Second Route")
+        let firstOutput = makeOutput(uid: "comparison-first-output", name: "First Output")
+        let secondOutput = makeOutput(uid: "comparison-second-output", name: "Second Output")
+        let store = ProfileStore(
+            profiles: [firstProfile, secondProfile],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: secondOutput.uid,
+                    profileID: secondProfile.id
+                )
+            ],
+            fallbackProfileID: firstProfile.id
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(firstOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var comparisonProfile = firstProfile
+        comparisonProfile.preampDB = -6
+        try model.startProgrammeComparison(profile: comparisonProfile)
+        model.selectProgrammeComparison(.filtersOff)
+
+        lookup.result = .success(secondOutput)
+        observer.emit(.success(secondOutput))
+        await waitUntil {
+            model.lifecycleState == .running
+                && model.currentOutputUID == secondOutput.uid
+                && engine.startCalls.count == 2
+        }
+
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(model.activeProfile == secondProfile)
+        #expect(engine.programmeComparisonSelections == [
+            .equalized,
+            .filtersOff,
+            .equalized
+        ])
+
+        let updatesBeforeStop = engine.updateDSPCalls
+        model.stopProgrammeComparison()
+
+        #expect(engine.updateDSPCalls == updatesBeforeStop)
+        #expect(model.activeProfile == secondProfile)
+    }
+
+    @Test
+    func runtimeFailureClearsProgrammeComparisonAndLaterStopIsNoOp() async throws {
+        let active = makeProfile(name: "Runtime Comparison")
+        let output = makeOutput(uid: "runtime-comparison-output", name: "Runtime Output")
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var comparisonProfile = active
+        comparisonProfile.preampDB = -6
+        try model.startProgrammeComparison(profile: comparisonProfile)
+        model.selectProgrammeComparison(.filtersOff)
+
+        engine.emitRuntimeFailure(adaptiveRenderFailure)
+        await waitUntil {
+            model.lifecycleState == .stopped
+        }
+
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(model.activeProfile == active)
+
+        let updatesBeforeStop = engine.updateDSPCalls
+        model.stopProgrammeComparison()
+
+        #expect(engine.updateDSPCalls == updatesBeforeStop)
+        #expect(model.activeProfile == active)
+    }
+
+    @Test
     func outputChangeToBypassedProfileDoesNotStartEngine() async {
         let fallback = makeProfile(name: "Fallback")
         var disabled = makeProfile(name: "Disabled")

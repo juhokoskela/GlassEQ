@@ -302,21 +302,24 @@ public enum FrequencyResponse {
         )
         switch source {
         case .magnitudeCurve(let curve):
-            let relevantGains = curve.points.lazy
+            let sortedPoints = curve.points.sorted { $0.frequency < $1.frequency }
+            let relevantGains = sortedPoints.lazy
                 .filter { $0.frequency <= maximumFrequency }
                 .map(\.gainDB)
             let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
                 frequency: maximumFrequency,
-                points: curve.points
+                points: sortedPoints
             )
             return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
-        case .impulseResponse, nil:
-            let frequencies = (0..<192).map { index in
-                20 * pow(maximumFrequency / 20, Double(index) / 191)
+        case .impulseResponse(let impulse):
+            let coefficientL1Norm = impulse.samples.reduce(into: 0.0) { sum, sample in
+                sum += abs(Double(sample))
             }
-            return preampDB + (frequencies.lazy.map {
-                convolutionMagnitudeDB(source: source, frequency: $0)
-            }.max() ?? 0)
+            // The triangle inequality bounds the response at every frequency, including DC.
+            let upperBoundDB = 20 * log10(max(coefficientL1Norm, .leastNonzeroMagnitude))
+            return preampDB + upperBoundDB
+        case nil:
+            return preampDB
         }
     }
 
