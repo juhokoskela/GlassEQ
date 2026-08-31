@@ -351,8 +351,9 @@ private struct TextProfileImportPane: View {
     @State private var importedImpulseResponse: ImportedImpulseResponse?
     @State private var importedStereoTextPair: ImportedStereoTextPair?
     @State private var isLoadingFile = false
-    @State private var isImporting = false
+    @State private var importPhase = ProfileImportTaskPhase.idle
     @State private var fileLoadTask: Task<Void, Never>?
+    @State private var importTask: Task<Void, Never>?
     @State private var didCopyCurrentProfile = false
     @State private var errorMessage: String?
 
@@ -467,12 +468,20 @@ private struct TextProfileImportPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(localized("Cancel"), action: onCancel)
+                Button(localized("Cancel")) {
+                    guard importPhase != .committing else {
+                        return
+                    }
+                    fileLoadTask?.cancel()
+                    importTask?.cancel()
+                    onCancel()
+                }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(importPhase == .committing)
                 Button {
                     importSelectedProfile()
                 } label: {
-                    if isImporting {
+                    if importPhase != .idle {
                         ProgressView()
                             .controlSize(.small)
                     } else {
@@ -487,14 +496,16 @@ private struct TextProfileImportPane: View {
                             && importedStereoTextPair == nil
                             && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         || isLoadingFile
-                        || isImporting
+                        || importPhase != .idle
                 )
             }
             .padding(16)
         }
         .onDisappear {
             fileLoadTask?.cancel()
+            importTask?.cancel()
         }
+        .interactiveDismissDisabled(importPhase == .committing)
     }
 
     private var footerText: String {
@@ -740,31 +751,51 @@ private struct TextProfileImportPane: View {
     }
 
     private func importParsedProfile(_ importedProfile: EQProfile) {
+        guard importPhase == .idle else {
+            return
+        }
         var profile = importedProfile
         profile.name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        isImporting = true
+        importPhase = .committing
         errorMessage = nil
-        Task {
+        importTask = Task { @MainActor in
             if let importError = await onImportParsedProfile(profile) {
+                guard !Task.isCancelled else {
+                    return
+                }
                 errorMessage = importError
-                isImporting = false
+                importPhase = .idle
             } else {
+                guard !Task.isCancelled else {
+                    return
+                }
+                importPhase = .idle
                 onImported()
             }
         }
     }
 
     private func importText() {
+        guard importPhase == .idle else {
+            return
+        }
         let name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
         let importedText = text
         let format = ImportedEQTextDetector.format(for: importedText)
-        isImporting = true
+        importPhase = .committing
         errorMessage = nil
-        Task {
+        importTask = Task { @MainActor in
             if let importError = await onImport(format, name, importedText) {
+                guard !Task.isCancelled else {
+                    return
+                }
                 errorMessage = importError
-                isImporting = false
+                importPhase = .idle
             } else {
+                guard !Task.isCancelled else {
+                    return
+                }
+                importPhase = .idle
                 onImported()
             }
         }
