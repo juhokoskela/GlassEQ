@@ -587,6 +587,26 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func activeSeparateClockOutputDoesNotNeedRestoration() {
+        #expect(!SystemTapAudioEngine.requiresSeparateClockRestoration(
+            activeBackendIsSeparate: true,
+            hasActiveOutputAndProfile: true
+        ))
+        #expect(SystemTapAudioEngine.requiresSeparateClockRestoration(
+            activeBackendIsSeparate: false,
+            hasActiveOutputAndProfile: false
+        ))
+        #expect(SystemTapAudioEngine.requiresSeparateClockRestoration(
+            activeBackendIsSeparate: false,
+            hasActiveOutputAndProfile: true
+        ))
+        #expect(SystemTapAudioEngine.requiresSeparateClockRestoration(
+            activeBackendIsSeparate: true,
+            hasActiveOutputAndProfile: false
+        ))
+    }
+
+    @Test
     func aggregateStartupTimeoutScalesForLongCallbacks() {
         #expect(SystemTapAudioEngine.startupQualificationTimeout(
             frameCount: 16,
