@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
@@ -7,6 +8,21 @@ import Testing
 
 @Suite
 struct SettingsIPCTests {
+    @Test
+    func fileImportChoiceClearsExistingSelectionOnlyAfterFailure() {
+        let failure = SettingsFileImportChoice(
+            selection: nil,
+            errorMessage: "Invalid file"
+        )
+        let cancellation = SettingsFileImportChoice(
+            selection: nil,
+            errorMessage: nil
+        )
+
+        #expect(failure.shouldClearExistingSelection)
+        #expect(!cancellation.shouldClearExistingSelection)
+    }
+
     @Test
     func autoEQCatalogueParserReadsRecommendedResults() throws {
         let markdown = """
@@ -373,6 +389,100 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func pipeMessageRoundTripsCommandCancellation() throws {
+        let message = SettingsPipeMessage.request(
+            sessionToken: "token",
+            id: "command-request",
+            kind: .cancel,
+            command: nil
+        )
+
+        let encoded = try SettingsPipeCodec.encodeLine(message)
+        let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
+
+        #expect(decoded == message)
+    }
+
+    @Test @MainActor
+    func cancellingFileImportPanelAwaitClosesThePanel() async {
+        let panel = TestFileImportPanel()
+        let task = Task { @MainActor in
+            try await SettingsFileImportPicker.waitForPanelResponse(
+                begin: { completion in
+                    panel.begin(completion)
+                },
+                cancel: {
+                    panel.cancel()
+                }
+            )
+        }
+        for _ in 0..<100 where !panel.didBegin {
+            await Task.yield()
+        }
+
+        task.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await task.value
+        }
+        #expect(panel.cancelCallCount == 1)
+    }
+
+    @Test @MainActor
+    func settingsPipeClientCancellationSendsCancelForOriginalRequest() async throws {
+        let pipe = Pipe()
+        let recorder = SettingsPipePumpRecorder(expectedMessageCount: 2)
+        let readPump = SettingsPipeReadPump(
+            label: "com.glasseq.tests.settings-cancellation",
+            onMessages: recorder.record,
+            onEndOfFile: recorder.recordEndOfFile
+        )
+        readPump.install(on: pipe.fileHandleForReading)
+        let client = SettingsPipeClient(
+            testingToken: "token",
+            model: GlassEQSettingsViewModel(),
+            output: pipe.fileHandleForWriting
+        )
+        defer {
+            client.disconnect()
+            readPump.invalidate(handle: pipe.fileHandleForReading)
+        }
+        let requestTask = Task { @MainActor in
+            try await client.perform(.chooseImportFiles(
+                mode: .single,
+                expectedSampleRate: 48_000
+            ))
+        }
+        for _ in 0..<100 where recorder.snapshot().messages.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let commandMessage = try #require(recorder.snapshot().messages.first)
+        guard case let .request(_, requestID, .command, _) = commandMessage else {
+            Issue.record("Expected the file-picker command request")
+            return
+        }
+
+        requestTask.cancel()
+
+        await #expect(throws: CancellationError.self) {
+            try await requestTask.value
+        }
+        for _ in 0..<100 where recorder.snapshot().messages.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let messages = recorder.snapshot().messages
+        #expect(messages.count >= 2)
+        if messages.count >= 2 {
+            #expect(messages[1] == .request(
+                sessionToken: "token",
+                id: requestID,
+                kind: .cancel,
+                command: nil
+            ))
+        }
+    }
+
+    @Test
     func pipeMessageRoundTripsBootstrapToken() throws {
         let message = SettingsPipeMessage.bootstrap(sessionToken: "bootstrap-token")
 
@@ -381,6 +491,21 @@ struct SettingsIPCTests {
 
         #expect(decoded == message)
         try decoded.validateSessionToken("bootstrap-token")
+    }
+
+    @Test @MainActor
+    func cancelledCommandDoesNotBecomeAVisibleSettingsError() async {
+        let model = GlassEQSettingsViewModel(
+            client: CancellingSettingsCommandClient()
+        )
+
+        let response = await model.perform(.chooseImportFiles(
+            mode: .single,
+            expectedSampleRate: 48_000
+        ))
+
+        #expect(response == nil)
+        #expect(model.commandErrorMessage == nil)
     }
 
     @Test
@@ -476,6 +601,66 @@ struct SettingsIPCTests {
         let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
 
         #expect(decoded == message)
+    }
+
+    @Test
+    func fileImportSelectionCommandsAndResponsesRoundTrip() throws {
+        let profile = EQProfile(
+            name: "Imported",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25]
+            ))
+        )
+        let commands: [SettingsCommand] = [
+            .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
+            .chooseImportFiles(mode: .stereoPair, expectedSampleRate: 96_000)
+        ]
+        let selections: [SettingsFileImportSelectionDTO] = [
+            .text(
+                suggestedName: "Headphones",
+                filename: "Headphones.txt",
+                text: "Preamp: -6 dB"
+            ),
+            .impulseResponse(
+                profile: profile,
+                channels: [SettingsImpulseResponseChannelDTO(
+                    filename: "room.wav",
+                    frameCount: 2,
+                    sampleRate: 48_000
+                )],
+                sourceFileCount: 1
+            ),
+            .stereoText(
+                profile: profile,
+                leftFilename: "left.txt",
+                rightFilename: "right.txt"
+            )
+        ]
+
+        for (index, command) in commands.enumerated() {
+            let message = SettingsPipeMessage.request(
+                sessionToken: "token",
+                id: "file-command-\(index)",
+                kind: .command,
+                command: command
+            )
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            #expect(try SettingsPipeCodec.decodeLine(Data(encoded.dropLast())) == message)
+        }
+
+        for (index, selection) in selections.enumerated() {
+            let message = SettingsPipeMessage.response(
+                sessionToken: "token",
+                id: "file-response-\(index)",
+                response: SettingsCommandResponse(fileImportSelection: selection),
+                error: nil
+            )
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            #expect(try SettingsPipeCodec.decodeLine(Data(encoded.dropLast())) == message)
+        }
     }
 
     @Test
@@ -1227,6 +1412,32 @@ private func launchArguments() -> [String] {
         "GlassEQSettings",
         "--glasseq-main-pid", "123"
     ]
+}
+
+@MainActor
+private final class CancellingSettingsCommandClient: SettingsCommanding {
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        throw CancellationError()
+    }
+}
+
+@MainActor
+private final class TestFileImportPanel {
+    private(set) var didBegin = false
+    private(set) var cancelCallCount = 0
+    private var completion: ((NSApplication.ModalResponse) -> Void)?
+
+    func begin(_ completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        didBegin = true
+        self.completion = completion
+    }
+
+    func cancel() {
+        cancelCallCount += 1
+        let completion = completion
+        self.completion = nil
+        completion?(.cancel)
+    }
 }
 
 private final class SettingsPipePumpRecorder: @unchecked Sendable {

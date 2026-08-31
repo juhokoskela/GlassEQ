@@ -1,11 +1,48 @@
 import AVFoundation
 import Foundation
 import GlassEQCore
+import GlassEQSettingsIPC
 import Testing
 @testable import GlassEQSettingsUI
 
 @Suite
 struct ImpulseResponseWAVImporterTests {
+    @Test
+    func mainProcessFileLoaderPackagesTextAndImpulseResponseSelections() throws {
+        let textURL = try writeText("Preamp: -3 dB")
+        let wavURL = try writeWAV(channels: [[1, 0.25]])
+        defer {
+            try? FileManager.default.removeItem(at: textURL)
+            try? FileManager.default.removeItem(at: wavURL)
+        }
+
+        let textSelection = try SettingsFileImportPicker.loadSelection(
+            mode: .single,
+            urls: [textURL],
+            expectedSampleRate: 48_000
+        )
+        guard case let .text(suggestedName, filename, text) = textSelection else {
+            Issue.record("Expected a text-file selection")
+            return
+        }
+        #expect(suggestedName == textURL.deletingPathExtension().lastPathComponent)
+        #expect(filename == textURL.lastPathComponent)
+        #expect(text == "Preamp: -3 dB")
+
+        let wavSelection = try SettingsFileImportPicker.loadSelection(
+            mode: .single,
+            urls: [wavURL],
+            expectedSampleRate: 48_000
+        )
+        guard case let .impulseResponse(profile, channels, sourceFileCount) = wavSelection else {
+            Issue.record("Expected an impulse-response selection")
+            return
+        }
+        #expect(profile.mode == .convolution)
+        #expect(channels.map(\.frameCount) == [2])
+        #expect(sourceFileCount == 1)
+    }
+
     @Test
     func importsMonoWAVAsLinkedImpulseResponse() throws {
         let url = try writeWAV(channels: [[1, 0.25, -0.125]])

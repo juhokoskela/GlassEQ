@@ -181,13 +181,10 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
     private(set) var token: String?
     private let mainProcessIdentifier: pid_t
     private weak var model: GlassEQSettingsViewModel?
-    private let input = FileHandle.standardInput
+    private let input: FileHandle
     private let bootstrapTimeout: Duration
     private let requestTimeout: Duration
-    private let pipeWritePump = SettingsPipeWritePump(
-        label: "com.glasseq.settings.pipe-write",
-        fileHandle: FileHandle.standardOutput
-    )
+    private let pipeWritePump: SettingsPipeWritePump
     private let pipeReadDelivery = SettingsPipeOrderedMainActorDelivery(
         label: "com.glasseq.settings.pipe-read.delivery"
     )
@@ -207,16 +204,42 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
     ) throws {
         self.mainProcessIdentifier = launchInfo.mainProcessIdentifier
         self.model = model
+        self.input = FileHandle.standardInput
         self.bootstrapTimeout = bootstrapTimeout
         self.requestTimeout = requestTimeout
+        self.pipeWritePump = SettingsPipeWritePump(
+            label: "com.glasseq.settings.pipe-write",
+            fileHandle: FileHandle.standardOutput
+        )
         super.init()
         try SettingsHostValidator.validate(launchInfo: launchInfo)
         installObservers()
     }
 
+    #if DEBUG
+    init(
+        testingToken: String,
+        model: GlassEQSettingsViewModel,
+        output: FileHandle,
+        requestTimeout: Duration = .seconds(30)
+    ) {
+        self.token = testingToken
+        self.mainProcessIdentifier = getpid()
+        self.model = model
+        self.input = .nullDevice
+        self.bootstrapTimeout = .seconds(5)
+        self.requestTimeout = requestTimeout
+        self.pipeWritePump = SettingsPipeWritePump(
+            label: "com.glasseq.settings.pipe-write.tests",
+            fileHandle: output
+        )
+        super.init()
+    }
+    #endif
+
     func connect() async throws -> SettingsSnapshotDTO {
         token = try await waitForBootstrapToken()
-        let response = try await send(kind: .connect)
+        let response = try await send(kind: .connect, timeout: requestTimeout)
         guard let snapshot = response.snapshot else {
             throw SettingsCommandFailure(message: "GlassEQ returned an empty settings snapshot.")
         }
@@ -224,11 +247,17 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        try await send(kind: .command, command: command)
+        let timeout: Duration?
+        if case .chooseImportFiles = command {
+            timeout = nil
+        } else {
+            timeout = requestTimeout
+        }
+        return try await send(kind: .command, command: command, timeout: timeout)
     }
 
     func acknowledgeReady() async throws {
-        _ = try await send(kind: .ready)
+        _ = try await send(kind: .ready, timeout: requestTimeout)
     }
 
     func disconnect() {
@@ -298,47 +327,97 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         }
     }
 
-    private func send(kind: SettingsPipeRequestKind, command: SettingsCommand? = nil) async throws -> SettingsCommandResponse {
+    private func send(
+        kind: SettingsPipeRequestKind,
+        command: SettingsCommand? = nil,
+        timeout: Duration?
+    ) async throws -> SettingsCommandResponse {
         guard let token else {
             throw SettingsCommandFailure(message: "Settings IPC session was not initialized.")
         }
+        try Task.checkCancellation()
         let requestID = UUID().uuidString
-        let timeout = requestTimeout
-        return try await withCheckedThrowingContinuation { continuation in
-            continuations[requestID] = continuation
-            requestTimeoutTasks[requestID] = Task { [weak self] in
-                guard let self else {
-                    return
+        let response = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                continuations[requestID] = continuation
+                if let timeout {
+                    requestTimeoutTasks[requestID] = Task { [weak self] in
+                        guard let self else {
+                            return
+                        }
+                        try? await Task.sleep(for: timeout)
+                        await MainActor.run {
+                            self.cancelPendingRequest(
+                                requestID,
+                                token: token,
+                                error: SettingsCommandFailure(message: "Settings IPC request timed out."),
+                                notifyMainProcess: true
+                            )
+                        }
+                    }
                 }
-                try? await Task.sleep(for: timeout)
-                await MainActor.run {
-                    guard let continuation = self.continuations.removeValue(forKey: requestID) else {
+                let message = SettingsPipeMessage.request(sessionToken: token, id: requestID, kind: kind, command: command)
+                pipeWritePump.enqueue(message) { [weak self] result in
+                    guard case .failure(let error) = result else {
                         return
                     }
-                    self.requestTimeoutTasks[requestID] = nil
-                    continuation.resume(throwing: SettingsCommandFailure(message: "Settings IPC request timed out."))
+                    Task { @MainActor in
+                        guard let self else {
+                            return
+                        }
+                        guard self.continuations.removeValue(forKey: requestID) != nil else {
+                            return
+                        }
+                        self.requestTimeoutTasks.removeValue(forKey: requestID)?.cancel()
+                        continuation.resume(throwing: SettingsCommandFailure(
+                            message: "Settings IPC write failed: \(error.localizedDescription)"
+                        ))
+                    }
+                }
+                if Task.isCancelled {
+                    cancelPendingRequest(
+                        requestID,
+                        token: token,
+                        error: CancellationError(),
+                        notifyMainProcess: true
+                    )
                 }
             }
-            let message = SettingsPipeMessage.request(sessionToken: token, id: requestID, kind: kind, command: command)
-            pipeWritePump.enqueue(message) { [weak self] result in
-                guard case .failure(let error) = result else {
-                    return
-                }
-                Task { @MainActor in
-                    guard let self else {
-                        continuation.resume(throwing: SettingsCommandFailure(message: "Settings disconnected from GlassEQ."))
-                        return
-                    }
-                    guard self.continuations.removeValue(forKey: requestID) != nil else {
-                        return
-                    }
-                    self.requestTimeoutTasks.removeValue(forKey: requestID)?.cancel()
-                    continuation.resume(throwing: SettingsCommandFailure(
-                        message: "Settings IPC write failed: \(error.localizedDescription)"
-                    ))
-                }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.cancelPendingRequest(
+                    requestID,
+                    token: token,
+                    error: CancellationError(),
+                    notifyMainProcess: true
+                )
             }
         }
+        try Task.checkCancellation()
+        return response
+    }
+
+    private func cancelPendingRequest(
+        _ requestID: String,
+        token: String,
+        error: any Error,
+        notifyMainProcess: Bool
+    ) {
+        guard let continuation = continuations.removeValue(forKey: requestID) else {
+            return
+        }
+        requestTimeoutTasks.removeValue(forKey: requestID)?.cancel()
+        if notifyMainProcess,
+           !disconnected,
+           self.token == token {
+            writePipeMessage(.request(
+                sessionToken: token,
+                id: requestID,
+                kind: .cancel,
+                command: nil
+            ))
+        }
+        continuation.resume(throwing: error)
     }
 
     private func handlePipeMessages(_ messages: [SettingsPipeMessage]) {

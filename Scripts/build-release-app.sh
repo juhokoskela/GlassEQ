@@ -56,6 +56,22 @@ verify_signed_entitlement() {
     fi
 }
 
+verify_signed_entitlement_keys() {
+    local bundle_path="$1"
+    shift
+    local actual_keys
+    local expected_keys
+
+    actual_keys="$(
+        codesign -d --entitlements :- "$bundle_path" 2>/dev/null |
+            plutil -convert json -o - - |
+            python3 -c 'import json, sys; print("\n".join(sorted(json.load(sys.stdin))))'
+    )" || fail "could not read signed entitlements from '$bundle_path'"
+    expected_keys="$(printf '%s\n' "$@" | LC_ALL=C sort)"
+    [[ "$actual_keys" == "$expected_keys" ]] ||
+        fail "signed bundle '$bundle_path' has unexpected entitlements: $actual_keys"
+}
+
 is_dry_run() {
     [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" || "$DRY_RUN" == "yes" ]]
 }
@@ -286,7 +302,10 @@ verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read
 verify_signed_entitlement "$APP_DIR" com.apple.security.network.client
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.inherit
-verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.files.user-selected.read-only
+verify_signed_entitlement_keys \
+    "$SETTINGS_APP_DIR" \
+    com.apple.security.app-sandbox \
+    com.apple.security.inherit
 
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     NOTARY_ZIP="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-notary-submit.zip"

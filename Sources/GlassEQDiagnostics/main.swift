@@ -28,7 +28,10 @@ private struct DiagnosticsOptions {
     var intentionalCrashAfterStart = false
     var listOutputs = false
     var clockSourceProbe = false
+    var explicitOutputClient = false
+    var setDefaultOutput = false
     var outputObjectID: UInt32?
+    var handoffExperiment: CoreAudioHandoffExperiment?
 
     init(arguments: [String]) throws {
         var positionalDuration: TimeInterval?
@@ -48,6 +51,25 @@ private struct DiagnosticsOptions {
                 listOutputs = true
             case "--clock-source-probe":
                 clockSourceProbe = true
+            case "--explicit-output-client":
+                explicitOutputClient = true
+            case "--set-default-output":
+                setDefaultOutput = true
+            case "--handoff-experiment":
+                index += 1
+                guard index < arguments.count else {
+                    throw DiagnosticsArgumentError.missingValue(argument)
+                }
+                handoffExperiment = try Self.parseHandoffExperiment(
+                    arguments[index],
+                    option: argument
+                )
+            case let value where value.hasPrefix("--handoff-experiment="):
+                let mode = String(value.dropFirst("--handoff-experiment=".count))
+                handoffExperiment = try Self.parseHandoffExperiment(
+                    mode,
+                    option: "--handoff-experiment"
+                )
             case "--output-id":
                 index += 1
                 guard index < arguments.count else {
@@ -79,6 +101,12 @@ private struct DiagnosticsOptions {
 
         duration = positionalDuration ?? 3
         holdAfterStart = explicitHoldAfterStart ?? duration
+        if explicitOutputClient && setDefaultOutput {
+            throw DiagnosticsArgumentError.incompatibleOptions(
+                "--explicit-output-client",
+                "--set-default-output"
+            )
+        }
     }
 
     private static func parseSeconds(_ value: String, option: String) throws -> TimeInterval {
@@ -94,12 +122,27 @@ private struct DiagnosticsOptions {
         }
         return objectID
     }
+
+    private static func parseHandoffExperiment(
+        _ value: String,
+        option: String
+    ) throws -> CoreAudioHandoffExperiment {
+        guard let experiment = CoreAudioHandoffExperiment(rawValue: value) else {
+            throw DiagnosticsArgumentError.invalidHandoffExperiment(
+                option: option,
+                value: value
+            )
+        }
+        return experiment
+    }
 }
 
 private enum DiagnosticsArgumentError: Error, CustomStringConvertible {
     case missingValue(String)
     case invalidSeconds(option: String, value: String)
     case invalidObjectID(option: String, value: String)
+    case invalidHandoffExperiment(option: String, value: String)
+    case incompatibleOptions(String, String)
     case unknownOption(String)
     case unexpectedArgument(String)
 
@@ -111,6 +154,10 @@ private enum DiagnosticsArgumentError: Error, CustomStringConvertible {
             return "\(option) requires a non-negative seconds value; got \(value)."
         case .invalidObjectID(let option, let value):
             return "\(option) requires a positive Core Audio object ID; got \(value)."
+        case .invalidHandoffExperiment(let option, let value):
+            return "\(option) requires production-start, quiesce-only, combined-incumbent, combined-16, physical-create-only, combined-create-only, combined-output-only, physical-first-live-taps, physical-first-live-taps-16, complete-route-switch, or physical-first-route-switch; got \(value)."
+        case .incompatibleOptions(let first, let second):
+            return "\(first) and \(second) cannot be used together."
         case .unknownOption(let option):
             return "Unknown option \(option)."
         case .unexpectedArgument(let argument):
@@ -134,6 +181,11 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
         } else {
             try CoreAudioDeviceQuery.defaultOutputDevice()
         }
+        if options.setDefaultOutput {
+            try setDiagnosticDefaultOutputDevice(output)
+            print("Default output: \(output.id)\t\(output.name)\t\(output.uid)")
+            return 0
+        }
         print("GlassEQ diagnostics")
         if options.health {
             print("Mode: health")
@@ -147,8 +199,20 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
             print("Transport type: \(transportType)")
         }
 
+        if options.explicitOutputClient {
+            return try runExplicitOutputClient(output: output)
+        }
+
         if options.clockSourceProbe {
             return runAggregateClockSourceProbe(output: output)
+        }
+        if let handoffExperiment = options.handoffExperiment {
+            return try runCoreAudioHandoffExperiment(
+                handoffExperiment,
+                engine: engine,
+                output: output,
+                holdDuration: options.holdAfterStart
+            )
         }
 
         printAudioEngineStatus(.starting)
@@ -207,7 +271,7 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
     }
 }
 
-private func printLatencyMetadata(
+func printLatencyMetadata(
     _ metadata: AudioDeviceLatencyMetadata,
     label: String
 ) {
@@ -320,7 +384,7 @@ private func printAudioEngineFailure(_ failure: AudioEngineFailure) {
     }
 }
 
-private func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
+func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
     print("Captured frames: \(metrics.capturedFrames)")
     print("Played frames: \(metrics.playedFrames)")
     print("Playback underrun frames: \(metrics.playbackUnderrunFrames)")
@@ -440,7 +504,7 @@ private func printExtremeDuration(
     ))
 }
 
-private func printTimestampProbeRecords(_ records: [AudioTimestampProbeRecord]) {
+func printTimestampProbeRecords(_ records: [AudioTimestampProbeRecord]) {
     print("Timestamp probe records: \(records.count)")
     for record in records {
         print(

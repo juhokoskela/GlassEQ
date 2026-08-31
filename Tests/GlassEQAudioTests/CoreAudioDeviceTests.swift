@@ -207,6 +207,7 @@ struct CoreAudioDeviceTests {
         #expect(description.processes == [42])
         #expect(description.bundleIDs == ["systemsoundserverd"])
         #expect(description.isExclusive)
+        #expect(description.muteBehavior == .mutedWhenTapped)
         #expect(description.isProcessRestoreEnabled)
     }
 
@@ -220,9 +221,244 @@ struct CoreAudioDeviceTests {
         #expect(description.processes.isEmpty)
         #expect(description.bundleIDs == ["systemsoundserverd"])
         #expect(!description.isExclusive)
-        #expect(description.muteBehavior == .muted)
+        #expect(description.muteBehavior == .mutedWhenTapped)
         #expect(!description.isMixdown)
         #expect(description.isProcessRestoreEnabled)
+    }
+
+    @Test
+    func aggregateStartupRequiresMatchingFramesAndStableTimestamps() {
+        #expect(SystemTapAudioEngine.startupCallbackIsValid(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 0,
+            outputFrameCount: 16,
+            expectedFrameCount: 16,
+            timestampsAreStable: true
+        ))
+        #expect(SystemTapAudioEngine.startupCallbackIsValid(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 16,
+            outputFrameCount: 16,
+            expectedFrameCount: 16,
+            timestampsAreStable: true
+        ))
+        #expect(!SystemTapAudioEngine.startupCallbackIsValid(
+            mainInputFrameCount: 512,
+            systemSoundInputFrameCount: 512,
+            outputFrameCount: 512,
+            expectedFrameCount: 16,
+            timestampsAreStable: true
+        ))
+        #expect(!SystemTapAudioEngine.startupCallbackIsValid(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 16,
+            outputFrameCount: 16,
+            expectedFrameCount: 16,
+            timestampsAreStable: false
+        ))
+    }
+
+    @Test
+    func aggregateStartupUsesHALAppliedCallbackSize() {
+        let requestedFrameSize: UInt32 = 16
+        let appliedFrameSize: UInt32 = 64
+        let expectedFrameCount = SystemTapAudioEngine.startupCallbackFrameExpectation(
+            appliedAggregateFrameSize: appliedFrameSize
+        )
+
+        #expect(expectedFrameCount != Int(requestedFrameSize))
+        #expect(SystemTapAudioEngine.startupCallbackIsValid(
+            mainInputFrameCount: Int(appliedFrameSize),
+            systemSoundInputFrameCount: Int(appliedFrameSize),
+            outputFrameCount: Int(appliedFrameSize),
+            expectedFrameCount: expectedFrameCount,
+            timestampsAreStable: true
+        ))
+    }
+
+    @Test
+    func aggregateStartupProbationCountsOnlyPostActivationCallbacks() {
+        let qualification = SystemTapAudioEngine.StartupCallbackQualification()
+        for _ in 0..<40 {
+            qualification.record(
+                qualification.beginCallback(),
+                isValid: true
+            )
+        }
+        let inFlightCallback = qualification.beginCallback()
+
+        qualification.beginProbation()
+        qualification.record(inFlightCallback, isValid: true)
+
+        #expect(qualification.validStreak == 0)
+        for _ in 0..<7 {
+            qualification.record(
+                qualification.beginCallback(),
+                isValid: true
+            )
+        }
+        #expect(qualification.validStreak == 7)
+        qualification.record(
+            qualification.beginCallback(),
+            isValid: true
+        )
+        #expect(qualification.validStreak == 8)
+    }
+
+    @Test
+    func aggregateStartupRetriesBeforeUsingOneSaferBufferRung() {
+        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
+            requestedFrameSize: 16
+        ) == [16, 16, 32])
+        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
+            requestedFrameSize: 32
+        ) == [32, 32, 64])
+        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
+            requestedFrameSize: 64
+        ) == [64, 64])
+    }
+
+    @Test
+    func aggregateStartupTimeoutScalesForLongCallbacks() {
+        #expect(SystemTapAudioEngine.startupQualificationTimeout(
+            frameCount: 16,
+            sampleRate: 48_000,
+            minimumConsecutiveCallbacks: 32
+        ) == 0.25)
+        #expect(SystemTapAudioEngine.startupQualificationTimeout(
+            frameCount: 480,
+            sampleRate: 24_000,
+            minimumConsecutiveCallbacks: 32
+        ) > 1.5)
+    }
+
+    @Test
+    func physicalFirstColdStartupIsUsedOnlyWhenNoBackendIsRunning() {
+        #expect(SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+            activeBackendIsSeparate: false,
+            combinedState: .stopped
+        ))
+        #expect(SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+            activeBackendIsSeparate: false,
+            combinedState: .failed("Previous startup failed")
+        ))
+        #expect(!SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+            activeBackendIsSeparate: true,
+            combinedState: .stopped
+        ))
+        #expect(!SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+            activeBackendIsSeparate: false,
+            combinedState: .running(output: AudioOutputDevice(
+                id: 1,
+                uid: "running-output",
+                name: "Running Output",
+                nominalSampleRate: 48_000,
+                outputChannelCount: 2,
+                bufferFrameSize: 16
+            ))
+        ))
+    }
+
+    @Test
+    func matchingDeferredColdStartupStaysOnCompatibilityBackend() {
+        #expect(SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: true,
+            deferredRouteMatches: true
+        ))
+        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: false,
+            deferredRouteMatches: true
+        ))
+        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: true,
+            deferredRouteMatches: false
+        ))
+    }
+
+    @Test
+    func coldStartupPromotionReturnsTheAppliedAggregateMetadata() throws {
+        let physicalOutput = output(
+            id: 9_101,
+            uid: "cold-promotion-output",
+            channelCount: 2,
+            bufferFrameSize: 512
+        )
+        var aggregateOutput = physicalOutput
+        aggregateOutput.bufferFrameSize = 32
+
+        let result = try SystemTapAudioEngine.coldStartupPromotionResult(
+            combinedState: .running(output: aggregateOutput)
+        )
+
+        guard case .promoted(let promotedOutput) = result else {
+            Issue.record("Expected a promoted output")
+            return
+        }
+        #expect(promotedOutput == aggregateOutput)
+        #expect(promotedOutput.bufferFrameSize == 32)
+        #expect(promotedOutput.bufferFrameSize != physicalOutput.bufferFrameSize)
+    }
+
+    @Test
+    func activeOutputProcessDetectionMatchesTheDeviceAndExclusions() throws {
+        let processDevices: [AudioObjectID: [AudioObjectID]] = [
+            10: [100],
+            20: [200],
+            30: [100, 200],
+        ]
+        let runningProcesses: Set<AudioObjectID> = [20, 30]
+        let query: (AudioObjectID, Set<AudioObjectID>) throws -> Bool = {
+            deviceID,
+            excluded in
+            try CoreAudioDeviceQuery.hasActiveOutputProcess(
+                using: deviceID,
+                excluding: excluded,
+                processObjectIDs: { [10, 20, 30] },
+                isRunningOutput: { runningProcesses.contains($0) },
+                outputDeviceIDs: { processDevices[$0] ?? [] }
+            )
+        }
+
+        #expect(try query(100, []))
+        #expect(try query(200, []))
+        #expect(!(try query(100, [30])))
+        #expect(!(try query(300, [])))
+    }
+
+    @Test
+    func activeOutputProcessDetectionSkipsDisappearingProcessObjects() throws {
+        let hasActiveProcess = try CoreAudioDeviceQuery.hasActiveOutputProcess(
+            using: 100,
+            excluding: [],
+            processObjectIDs: { [10, 20, 30] },
+            isRunningOutput: { processObjectID in
+                if processObjectID == 10 {
+                    throw ActiveProcessQueryTestError.staleProcess
+                }
+                return true
+            },
+            outputDeviceIDs: { processObjectID in
+                if processObjectID == 20 {
+                    throw ActiveProcessQueryTestError.staleProcess
+                }
+                return [100]
+            }
+        )
+
+        #expect(hasActiveProcess)
+    }
+
+    @Test
+    func activeOutputProcessDetectionPreservesProcessListFailures() {
+        #expect(throws: ActiveProcessQueryTestError.self) {
+            try CoreAudioDeviceQuery.hasActiveOutputProcess(
+                using: 100,
+                excluding: [],
+                processObjectIDs: { throw ActiveProcessQueryTestError.processList },
+                isRunningOutput: { _ in true },
+                outputDeviceIDs: { _ in [100] }
+            )
+        }
     }
 
     @Test
@@ -1194,6 +1430,11 @@ struct CoreAudioDeviceTests {
             transportType: transportType
         )
     }
+}
+
+private enum ActiveProcessQueryTestError: Error {
+    case processList
+    case staleProcess
 }
 
 private final class LockedCounter: @unchecked Sendable {

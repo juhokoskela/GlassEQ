@@ -191,6 +191,84 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func coldStartupCompatibilityWaitsForActivePlaybackBeforePromotion() async {
+        let output = makeOutput(uid: "cold-start-promotion", name: "D10s")
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .clientsActive
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.coldStartupAggregatePromotionAttemptCount > 0
+                && model.statusMessage.contains("until active playback releases the output")
+        }
+
+        engine.coldStartupAggregatePromotionResult = .promoted(output)
+        await waitUntil {
+            !engine.isDeferringColdStartupAggregate
+                && model.statusMessage.contains("Processing D10s")
+        }
+
+        #expect(engine.startCalls.count == 1)
+        #expect(engine.coldStartupAggregatePromotionAttemptCount >= 2)
+    }
+
+    @Test
+    func rejectedProfileChangeRestartsColdStartupPromotion() async throws {
+        let running = makeProfile(name: "Cold Start Running")
+        let requested = makeProfile(name: "Cold Start Requested")
+        let output = makeOutput(uid: "cold-start-profile-failure", name: "D10s")
+        let store = ProfileStore(
+            profiles: [running, requested],
+            fallbackProfileID: running.id
+        )
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .clientsActive
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.coldStartupAggregatePromotionAttemptCount > 0
+        }
+
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        try model.apply(profile: requested)
+        await waitUntil {
+            model.statusMessage.contains("not applied")
+        }
+
+        engine.coldStartupAggregatePromotionResult = .promoted(output)
+        await waitUntil {
+            !engine.isDeferringColdStartupAggregate
+        }
+
+        #expect(model.activeProfile == running)
+        #expect(engine.state == .running(output: output))
+    }
+
+    @Test
     func promotedHeadsetRouteFallsBackAfterOneSteadyStateJump() async {
         let output = makeOutput(
             uid: "headset-demotion",
@@ -1454,6 +1532,168 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
         #expect(engine.events == ["start:\(initialOutput.uid)", "mute", "start:\(changedOutput.uid)"])
+    }
+
+    @Test
+    func returningToRunningOutputBeforeSettlementCancelsPendingRebuild() async {
+        let runningOutput = makeOutput(uid: "running-output", name: "USB DAC", id: 200)
+        let transientOutput = makeOutput(uid: "transient-output", name: "Display", id: 300)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(runningOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .seconds(1)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(transientOutput)
+        observer.emit(.success(transientOutput))
+        await waitUntil {
+            model.statusMessage == "Audio output changed; rebuilding..."
+        }
+
+        lookup.result = .success(runningOutput)
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            engine.resumeOutputCallCount == 1
+        }
+        try? await Task.sleep(for: .milliseconds(1_100))
+
+        #expect(engine.startCalls.map(\.output) == [runningOutput])
+        #expect(engine.events == ["start:\(runningOutput.uid)", "mute", "resume"])
+        #expect(model.lifecycleState == .running)
+    }
+
+    @Test
+    func revertingUnmutedBufferChangeDoesNotReprimePlayback() async {
+        let runningOutput = makeOutput(
+            uid: "running-output",
+            name: "USB DAC",
+            id: 200,
+            bufferFrameSize: 256
+        )
+        let transientOutput = makeOutput(
+            uid: runningOutput.uid,
+            name: runningOutput.name,
+            id: runningOutput.id,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(runningOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .seconds(1)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(transientOutput)
+        observer.emit(.success(transientOutput))
+        await settleAsyncWork()
+        lookup.result = .success(runningOutput)
+        observer.emit(.success(runningOutput))
+        try? await Task.sleep(for: .milliseconds(1_100))
+
+        #expect(engine.startCalls.map(\.output) == [runningOutput])
+        #expect(engine.muteOutputCallCount == 0)
+        #expect(engine.resumeOutputCallCount == 0)
+        #expect(engine.events == ["start:\(runningOutput.uid)"])
+        #expect(model.lifecycleState == .running)
+    }
+
+    @Test
+    func redundantRunningOutputNotificationDoesNotMuteOrRebuild() async {
+        let output = makeOutput(
+            uid: "stable-output",
+            name: "USB DAC",
+            id: 201,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        observer.emit(.success(output))
+        await settleAsyncWork()
+
+        #expect(engine.muteOutputCallCount == 0)
+        #expect(engine.startCalls.map(\.output) == [output])
+        #expect(model.lifecycleState == .running)
+    }
+
+    @Test
+    func physicalBufferChangeRebuildsWithoutMutingBeforeSettlement() async {
+        let initialOutput = makeOutput(
+            uid: "buffer-change-output",
+            name: "USB DAC",
+            id: 202,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 256
+        )
+        let changedOutput = makeOutput(
+            uid: "buffer-change-output",
+            name: "USB DAC",
+            id: 202,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(initialOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(changedOutput)
+        observer.emit(.success(changedOutput))
+        await waitUntil {
+            engine.startCalls.count == 2
+        }
+
+        #expect(engine.muteOutputCallCount == 0)
+        #expect(engine.startCalls.map(\.output) == [initialOutput, changedOutput])
+        #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
     }
 
     @Test
@@ -3030,6 +3270,95 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsHelperCanCancelAnInFlightFilePicker() async throws {
+        let model = makeModel()
+        let launcher = ControllableSettingsHelperLauncher()
+        let picker = CancellableSettingsFileImportPicker()
+        let coordinator = SettingsCoordinator(
+            model: model,
+            helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") },
+            fileImportPicker: picker.choose(mode:expectedSampleRate:)
+        )
+
+        let token = try await connectSettingsHelper(
+            coordinator: coordinator,
+            launcher: launcher
+        )
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "file-picker",
+            kind: .command,
+            command: .chooseImportFiles(mode: .single, expectedSampleRate: 48_000)
+        ))
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "file-picker",
+            kind: .cancel,
+            command: nil
+        ))
+
+        await waitUntil {
+            picker.wasCancelled
+        }
+        await settleAsyncWork()
+        #expect(picker.wasCancelled)
+        #expect(!launcher.receivedAppMessages.contains { message in
+            if case .response(_, "file-picker", _, _) = message {
+                return true
+            }
+            return false
+        })
+        coordinator.shutdown()
+    }
+
+    @Test
+    func settingsHelperDisconnectCancelsItsInFlightFilePicker() async throws {
+        let model = makeModel()
+        let launcher = ControllableSettingsHelperLauncher()
+        let picker = CancellableSettingsFileImportPicker()
+        let coordinator = SettingsCoordinator(
+            model: model,
+            helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") },
+            fileImportPicker: picker.choose(mode:expectedSampleRate:)
+        )
+
+        let token = try await connectSettingsHelper(
+            coordinator: coordinator,
+            launcher: launcher
+        )
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "file-picker",
+            kind: .command,
+            command: .chooseImportFiles(mode: .stereoPair, expectedSampleRate: 48_000)
+        ))
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "disconnect",
+            kind: .disconnect,
+            command: nil
+        ))
+
+        await waitUntil {
+            picker.wasCancelled
+        }
+        #expect(picker.wasCancelled)
+        #expect(!coordinator.hasActiveSessionResourcesForTesting)
+    }
+
+    @Test
     func settingsLaunchValidationFailureTerminatesPartiallyStartedHelper() async throws {
         let model = makeModel()
         let launcher = SleepingSettingsHelperLauncher()
@@ -3575,6 +3904,7 @@ private func makeModel(
     aggregateStabilityDelay: Duration = .zero,
     aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
     headsetAggregatePromotionDelay: Duration = .seconds(6),
+    coldStartupAggregatePromotionPollInterval: Duration = .seconds(1),
     renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
     renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
     renderWatchdogPollInterval: Duration = .milliseconds(500),
@@ -3600,6 +3930,7 @@ private func makeModel(
         aggregateStabilitySettlingDelay: aggregateStabilityDelay,
         aggregateCleanSessionDuration: aggregateCleanSessionDuration,
         headsetAggregatePromotionDelay: headsetAggregatePromotionDelay,
+        coldStartupAggregatePromotionPollInterval: coldStartupAggregatePromotionPollInterval,
         renderWatchdogStallThreshold: renderWatchdogStallThreshold,
         renderWatchdogRepeatedFailureWindow: renderWatchdogRepeatedFailureWindow,
         renderWatchdogPollInterval: renderWatchdogPollInterval,
@@ -3636,6 +3967,26 @@ private final class BlockingProfileImportOperation: @unchecked Sendable {
             return continuation
         }
         continuation?.resume(returning: result)
+    }
+}
+
+@MainActor
+private final class CancellableSettingsFileImportPicker {
+    private(set) var hasEntered = false
+    private(set) var wasCancelled = false
+
+    func choose(
+        mode: SettingsFileImportMode,
+        expectedSampleRate: Double
+    ) async throws -> SettingsFileImportSelectionDTO? {
+        hasEntered = true
+        do {
+            try await Task.sleep(for: .seconds(30))
+            return nil
+        } catch is CancellationError {
+            wasCancelled = true
+            throw CancellationError()
+        }
     }
 }
 
@@ -3729,6 +4080,48 @@ private func helperExecutableURL(for helperURL: URL) -> URL {
         .appendingPathComponent("MacOS", isDirectory: true)
         .appendingPathComponent("GlassEQSettings", isDirectory: false)
         .standardizedFileURL
+}
+
+@MainActor
+private func connectSettingsHelper(
+    coordinator: SettingsCoordinator,
+    launcher: ControllableSettingsHelperLauncher
+) async throws -> String {
+    #expect(coordinator.openSettings() == .helper)
+    await waitUntil {
+        launcher.receivedAppMessages.contains { message in
+            if case .bootstrap = message {
+                return true
+            }
+            return false
+        }
+    }
+    let bootstrap = try #require(launcher.receivedAppMessages.first { message in
+        if case .bootstrap = message {
+            return true
+        }
+        return false
+    })
+    guard case .bootstrap(let token) = bootstrap else {
+        throw SettingsCommandFailure(message: "Expected Settings bootstrap message.")
+    }
+    try launcher.writeHelperMessage(.request(
+        sessionToken: token,
+        id: "connect",
+        kind: .connect,
+        command: nil
+    ))
+    try launcher.writeHelperMessage(.request(
+        sessionToken: token,
+        id: "ready",
+        kind: .ready,
+        command: nil
+    ))
+    await waitUntil {
+        coordinator.isHelperReadyForTesting
+    }
+    #expect(coordinator.isHelperReadyForTesting)
+    return token
 }
 
 private func settleAsyncWork() async {
@@ -4127,6 +4520,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
+    private var _resumeOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
     private var _events: [String] = []
     private var _preferredAggregateBufferFrameSize: UInt32 = 16
@@ -4137,6 +4531,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _headsetAggregatePromotionAttemptCount = 0
     private var _isUsingTransitionalHeadsetBackend = false
     private var _isUsingPromotedHeadsetAggregate = false
+    private var _coldStartupPromotionCandidateUIDs: Set<String> = []
+    private var _coldStartupAggregatePromotionResult = ColdStartupAggregatePromotionResult.notApplicable
+    private var _coldStartupAggregatePromotionAttemptCount = 0
+    private var _isDeferringColdStartupAggregate = false
     private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
 
     var state: AudioEngineState {
@@ -4155,6 +4553,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     var isUsingPromotedHeadsetAggregate: Bool {
         withLock { _isUsingPromotedHeadsetAggregate }
+    }
+
+    var isDeferringColdStartupAggregate: Bool {
+        withLock { _isDeferringColdStartupAggregate }
     }
 
     var startError: Error? {
@@ -4242,6 +4644,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _muteOutputCallCount = newValue } }
     }
 
+    private(set) var resumeOutputCallCount: Int {
+        get { withLock { _resumeOutputCallCount } }
+        set { withLock { _resumeOutputCallCount = newValue } }
+    }
+
     var metrics: AudioEngineMetrics {
         get { withLock { _metrics } }
         set { withLock { _metrics = newValue } }
@@ -4264,6 +4671,20 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     var headsetAggregatePromotionAttemptCount: Int {
         withLock { _headsetAggregatePromotionAttemptCount }
+    }
+
+    var coldStartupPromotionCandidateUIDs: Set<String> {
+        get { withLock { _coldStartupPromotionCandidateUIDs } }
+        set { withLock { _coldStartupPromotionCandidateUIDs = newValue } }
+    }
+
+    var coldStartupAggregatePromotionResult: ColdStartupAggregatePromotionResult {
+        get { withLock { _coldStartupAggregatePromotionResult } }
+        set { withLock { _coldStartupAggregatePromotionResult = newValue } }
+    }
+
+    var coldStartupAggregatePromotionAttemptCount: Int {
+        withLock { _coldStartupAggregatePromotionAttemptCount }
     }
 
     var events: [String] {
@@ -4345,6 +4766,20 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _state = .running(output: activeOutput)
             _isUsingTransitionalHeadsetBackend = _headsetPromotionCandidateUIDs.contains(output.uid)
             _isUsingPromotedHeadsetAggregate = false
+            _isDeferringColdStartupAggregate = _coldStartupPromotionCandidateUIDs.contains(output.uid)
+        }
+    }
+
+    func attemptColdStartupAggregatePromotion() throws
+        -> ColdStartupAggregatePromotionResult {
+        withLock {
+            _coldStartupAggregatePromotionAttemptCount += 1
+            let result = _coldStartupAggregatePromotionResult
+            if case .promoted(let output) = result {
+                _state = .running(output: output)
+                _isDeferringColdStartupAggregate = false
+            }
+            return result
         }
     }
 
@@ -4371,7 +4806,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
         withLock {
-            if _isUsingTransitionalHeadsetBackend {
+            if _isUsingTransitionalHeadsetBackend || _isDeferringColdStartupAggregate {
                 return nil
             }
             return AggregateAudioRouteFingerprint(
@@ -4457,6 +4892,13 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
+    func resumeOutputAfterCancelledTransition() {
+        withLock {
+            _events.append("resume")
+            _resumeOutputCallCount += 1
+        }
+    }
+
     func setRuntimeFailureHandler(
         _ handler: (@Sendable (AudioEngineFailure) -> Void)?
     ) {
@@ -4482,6 +4924,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _state = .stopped
             _isUsingTransitionalHeadsetBackend = false
             _isUsingPromotedHeadsetAggregate = false
+            _isDeferringColdStartupAggregate = false
         }
     }
 

@@ -308,10 +308,10 @@ public struct SettingsView: View {
         .sheet(isPresented: $isImportSheetPresented) {
             ProfileImportSheet(
                 currentProfile: snapshot.draftProfile,
-                currentProcessingSampleRate: snapshot.currentProcessingSampleRate,
                 isReadOnly: isProfileStoreProtected,
                 onImport: importProfile,
-                onImportParsedProfile: importParsedProfile
+                onImportParsedProfile: importParsedProfile,
+                onChooseImportFiles: chooseImportFiles
             )
         }
         // Run the content up under the (transparent, separator-less) titlebar so there's no bar
@@ -417,6 +417,17 @@ public struct SettingsView: View {
             return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
         }
         return nil
+    }
+
+    private func chooseImportFiles(_ mode: SettingsFileImportMode) async -> SettingsFileImportChoice {
+        let response = await model.perform(.chooseImportFiles(
+            mode: mode,
+            expectedSampleRate: snapshot.currentProcessingSampleRate
+        ))
+        return SettingsFileImportChoice(
+            selection: response?.fileImportSelection,
+            errorMessage: response == nil ? model.commandErrorMessage : nil
+        )
     }
 
     private func show(_ section: SettingsSection) {
