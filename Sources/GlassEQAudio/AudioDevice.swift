@@ -299,11 +299,15 @@ public enum CoreAudioDeviceQuery {
     ) throws -> Bool {
         for processObjectID in try processObjectIDs()
         where !excludedProcessObjectIDs.contains(processObjectID) {
-            guard try isRunningOutput(processObjectID) else {
+            do {
+                guard try isRunningOutput(processObjectID) else {
+                    continue
+                }
+                if try outputDeviceIDs(processObjectID).contains(deviceID) {
+                    return true
+                }
+            } catch {
                 continue
-            }
-            if try outputDeviceIDs(processObjectID).contains(deviceID) {
-                return true
             }
         }
         return false
