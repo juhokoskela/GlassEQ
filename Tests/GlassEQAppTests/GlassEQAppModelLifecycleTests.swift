@@ -1594,6 +1594,7 @@ struct GlassEQAppModelLifecycleTests {
             nominalSampleRate: 24_000
         )
         let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
         engine.processingSampleRate = 48_000
         let model = makeModel(engine: engine)
         model.currentOutputUID = output.uid
@@ -1601,6 +1602,7 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
 
+        engine.state = .stopped
         engine.processingSampleRate = nil
 
         #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
@@ -1625,6 +1627,28 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(snapshot.currentOutputSampleRate == 24_000)
         #expect(snapshot.currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func settingsSnapshotDoesNotAssociateAStaleRuntimeWithANewRoute() {
+        let oldOutput = makeOutput(
+            uid: "old-output",
+            name: "Speakers",
+            nominalSampleRate: 48_000
+        )
+        let newOutput = makeOutput(
+            uid: "new-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: oldOutput)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = newOutput.uid
+        model.currentOutputSampleRate = newOutput.nominalSampleRate
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
     }
 
     @Test

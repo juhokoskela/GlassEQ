@@ -973,7 +973,10 @@ final class GlassEQAppModel {
         }
 
         let outputSampleRate = Int64(currentOutputSampleRate.rounded())
-        if let processingSampleRate = engine.processingSampleRate,
+        if case .running(let activeOutput) = engine.state,
+           activeOutput.uid == currentOutputUID,
+           Int64(activeOutput.nominalSampleRate.rounded()) == outputSampleRate,
+           let processingSampleRate = engine.processingSampleRate,
            processingSampleRate.isFinite,
            processingSampleRate > 0 {
             lastProcessingSampleRate = (
