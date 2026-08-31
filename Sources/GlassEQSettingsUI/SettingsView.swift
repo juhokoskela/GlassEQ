@@ -308,7 +308,7 @@ public struct SettingsView: View {
         .sheet(isPresented: $isImportSheetPresented) {
             ProfileImportSheet(
                 currentProfile: snapshot.draftProfile,
-                currentOutputSampleRate: snapshot.currentOutputSampleRate,
+                currentProcessingSampleRate: snapshot.currentProcessingSampleRate,
                 isReadOnly: isProfileStoreProtected,
                 onImport: importProfile,
                 onImportParsedProfile: importParsedProfile

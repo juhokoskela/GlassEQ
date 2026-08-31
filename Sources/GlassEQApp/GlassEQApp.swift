@@ -244,6 +244,7 @@ enum GlassEQAppLifecycleState: Equatable {
 
 protocol AudioEngineControlling: AnyObject, Sendable {
     var state: AudioEngineState { get }
+    var processingSampleRate: Double? { get }
     var isUsingTransitionalHeadsetBackend: Bool { get }
     var isUsingPromotedHeadsetAggregate: Bool { get }
 
@@ -912,6 +913,7 @@ final class GlassEQAppModel {
             currentOutputName: currentOutputName,
             currentOutputUID: currentOutputUID,
             currentOutputSampleRate: currentOutputSampleRate,
+            currentProcessingSampleRate: engine.processingSampleRate ?? currentOutputSampleRate,
             currentOutputChannelCount: currentOutputChannelCount,
             currentOutputBufferFrameSize: currentOutputBufferFrameSize,
             currentOutputMappedProfileID: currentOutputMappedProfileID,

@@ -402,6 +402,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var activeProfileName: String?
     public var fallbackProfileID: UUID?
     public var currentOutput: SettingsOutputDTO?
+    public var currentProcessingSampleRate: Double?
     public var currentOutputMappedProfileID: SettingsOptionalUUIDPatchDTO?
     public var aggregateBuffer: SettingsAggregateBufferDTO?
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO?
@@ -417,6 +418,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         activeProfileName: String? = nil,
         fallbackProfileID: UUID? = nil,
         currentOutput: SettingsOutputDTO? = nil,
+        currentProcessingSampleRate: Double? = nil,
         currentOutputMappedProfileID: SettingsOptionalUUIDPatchDTO? = nil,
         aggregateBuffer: SettingsAggregateBufferDTO? = nil,
         profileStoreProtection: SettingsProfileStoreProtectionDTO? = nil
@@ -431,6 +433,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.activeProfileName = activeProfileName
         self.fallbackProfileID = fallbackProfileID
         self.currentOutput = currentOutput
+        self.currentProcessingSampleRate = currentProcessingSampleRate
         self.currentOutputMappedProfileID = currentOutputMappedProfileID
         self.aggregateBuffer = aggregateBuffer
         self.profileStoreProtection = profileStoreProtection
@@ -446,6 +449,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var currentOutputName: String
     public var currentOutputUID: String
     public var currentOutputSampleRate: Double
+    public var currentProcessingSampleRate: Double
     public var currentOutputChannelCount: Int
     public var currentOutputBufferFrameSize: UInt32
     public var currentOutputMappedProfileID: UUID?
@@ -467,6 +471,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case currentOutputName
         case currentOutputUID
         case currentOutputSampleRate
+        case currentProcessingSampleRate
         case currentOutputChannelCount
         case currentOutputBufferFrameSize
         case currentOutputMappedProfileID
@@ -489,6 +494,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         currentOutputName: String,
         currentOutputUID: String,
         currentOutputSampleRate: Double,
+        currentProcessingSampleRate: Double,
         currentOutputChannelCount: Int,
         currentOutputBufferFrameSize: UInt32,
         currentOutputMappedProfileID: UUID?,
@@ -509,6 +515,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.currentOutputName = currentOutputName
         self.currentOutputUID = currentOutputUID
         self.currentOutputSampleRate = currentOutputSampleRate
+        self.currentProcessingSampleRate = currentProcessingSampleRate
         self.currentOutputChannelCount = currentOutputChannelCount
         self.currentOutputBufferFrameSize = currentOutputBufferFrameSize
         self.currentOutputMappedProfileID = currentOutputMappedProfileID
@@ -524,6 +531,10 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let currentOutputSampleRate = try container.decode(
+            Double.self,
+            forKey: .currentOutputSampleRate
+        )
         self.init(
             profiles: try container.decode([EQProfile].self, forKey: .profiles),
             selectedProfileID: try container.decode(UUID.self, forKey: .selectedProfileID),
@@ -532,7 +543,11 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             activeProfileName: try container.decode(String.self, forKey: .activeProfileName),
             currentOutputName: try container.decode(String.self, forKey: .currentOutputName),
             currentOutputUID: try container.decode(String.self, forKey: .currentOutputUID),
-            currentOutputSampleRate: try container.decode(Double.self, forKey: .currentOutputSampleRate),
+            currentOutputSampleRate: currentOutputSampleRate,
+            currentProcessingSampleRate: try container.decodeIfPresent(
+                Double.self,
+                forKey: .currentProcessingSampleRate
+            ) ?? currentOutputSampleRate,
             currentOutputChannelCount: try container.decode(Int.self, forKey: .currentOutputChannelCount),
             currentOutputBufferFrameSize: try container.decode(UInt32.self, forKey: .currentOutputBufferFrameSize),
             currentOutputMappedProfileID: try container.decodeIfPresent(UUID.self, forKey: .currentOutputMappedProfileID),
@@ -567,6 +582,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             currentOutputName: "No output",
             currentOutputUID: "",
             currentOutputSampleRate: 0,
+            currentProcessingSampleRate: 0,
             currentOutputChannelCount: 0,
             currentOutputBufferFrameSize: 0,
             currentOutputMappedProfileID: nil,

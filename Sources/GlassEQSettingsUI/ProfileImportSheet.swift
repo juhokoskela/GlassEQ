@@ -37,7 +37,7 @@ private enum ProfileImportTaskPhase {
 
 struct ProfileImportSheet: View {
     var currentProfile: EQProfile
-    var currentOutputSampleRate: Double
+    var currentProcessingSampleRate: Double
     var isReadOnly: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
@@ -79,7 +79,7 @@ struct ProfileImportSheet: View {
                 case .text:
                     TextProfileImportPane(
                         currentProfile: currentProfile,
-                        currentOutputSampleRate: currentOutputSampleRate,
+                        currentProcessingSampleRate: currentProcessingSampleRate,
                         isReadOnly: isReadOnly,
                         onImport: onImport,
                         onImportParsedProfile: onImportParsedProfile,
@@ -338,7 +338,7 @@ private struct AutoEQImportPane: View {
 
 private struct TextProfileImportPane: View {
     var currentProfile: EQProfile
-    var currentOutputSampleRate: Double
+    var currentProcessingSampleRate: Double
     var isReadOnly: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
@@ -642,7 +642,7 @@ private struct TextProfileImportPane: View {
         fileLoadTask = Task { @MainActor in
             do {
                 if url.pathExtension.lowercased() == "wav" {
-                    let expectedSampleRate = currentOutputSampleRate
+                    let expectedSampleRate = currentProcessingSampleRate
                     let imported = try await Task.detached(priority: .userInitiated) {
                         try ImpulseResponseWAVImporter.load(
                             from: url,
@@ -692,7 +692,7 @@ private struct TextProfileImportPane: View {
                     throw StereoTextPairImportError.filesMustUseSameFormat
                 }
                 if leftIsWAV {
-                    let expectedSampleRate = currentOutputSampleRate
+                    let expectedSampleRate = currentProcessingSampleRate
                     let imported = try await Task.detached(priority: .userInitiated) {
                         try ImpulseResponseWAVImporter.loadStereoPair(
                             leftURL: leftURL,
