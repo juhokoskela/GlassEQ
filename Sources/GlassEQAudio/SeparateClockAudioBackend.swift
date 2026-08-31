@@ -297,6 +297,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         #if DEBUG
         private let freezePlayedFramesForTesting = Atomic<Bool>(false)
         #endif
+        private let playbackUnderrunEvents = Atomic<UInt64>(0)
         private let playbackUnderrunFrames = Atomic<UInt64>(0)
         private let droppedInputFrames = Atomic<UInt64>(0)
         private let droppedBufferedFrames = Atomic<UInt64>(0)
@@ -308,6 +309,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let playbackBufferObservations = Atomic<UInt64>(0)
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
+        private let captureCallbackSizes = RealtimeCallbackSizeTracker()
+        private let playbackCallbackSizes = RealtimeCallbackSizeTracker()
         private let playbackTimestampDiscontinuities = Atomic<UInt64>(0)
         private let playbackBufferRenegotiations = Atomic<UInt64>(0)
         private let adaptivePlaybackRenderFailures = Atomic<UInt64>(0)
@@ -518,6 +521,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         func resetMetrics() {
             capturedFrames.store(0, ordering: .relaxed)
             playedFrames.store(0, ordering: .relaxed)
+            playbackUnderrunEvents.store(0, ordering: .relaxed)
             playbackUnderrunFrames.store(0, ordering: .relaxed)
             droppedInputFrames.store(0, ordering: .relaxed)
             droppedBufferedFrames.store(0, ordering: .relaxed)
@@ -529,6 +533,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             playbackBufferObservations.store(0, ordering: .relaxed)
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
+            captureCallbackSizes.reset()
+            playbackCallbackSizes.reset()
             playbackTimestampDiscontinuities.store(0, ordering: .relaxed)
             playbackBufferRenegotiations.store(0, ordering: .relaxed)
             adaptivePlaybackRenderFailures.store(0, ordering: .relaxed)
@@ -543,6 +549,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             return AudioEngineMetrics(
                 capturedFrames: capturedFrames.load(ordering: .relaxed),
                 playedFrames: playedFrames.load(ordering: .relaxed),
+                playbackUnderrunEvents: playbackUnderrunEvents.load(ordering: .relaxed),
                 playbackUnderrunFrames: playbackUnderrunFrames.load(ordering: .relaxed),
                 droppedInputFrames: droppedInputFrames.load(ordering: .relaxed),
                 droppedBufferedFrames: droppedBufferedFrames.load(ordering: .relaxed),
@@ -558,6 +565,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 playbackBufferObservations: observations,
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
+                captureCallbackSizeObservations: captureCallbackSizes.snapshot(),
+                playbackCallbackSizeObservations: playbackCallbackSizes.snapshot(),
                 playbackTimestampDiscontinuities: playbackTimestampDiscontinuities.load(ordering: .relaxed),
                 playbackBufferRenegotiations: playbackBufferRenegotiations.load(ordering: .relaxed),
                 adaptivePlaybackRenderFailures: adaptivePlaybackRenderFailures.load(ordering: .relaxed),
@@ -649,6 +658,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 return
             }
             updateMax(maxCaptureCallbackFrames, frameCount)
+            captureCallbackSizes.record(frameCount)
 
             if outputMutedForTransition.load(ordering: .acquiring) {
                 return
@@ -734,6 +744,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 return
             }
             updateMax(maxPlaybackCallbackFrames, frameCount)
+            playbackCallbackSizes.record(frameCount)
 
             if pendingOutputTimestampReset.exchange(false, ordering: .acquiringAndReleasing) {
                 outputTimestampTracker.reset()
@@ -844,6 +855,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
 
             if underrunFrames > 0 {
+                playbackUnderrunEvents.wrappingAdd(1, ordering: .relaxed)
                 playbackUnderrunFrames.wrappingAdd(UInt64(underrunFrames), ordering: .relaxed)
                 signalPlaybackInstability(.underrun)
             } else if adaptiveRenderFailed {
@@ -1968,6 +1980,16 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     public func snapshotMetrics() -> AudioEngineMetrics {
         let runtime = control.withLock { $0.runtime }
         return runtime?.snapshotMetrics() ?? AudioEngineMetrics()
+    }
+
+    func diagnosticDeviceIDs() -> (physical: AudioObjectID, aggregate: AudioObjectID)? {
+        control.withLock { state in
+            guard let output = state.activeOutput,
+                  state.aggregateDeviceID != kAudioObjectUnknown else {
+                return nil
+            }
+            return (output.id, state.aggregateDeviceID)
+        }
     }
 
     public func resetDiagnostics() {

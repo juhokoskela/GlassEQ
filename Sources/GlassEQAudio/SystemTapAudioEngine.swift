@@ -31,18 +31,33 @@ public typealias AudioEngineDiagnosticTrace = @Sendable (
 
 public struct AudioRenderTimingMetrics: Equatable, Sendable {
     public var callbackStartLatenessObservations: UInt64
+    public var callbackStartLatenessP50Nanoseconds: UInt64
+    public var callbackStartLatenessP99Nanoseconds: UInt64
+    public var callbackStartLatenessP999Nanoseconds: UInt64
     public var callbackStartLatenessP9999Nanoseconds: UInt64
     public var maximumCallbackStartLatenessNanoseconds: UInt64
     public var directHeadObservations: UInt64
+    public var directHeadP50Nanoseconds: UInt64
+    public var directHeadP99Nanoseconds: UInt64
+    public var directHeadP999Nanoseconds: UInt64
     public var directHeadP9999Nanoseconds: UInt64
     public var maximumDirectHeadNanoseconds: UInt64
     public var tailWorkObservations: UInt64
+    public var tailWorkP50Nanoseconds: UInt64
+    public var tailWorkP99Nanoseconds: UInt64
+    public var tailWorkP999Nanoseconds: UInt64
     public var tailWorkP9999Nanoseconds: UInt64
     public var maximumTailWorkNanoseconds: UInt64
     public var totalRenderObservations: UInt64
+    public var totalRenderP50Nanoseconds: UInt64
+    public var totalRenderP99Nanoseconds: UInt64
+    public var totalRenderP999Nanoseconds: UInt64
     public var totalRenderP9999Nanoseconds: UInt64
     public var maximumTotalRenderNanoseconds: UInt64
     public var completionLatenessObservations: UInt64
+    public var completionLatenessP50Nanoseconds: UInt64
+    public var completionLatenessP99Nanoseconds: UInt64
+    public var completionLatenessP999Nanoseconds: UInt64
     public var completionLatenessP9999Nanoseconds: UInt64
     public var maximumCompletionLatenessNanoseconds: UInt64
     public var tailCompletionObservations: UInt64
@@ -51,18 +66,33 @@ public struct AudioRenderTimingMetrics: Equatable, Sendable {
 
     public init(
         callbackStartLatenessObservations: UInt64 = 0,
+        callbackStartLatenessP50Nanoseconds: UInt64 = 0,
+        callbackStartLatenessP99Nanoseconds: UInt64 = 0,
+        callbackStartLatenessP999Nanoseconds: UInt64 = 0,
         callbackStartLatenessP9999Nanoseconds: UInt64 = 0,
         maximumCallbackStartLatenessNanoseconds: UInt64 = 0,
         directHeadObservations: UInt64 = 0,
+        directHeadP50Nanoseconds: UInt64 = 0,
+        directHeadP99Nanoseconds: UInt64 = 0,
+        directHeadP999Nanoseconds: UInt64 = 0,
         directHeadP9999Nanoseconds: UInt64 = 0,
         maximumDirectHeadNanoseconds: UInt64 = 0,
         tailWorkObservations: UInt64 = 0,
+        tailWorkP50Nanoseconds: UInt64 = 0,
+        tailWorkP99Nanoseconds: UInt64 = 0,
+        tailWorkP999Nanoseconds: UInt64 = 0,
         tailWorkP9999Nanoseconds: UInt64 = 0,
         maximumTailWorkNanoseconds: UInt64 = 0,
         totalRenderObservations: UInt64 = 0,
+        totalRenderP50Nanoseconds: UInt64 = 0,
+        totalRenderP99Nanoseconds: UInt64 = 0,
+        totalRenderP999Nanoseconds: UInt64 = 0,
         totalRenderP9999Nanoseconds: UInt64 = 0,
         maximumTotalRenderNanoseconds: UInt64 = 0,
         completionLatenessObservations: UInt64 = 0,
+        completionLatenessP50Nanoseconds: UInt64 = 0,
+        completionLatenessP99Nanoseconds: UInt64 = 0,
+        completionLatenessP999Nanoseconds: UInt64 = 0,
         completionLatenessP9999Nanoseconds: UInt64 = 0,
         maximumCompletionLatenessNanoseconds: UInt64 = 0,
         tailCompletionObservations: UInt64 = 0,
@@ -70,23 +100,48 @@ public struct AudioRenderTimingMetrics: Equatable, Sendable {
         tailDeadlineMisses: UInt64 = 0
     ) {
         self.callbackStartLatenessObservations = callbackStartLatenessObservations
+        self.callbackStartLatenessP50Nanoseconds = callbackStartLatenessP50Nanoseconds
+        self.callbackStartLatenessP99Nanoseconds = callbackStartLatenessP99Nanoseconds
+        self.callbackStartLatenessP999Nanoseconds = callbackStartLatenessP999Nanoseconds
         self.callbackStartLatenessP9999Nanoseconds = callbackStartLatenessP9999Nanoseconds
         self.maximumCallbackStartLatenessNanoseconds = maximumCallbackStartLatenessNanoseconds
         self.directHeadObservations = directHeadObservations
+        self.directHeadP50Nanoseconds = directHeadP50Nanoseconds
+        self.directHeadP99Nanoseconds = directHeadP99Nanoseconds
+        self.directHeadP999Nanoseconds = directHeadP999Nanoseconds
         self.directHeadP9999Nanoseconds = directHeadP9999Nanoseconds
         self.maximumDirectHeadNanoseconds = maximumDirectHeadNanoseconds
         self.tailWorkObservations = tailWorkObservations
+        self.tailWorkP50Nanoseconds = tailWorkP50Nanoseconds
+        self.tailWorkP99Nanoseconds = tailWorkP99Nanoseconds
+        self.tailWorkP999Nanoseconds = tailWorkP999Nanoseconds
         self.tailWorkP9999Nanoseconds = tailWorkP9999Nanoseconds
         self.maximumTailWorkNanoseconds = maximumTailWorkNanoseconds
         self.totalRenderObservations = totalRenderObservations
+        self.totalRenderP50Nanoseconds = totalRenderP50Nanoseconds
+        self.totalRenderP99Nanoseconds = totalRenderP99Nanoseconds
+        self.totalRenderP999Nanoseconds = totalRenderP999Nanoseconds
         self.totalRenderP9999Nanoseconds = totalRenderP9999Nanoseconds
         self.maximumTotalRenderNanoseconds = maximumTotalRenderNanoseconds
         self.completionLatenessObservations = completionLatenessObservations
+        self.completionLatenessP50Nanoseconds = completionLatenessP50Nanoseconds
+        self.completionLatenessP99Nanoseconds = completionLatenessP99Nanoseconds
+        self.completionLatenessP999Nanoseconds = completionLatenessP999Nanoseconds
         self.completionLatenessP9999Nanoseconds = completionLatenessP9999Nanoseconds
         self.maximumCompletionLatenessNanoseconds = maximumCompletionLatenessNanoseconds
         self.tailCompletionObservations = tailCompletionObservations
         self.minimumTailCompletionSlackFrames = minimumTailCompletionSlackFrames
         self.tailDeadlineMisses = tailDeadlineMisses
+    }
+}
+
+public struct AudioCallbackSizeObservation: Equatable, Sendable {
+    public var frameCount: Int?
+    public var observations: UInt64
+
+    public init(frameCount: Int?, observations: UInt64) {
+        self.frameCount = frameCount
+        self.observations = observations
     }
 }
 
@@ -102,19 +157,29 @@ public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Send
     ) {
         self.outputDeviceUID = outputDeviceUID
         self.nativeOutputStreamIndex = nativeOutputStreamIndex
-        self.nominalSampleRate = Int64(nominalSampleRate.rounded())
+        if nominalSampleRate.isFinite,
+           nominalSampleRate > 0,
+           nominalSampleRate <= CoreAudioDeviceQuery.maxSampleRate {
+            self.nominalSampleRate = Int64(nominalSampleRate.rounded())
+        } else {
+            self.nominalSampleRate = 0
+        }
     }
 
     public var isValid: Bool {
         !outputDeviceUID.isEmpty
+            && outputDeviceUID.utf8.count <= 512
             && nativeOutputStreamIndex >= 0
+            && nativeOutputStreamIndex < CoreAudioDeviceQuery.maxChannelCount
             && nominalSampleRate > 0
+            && nominalSampleRate <= Int64(CoreAudioDeviceQuery.maxSampleRate)
     }
 }
 
 public struct AudioEngineMetrics: Equatable, Sendable {
     public var capturedFrames: UInt64
     public var playedFrames: UInt64
+    public var playbackUnderrunEvents: UInt64
     public var playbackUnderrunFrames: UInt64
     public var droppedInputFrames: UInt64
     public var droppedBufferedFrames: UInt64
@@ -140,6 +205,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public var averageTimestampJumpIntervalNanoseconds: Double
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
+    public var captureCallbackSizeObservations: [AudioCallbackSizeObservation]
+    public var playbackCallbackSizeObservations: [AudioCallbackSizeObservation]
     public var renderDeadlineMisses: UInt64
     public var callbackStartStarvations: UInt64
     public var renderOverruns: UInt64
@@ -168,6 +235,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public init(
         capturedFrames: UInt64 = 0,
         playedFrames: UInt64 = 0,
+        playbackUnderrunEvents: UInt64 = 0,
         playbackUnderrunFrames: UInt64 = 0,
         droppedInputFrames: UInt64 = 0,
         droppedBufferedFrames: UInt64 = 0,
@@ -193,6 +261,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         averageTimestampJumpIntervalNanoseconds: Double = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
+        captureCallbackSizeObservations: [AudioCallbackSizeObservation] = [],
+        playbackCallbackSizeObservations: [AudioCallbackSizeObservation] = [],
         renderDeadlineMisses: UInt64 = 0,
         callbackStartStarvations: UInt64 = 0,
         renderOverruns: UInt64 = 0,
@@ -220,6 +290,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     ) {
         self.capturedFrames = capturedFrames
         self.playedFrames = playedFrames
+        self.playbackUnderrunEvents = playbackUnderrunEvents
         self.playbackUnderrunFrames = playbackUnderrunFrames
         self.droppedInputFrames = droppedInputFrames
         self.droppedBufferedFrames = droppedBufferedFrames
@@ -245,6 +316,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         self.averageTimestampJumpIntervalNanoseconds = averageTimestampJumpIntervalNanoseconds
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
+        self.captureCallbackSizeObservations = captureCallbackSizeObservations
+        self.playbackCallbackSizeObservations = playbackCallbackSizeObservations
         self.renderDeadlineMisses = renderDeadlineMisses
         self.callbackStartStarvations = callbackStartStarvations
         self.renderOverruns = renderOverruns
@@ -569,6 +642,9 @@ struct RealtimeOutputDeclicker: Sendable {
 
 struct ExtremeDurationSnapshot {
     var observations: UInt64
+    var p50Nanoseconds: UInt64
+    var p99Nanoseconds: UInt64
+    var p999Nanoseconds: UInt64
     var p9999Nanoseconds: UInt64
     var maximumNanoseconds: UInt64
 }
@@ -584,6 +660,9 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
 
     private let requestedGeneration = Atomic<UInt64>(0)
     private let publishedObservations = Atomic<UInt64>(0)
+    private let publishedP50Nanoseconds = Atomic<UInt64>(0)
+    private let publishedP99Nanoseconds = Atomic<UInt64>(0)
+    private let publishedP999Nanoseconds = Atomic<UInt64>(0)
     private let publishedP9999Nanoseconds = Atomic<UInt64>(0)
     private let publishedMaximumNanoseconds = Atomic<UInt64>(0)
     private var localGeneration: UInt64 = 0
@@ -619,13 +698,20 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     func reset() {
         requestedGeneration.wrappingAdd(1, ordering: .releasing)
         publishedObservations.store(0, ordering: .relaxed)
+        publishedP50Nanoseconds.store(0, ordering: .relaxed)
+        publishedP99Nanoseconds.store(0, ordering: .relaxed)
+        publishedP999Nanoseconds.store(0, ordering: .relaxed)
         publishedP9999Nanoseconds.store(0, ordering: .relaxed)
         publishedMaximumNanoseconds.store(0, ordering: .relaxed)
     }
 
     func snapshot() -> ExtremeDurationSnapshot {
-        ExtremeDurationSnapshot(
-            observations: publishedObservations.load(ordering: .relaxed),
+        let observations = publishedObservations.load(ordering: .acquiring)
+        return ExtremeDurationSnapshot(
+            observations: observations,
+            p50Nanoseconds: publishedP50Nanoseconds.load(ordering: .relaxed),
+            p99Nanoseconds: publishedP99Nanoseconds.load(ordering: .relaxed),
+            p999Nanoseconds: publishedP999Nanoseconds.load(ordering: .relaxed),
             p9999Nanoseconds: publishedP9999Nanoseconds.load(ordering: .relaxed),
             maximumNanoseconds: publishedMaximumNanoseconds.load(ordering: .relaxed)
         )
@@ -642,29 +728,49 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     }
 
     private func publish() {
-        let rank = max(
-            UInt64(ceil(Double(observations) * 0.9999)),
-            1
-        )
+        let p50Rank = Self.rank(for: 0.5, observations: observations)
+        let p99Rank = Self.rank(for: 0.99, observations: observations)
+        let p999Rank = Self.rank(for: 0.999, observations: observations)
+        let p9999Rank = Self.rank(for: 0.9999, observations: observations)
         var cumulative: UInt64 = 0
-        var percentile = maximumNanoseconds
+        var p50: UInt64?
+        var p99: UInt64?
+        var p999: UInt64?
+        var p9999: UInt64?
         for bucket in 0..<Self.bucketCount
         where bucketGenerations[bucket] == localGeneration {
             cumulative &+= bucketCounts[bucket]
-            if cumulative >= rank {
-                percentile = min(
-                    Self.bucketUpperBound(
-                        bucket,
-                        maximumNanoseconds: maximumNanoseconds
-                    ),
-                    maximumNanoseconds
-                )
+            let upperBound = min(
+                Self.bucketUpperBound(
+                    bucket,
+                    maximumNanoseconds: maximumNanoseconds
+                ),
+                maximumNanoseconds
+            )
+            if p50 == nil, cumulative >= p50Rank {
+                p50 = upperBound
+            }
+            if p99 == nil, cumulative >= p99Rank {
+                p99 = upperBound
+            }
+            if p999 == nil, cumulative >= p999Rank {
+                p999 = upperBound
+            }
+            if cumulative >= p9999Rank {
+                p9999 = upperBound
                 break
             }
         }
         publishedMaximumNanoseconds.store(maximumNanoseconds, ordering: .relaxed)
-        publishedP9999Nanoseconds.store(percentile, ordering: .relaxed)
+        publishedP50Nanoseconds.store(p50 ?? maximumNanoseconds, ordering: .relaxed)
+        publishedP99Nanoseconds.store(p99 ?? maximumNanoseconds, ordering: .relaxed)
+        publishedP999Nanoseconds.store(p999 ?? maximumNanoseconds, ordering: .relaxed)
+        publishedP9999Nanoseconds.store(p9999 ?? maximumNanoseconds, ordering: .relaxed)
         publishedObservations.store(observations, ordering: .releasing)
+    }
+
+    private static func rank(for percentile: Double, observations: UInt64) -> UInt64 {
+        max(UInt64(ceil(Double(observations) * percentile)), 1)
     }
 
     private static func bucketIndex(for nanoseconds: UInt64) -> Int {
@@ -692,6 +798,103 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
                 + UInt64(bucket - fineBucketCount + 1) * coarseBucketWidthNanoseconds
         }
         return maximumNanoseconds
+    }
+}
+
+final class RealtimeCallbackSizeTracker: @unchecked Sendable {
+    private let frames16 = Atomic<UInt64>(0)
+    private let frames32 = Atomic<UInt64>(0)
+    private let frames64 = Atomic<UInt64>(0)
+    private let frames128 = Atomic<UInt64>(0)
+    private let frames256 = Atomic<UInt64>(0)
+    private let frames480 = Atomic<UInt64>(0)
+    private let frames512 = Atomic<UInt64>(0)
+    private let frames960 = Atomic<UInt64>(0)
+    private let frames1024 = Atomic<UInt64>(0)
+    private let frames2048 = Atomic<UInt64>(0)
+    private let frames4096 = Atomic<UInt64>(0)
+    private let frames8192 = Atomic<UInt64>(0)
+    private let other = Atomic<UInt64>(0)
+
+    func record(_ frameCount: Int) {
+        switch frameCount {
+        case 16:
+            frames16.wrappingAdd(1, ordering: .relaxed)
+        case 32:
+            frames32.wrappingAdd(1, ordering: .relaxed)
+        case 64:
+            frames64.wrappingAdd(1, ordering: .relaxed)
+        case 128:
+            frames128.wrappingAdd(1, ordering: .relaxed)
+        case 256:
+            frames256.wrappingAdd(1, ordering: .relaxed)
+        case 480:
+            frames480.wrappingAdd(1, ordering: .relaxed)
+        case 512:
+            frames512.wrappingAdd(1, ordering: .relaxed)
+        case 960:
+            frames960.wrappingAdd(1, ordering: .relaxed)
+        case 1_024:
+            frames1024.wrappingAdd(1, ordering: .relaxed)
+        case 2_048:
+            frames2048.wrappingAdd(1, ordering: .relaxed)
+        case 4_096:
+            frames4096.wrappingAdd(1, ordering: .relaxed)
+        case 8_192:
+            frames8192.wrappingAdd(1, ordering: .relaxed)
+        default:
+            other.wrappingAdd(1, ordering: .relaxed)
+        }
+    }
+
+    func reset() {
+        frames16.store(0, ordering: .relaxed)
+        frames32.store(0, ordering: .relaxed)
+        frames64.store(0, ordering: .relaxed)
+        frames128.store(0, ordering: .relaxed)
+        frames256.store(0, ordering: .relaxed)
+        frames480.store(0, ordering: .relaxed)
+        frames512.store(0, ordering: .relaxed)
+        frames960.store(0, ordering: .relaxed)
+        frames1024.store(0, ordering: .relaxed)
+        frames2048.store(0, ordering: .relaxed)
+        frames4096.store(0, ordering: .relaxed)
+        frames8192.store(0, ordering: .relaxed)
+        other.store(0, ordering: .relaxed)
+    }
+
+    func snapshot() -> [AudioCallbackSizeObservation] {
+        var result: [AudioCallbackSizeObservation] = []
+        result.reserveCapacity(13)
+        append(frames16, frameCount: 16, to: &result)
+        append(frames32, frameCount: 32, to: &result)
+        append(frames64, frameCount: 64, to: &result)
+        append(frames128, frameCount: 128, to: &result)
+        append(frames256, frameCount: 256, to: &result)
+        append(frames480, frameCount: 480, to: &result)
+        append(frames512, frameCount: 512, to: &result)
+        append(frames960, frameCount: 960, to: &result)
+        append(frames1024, frameCount: 1_024, to: &result)
+        append(frames2048, frameCount: 2_048, to: &result)
+        append(frames4096, frameCount: 4_096, to: &result)
+        append(frames8192, frameCount: 8_192, to: &result)
+        append(other, frameCount: nil, to: &result)
+        return result
+    }
+
+    private func append(
+        _ counter: borrowing Atomic<UInt64>,
+        frameCount: Int?,
+        to result: inout [AudioCallbackSizeObservation]
+    ) {
+        let observations = counter.load(ordering: .relaxed)
+        guard observations > 0 else {
+            return
+        }
+        result.append(AudioCallbackSizeObservation(
+            frameCount: frameCount,
+            observations: observations
+        ))
     }
 }
 
@@ -975,6 +1178,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         #if DEBUG
         private let freezePlayedFramesForTesting = Atomic<Bool>(false)
         #endif
+        private let playbackUnderrunEvents = Atomic<UInt64>(0)
         private let playbackUnderrunFrames = Atomic<UInt64>(0)
         private let droppedInputFrames = Atomic<UInt64>(0)
         private let saturatedSamples = Atomic<UInt64>(0)
@@ -994,6 +1198,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let totalTimestampJumpIntervalNanoseconds = Atomic<UInt64>(0)
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
+        private let captureCallbackSizes = RealtimeCallbackSizeTracker()
+        private let playbackCallbackSizes = RealtimeCallbackSizeTracker()
         private let renderDeadlineMisses = Atomic<UInt64>(0)
         private let callbackStartStarvations = Atomic<UInt64>(0)
         private let renderOverruns = Atomic<UInt64>(0)
@@ -1246,9 +1452,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
             updateMax(maxCaptureCallbackFrames, inputFrameCount)
             updateMax(maxPlaybackCallbackFrames, outputFrameCount)
+            captureCallbackSizes.record(inputFrameCount)
+            playbackCallbackSizes.record(outputFrameCount)
             capturedFrames.wrappingAdd(UInt64(inputFrameCount), ordering: .relaxed)
 
             if inputFrameCount < outputFrameCount {
+                playbackUnderrunEvents.wrappingAdd(1, ordering: .relaxed)
                 playbackUnderrunFrames.wrappingAdd(
                     UInt64(outputFrameCount - inputFrameCount),
                     ordering: .relaxed
@@ -1430,6 +1639,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         func resetMetrics() {
             capturedFrames.store(0, ordering: .relaxed)
             playedFrames.store(0, ordering: .relaxed)
+            playbackUnderrunEvents.store(0, ordering: .relaxed)
             playbackUnderrunFrames.store(0, ordering: .relaxed)
             droppedInputFrames.store(0, ordering: .relaxed)
             saturatedSamples.store(0, ordering: .relaxed)
@@ -1447,6 +1657,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             totalTimestampJumpIntervalNanoseconds.store(0, ordering: .relaxed)
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
+            captureCallbackSizes.reset()
+            playbackCallbackSizes.reset()
             renderDeadlineMisses.store(0, ordering: .relaxed)
             callbackStartStarvations.store(0, ordering: .relaxed)
             renderOverruns.store(0, ordering: .relaxed)
@@ -1499,6 +1711,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return AudioEngineMetrics(
                 capturedFrames: capturedFrames.load(ordering: .relaxed),
                 playedFrames: playedFrames.load(ordering: .relaxed),
+                playbackUnderrunEvents: playbackUnderrunEvents.load(ordering: .relaxed),
                 playbackUnderrunFrames: playbackUnderrunFrames.load(ordering: .relaxed),
                 droppedInputFrames: droppedInputFrames.load(ordering: .relaxed),
                 saturatedSamples: saturatedSamples.load(ordering: .relaxed),
@@ -1535,6 +1748,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     : Double(totalJumpInterval) / Double(jumpIntervalObservations),
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
+                captureCallbackSizeObservations: captureCallbackSizes.snapshot(),
+                playbackCallbackSizeObservations: playbackCallbackSizes.snapshot(),
                 renderDeadlineMisses: renderDeadlineMisses.load(ordering: .relaxed),
                 callbackStartStarvations: callbackStartStarvations.load(ordering: .relaxed),
                 renderOverruns: renderOverruns.load(ordering: .relaxed),
@@ -1565,18 +1780,33 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     : Double(totalOutputLead) / Double(timingObservations),
                 renderTiming: AudioRenderTimingMetrics(
                     callbackStartLatenessObservations: callbackStart.observations,
+                    callbackStartLatenessP50Nanoseconds: callbackStart.p50Nanoseconds,
+                    callbackStartLatenessP99Nanoseconds: callbackStart.p99Nanoseconds,
+                    callbackStartLatenessP999Nanoseconds: callbackStart.p999Nanoseconds,
                     callbackStartLatenessP9999Nanoseconds: callbackStart.p9999Nanoseconds,
                     maximumCallbackStartLatenessNanoseconds: callbackStart.maximumNanoseconds,
                     directHeadObservations: directHead.observations,
+                    directHeadP50Nanoseconds: directHead.p50Nanoseconds,
+                    directHeadP99Nanoseconds: directHead.p99Nanoseconds,
+                    directHeadP999Nanoseconds: directHead.p999Nanoseconds,
                     directHeadP9999Nanoseconds: directHead.p9999Nanoseconds,
                     maximumDirectHeadNanoseconds: directHead.maximumNanoseconds,
                     tailWorkObservations: tailWork.observations,
+                    tailWorkP50Nanoseconds: tailWork.p50Nanoseconds,
+                    tailWorkP99Nanoseconds: tailWork.p99Nanoseconds,
+                    tailWorkP999Nanoseconds: tailWork.p999Nanoseconds,
                     tailWorkP9999Nanoseconds: tailWork.p9999Nanoseconds,
                     maximumTailWorkNanoseconds: tailWork.maximumNanoseconds,
                     totalRenderObservations: totalRender.observations,
+                    totalRenderP50Nanoseconds: totalRender.p50Nanoseconds,
+                    totalRenderP99Nanoseconds: totalRender.p99Nanoseconds,
+                    totalRenderP999Nanoseconds: totalRender.p999Nanoseconds,
                     totalRenderP9999Nanoseconds: totalRender.p9999Nanoseconds,
                     maximumTotalRenderNanoseconds: totalRender.maximumNanoseconds,
                     completionLatenessObservations: completion.observations,
+                    completionLatenessP50Nanoseconds: completion.p50Nanoseconds,
+                    completionLatenessP99Nanoseconds: completion.p99Nanoseconds,
+                    completionLatenessP999Nanoseconds: completion.p999Nanoseconds,
                     completionLatenessP9999Nanoseconds: completion.p9999Nanoseconds,
                     maximumCompletionLatenessNanoseconds: completion.maximumNanoseconds,
                     tailCompletionObservations: tailCompletions,
@@ -2287,6 +2517,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return false
         }
         return Self.shouldUseSeparateClockBackend(for: output)
+    }
+
+    public var isUsingSeparateClockBackend: Bool {
+        activeBackend.withLock { $0 == .separateClock }
     }
 
     public var isDeferringColdStartupAggregate: Bool {
@@ -3608,15 +3842,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     public func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? {
-        guard activeBackend.withLock({ $0 }) == .combinedAggregate else {
-            return nil
-        }
-        let route = control.withLock { state -> (AudioObjectID, AudioObjectID)? in
-            guard let output = state.activeOutput,
-                  state.aggregateDeviceID != kAudioObjectUnknown else {
-                return nil
+        let route: (AudioObjectID, AudioObjectID)?
+        if isUsingSeparateClockBackend {
+            route = separateClockBackend.diagnosticDeviceIDs()
+        } else {
+            route = control.withLock { state -> (AudioObjectID, AudioObjectID)? in
+                guard let output = state.activeOutput,
+                      state.aggregateDeviceID != kAudioObjectUnknown else {
+                    return nil
+                }
+                return (output.id, state.aggregateDeviceID)
             }
-            return (output.id, state.aggregateDeviceID)
         }
         guard let route else {
             return nil

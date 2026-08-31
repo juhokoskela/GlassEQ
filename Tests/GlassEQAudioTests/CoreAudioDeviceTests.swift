@@ -1390,7 +1390,7 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func extremeDurationTrackerPublishesP9999AndResetsWithoutClearingOnControlThread() {
+    func extremeDurationTrackerPublishesPercentilesAndResetsWithoutClearingOnControlThread() {
         let tracker = RealtimeExtremeDurationTracker()
         for microseconds in 1...1_024 {
             tracker.record(UInt64(microseconds) * 1_000)
@@ -1398,6 +1398,9 @@ struct CoreAudioDeviceTests {
 
         let measured = tracker.snapshot()
         #expect(measured.observations == 1_024)
+        #expect(measured.p50Nanoseconds == 516_000)
+        #expect(measured.p99Nanoseconds == 1_016_000)
+        #expect(measured.p999Nanoseconds == 1_024_000)
         #expect(measured.p9999Nanoseconds == 1_024_000)
         #expect(measured.maximumNanoseconds == 1_024_000)
 
@@ -1407,8 +1410,30 @@ struct CoreAudioDeviceTests {
         tracker.record(250)
         let afterReset = tracker.snapshot()
         #expect(afterReset.observations == 1)
+        #expect(afterReset.p50Nanoseconds == 250)
+        #expect(afterReset.p99Nanoseconds == 250)
+        #expect(afterReset.p999Nanoseconds == 250)
         #expect(afterReset.p9999Nanoseconds == 250)
         #expect(afterReset.maximumNanoseconds == 250)
+    }
+
+    @Test
+    func callbackSizeTrackerUsesBoundedBucketsAndResets() {
+        let tracker = RealtimeCallbackSizeTracker()
+        tracker.record(16)
+        tracker.record(16)
+        tracker.record(512)
+        tracker.record(17)
+
+        #expect(tracker.snapshot() == [
+            AudioCallbackSizeObservation(frameCount: 16, observations: 2),
+            AudioCallbackSizeObservation(frameCount: 512, observations: 1),
+            AudioCallbackSizeObservation(frameCount: nil, observations: 1)
+        ])
+
+        tracker.reset()
+
+        #expect(tracker.snapshot().isEmpty)
     }
 
     @Test
