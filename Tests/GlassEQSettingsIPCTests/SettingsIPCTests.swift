@@ -31,27 +31,6 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func playbackBufferCalibrationResetRequiresRunningOutput() {
-        #expect(canResetPlaybackBufferCalibration(isRunning: true, outputUID: "speakers"))
-        #expect(!canResetPlaybackBufferCalibration(isRunning: false, outputUID: "speakers"))
-        #expect(!canResetPlaybackBufferCalibration(isRunning: true, outputUID: ""))
-    }
-
-    @Test
-    func sampleRateConversionRequiresARunningEngineAndActiveMetrics() {
-        #expect(sampleRateConversionIsActive(isRunning: true, metricsActive: true))
-        #expect(!sampleRateConversionIsActive(isRunning: false, metricsActive: true))
-        #expect(!sampleRateConversionIsActive(isRunning: true, metricsActive: false))
-    }
-
-    @Test
-    func clockCorrectionLimitRequiresARunningEngineAndSaturatedMetrics() {
-        #expect(clockCorrectionLimitIsReached(isRunning: true, metricsSaturated: true))
-        #expect(!clockCorrectionLimitIsReached(isRunning: false, metricsSaturated: true))
-        #expect(!clockCorrectionLimitIsReached(isRunning: true, metricsSaturated: false))
-    }
-
-    @Test
     func profileDeletionIsDisabledWhilePreviewProtectsTheReturnProfile() {
         let returnProfile = EQProfile(name: "Return", mode: .parametric, filters: [])
         let previewProfile = EQProfile(name: "Preview", mode: .parametric, filters: [])
@@ -277,19 +256,41 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func resetPlaybackBufferCalibrationCommandRoundTrips() throws {
-        let message = SettingsPipeMessage.request(
-            sessionToken: "token",
-            id: "request-reset-buffer",
-            kind: .command,
-            command: .resetPlaybackBufferCalibration
+    func aggregateBufferCommandsAndOutputDeepLinkRoundTrip() throws {
+        let messages = [
+            SettingsPipeMessage.request(
+                sessionToken: "token",
+                id: "buffer-mode",
+                kind: .command,
+                command: .setAggregateBufferMode(.frames64)
+            ),
+            SettingsPipeMessage.request(
+                sessionToken: "token",
+                id: "buffer-retry",
+                kind: .command,
+                command: .retryAutomaticAggregateBuffer
+            ),
+            SettingsPipeMessage.event(
+                sessionToken: "token",
+                event: .sectionRequested(.output)
+            )
+        ]
+
+        for message in messages {
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
+            #expect(decoded == message)
+        }
+    }
+
+    @Test
+    func aggregateBufferSnapshotDefaultsLegacyPayloadToAutomaticSixteen() throws {
+        let decoded = try JSONDecoder().decode(
+            SettingsAggregateBufferDTO.self,
+            from: Data("{}".utf8)
         )
 
-        let decoded = try SettingsPipeCodec.decodeLine(
-            Data(try SettingsPipeCodec.encodeLine(message).dropLast())
-        )
-
-        #expect(decoded == message)
+        #expect(decoded == SettingsAggregateBufferDTO())
     }
 
     @Test
@@ -311,40 +312,28 @@ struct SettingsIPCTests {
         #expect(metrics.playedFrames == 24)
         #expect(metrics.playbackUnderrunFrames == 1)
         #expect(metrics.saturatedSamples == 2)
-        #expect(metrics.currentBufferedFrames == 512)
-        #expect(metrics.maxBufferedFrames == 1024)
-        #expect(metrics.maximumPlaybackBufferedFrames == 0)
-        #expect(metrics.minimumPlaybackBufferedFrames == 0)
-        #expect(metrics.averagePlaybackBufferedFrames == 0)
-        #expect(metrics.ringGateContentionFailures == 0)
-        #expect(metrics.playbackBufferObservations == 0)
         #expect(metrics.maximumCaptureCallbackFrames == 0)
         #expect(metrics.maximumPlaybackCallbackFrames == 0)
-        #expect(metrics.playbackTimestampDiscontinuities == 0)
-        #expect(metrics.playbackBufferRenegotiations == 0)
-        #expect(metrics.adaptivePlaybackRenderFailures == 0)
         #expect(metrics.droppedInputFrames == 0)
-        #expect(metrics.droppedBufferedFrames == 0)
-        #expect(metrics.playbackRateCorrectionPPM == 0)
-        #expect(!metrics.playbackRateCorrectionSaturated)
-        #expect(metrics.playbackOccupancyTargetFrames == 0)
-        #expect(metrics.filteredPlaybackOccupancyFrames == 0)
-        #expect(metrics.playbackBufferSampleRate == 0)
-        #expect(!metrics.playbackSampleRateConversionActive)
+        #expect(metrics.tapToOutputLatencyObservations == 0)
+        #expect(metrics.minimumTapToOutputLatencyNanoseconds == 0)
+        #expect(metrics.maximumTapToOutputLatencyNanoseconds == 0)
+        #expect(metrics.averageTapToOutputLatencyNanoseconds == 0)
     }
 
     @Test
-    func playbackLatencyUsesTheBufferFrameRate() {
-        #expect(playbackFramesToMilliseconds(
-            480,
-            bufferSampleRate: 48_000,
-            fallbackSampleRate: 16_000
-        ) == 10)
-        #expect(playbackFramesToMilliseconds(
-            480,
-            bufferSampleRate: 0,
-            fallbackSampleRate: 16_000
-        ) == 30)
+    func audioMetricsRoundTripTapToOutputLatency() throws {
+        let metrics = SettingsAudioMetricsDTO(
+            tapToOutputLatencyObservations: 500,
+            minimumTapToOutputLatencyNanoseconds: 1_250_000,
+            maximumTapToOutputLatencyNanoseconds: 2_750_000,
+            averageTapToOutputLatencyNanoseconds: 1_500_000
+        )
+
+        let data = try JSONEncoder().encode(metrics)
+        let decoded = try JSONDecoder().decode(SettingsAudioMetricsDTO.self, from: data)
+
+        #expect(decoded == metrics)
     }
 
     @Test

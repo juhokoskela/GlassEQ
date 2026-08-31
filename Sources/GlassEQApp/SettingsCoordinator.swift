@@ -96,6 +96,7 @@ final class SettingsCoordinator: NSObject {
     private var settingsConnected = false
     private var readyAcknowledgmentPending = false
     private var pendingFocusRequest = false
+    private var pendingSectionRequest: SettingsSection?
     private var suppressedModelChangeDepth = 0
     private var lastSentSnapshot: SettingsSnapshot?
 
@@ -113,12 +114,17 @@ final class SettingsCoordinator: NSObject {
     }
 
     @discardableResult
-    func openSettings() -> SettingsOpenDisposition {
+    func openSettings(section: SettingsSection? = nil) -> SettingsOpenDisposition {
         if let helperProcess, helperProcess.isRunning {
             if settingsConnected {
-                send(.focusRequested)
+                if let section {
+                    send(.sectionRequested(section))
+                } else {
+                    send(.focusRequested)
+                }
             } else {
                 pendingFocusRequest = true
+                pendingSectionRequest = section
             }
             focusSettings()
             return .helper
@@ -127,6 +133,7 @@ final class SettingsCoordinator: NSObject {
         do {
             let token = try prepareSession()
             pendingFocusRequest = true
+            pendingSectionRequest = section
             try launchHelper(token: token)
             return .helper
         } catch {
@@ -135,6 +142,10 @@ final class SettingsCoordinator: NSObject {
             cleanupSession(terminateHelper: true)
             return .inProcessFallback(reason: reason)
         }
+    }
+
+    var hasRunningSettingsHelper: Bool {
+        helperProcess?.isRunning == true
     }
 
     func shutdown() {
@@ -177,6 +188,7 @@ final class SettingsCoordinator: NSObject {
         settingsConnected = false
         readyAcknowledgmentPending = false
         pendingFocusRequest = false
+        pendingSectionRequest = nil
         suppressedModelChangeDepth = 0
         lastSentSnapshot = nil
         return token
@@ -414,7 +426,12 @@ final class SettingsCoordinator: NSObject {
             }
             if pendingFocusRequest {
                 pendingFocusRequest = false
-                send(.focusRequested)
+                if let pendingSectionRequest {
+                    self.pendingSectionRequest = nil
+                    send(.sectionRequested(pendingSectionRequest))
+                } else {
+                    send(.focusRequested)
+                }
             }
         }
     }
@@ -516,6 +533,10 @@ final class SettingsCoordinator: NSObject {
             } else {
                 patch.currentOutputMappedProfileID = .clear
             }
+            didPatch = true
+        }
+        if previous.aggregateBuffer != snapshot.aggregateBuffer {
+            patch.aggregateBuffer = snapshot.aggregateBuffer
             didPatch = true
         }
         if previous.profileStoreProtection != snapshot.profileStoreProtection {
@@ -629,6 +650,7 @@ final class SettingsCoordinator: NSObject {
         pipeWriter = nil
         launchToken = nil
         pendingFocusRequest = false
+        pendingSectionRequest = nil
         suppressedModelChangeDepth = 0
         lastSentSnapshot = nil
         runningApplication = nil
@@ -914,15 +936,30 @@ struct SecuritySettingsCodeSigningValidator: SettingsCodeSigningValidating {
 }
 
 extension GlassEQAppModel {
+    func openAggregateBufferSettings() {
+        if settingsCoordinator.hasRunningSettingsHelper {
+            openSettings(section: .output)
+            return
+        }
+        SettingsWindowFocus.request(section: .output)
+        requestInProcessSettingsPresentation()
+    }
+
     @discardableResult
-    func openSettings() -> SettingsOpenDisposition {
+    func openSettings(section: SettingsSection? = nil) -> SettingsOpenDisposition {
         guard !inProcessSettingsIsPresented,
               !inProcessSettingsPresentationIsPending else {
+            if let section {
+                SettingsWindowFocus.request(section: section)
+            }
             requestInProcessSettingsPresentation()
             return .activeInProcessFallback
         }
-        let disposition = settingsCoordinator.openSettings()
+        let disposition = settingsCoordinator.openSettings(section: section)
         if case .inProcessFallback(let reason) = disposition {
+            if let section {
+                SettingsWindowFocus.request(section: section)
+            }
             requestInProcessSettingsPresentation(
                 statusMessage: localized("Settings helper unavailable: \(reason). Opened Settings in GlassEQ instead.")
             )
@@ -1026,8 +1063,12 @@ extension GlassEQAppModel {
             resetDiagnostics()
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
-        case .resetPlaybackBufferCalibration:
-            try await resetPlaybackBufferCalibrationForCurrentOutput()
+        case .setAggregateBufferMode(let mode):
+            try setAggregateBufferMode(mode)
+            return SettingsCommandResponse(snapshot: settingsSnapshot())
+
+        case .retryAutomaticAggregateBuffer:
+            try retryAutomaticAggregateBuffer()
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .retryAudioEngine:

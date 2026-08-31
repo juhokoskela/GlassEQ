@@ -39,6 +39,61 @@ public enum SettingsProfileKind: String, Codable, Sendable {
     case parametric
 }
 
+public enum SettingsAggregateBufferMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case automatic
+    case frames16
+    case frames32
+    case frames64
+
+    public var id: String { rawValue }
+}
+
+public enum SettingsSection: String, Codable, Equatable, Sendable {
+    case editor
+    case importer
+    case output
+}
+
+public struct SettingsAggregateBufferDTO: Codable, Equatable, Sendable {
+    public var mode: SettingsAggregateBufferMode
+    public var automaticFrameSize: UInt32
+    public var isAvailable: Bool
+
+    public init(
+        mode: SettingsAggregateBufferMode = .automatic,
+        automaticFrameSize: UInt32 = 16,
+        isAvailable: Bool = false
+    ) {
+        self.mode = mode
+        self.automaticFrameSize = automaticFrameSize
+        self.isAvailable = isAvailable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case automaticFrameSize
+        case isAvailable
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            mode: try container.decodeIfPresent(
+                SettingsAggregateBufferMode.self,
+                forKey: .mode
+            ) ?? .automatic,
+            automaticFrameSize: try container.decodeIfPresent(
+                UInt32.self,
+                forKey: .automaticFrameSize
+            ) ?? 16,
+            isAvailable: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .isAvailable
+            ) ?? false
+        )
+    }
+}
+
 public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var capturedFrames: UInt64
     public var playedFrames: UInt64
@@ -53,6 +108,8 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var minimumPlaybackBufferedFrames: Int
     public var averagePlaybackBufferedFrames: Double
     public var playbackBufferObservations: UInt64
+    public var inputTimestampDiscontinuities: UInt64
+    public var outputTimestampDiscontinuities: UInt64
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
     public var playbackTimestampDiscontinuities: UInt64
@@ -64,6 +121,10 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var filteredPlaybackOccupancyFrames: Double
     public var playbackBufferSampleRate: Double
     public var playbackSampleRateConversionActive: Bool
+    public var tapToOutputLatencyObservations: UInt64
+    public var minimumTapToOutputLatencyNanoseconds: UInt64
+    public var maximumTapToOutputLatencyNanoseconds: UInt64
+    public var averageTapToOutputLatencyNanoseconds: Double
 
     private enum CodingKeys: String, CodingKey {
         case capturedFrames
@@ -79,6 +140,8 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case minimumPlaybackBufferedFrames
         case averagePlaybackBufferedFrames
         case playbackBufferObservations
+        case inputTimestampDiscontinuities
+        case outputTimestampDiscontinuities
         case maximumCaptureCallbackFrames
         case maximumPlaybackCallbackFrames
         case playbackTimestampDiscontinuities
@@ -90,6 +153,10 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case filteredPlaybackOccupancyFrames
         case playbackBufferSampleRate
         case playbackSampleRateConversionActive
+        case tapToOutputLatencyObservations
+        case minimumTapToOutputLatencyNanoseconds
+        case maximumTapToOutputLatencyNanoseconds
+        case averageTapToOutputLatencyNanoseconds
     }
 
     public init(
@@ -106,6 +173,8 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         minimumPlaybackBufferedFrames: Int = 0,
         averagePlaybackBufferedFrames: Double = 0,
         playbackBufferObservations: UInt64 = 0,
+        inputTimestampDiscontinuities: UInt64 = 0,
+        outputTimestampDiscontinuities: UInt64 = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
@@ -116,7 +185,11 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         playbackOccupancyTargetFrames: Int = 0,
         filteredPlaybackOccupancyFrames: Double = 0,
         playbackBufferSampleRate: Double = 0,
-        playbackSampleRateConversionActive: Bool = false
+        playbackSampleRateConversionActive: Bool = false,
+        tapToOutputLatencyObservations: UInt64 = 0,
+        minimumTapToOutputLatencyNanoseconds: UInt64 = 0,
+        maximumTapToOutputLatencyNanoseconds: UInt64 = 0,
+        averageTapToOutputLatencyNanoseconds: Double = 0
     ) {
         self.capturedFrames = capturedFrames
         self.playedFrames = playedFrames
@@ -131,6 +204,8 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.minimumPlaybackBufferedFrames = minimumPlaybackBufferedFrames
         self.averagePlaybackBufferedFrames = averagePlaybackBufferedFrames
         self.playbackBufferObservations = playbackBufferObservations
+        self.inputTimestampDiscontinuities = inputTimestampDiscontinuities
+        self.outputTimestampDiscontinuities = outputTimestampDiscontinuities
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
@@ -142,6 +217,10 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.filteredPlaybackOccupancyFrames = filteredPlaybackOccupancyFrames
         self.playbackBufferSampleRate = playbackBufferSampleRate
         self.playbackSampleRateConversionActive = playbackSampleRateConversionActive
+        self.tapToOutputLatencyObservations = tapToOutputLatencyObservations
+        self.minimumTapToOutputLatencyNanoseconds = minimumTapToOutputLatencyNanoseconds
+        self.maximumTapToOutputLatencyNanoseconds = maximumTapToOutputLatencyNanoseconds
+        self.averageTapToOutputLatencyNanoseconds = averageTapToOutputLatencyNanoseconds
     }
 
     public init(from decoder: any Decoder) throws {
@@ -160,6 +239,8 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             minimumPlaybackBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .minimumPlaybackBufferedFrames) ?? 0,
             averagePlaybackBufferedFrames: try container.decodeIfPresent(Double.self, forKey: .averagePlaybackBufferedFrames) ?? 0,
             playbackBufferObservations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferObservations) ?? 0,
+            inputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .inputTimestampDiscontinuities) ?? 0,
+            outputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .outputTimestampDiscontinuities) ?? 0,
             maximumCaptureCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumCaptureCallbackFrames) ?? 0,
             maximumPlaybackCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumPlaybackCallbackFrames) ?? 0,
             playbackTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
@@ -170,7 +251,11 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             playbackOccupancyTargetFrames: try container.decodeIfPresent(Int.self, forKey: .playbackOccupancyTargetFrames) ?? 0,
             filteredPlaybackOccupancyFrames: try container.decodeIfPresent(Double.self, forKey: .filteredPlaybackOccupancyFrames) ?? 0,
             playbackBufferSampleRate: try container.decodeIfPresent(Double.self, forKey: .playbackBufferSampleRate) ?? 0,
-            playbackSampleRateConversionActive: try container.decodeIfPresent(Bool.self, forKey: .playbackSampleRateConversionActive) ?? false
+            playbackSampleRateConversionActive: try container.decodeIfPresent(Bool.self, forKey: .playbackSampleRateConversionActive) ?? false,
+            tapToOutputLatencyObservations: try container.decodeIfPresent(UInt64.self, forKey: .tapToOutputLatencyObservations) ?? 0,
+            minimumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumTapToOutputLatencyNanoseconds) ?? 0,
+            maximumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTapToOutputLatencyNanoseconds) ?? 0,
+            averageTapToOutputLatencyNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageTapToOutputLatencyNanoseconds) ?? 0
         )
     }
 }
@@ -227,6 +312,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var fallbackProfileID: UUID?
     public var currentOutput: SettingsOutputDTO?
     public var currentOutputMappedProfileID: SettingsOptionalUUIDPatchDTO?
+    public var aggregateBuffer: SettingsAggregateBufferDTO?
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO?
 
     public init(
@@ -240,6 +326,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         fallbackProfileID: UUID? = nil,
         currentOutput: SettingsOutputDTO? = nil,
         currentOutputMappedProfileID: SettingsOptionalUUIDPatchDTO? = nil,
+        aggregateBuffer: SettingsAggregateBufferDTO? = nil,
         profileStoreProtection: SettingsProfileStoreProtectionDTO? = nil
     ) {
         self.statusMessage = statusMessage
@@ -252,6 +339,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.fallbackProfileID = fallbackProfileID
         self.currentOutput = currentOutput
         self.currentOutputMappedProfileID = currentOutputMappedProfileID
+        self.aggregateBuffer = aggregateBuffer
         self.profileStoreProtection = profileStoreProtection
     }
 }
@@ -268,6 +356,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var currentOutputChannelCount: Int
     public var currentOutputBufferFrameSize: UInt32
     public var currentOutputMappedProfileID: UUID?
+    public var aggregateBuffer: SettingsAggregateBufferDTO
     public var fallbackProfileID: UUID
     public var statusMessage: String
     public var metrics: SettingsAudioMetricsDTO
@@ -287,6 +376,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case currentOutputChannelCount
         case currentOutputBufferFrameSize
         case currentOutputMappedProfileID
+        case aggregateBuffer
         case fallbackProfileID
         case statusMessage
         case metrics
@@ -307,6 +397,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         currentOutputChannelCount: Int,
         currentOutputBufferFrameSize: UInt32,
         currentOutputMappedProfileID: UUID?,
+        aggregateBuffer: SettingsAggregateBufferDTO = SettingsAggregateBufferDTO(),
         fallbackProfileID: UUID,
         statusMessage: String,
         metrics: SettingsAudioMetricsDTO,
@@ -325,6 +416,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.currentOutputChannelCount = currentOutputChannelCount
         self.currentOutputBufferFrameSize = currentOutputBufferFrameSize
         self.currentOutputMappedProfileID = currentOutputMappedProfileID
+        self.aggregateBuffer = aggregateBuffer
         self.fallbackProfileID = fallbackProfileID
         self.statusMessage = statusMessage
         self.metrics = metrics
@@ -347,6 +439,10 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             currentOutputChannelCount: try container.decode(Int.self, forKey: .currentOutputChannelCount),
             currentOutputBufferFrameSize: try container.decode(UInt32.self, forKey: .currentOutputBufferFrameSize),
             currentOutputMappedProfileID: try container.decodeIfPresent(UUID.self, forKey: .currentOutputMappedProfileID),
+            aggregateBuffer: try container.decodeIfPresent(
+                SettingsAggregateBufferDTO.self,
+                forKey: .aggregateBuffer
+            ) ?? SettingsAggregateBufferDTO(),
             fallbackProfileID: try container.decode(UUID.self, forKey: .fallbackProfileID),
             statusMessage: try container.decode(String.self, forKey: .statusMessage),
             metrics: try container.decode(SettingsAudioMetricsDTO.self, forKey: .metrics),
@@ -373,6 +469,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             currentOutputChannelCount: 0,
             currentOutputBufferFrameSize: 0,
             currentOutputMappedProfileID: nil,
+            aggregateBuffer: SettingsAggregateBufferDTO(),
             fallbackProfileID: profile.id,
             statusMessage: "Connecting to GlassEQ...",
             metrics: SettingsAudioMetricsDTO(),
@@ -394,7 +491,8 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case preview(EQProfile)
     case stopPreview
     case resetDiagnostics
-    case resetPlaybackBufferCalibration
+    case setAggregateBufferMode(SettingsAggregateBufferMode)
+    case retryAutomaticAggregateBuffer
     case retryAudioEngine
     case openPrivacySettings
     case startMetricsPolling
@@ -428,6 +526,7 @@ public enum SettingsEvent: Codable, Equatable, Sendable {
     case metricsChanged(SettingsAudioMetricsDTO)
     case commandFailed(SettingsCommandFailure)
     case focusRequested
+    case sectionRequested(SettingsSection)
     case shutdown
 }
 

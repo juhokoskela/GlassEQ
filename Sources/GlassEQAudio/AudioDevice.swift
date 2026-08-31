@@ -96,6 +96,12 @@ public enum CoreAudioDeviceQuery {
         return try outputDevice(id: deviceID)
     }
 
+    public static func outputDevices() throws -> [AudioOutputDevice] {
+        try audioDeviceIDs().compactMap { deviceID in
+            try? outputDevice(id: deviceID)
+        }
+    }
+
     public static func outputDevice(id: AudioObjectID) throws -> AudioOutputDevice {
         guard id != kAudioObjectUnknown else {
             throw AudioDeviceAvailabilityError.noDefaultOutput
@@ -435,6 +441,13 @@ public enum CoreAudioDeviceQuery {
         objectID: AudioObjectID,
         scope: AudioObjectPropertyScope
     ) throws -> Int {
+        try streamChannelCounts(objectID: objectID, scope: scope).reduce(0, +)
+    }
+
+    static func streamChannelCounts(
+        objectID: AudioObjectID,
+        scope: AudioObjectPropertyScope
+    ) throws -> [Int] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: scope,
@@ -461,10 +474,18 @@ public enum CoreAudioDeviceQuery {
         )
         try validateStreamConfigurationSize(size, objectID: objectID)
 
+        let bufferCount = Int(rawPointer.load(as: UInt32.self))
+        try validateAudioBufferListStorage(
+            bufferCount: bufferCount,
+            byteCount: Int(size),
+            objectID: objectID
+        )
+        guard bufferCount > 0 else {
+            return []
+        }
         let bufferList = rawPointer.bindMemory(to: AudioBufferList.self, capacity: 1)
-        try validateAudioBufferListStorage(bufferList.pointee, byteCount: Int(size), objectID: objectID)
-        return UnsafeMutableAudioBufferListPointer(bufferList).reduce(0) { partial, buffer in
-            partial + Int(buffer.mNumberChannels)
+        return UnsafeMutableAudioBufferListPointer(bufferList).map { buffer in
+            Int(buffer.mNumberChannels)
         }
     }
 
@@ -483,7 +504,13 @@ public enum CoreAudioDeviceQuery {
     }
 
     static func validateStreamConfigurationSize(_ size: UInt32, objectID: AudioObjectID) throws {
-        guard size >= UInt32(MemoryLayout<AudioBufferList>.size) else {
+        guard let buffersOffset = MemoryLayout<AudioBufferList>.offset(of: \.mBuffers) else {
+            throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
+                objectID,
+                "cannot determine AudioBufferList layout"
+            )
+        }
+        guard size >= UInt32(buffersOffset) else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
                 objectID,
                 "stream configuration is too small (\(size) bytes)"
@@ -569,16 +596,15 @@ public enum CoreAudioDeviceQuery {
         return count
     }
 
-    private static func validateAudioBufferListStorage(
-        _ bufferList: AudioBufferList,
+    static func validateAudioBufferListStorage(
+        bufferCount: Int,
         byteCount: Int,
         objectID: AudioObjectID
     ) throws {
         guard let buffersOffset = MemoryLayout<AudioBufferList>.offset(of: \.mBuffers) else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(objectID, "cannot determine AudioBufferList layout")
         }
-        let bufferCount = Int(bufferList.mNumberBuffers)
-        guard bufferCount > 0, bufferCount <= maxChannelCount else {
+        guard bufferCount >= 0, bufferCount <= maxChannelCount else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
                 objectID,
                 "stream configuration has invalid buffer count \(bufferCount)"

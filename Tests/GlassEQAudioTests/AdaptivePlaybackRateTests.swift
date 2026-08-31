@@ -291,6 +291,59 @@ struct AdaptivePlaybackRateTests {
     }
 
     @Test
+    func schemaTwoCalibrationIsDiscardedBeforeRecordingFreshEvidence() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)
+        let url = directory.appendingPathComponent("LearnedPlaybackBuffers.json")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let contaminatedJSON = """
+        {
+          "schemaVersion": 2,
+          "calibrations": [
+            {
+              "outputUID": "scarlett",
+              "sampleRate": 48000,
+              "stableFrameSize": 512,
+              "operatingPoints": [
+                {
+                  "frameSize": 512,
+                  "stableTargetFrames": 704
+                }
+              ],
+              "events": []
+            }
+          ]
+        }
+        """
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try #require(contaminatedJSON.data(using: .utf8)).write(to: url)
+
+        #expect(PersistedPlaybackBufferCalibrationStore.calibration(
+            outputUID: "scarlett",
+            sampleRate: 48_000,
+            from: url
+        ) == nil)
+
+        try PersistedPlaybackBufferCalibrationStore.recordStable(
+            outputUID: "scarlett",
+            sampleRate: 48_000,
+            frameSize: 64,
+            targetFrames: 128,
+            at: url
+        )
+        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
+            outputUID: "scarlett",
+            sampleRate: 48_000,
+            from: url
+        ))
+        #expect(calibration.stableFrameSize == 64)
+        #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == 128)
+        #expect(calibration.operatingPoint(for: 512) == nil)
+    }
+
+    @Test
     func resettingPlaybackBufferCalibrationRemovesOnlyTheSelectedDevice() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)
@@ -395,7 +448,7 @@ struct AdaptivePlaybackRateTests {
             resultingFrameSize: 128,
             previousTargetFrames: 128,
             resultingTargetFrames: 256,
-            reason: .outputTimestampDiscontinuity,
+            reason: .underrun,
             timestamp: Date(timeIntervalSince1970: 2),
             at: url
         )
@@ -406,10 +459,11 @@ struct AdaptivePlaybackRateTests {
         ))
         #expect(calibration.stableFrameSize == nil)
         #expect(calibration.probingFrameSize == 128)
-        #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == 128)
+        #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == nil)
+        #expect(calibration.operatingPoint(for: 64)?.unstableThroughTargetFrames == 128)
         #expect(calibration.operatingPoint(for: 128)?.probingTargetFrames == 256)
         #expect(calibration.events.last?.kind == .instability)
-        #expect(calibration.events.last?.reason == .outputTimestampDiscontinuity)
+        #expect(calibration.events.last?.reason == .underrun)
         #expect(calibration.events.last?.previousFrameSize == 64)
         #expect(calibration.events.last?.resultingFrameSize == 128)
         #expect(calibration.events.last?.previousTargetFrames == 128)
@@ -527,7 +581,7 @@ struct AdaptivePlaybackRateTests {
     }
 
     @Test
-    func excessiveBacklogDoesNotInvalidateStableBufferCalibration() throws {
+    func adaptiveRenderFailureDoesNotInvalidateStableBufferCalibration() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQPlaybackBufferCalibration-\(UUID().uuidString)", isDirectory: true)
         let url = directory.appendingPathComponent("LearnedPlaybackBuffers.json")
@@ -552,7 +606,7 @@ struct AdaptivePlaybackRateTests {
             resultingFrameSize: 64,
             previousTargetFrames: 128,
             resultingTargetFrames: 128,
-            reason: .excessiveBacklog,
+            reason: .adaptiveRenderFailure,
             timestamp: Date(timeIntervalSince1970: 2),
             at: url
         )
@@ -581,6 +635,112 @@ struct AdaptivePlaybackRateTests {
 
         #expect(!probe.hasCompletedProbation(at: start.advanced(by: .seconds(59))))
         #expect(probe.hasCompletedProbation(at: start.advanced(by: .seconds(60))))
+    }
+
+    @Test
+    func underrunEvidenceRequiresThreeEpisodesWithinTwoSeconds() {
+        let start = ContinuousClock().now
+        var evidence = PlaybackBufferUnderrunEvidence()
+
+        let first = evidence.record(eventCount: 1, at: start)
+        let second = evidence.record(eventCount: 1, at: start.advanced(by: .seconds(1)))
+        let third = evidence.record(eventCount: 1, at: start.advanced(by: .seconds(2)))
+        let afterReset = evidence.record(eventCount: 1, at: start.advanced(by: .seconds(2)))
+        #expect(!first)
+        #expect(!second)
+        #expect(third)
+        #expect(!afterReset)
+    }
+
+    @Test
+    func underrunEvidenceExpiresAndAcceptsControllerGenerationDeltas() {
+        let start = ContinuousClock().now
+        var evidence = PlaybackBufferUnderrunEvidence()
+
+        let first = evidence.record(eventCount: 1, at: start)
+        let afterExpiry = evidence.record(
+            eventCount: 1,
+            at: start.advanced(by: .seconds(2) + .milliseconds(1))
+        )
+        evidence.reset()
+        let batched = evidence.record(eventCount: 3, at: start.advanced(by: .seconds(3)))
+        #expect(!first)
+        #expect(!afterExpiry)
+        #expect(batched)
+    }
+
+    @Test
+    func adaptationEvidenceRequiresThreeUnderrunEpisodesBeforeEscalating() {
+        let start = ContinuousClock().now
+        var evidence = PlaybackBufferAdaptationEvidence()
+        evidence.reset(instabilityGeneration: 0, timestampDiscontinuities: 0)
+
+        let first = evidence.observe(
+            instabilityGeneration: 1,
+            reason: .underrun,
+            timestampDiscontinuities: 0,
+            at: start
+        )
+        let second = evidence.observe(
+            instabilityGeneration: 2,
+            reason: .underrun,
+            timestampDiscontinuities: 0,
+            at: start.advanced(by: .seconds(1))
+        )
+        let third = evidence.observe(
+            instabilityGeneration: 3,
+            reason: .underrun,
+            timestampDiscontinuities: 0,
+            at: start.advanced(by: .seconds(2))
+        )
+
+        #expect(first.observedDisturbance)
+        #expect(first.escalationReason == nil)
+        #expect(second.observedDisturbance)
+        #expect(second.escalationReason == nil)
+        #expect(third.escalationReason == .underrun)
+    }
+
+    @Test
+    func adaptationEvidenceTreatsTimestampChangesAsDisturbancesWithoutEscalating() {
+        let start = ContinuousClock().now
+        var evidence = PlaybackBufferAdaptationEvidence()
+        evidence.reset(instabilityGeneration: 4, timestampDiscontinuities: 2)
+
+        let discontinuity = evidence.observe(
+            instabilityGeneration: 4,
+            reason: .underrun,
+            timestampDiscontinuities: 3,
+            at: start
+        )
+        let diagnosticsReset = evidence.observe(
+            instabilityGeneration: 4,
+            reason: .underrun,
+            timestampDiscontinuities: 0,
+            at: start.advanced(by: .seconds(1))
+        )
+
+        #expect(discontinuity.observedDisturbance)
+        #expect(discontinuity.escalationReason == nil)
+        #expect(!diagnosticsReset.observedDisturbance)
+        #expect(diagnosticsReset.escalationReason == nil)
+    }
+
+    @Test
+    func adaptationEvidenceEscalatesActiveRenderFailuresImmediately() {
+        let start = ContinuousClock().now
+        var evidence = PlaybackBufferAdaptationEvidence()
+        evidence.reset(instabilityGeneration: 8, timestampDiscontinuities: 0)
+
+        let observation = evidence.observe(
+            instabilityGeneration: 9,
+            reason: .adaptiveRenderFailure,
+            timestampDiscontinuities: 0,
+            at: start
+        )
+
+        #expect(observation.observedDisturbance)
+        #expect(observation.escalationReason == .adaptiveRenderFailure)
     }
 
     @Test
@@ -624,42 +784,24 @@ struct AdaptivePlaybackRateTests {
     }
 
     @Test
-    func onlyUnderrunsGrowTheReservoirBeforeTheCallbackSizeChanges() {
+    func underrunsGrowTheReservoirBeforeTheCallbackSizeChanges() {
         #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .underrun,
             callbackFrames: 64,
             after: 128
         ) == 192)
         #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .excessiveBacklog,
-            callbackFrames: 64,
-            after: 192
-        ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .underrun,
             callbackFrames: 64,
             after: 256
         ) == nil)
         #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .outputTimestampDiscontinuity,
-            callbackFrames: 64,
-            after: 128
-        ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.shouldIncreaseCallback(for: .underrun))
-        #expect(AdaptivePlaybackBufferPolicy.shouldIncreaseCallback(for: .outputTimestampDiscontinuity))
-        #expect(!AdaptivePlaybackBufferPolicy.shouldIncreaseCallback(for: .excessiveBacklog))
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .underrun,
             callbackFrames: 128,
             after: 192
         ) == 256)
         #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .underrun,
             callbackFrames: 128,
             after: 320
         ) == nil)
         #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            for: .underrun,
             callbackFrames: 3_072,
             after: 4_096,
             maximumReservoirFrames: 2_048
@@ -675,29 +817,29 @@ struct AdaptivePlaybackRateTests {
             targetFrames: 704,
             reason: .underrun
         )
-        var timestampGap = underrun
-        timestampGap.reason = .outputTimestampDiscontinuity
+        var largerTarget = underrun
+        largerTarget.targetFrames = 768
         var gate = PlaybackBufferInstabilityPersistenceGate()
 
         let firstUnderrun = gate.shouldPersist(underrun)
         let repeatedUnderrun = gate.shouldPersist(underrun)
-        let firstTimestampGap = gate.shouldPersist(timestampGap)
-        let repeatedTimestampGap = gate.shouldPersist(timestampGap)
+        let firstLargerTarget = gate.shouldPersist(largerTarget)
+        let repeatedLargerTarget = gate.shouldPersist(largerTarget)
         #expect(firstUnderrun)
         #expect(!repeatedUnderrun)
-        #expect(firstTimestampGap)
-        #expect(!repeatedTimestampGap)
+        #expect(firstLargerTarget)
+        #expect(!repeatedLargerTarget)
 
         gate.reset(outputUID: "other-output")
-        let afterUnrelatedReset = gate.shouldPersist(timestampGap)
+        let afterUnrelatedReset = gate.shouldPersist(largerTarget)
         #expect(!afterUnrelatedReset)
 
         gate.reset(outputUID: "scarlett")
-        let afterMatchingReset = gate.shouldPersist(timestampGap)
+        let afterMatchingReset = gate.shouldPersist(largerTarget)
         #expect(afterMatchingReset)
 
-        gate.persistenceFailed(for: timestampGap)
-        let afterPersistenceFailure = gate.shouldPersist(timestampGap)
+        gate.persistenceFailed(for: largerTarget)
+        let afterPersistenceFailure = gate.shouldPersist(largerTarget)
         #expect(afterPersistenceFailure)
     }
 
@@ -710,13 +852,13 @@ struct AdaptivePlaybackRateTests {
     @Test
     func activeAdaptiveRenderFailureTakesPriorityOverLaterInstability() {
         #expect(AdaptivePlaybackRenderRecoveryPolicy.effectiveInstabilityReason(
-            latest: .outputTimestampDiscontinuity,
+            latest: .underrun,
             renderFailureActive: true
         ) == .adaptiveRenderFailure)
         #expect(AdaptivePlaybackRenderRecoveryPolicy.effectiveInstabilityReason(
-            latest: .outputTimestampDiscontinuity,
+            latest: .underrun,
             renderFailureActive: false
-        ) == .outputTimestampDiscontinuity)
+        ) == .underrun)
     }
 
     @Test
@@ -839,7 +981,7 @@ struct AdaptivePlaybackRateTests {
         #expect(operatingPoint.stableTargetFrames == 256)
         #expect(operatingPoint.probingTargetFrames == 256)
         #expect(operatingPoint.unstableThroughTargetFrames == 192)
-        #expect(AdaptivePlaybackBufferPolicy.nextSessionTargetProbe(
+        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
             callbackFrames: 128,
             stableTargetFrames: 256,
             unstableThroughTargetFrames: operatingPoint.unstableThroughTargetFrames
@@ -847,26 +989,32 @@ struct AdaptivePlaybackRateTests {
     }
 
     @Test
-    func nextSessionReservoirProbeIsConservativeAndRemembersFailures() {
-        #expect(AdaptivePlaybackBufferPolicy.nextSessionTargetProbe(
+    func targetDecayIsConservativeAndRemembersFailures() {
+        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
             callbackFrames: 128,
             stableTargetFrames: 256,
             unstableThroughTargetFrames: nil
         ) == 192)
-        #expect(AdaptivePlaybackBufferPolicy.nextSessionTargetProbe(
+        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
             callbackFrames: 128,
             stableTargetFrames: 256,
             unstableThroughTargetFrames: 192
         ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.nextSessionTargetProbe(
+        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
             callbackFrames: 64,
             stableTargetFrames: 128,
             unstableThroughTargetFrames: nil
         ) == nil)
+        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
+            callbackFrames: 128,
+            stableTargetFrames: 256,
+            unstableThroughTargetFrames: nil,
+            baselineTargetFrames: 256
+        ) == nil)
     }
 
     @Test
-    func startupTargetSelectsStableOrOneStepDown() {
+    func startupTargetUsesBaselineOrCurrentCalibrationWithoutProbingDown() {
         let stable = PersistedPlaybackBufferOperatingPoint(
             frameSize: 128,
             stableTargetFrames: 256,
@@ -874,27 +1022,17 @@ struct AdaptivePlaybackRateTests {
             unstableThroughTargetFrames: nil
         )
         #expect(AdaptivePlaybackBufferPolicy.startupTargetFrames(
-            callbackFrames: 128,
             baselineTargetFrames: 192,
-            operatingPoint: nil,
-            allowsDownwardProbe: false
+            operatingPoint: nil
         ) == 192)
         #expect(AdaptivePlaybackBufferPolicy.startupTargetFrames(
-            callbackFrames: 128,
             baselineTargetFrames: 192,
-            operatingPoint: stable,
-            allowsDownwardProbe: false
+            operatingPoint: stable
         ) == 256)
-        #expect(AdaptivePlaybackBufferPolicy.startupTargetFrames(
-            callbackFrames: 128,
-            baselineTargetFrames: 192,
-            operatingPoint: stable,
-            allowsDownwardProbe: true
-        ) == 192)
     }
 
     @Test
-    func startupFrameSizeProbesOneRungBelowStableCalibration() {
+    func startupFrameSizeUsesCurrentCalibrationWithoutProbingDown() {
         let calibration = PersistedPlaybackBufferCalibration(
             outputUID: "output-a",
             sampleRate: 48_000,
@@ -908,14 +1046,7 @@ struct AdaptivePlaybackRateTests {
         #expect(AdaptivePlaybackBufferPolicy.startupFrameSize(
             preferredFrameSize: 64,
             calibration: calibration,
-            supportedRange: range,
-            allowsDownwardProbe: true
-        ) == 128)
-        #expect(AdaptivePlaybackBufferPolicy.startupFrameSize(
-            preferredFrameSize: 64,
-            calibration: calibration,
-            supportedRange: range,
-            allowsDownwardProbe: false
+            supportedRange: range
         ) == 256)
 
         var probing = calibration
@@ -923,8 +1054,7 @@ struct AdaptivePlaybackRateTests {
         #expect(AdaptivePlaybackBufferPolicy.startupFrameSize(
             preferredFrameSize: 64,
             calibration: probing,
-            supportedRange: range,
-            allowsDownwardProbe: true
+            supportedRange: range
         ) == 512)
     }
 
@@ -1038,6 +1168,35 @@ struct AdaptivePlaybackRateTests {
         #expect(servo.targetFrames == 192)
         #expect(servo.filteredOccupancyFrames == 192)
         #expect(servo.correctionPartsPerMillion == learnedCorrection)
+    }
+
+    @Test
+    func reprimeAndRetargetDoNotPromoteProportionalCorrectionIntoLearnedBias() {
+        var servo = PlaybackRateServo(sampleRate: 48_000, targetFrames: 128)
+        servo.didPrime(occupancyFrames: 128)
+        for _ in 0..<Int(48_000 / 64) {
+            _ = servo.update(occupancyFrames: 64, outputFrames: 64)
+        }
+        let learnedCorrection = servo.learnedCorrectionPartsPerMillion
+        let activeCorrection = servo.correctionPartsPerMillion
+        #expect(abs(activeCorrection - learnedCorrection) > 10)
+
+        var reprimeServo = servo
+        reprimeServo.beginPriming()
+        #expect(reprimeServo.learnedCorrectionPartsPerMillion == learnedCorrection)
+        #expect(reprimeServo.correctionPartsPerMillion == activeCorrection)
+        reprimeServo.didPrime(occupancyFrames: 128)
+        for _ in 0..<Int(48_000 / 64) {
+            _ = reprimeServo.update(occupancyFrames: 128, outputFrames: 64)
+        }
+        #expect(abs(
+            reprimeServo.correctionPartsPerMillion
+                - reprimeServo.learnedCorrectionPartsPerMillion
+        ) < 0.5)
+
+        servo.retarget(192)
+        #expect(servo.learnedCorrectionPartsPerMillion == learnedCorrection)
+        #expect(servo.correctionPartsPerMillion == activeCorrection)
     }
 
     @Test

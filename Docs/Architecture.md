@@ -4,15 +4,18 @@
 
 macOS owns output switching. GlassEQ observes the default output device and follows it. The app never asks the user to choose a physical output inside GlassEQ.
 
-The runtime flow is:
+The normal-rate runtime flow is:
 
 1. Discover current default output device and UID.
 2. Load the mapped profile for that output UID.
-3. Build a private Core Audio system tap that excludes GlassEQ itself.
-4. Mute tapped dry output while the tap is active.
-5. Process tap buffers through the active EQ configuration.
-6. Replay processed audio to the current default output device.
-7. Tear down and rebuild the graph when macOS changes the default output.
+3. Build a private Core Audio tap for the selected physical output stream. The tap excludes GlassEQ itself and mutes the tapped dry output.
+4. Build one private aggregate device containing the tap and physical output.
+5. Use the physical output as the aggregate clock source and enable Core Audio drift compensation for the tap.
+6. Disable every aggregate input stream except the tap stream for GlassEQ's I/O callback.
+7. Process tap buffers and write the result to the physical output in one aggregate-device callback.
+8. Rebuild the tap and aggregate when macOS changes the selected output device or stream.
+
+Bluetooth routes at 24 kHz or below initially use a separate-clock compatibility backend. The tap runs in a tap-only aggregate, the physical output has its own HAL callback, and a bounded ring buffer, occupancy servo, and realtime sample-rate converter bridge the two clocks. After the route settles and its physical clock advances at the advertised rate, GlassEQ attempts to replace the bridge with the normal combined aggregate. A failed promotion or later paired timestamp discontinuity returns the route to compatibility mode for the remainder of that output transition.
 
 ## Real-Time Rules
 
@@ -20,13 +23,23 @@ The audio render path must not allocate, lock, touch disk, log, parse text, muta
 
 ## Current Implementation Status
 
-This repository contains the SwiftPM project, DSP engine, importers, profile persistence, menu bar shell, Core Audio tap capture, a preallocated stereo ring buffer, and playback to the current default output device. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
+This repository contains the SwiftPM project, DSP engine, importers, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
 
-## Adaptive Playback Buffering
+## Clocking And Routing
 
-Normal-rate outputs start at the lowest callback-size step GlassEQ supports. Each device UID and sample-rate pair learns its hardware callback size plus a separate stable servo target for every callback size it has exercised. An underrun adds one 64-frame capture period to the current target, up to three capture periods beyond the callback; only another underrun at that ceiling increases the hardware callback. Excessive backlog is trimmed during reprime and does not modify the device calibration. An output timestamp discontinuity increases the hardware callback immediately because more queued audio cannot repair a missed device deadline. A callback increase starts from the target already learned for that quantum, or from one callback plus one capture period when the quantum is new, instead of carrying forward the previous quantum's reservoir. A candidate operating point must run for 60 seconds without another instability before it becomes stable. On a later engine session, a stable target may probe one 64-frame step lower; a failed lower target is remembered and is not retried until the device calibration is reset. Hardware callbacks never decrease automatically. The bounded local history records stabilization and meaningful instability transitions; repeated unresolved instability at the same operating point is deduplicated in memory without rereading or rewriting the calibration file. No calibration data leaves the Mac. Existing learned scalar targets migrate to the operating point for their callback size. Diagnostics can clear every learned sample-rate variant for the current device UID and immediately restart its calibration without affecting other outputs.
+On normal-rate routes, the selected physical output is the aggregate's main subdevice and therefore owns the render clock. The process tap captures the device stream containing the output's preferred stereo pair and is an aggregate subtap with high-quality Core Audio drift compensation enabled. The engine has one `AudioDeviceIOProcID`: each callback receives the tapped system mix, runs the biquad cascade, and writes directly to the physical output buffers. There is no application-level queue or asynchronous sample-rate converter on this path.
 
-Every route runs the occupancy servo and four-point Hermite resampler. Matching the tap and output's nominal sample rates does not guarantee that their hardware clocks advance identically, so the servo applies a small continuous rate correction instead of eventually dropping or duplicating frames. Output timestamp discontinuities and occupancy jumps beyond four callback periods re-prime directly to the route target while preserving the learned correction; step backlogs are never left for the ppm-scale servo to drain. Bidirectional Bluetooth headset modes retain their device-owned 24 or 16 kHz rate and add Audio Toolbox's realtime-safe PCM converter after the Hermite stage; returning to a normal-rate route disposes that converter and resets the clock pair. Low-sample-rate routes keep conservative fixed callback buffering instead of running the calibration ladder. EQ coefficients remain calculated at the tap's processing rate, while filters above the output route's usable-frequency ceiling receive identity coefficients so runtime behavior matches the editor warning.
+GlassEQ measures tap-to-output latency as the host-time difference between the first tapped input frame acquired for an I/O cycle and the first rendered output frame scheduled for hardware. Diagnostics report the observed average and range. This does not include latency before the system tap or after the output reaches the hardware.
+
+On duplex interfaces, Core Audio exposes the physical input channels before the process-tap channels in the aggregate input layout. GlassEQ requires the tap to occupy complete input streams, disables every physical input stream for its I/O callback, and verifies the applied stream-usage mask before starting. The callback still understands the aggregate channel offsets because disabled streams remain present as null buffers. GlassEQ fails startup if Core Audio cannot isolate the tap this way.
+
+The device-scoped tap deliberately follows one output stream rather than all system routes. Audio explicitly routed to another device, including a distinct system-alert output, is outside GlassEQ's processing path. The low-latency path currently requires the preferred pair to occupy one native mono or stereo hardware stream. A pair that spans streams cannot be captured by one device tap, while asking Core Audio to mix down a multichannel stream reintroduces the deep input latency this design avoids. Output switching also requires recreating the muted tap after macOS reports the new route; switch handoff behavior remains a hardware soak-test requirement.
+
+AirPods headset transitions exposed periodic, matching input and output timestamp discontinuities in the combined aggregate at 24 kHz. A timestamp probe showed that HAL could advertise 24 kHz while advancing `mSampleTime` on the old 48 kHz scale, then reset the timeline after several seconds. A combined aggregate created after the headset route had settled ran cleanly, but larger aggregate buffers, drift-compensation changes, and tap mixdown did not make the transition safe. For Bluetooth routes at 24 kHz or below, GlassEQ first uses a tap-only aggregate and drives the physical output separately. A preallocated ring buffer carries processed samples between callbacks, an occupancy servo corrects clock drift, and the realtime converter handles the tap and device sample-rate difference. After six seconds, GlassEQ measures the physical device's sample-time slope for 500 ms. If it agrees with the nominal rate, GlassEQ tries the combined path and rejects it if a paired timestamp discontinuity appears during a 750 ms validation window. One later qualifying paired jump also returns the route to the bridge, with no second promotion attempt until the output changes. Returning to a normal-rate route disposes either headset backend and restores the combined fast path.
+
+See [Aggregate clock experiment: findings](AggregateClockExperiment.md) for the measurements and experiments behind this design.
+
+GlassEQ requests a 16-frame callback only from the private combined aggregate and leaves the physical output's shared buffer-frame property unchanged. While the separate-clock headset backend is active, Core Audio owns the physical output's low-rate callback size while tap capture uses its own aggregate quantum. EQ coefficients use the active processing rate; filters above the output route's usable-frequency ceiling receive identity coefficients so runtime behavior matches the editor warning.
 
 ## Diagnostics
 
@@ -41,6 +54,12 @@ The command prints output device metadata and post-run callback metrics:
 - Captured frames from the private Core Audio tap.
 - Played frames written to the default output device.
 - Playback underrun frames.
+- Input frames dropped because a callback exposed more input than output capacity.
+- Peak capture and output callback sizes.
+- Average and range of tap-to-output latency from Core Audio's I/O timestamps.
+- Samples that reached the soft clipper.
+
+The separate-clock fallback reports its additional bridge diagnostics instead: buffered frames, occupancy-derived bridge latency, clock correction, output timing gaps, sample-rate conversion, and reservoir target. Its bridge-latency number is not the same measurement as the combined path's timestamp-derived tap-to-output latency.
 
 The diagnostic follows the current macOS output device and does not switch outputs itself.
 
@@ -55,3 +74,7 @@ swift run GlassEQDiagnostics 2
 ## Profile Storage And Settings Helper
 
 Profile data belongs to the main app sandbox and is migrated by the main app through `container-migration.plist`. The settings helper does not share profile storage and does not need an app-group entitlement; it receives snapshots and sends commands over the private stdin/stdout IPC session launched by GlassEQ.
+
+## Backlog
+
+- Support preferred stereo pairs inside native output streams wider than two channels without enabling Core Audio tap mixdown. The first version should still process only the preferred pair, preserve the device-scoped native stream format, map the tapped channels and aggregate buffers explicitly, keep physical inputs disabled, and verify that the wider stream does not restore the 43.5 ms mixdown latency.

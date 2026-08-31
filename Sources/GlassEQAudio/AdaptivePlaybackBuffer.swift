@@ -3,9 +3,12 @@ import Foundation
 
 public enum PlaybackBufferInstabilityReason: UInt8, Codable, Equatable, Sendable {
     case underrun = 1
-    case outputTimestampDiscontinuity = 2
-    case excessiveBacklog = 3
     case adaptiveRenderFailure = 4
+}
+
+public enum PlaybackBufferRenegotiationCause: Equatable, Sendable {
+    case instability(PlaybackBufferInstabilityReason)
+    case stableDecay
 }
 
 public struct PlaybackBufferRenegotiation: Equatable, Sendable {
@@ -16,7 +19,7 @@ public struct PlaybackBufferRenegotiation: Equatable, Sendable {
     public var frameSize: UInt32
     public var previousPlaybackTargetFrames: Int
     public var playbackTargetFrames: Int
-    public var reason: PlaybackBufferInstabilityReason
+    public var cause: PlaybackBufferRenegotiationCause
 
     public init(
         outputName: String,
@@ -26,7 +29,7 @@ public struct PlaybackBufferRenegotiation: Equatable, Sendable {
         frameSize: UInt32,
         previousPlaybackTargetFrames: Int? = nil,
         playbackTargetFrames: Int,
-        reason: PlaybackBufferInstabilityReason
+        cause: PlaybackBufferRenegotiationCause
     ) {
         self.outputName = outputName
         self.outputUID = outputUID
@@ -35,7 +38,7 @@ public struct PlaybackBufferRenegotiation: Equatable, Sendable {
         self.frameSize = frameSize
         self.previousPlaybackTargetFrames = previousPlaybackTargetFrames ?? playbackTargetFrames
         self.playbackTargetFrames = playbackTargetFrames
-        self.reason = reason
+        self.cause = cause
     }
 }
 
@@ -112,7 +115,7 @@ private struct LegacyPersistedPlaybackBufferSize: Codable {
 }
 
 private struct PersistedPlaybackBufferCalibrationDocument: Codable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int
     var calibrations: [PersistedPlaybackBufferCalibration]
@@ -146,6 +149,100 @@ struct PlaybackBufferCalibrationProbe: Equatable, Sendable {
         duration: Duration = PlaybackBufferCalibrationPolicy.probationDuration
     ) -> Bool {
         startedAt.duration(to: now) >= duration
+    }
+}
+
+struct PlaybackBufferUnderrunEvidence: Sendable {
+    // Reprime separates underrun signals into episodes, so the controller can corroborate them
+    // from generation deltas without adding counters to the realtime callback.
+    private var count = 0
+    private var startedAt: ContinuousClock.Instant?
+
+    mutating func record(
+        eventCount: UInt64,
+        at now: ContinuousClock.Instant,
+        requiredCount: Int = PlaybackBufferAdaptationPolicy.requiredUnderrunCount,
+        window: Duration = PlaybackBufferAdaptationPolicy.underrunWindow
+    ) -> Bool {
+        guard eventCount > 0, requiredCount > 0 else {
+            return false
+        }
+        if let startedAt,
+           startedAt.duration(to: now) > window {
+            reset()
+        }
+        if startedAt == nil {
+            startedAt = now
+        }
+        count += Int(min(eventCount, UInt64(requiredCount)))
+        guard count >= requiredCount else {
+            return false
+        }
+        reset()
+        return true
+    }
+
+    mutating func reset() {
+        count = 0
+        startedAt = nil
+    }
+}
+
+struct PlaybackBufferAdaptationEvidenceObservation: Equatable, Sendable {
+    var observedDisturbance = false
+    var escalationReason: PlaybackBufferInstabilityReason?
+}
+
+struct PlaybackBufferAdaptationEvidence: Sendable {
+    private var handledInstabilityGeneration: UInt64 = 0
+    private var handledTimestampDiscontinuities: UInt64 = 0
+    private var underruns = PlaybackBufferUnderrunEvidence()
+
+    mutating func reset(
+        instabilityGeneration: UInt64,
+        timestampDiscontinuities: UInt64
+    ) {
+        handledInstabilityGeneration = instabilityGeneration
+        handledTimestampDiscontinuities = timestampDiscontinuities
+        underruns.reset()
+    }
+
+    mutating func resetUnderrunEpisodes() {
+        underruns.reset()
+    }
+
+    mutating func observe(
+        instabilityGeneration: UInt64,
+        reason: PlaybackBufferInstabilityReason,
+        timestampDiscontinuities: UInt64,
+        at now: ContinuousClock.Instant
+    ) -> PlaybackBufferAdaptationEvidenceObservation {
+        var observation = PlaybackBufferAdaptationEvidenceObservation()
+
+        if timestampDiscontinuities < handledTimestampDiscontinuities {
+            handledTimestampDiscontinuities = timestampDiscontinuities
+        } else if timestampDiscontinuities != handledTimestampDiscontinuities {
+            handledTimestampDiscontinuities = timestampDiscontinuities
+            observation.observedDisturbance = true
+        }
+
+        guard instabilityGeneration != handledInstabilityGeneration else {
+            return observation
+        }
+        let eventCount = instabilityGeneration &- handledInstabilityGeneration
+        handledInstabilityGeneration = instabilityGeneration
+        observation.observedDisturbance = true
+
+        switch reason {
+        case .underrun:
+            if underruns.record(eventCount: eventCount, at: now) {
+                observation.escalationReason = .underrun
+            }
+        case .adaptiveRenderFailure:
+            underruns.reset()
+            observation.escalationReason = .adaptiveRenderFailure
+        }
+        return observation
     }
 }
 
@@ -215,6 +312,12 @@ enum PlaybackBufferCalibrationPolicy {
     }
 }
 
+enum PlaybackBufferAdaptationPolicy {
+    static let requiredUnderrunCount = 3
+    static let underrunWindow: Duration = .seconds(2)
+    static let decayDelay: Duration = .seconds(5 * 60)
+}
+
 enum PersistedPlaybackBufferCalibrationStore {
     static func defaultURL(nextTo restorationStoreURL: URL) -> URL {
         restorationStoreURL.deletingLastPathComponent()
@@ -233,6 +336,8 @@ enum PersistedPlaybackBufferCalibrationStore {
             return normalized(document.calibrations)
         }
 
+        // Schema 2 persisted callback growth caused by timestamp reanchors. Do not migrate that
+        // contaminated evidence; legacy and schema 1 records predate that escalation path.
         if let document = try? decoder.decode(PersistedPlaybackBufferCalibrationDocumentV1.self, from: data),
            document.schemaVersion == 1 {
             return normalized(document.calibrations.map(migrateV1Calibration))
@@ -334,9 +439,7 @@ enum PersistedPlaybackBufferCalibrationStore {
               previousTargetFrames > 0, resultingTargetFrames > 0 else {
             return
         }
-        guard reason != .excessiveBacklog
-                || previousFrameSize != resultingFrameSize
-                || previousTargetFrames != resultingTargetFrames else {
+        guard reason == .underrun else {
             return
         }
         try updateCalibration(
@@ -358,17 +461,15 @@ enum PersistedPlaybackBufferCalibrationStore {
             if calibration.stableFrameSize == nil {
                 calibration.probingFrameSize = resultingFrameSize
             }
-            if reason == .underrun {
-                calibration.updateOperatingPoint(for: previousFrameSize) { operatingPoint in
-                    if operatingPoint.stableTargetFrames == previousTarget {
-                        operatingPoint.stableTargetFrames = nil
-                    }
-                    operatingPoint.probingTargetFrames = nil
-                    operatingPoint.unstableThroughTargetFrames = max(
-                        operatingPoint.unstableThroughTargetFrames ?? 0,
-                        previousTarget
-                    )
+            calibration.updateOperatingPoint(for: previousFrameSize) { operatingPoint in
+                if operatingPoint.stableTargetFrames == previousTarget {
+                    operatingPoint.stableTargetFrames = nil
                 }
+                operatingPoint.probingTargetFrames = nil
+                operatingPoint.unstableThroughTargetFrames = max(
+                    operatingPoint.unstableThroughTargetFrames ?? 0,
+                    previousTarget
+                )
             }
             calibration.updateOperatingPoint(for: resultingFrameSize) { operatingPoint in
                 operatingPoint.probingTargetFrames = UInt32(clamping: resultingTargetFrames)
@@ -656,22 +757,11 @@ struct AdaptivePlaybackBufferPolicy {
     static func startupFrameSize(
         preferredFrameSize: UInt32,
         calibration: PersistedPlaybackBufferCalibration?,
-        supportedRange: AudioBufferFrameSizeRange,
-        allowsDownwardProbe: Bool
+        supportedRange: AudioBufferFrameSizeRange
     ) -> UInt32 {
-        let calibratedFrameSize: UInt32
-        if let probingFrameSize = calibration?.probingFrameSize {
-            calibratedFrameSize = probingFrameSize
-        } else if allowsDownwardProbe,
-                  let stableFrameSize = calibration?.stableFrameSize,
-                  let downProbe = previousFrameSize(
-                      before: stableFrameSize,
-                      supportedRange: supportedRange
-                  ) {
-            calibratedFrameSize = downProbe
-        } else {
-            calibratedFrameSize = calibration?.stableFrameSize ?? 0
-        }
+        let calibratedFrameSize = calibration?.probingFrameSize
+            ?? calibration?.stableFrameSize
+            ?? 0
         return min(
             max(max(preferredFrameSize, calibratedFrameSize), supportedRange.minimum),
             supportedRange.maximum
@@ -679,16 +769,10 @@ struct AdaptivePlaybackBufferPolicy {
     }
 
     static func nextTargetFrames(
-        for reason: PlaybackBufferInstabilityReason,
         callbackFrames: UInt32,
         after currentTargetFrames: Int,
         maximumReservoirFrames: Int = maximumReservoirFrames
     ) -> Int? {
-        // Reservoir protects against missing input. Backlog is trimmed during reprime and does
-        // not become safer when both the prime and target move upward together.
-        guard reason == .underrun else {
-            return nil
-        }
         let callbackFrames = max(Int(callbackFrames), 1)
         let maximumTargetFrames = callbackFrames + max(maximumReservoirFrames, reservoirStepFrames)
         let nextTargetFrames = max(
@@ -698,23 +782,22 @@ struct AdaptivePlaybackBufferPolicy {
         return nextTargetFrames <= maximumTargetFrames ? nextTargetFrames : nil
     }
 
-    static func shouldIncreaseCallback(for reason: PlaybackBufferInstabilityReason) -> Bool {
-        // Timestamp gaps implicate callback scheduling, while repeated underruns reach this point
-        // only after the reservoir ladder is exhausted. Backlog is neither signal.
-        reason != .excessiveBacklog
-    }
-
     static func minimumTargetFrames(callbackFrames: UInt32) -> Int {
         max(Int(callbackFrames) + reservoirStepFrames, reservoirStepFrames * 2)
     }
 
-    static func nextSessionTargetProbe(
+    static func nextDecayTargetFrames(
         callbackFrames: UInt32,
         stableTargetFrames: Int,
-        unstableThroughTargetFrames: UInt32?
+        unstableThroughTargetFrames: UInt32?,
+        baselineTargetFrames: Int = 0
     ) -> Int? {
         let candidate = stableTargetFrames - reservoirStepFrames
-        guard candidate >= minimumTargetFrames(callbackFrames: callbackFrames),
+        let minimum = max(
+            minimumTargetFrames(callbackFrames: callbackFrames),
+            baselineTargetFrames
+        )
+        guard candidate >= minimum,
               candidate > Int(unstableThroughTargetFrames ?? 0) else {
             return nil
         }
@@ -722,25 +805,14 @@ struct AdaptivePlaybackBufferPolicy {
     }
 
     static func startupTargetFrames(
-        callbackFrames: UInt32,
         baselineTargetFrames: Int,
-        operatingPoint: PersistedPlaybackBufferOperatingPoint?,
-        allowsDownwardProbe: Bool
+        operatingPoint: PersistedPlaybackBufferOperatingPoint?
     ) -> Int {
         guard let operatingPoint else {
             return baselineTargetFrames
         }
         if let probingTargetFrames = operatingPoint.probingTargetFrames {
             return max(baselineTargetFrames, Int(probingTargetFrames))
-        }
-        if allowsDownwardProbe,
-           let stableTargetFrames = operatingPoint.stableTargetFrames,
-           let downProbe = nextSessionTargetProbe(
-               callbackFrames: callbackFrames,
-               stableTargetFrames: Int(stableTargetFrames),
-               unstableThroughTargetFrames: operatingPoint.unstableThroughTargetFrames
-           ) {
-            return max(baselineTargetFrames, downProbe)
         }
         return max(baselineTargetFrames, Int(operatingPoint.stableTargetFrames ?? 0))
     }
