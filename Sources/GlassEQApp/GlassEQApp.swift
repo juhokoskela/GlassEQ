@@ -2338,6 +2338,7 @@ final class GlassEQAppModel {
             wasRunningBeforeSleep = false
             pendingAggregateBufferIncrease = nil
             startAggregateStabilityMonitoring()
+            startColdStartupAggregatePromotionIfNeeded()
             startHeadsetAggregatePromotionIfNeeded()
         case .failure(let error, let attemptedOutput):
             if let attemptedOutput {
