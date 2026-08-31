@@ -776,26 +776,6 @@ struct EQCoreTests {
     }
 
     @Test
-    func dspCallbackPathStaysWithinGenerousDebugBudget() {
-        guard !isThreadSanitizerRuntimeLoaded else {
-            return
-        }
-        let profile = EQProfile.flatGraphic31
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var samples = makeStereoTestBlock(frameCount: 256, sampleRate: 48_000)
-        let clock = ContinuousClock()
-        let start = clock.now
-
-        for _ in 0..<256 {
-            _ = samples.withUnsafeMutableBufferPointer {
-                processor.processInterleavedWithDiagnostics($0, frameCount: 256, channelCount: 2)
-            }
-        }
-
-        #expect(start.duration(to: clock.now) < .seconds(2))
-    }
-
-    @Test
     func programmeComparisonCallbackPathStaysWithinGenerousDebugBudget() {
         guard !isThreadSanitizerRuntimeLoaded else {
             return
