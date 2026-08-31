@@ -256,18 +256,24 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32)
     func update(profile: EQProfile) throws
     @discardableResult func updateDSP(profile: EQProfile) -> Bool
-    func setBypassed(_ isBypassed: Bool)
     func muteOutputForTransition()
     func stop()
     func snapshotMetrics() -> AudioEngineMetrics
     func resetDiagnostics()
     func setRuntimeFailureHandler(_ handler: (@Sendable (AudioEngineFailure) -> Void)?)
+    #if DEBUG
+    func simulateRenderStallForTesting()
+    #endif
 }
 
 extension AudioEngineControlling {
     func setRuntimeFailureHandler(
         _: (@Sendable (AudioEngineFailure) -> Void)?
     ) {}
+
+    #if DEBUG
+    func simulateRenderStallForTesting() {}
+    #endif
 }
 
 extension SystemTapAudioEngine: AudioEngineControlling {}
@@ -436,6 +442,9 @@ final class GlassEQAppModel {
     private let saveDebounceDelay: Duration
     private var observer: (any DefaultOutputObserving)?
     private var metricsTask: Task<Void, Never>?
+    private var renderWatchdogTask: Task<Void, Never>?
+    private var renderWatchdog: AudioRenderWatchdog
+    private let renderWatchdogPollInterval: Duration
     private var aggregateStabilityTask: Task<Void, Never>?
     private var headsetAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
@@ -648,10 +657,17 @@ final class GlassEQAppModel {
             aggregateBufferFrameSize: UInt32
         )
         case restart(profile: EQProfile, rollback: ProfileRollback?)
+        case recoverRenderStall(
+            output: AudioOutputDevice,
+            profile: EQProfile,
+            aggregateBufferFrameSize: UInt32
+        )
 
         var profile: EQProfile {
             switch self {
-            case .start(_, let profile, _, _), .restart(let profile, _):
+            case .start(_, let profile, _, _),
+                 .restart(let profile, _),
+                 .recoverRenderStall(_, let profile, _):
                 return profile
             }
         }
@@ -660,6 +676,8 @@ final class GlassEQAppModel {
             switch self {
             case .start(_, _, let rollback, _), .restart(_, let rollback):
                 return rollback
+            case .recoverRenderStall:
+                return nil
             }
         }
     }
@@ -702,6 +720,9 @@ final class GlassEQAppModel {
         aggregateStabilitySettlingDelay: Duration = .seconds(2),
         aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
         headsetAggregatePromotionDelay: Duration = .seconds(6),
+        renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
+        renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
+        renderWatchdogPollInterval: Duration = .milliseconds(500),
         aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil
     ) {
         let loadResult: ProfileStoreLoadResult?
@@ -751,6 +772,11 @@ final class GlassEQAppModel {
         self.aggregateStabilitySettlingDelay = aggregateStabilitySettlingDelay
         self.aggregateCleanSessionDuration = aggregateCleanSessionDuration
         self.headsetAggregatePromotionDelay = headsetAggregatePromotionDelay
+        self.renderWatchdog = AudioRenderWatchdog(
+            stallThreshold: renderWatchdogStallThreshold,
+            repeatedFailureWindow: renderWatchdogRepeatedFailureWindow
+        )
+        self.renderWatchdogPollInterval = renderWatchdogPollInterval
         self.aggregateBufferNotifier = aggregateBufferNotifier
             ?? (registerAppDelegate
                 ? AggregateBufferNotifier.shared
@@ -966,6 +992,9 @@ final class GlassEQAppModel {
         invalidatePendingEngineStart()
         metricsTask?.cancel()
         metricsTask = nil
+        renderWatchdogTask?.cancel()
+        renderWatchdogTask = nil
+        renderWatchdog.reset()
         scheduleEngineStop(updateMetrics: true)
         previewReturnProfile = nil
         lifecycleState = .stopped
@@ -1243,6 +1272,19 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
+    #if DEBUG
+    func simulateRenderStallForTesting() {
+        guard lifecycleState == .running,
+              isRunning,
+              engineStartTask == nil else {
+            return
+        }
+        engine.simulateRenderStallForTesting()
+        statusMessage = localized("Debug: render heartbeat frozen for watchdog test")
+        notifyModelDidChange()
+    }
+    #endif
+
     @discardableResult
     private func addProfile(_ profile: EQProfile, name: String, status: String? = nil) throws -> EQProfile {
         try ensureProfileStoreWritable()
@@ -1502,6 +1544,9 @@ final class GlassEQAppModel {
 
         engineStartGeneration += 1
         let generation = engineStartGeneration
+        renderWatchdogTask?.cancel()
+        renderWatchdogTask = nil
+        renderWatchdog.pause()
         aggregateStabilityTask?.cancel()
         aggregateStabilityTask = nil
         headsetAggregatePromotionTask?.cancel()
@@ -1512,6 +1557,8 @@ final class GlassEQAppModel {
             pendingEngineStartOutput = output
         case .restart:
             pendingEngineStartOutput = nil
+        case .recoverRenderStall(let output, _, _):
+            pendingEngineStartOutput = output
         }
 
         let engine = engine
@@ -1606,6 +1653,7 @@ final class GlassEQAppModel {
         let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
+        renderWatchdog.reset()
         if shouldStopEngine {
             scheduleEngineStop(updateMetrics: updateMetrics)
         }
@@ -1750,6 +1798,25 @@ final class GlassEQAppModel {
                         output = defaultOutput
                     }
                 }
+            case .recoverRenderStall(
+                let requestedOutput,
+                let profile,
+                let aggregateBufferFrameSize
+            ):
+                attemptedOutput = requestedOutput
+                engine.stop()
+                confirmedState.clear()
+                guard !Task.isCancelled else {
+                    confirmedState.recordCancelledAttempt(failedAttempt)
+                    return .cancelled
+                }
+                engine.setPreferredAggregateBufferFrameSize(aggregateBufferFrameSize)
+                try engine.start(output: requestedOutput, profile: profile)
+                if case .running(let activeOutput) = engine.state {
+                    output = activeOutput
+                } else {
+                    output = requestedOutput
+                }
             }
             confirmedState.confirm(confirmation)
             return .success(output)
@@ -1848,6 +1915,11 @@ final class GlassEQAppModel {
             statusMessage = audioEngineStatusMessage(error)
         case .cancelled:
             return
+        }
+        if lifecycleState == .running {
+            startRenderWatchdog()
+        } else {
+            renderWatchdog.pause()
         }
         notifyModelDidChange()
     }
@@ -2396,6 +2468,7 @@ final class GlassEQAppModel {
             requestWakeReconnectAttempt()
             return
         }
+        renderWatchdog.reset()
         restartEngineWithActiveProfile()
     }
 
@@ -2507,6 +2580,89 @@ final class GlassEQAppModel {
         metricsTask = nil
     }
 
+    private func startRenderWatchdog() {
+        renderWatchdogTask?.cancel()
+        renderWatchdog.pause()
+        guard case .running(let output) = engine.state else {
+            return
+        }
+        let generation = engineStartGeneration
+        let route = AudioRenderWatchdogRoute(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: activeAggregateRoute?.nativeOutputStreamIndex,
+            nominalSampleRate: output.nominalSampleRate
+        )
+        let initialMetrics = engine.snapshotMetrics()
+        _ = renderWatchdog.observe(
+            generation: generation,
+            route: route,
+            isRunning: true,
+            playedFrames: initialMetrics.playedFrames
+        )
+        renderWatchdogTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: self?.renderWatchdogPollInterval ?? .milliseconds(500))
+                guard let self,
+                      !Task.isCancelled,
+                      self.lifecycleState == .running,
+                      self.isRunning,
+                      self.engineStartTask == nil,
+                      self.engineStartGeneration == generation else {
+                    return
+                }
+                let metrics = self.engine.snapshotMetrics()
+                guard let action = self.renderWatchdog.observe(
+                    generation: generation,
+                    route: route,
+                    isRunning: true,
+                    playedFrames: metrics.playedFrames
+                ) else {
+                    continue
+                }
+                self.handleRenderWatchdogAction(action, generation: generation)
+                return
+            }
+        }
+    }
+
+    private func handleRenderWatchdogAction(
+        _ action: AudioRenderWatchdogAction,
+        generation: Int
+    ) {
+        guard lifecycleState == .running,
+              isRunning,
+              engineStartTask == nil,
+              engineStartGeneration == generation,
+              case .running(let output) = engine.state else {
+            return
+        }
+
+        switch action {
+        case .restart:
+            let frameSize = activeAggregateRoute.map {
+                aggregateBufferPolicyStore.selection(for: $0).frameSize
+            } ?? 16
+            statusMessage = localized(
+                "Audio rendering stalled; rebuilding \(output.name)..."
+            )
+            notifyModelDidChange()
+            scheduleEngineWork(.recoverRenderStall(
+                output: output,
+                profile: activeProfile,
+                aggregateBufferFrameSize: frameSize
+            ))
+        case .stop:
+            invalidatePendingEngineStart()
+            scheduleEngineStop(updateMetrics: true)
+            lifecycleState = .stopped
+            isRunning = false
+            statusMessage = localized(
+                "Audio rendering stalled again, so GlassEQ stopped processing. Retry the audio engine when ready."
+            )
+            notifyModelDidChange()
+        }
+    }
+
     func notifyModelDidChange() {
         NotificationCenter.default.post(name: .glassEQModelDidChange, object: self)
         settingsCoordinator.modelDidChange()
@@ -2536,6 +2692,9 @@ final class GlassEQAppModel {
 
     private func invalidatePendingEngineStart() {
         engineStartGeneration += 1
+        renderWatchdogTask?.cancel()
+        renderWatchdogTask = nil
+        renderWatchdog.pause()
         aggregateStabilityTask?.cancel()
         aggregateStabilityTask = nil
         headsetAggregatePromotionTask?.cancel()
@@ -2859,6 +3018,14 @@ private struct MenuBarView: View {
                 .buttonStyle(.glass)
                 .tint(popoverControlsAreActive ? .macOSSystemRed : nil)
             }
+
+            #if DEBUG
+            Button(localized("Test render watchdog")) {
+                model.simulateRenderStallForTesting()
+            }
+            .disabled(!model.isRunning || model.activeProfile.isBypassed)
+            .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
+            #endif
 
             Text(model.statusMessage)
                 .font(.caption.weight(.medium))

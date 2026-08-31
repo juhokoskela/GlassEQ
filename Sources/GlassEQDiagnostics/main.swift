@@ -468,6 +468,10 @@ private func runDSPBenchmark() {
     for benchmarkCase in cases {
         run(benchmarkCase)
     }
+    for transitionCase in cases where transitionCase.name.hasPrefix("31-band graphic")
+        && transitionCase.sampleRate != 96_000 {
+        runTransition(transitionCase)
+    }
 }
 
 private func run(_ benchmarkCase: DSPBenchmarkCase) {
@@ -516,6 +520,79 @@ private func run(_ benchmarkCase: DSPBenchmarkCase) {
     print(String(format: "  Avg DSP time: %.3f us/buffer", averageMicroseconds))
     print(String(format: "  Callback budget: %.3f us (%.3f%% used)", callbackBudgetMicroseconds, budgetPercent))
     print(String(format: "  Avg per sample: %.3f ns", perSampleNanoseconds))
+    print("  Saturated samples during benchmark: \(saturatedSamples)")
+    print("")
+}
+
+private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
+    let iterations = 20_000
+    let warmupIterations = 1_000
+    let originalSamples = makeStereoTestBlock(
+        frameCount: benchmarkCase.frameCount,
+        sampleRate: benchmarkCase.sampleRate
+    )
+    var samples = originalSamples
+    var transition = RealtimeEQTransition(
+        activeProcessor: EQProcessor(configuration: EQConfiguration(
+            profile: benchmarkCase.profile,
+            sampleRate: benchmarkCase.sampleRate,
+            channelCount: benchmarkCase.channelCount
+        )),
+        maximumFrameCount: benchmarkCase.frameCount,
+        channelCount: benchmarkCase.channelCount,
+        sampleRate: benchmarkCase.sampleRate,
+        warmupSeconds: 0,
+        blendSeconds: 3_600
+    )
+    precondition(transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+        profile: benchmarkCase.profile,
+        sampleRate: benchmarkCase.sampleRate,
+        channelCount: benchmarkCase.channelCount
+    ))))
+
+    for _ in 0..<warmupIterations {
+        samples = originalSamples
+        samples.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: benchmarkCase.frameCount,
+                channelCount: benchmarkCase.channelCount
+            )
+        }
+    }
+
+    let start = DispatchTime.now().uptimeNanoseconds
+    var saturatedSamples: UInt64 = 0
+    for _ in 0..<iterations {
+        samples = originalSamples
+        saturatedSamples &+= samples.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: benchmarkCase.frameCount,
+                channelCount: benchmarkCase.channelCount
+            ).saturatedSamples
+        }
+    }
+    let elapsed = DispatchTime.now().uptimeNanoseconds - start
+
+    let averageMicroseconds = Double(elapsed) / Double(iterations) / 1_000
+    let callbackBudgetMicroseconds = Double(benchmarkCase.frameCount)
+        / benchmarkCase.sampleRate * 1_000_000
+    let budgetPercent = averageMicroseconds / callbackBudgetMicroseconds * 100
+
+    print("Whole-bank transition: \(benchmarkCase.name)")
+    print(String(
+        format: "  Buffer: %d frames, %d channels, %.0f Hz",
+        benchmarkCase.frameCount,
+        benchmarkCase.channelCount,
+        benchmarkCase.sampleRate
+    ))
+    print(String(format: "  Avg DSP time: %.3f us/buffer", averageMicroseconds))
+    print(String(
+        format: "  Callback budget: %.3f us (%.3f%% used)",
+        callbackBudgetMicroseconds,
+        budgetPercent
+    ))
     print("  Saturated samples during benchmark: \(saturatedSamples)")
     print("")
 }

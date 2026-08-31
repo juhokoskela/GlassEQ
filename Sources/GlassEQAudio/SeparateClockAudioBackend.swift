@@ -209,12 +209,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     private final class PreparedDSPConfigBox: @unchecked Sendable {
-        let config: EQRenderConfiguration
-        var retiredStorage: EQProcessorRetiredRenderStorage?
+        var processor: EQProcessor?
+        var retiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
         init(config: EQRenderConfiguration) {
-            self.config = config
+            self.processor = EQProcessor(renderConfiguration: config)
         }
     }
 
@@ -231,7 +231,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let configuredCaptureCallbackFrames: Int
         private let playbackPrimeFrames: Atomic<Int>
         private let maxCallbackFrames: Int
-        private var processor: EQProcessor
+        private var dspTransition: RealtimeEQTransition
         private var captureScratchSamples: [Float]
         private var adaptiveInputSamples: [Float]
         private var sampleRateConverterInputSamples: UnsafeMutableBufferPointer<Float>
@@ -246,6 +246,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
         private let capturedFrames = Atomic<UInt64>(0)
         private let playedFrames = Atomic<UInt64>(0)
+        #if DEBUG
+        private let freezePlayedFramesForTesting = Atomic<Bool>(false)
+        #endif
         private let playbackUnderrunFrames = Atomic<UInt64>(0)
         private let droppedInputFrames = Atomic<UInt64>(0)
         private let droppedBufferedFrames = Atomic<UInt64>(0)
@@ -271,13 +274,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let playbackRateCorrectionSaturated = Atomic<Bool>(false)
         private let filteredPlaybackOccupancyMilliFrames = Atomic<Int64>(0)
         private let sampleRateConversionActive = Atomic<Bool>(false)
-        private let bypassEnabled: Atomic<Bool>
         private let playbackPriming = Atomic<Bool>(true)
         private let outputMutedForTransition = Atomic<Bool>(false)
         private let pendingPlaybackReset = Atomic<Bool>(false)
         private let pendingOutputTimestampReset = Atomic<Bool>(true)
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
+        private var activeDSPConfigPointer: UInt = 0
         private let stopping = Atomic<Bool>(false)
         private let captureInCallback = Atomic<Bool>(false)
         private let playbackInCallback = Atomic<Bool>(false)
@@ -322,18 +325,23 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 inputSampleRate: sampleRate,
                 outputSampleRate: sampleRate
             )
-            self.processor = EQProcessor(
-                renderConfiguration: EQRenderConfiguration(
-                    profile: SeparateClockAudioBackend.dspProfile(from: profile),
-                    sampleRate: sampleRate,
-                    channelCount: self.channelCount
-                )
+            self.dspTransition = RealtimeEQTransition(
+                activeProcessor: EQProcessor(
+                    renderConfiguration: EQRenderConfiguration(
+                        profile: profile,
+                        sampleRate: sampleRate,
+                        channelCount: self.channelCount
+                    )
+                ),
+                maximumFrameCount: scratchFrames,
+                channelCount: self.channelCount,
+                sampleRate: sampleRate
             )
-            self.bypassEnabled = Atomic(profile.isBypassed)
         }
 
         deinit {
             drainDSPConfigBoxes()
+            releaseDSPConfigBox(activeDSPConfigPointer)
             sampleRateConverterInputSamples.deinitialize()
             sampleRateConverterInputSamples.deallocate()
             adaptiveOutputSamples.deinitialize()
@@ -344,10 +352,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             stopping.store(true, ordering: .releasing)
             outputMutedForTransition.store(true, ordering: .releasing)
             playbackPriming.store(true, ordering: .releasing)
-        }
-
-        func setBypassed(_ isBypassed: Bool) {
-            bypassEnabled.store(isBypassed, ordering: .relaxed)
         }
 
         func muteOutputForTransition() {
@@ -563,12 +567,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 return
             }
 
-            applyPendingDSPConfig()
-
-            if bypassEnabled.load(ordering: .relaxed) {
-                captureBypassed(inputBuffers: inputBuffers, frameCount: frameCount)
-                return
-            }
+            beginPendingDSPTransitionIfPossible()
 
             var saturatedSampleCount: UInt64 = 0
             captureScratchSamples.withUnsafeMutableBufferPointer { scratch in
@@ -587,11 +586,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                         frameCount: chunkFrames,
                         channelCount: channelCount
                     )
-                    saturatedSampleCount += processor.processInterleavedWithDiagnostics(
+                    let transitionResult = dspTransition.processInterleavedWithDiagnostics(
                         chunkSamples,
                         frameCount: chunkFrames,
                         channelCount: channelCount
                     )
+                    finishDSPTransition(transitionResult)
+                    saturatedSampleCount += transitionResult.saturatedSamples
                     recordWriteResult(
                         ringBuffer.writeInterleaved(
                             UnsafeBufferPointer(chunkSamples),
@@ -757,8 +758,20 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 beginPlaybackReprime()
             }
             updateMaxBufferedFrames(ringBuffer.occupancyFrames())
+            #if DEBUG
+            if !freezePlayedFramesForTesting.load(ordering: .relaxed) {
+                playedFrames.wrappingAdd(UInt64(frameCount), ordering: .relaxed)
+            }
+            #else
             playedFrames.wrappingAdd(UInt64(frameCount), ordering: .relaxed)
+            #endif
         }
+
+        #if DEBUG
+        func simulateRenderStallForTesting() {
+            freezePlayedFramesForTesting.store(true, ordering: .releasing)
+        }
+        #endif
 
         private func beginPlaybackReprime() {
             playbackRateServo.beginPriming()
@@ -1034,55 +1047,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
         }
 
-        private func captureBypassed(
-            inputBuffers: UnsafeMutableAudioBufferListPointer,
-            frameCount: Int
-        ) {
-            if let inputSamples = contiguousInterleavedInputBuffer(
-                inputBuffers,
-                frameCount: frameCount,
-                channelCount: channelCount
-            ) {
-                recordWriteResult(
-                    ringBuffer.writeInterleaved(
-                        inputSamples,
-                        frameCount: frameCount,
-                        sourceChannelCount: channelCount
-                    )
-                )
-            } else {
-                captureScratchSamples.withUnsafeMutableBufferPointer { scratch in
-                    let scratchFrames = max(scratch.count / channelCount, 1)
-                    var frameOffset = 0
-                    while frameOffset < frameCount {
-                        let chunkFrames = min(frameCount - frameOffset, scratchFrames)
-                        let chunkSamples = UnsafeMutableBufferPointer(
-                            start: scratch.baseAddress,
-                            count: chunkFrames * channelCount
-                        )
-                        copyInput(
-                            from: inputBuffers,
-                            sourceFrameOffset: frameOffset,
-                            into: chunkSamples,
-                            frameCount: chunkFrames,
-                            channelCount: channelCount
-                        )
-                        recordWriteResult(
-                            ringBuffer.writeInterleaved(
-                                UnsafeBufferPointer(chunkSamples),
-                                frameCount: chunkFrames,
-                                sourceChannelCount: channelCount
-                            )
-                        )
-                        frameOffset += chunkFrames
-                    }
-                }
-            }
-
-            updateMaxBufferedFrames(ringBuffer.occupancyFrames())
-            capturedFrames.wrappingAdd(UInt64(frameCount), ordering: .relaxed)
-        }
-
         private func recordWriteResult(_ result: RingBufferWriteResult) {
             if result.droppedInputFrames > 0 {
                 droppedInputFrames.wrappingAdd(UInt64(result.droppedInputFrames), ordering: .relaxed)
@@ -1092,7 +1056,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
         }
 
-        private func applyPendingDSPConfig() {
+        private func beginPendingDSPTransitionIfPossible() {
+            guard activeDSPConfigPointer == 0,
+                  !dspTransition.isTransitioning else {
+                return
+            }
             let rawPointer = pendingDSPConfigPointer.exchange(0, ordering: .acquiringAndReleasing)
             guard rawPointer != 0 else {
                 return
@@ -1100,7 +1068,25 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
             let pointer = UnsafeRawPointer(bitPattern: rawPointer)!
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
-            box.retiredStorage = processor.applyRealtimeCompatiblePreparedConfiguration(box.config)
+            guard let processor = box.processor,
+                  dspTransition.beginTransition(to: processor) else {
+                pushRetiredDSPConfigBox(rawPointer)
+                return
+            }
+            box.processor = nil
+            activeDSPConfigPointer = rawPointer
+        }
+
+        private func finishDSPTransition(_ result: EQTransitionRenderResult) {
+            guard result.completedTransition,
+                  activeDSPConfigPointer != 0,
+                  let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer) else {
+                return
+            }
+            let rawPointer = activeDSPConfigPointer
+            activeDSPConfigPointer = 0
+            let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
+            box.retiredProcessor = result.retiredProcessor
             pushRetiredDSPConfigBox(rawPointer)
         }
 
@@ -1516,7 +1502,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     func completeCombinedHandoff() {
         control.withLock { state in
-            stopLocked(&state)
+            stopLocked(&state, restoringDirectPlayback: false)
         }
         updatePlaybackBufferAdaptationTimer()
     }
@@ -1689,14 +1675,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         let preparedConfig = EQRenderConfiguration(
-            profile: Self.dspProfile(from: profile),
+            profile: profile,
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
         )
         runtime.drainDSPConfigBoxes()
         runtime.publishPendingDSPConfig(preparedConfig)
-        runtime.setBypassed(profile.isBypassed)
         state.activeProfile = profile
         if incrementsProfileRevision {
             state.profileRevision &+= 1
@@ -1705,38 +1690,18 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     static func canHotSwapDSP(
-        from activeProfile: EQProfile,
+        from _: EQProfile,
         to nextProfile: EQProfile,
         sampleRate: Double,
         channelCount: Int,
         maximumUsableFrequency: Double? = nil
     ) -> Bool {
-        guard activeProfile.mode == nextProfile.mode,
-              activeProfile.channelMode == nextProfile.channelMode else {
-            return false
-        }
-
-        return EQRenderConfiguration(
-            profile: Self.dspProfile(from: nextProfile),
+        EQRenderConfiguration(
+            profile: nextProfile,
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ).hasRealtimeCompatibleTopology(
-            with: EQRenderConfiguration(
-                profile: Self.dspProfile(from: activeProfile),
-                sampleRate: sampleRate,
-                channelCount: channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
-            )
-        )
-    }
-
-    public func setBypassed(_ isBypassed: Bool) {
-        control.withLock { state in
-            state.runtime?.setBypassed(isBypassed)
-            state.activeProfile?.isBypassed = isBypassed
-            state.profileRevision &+= 1
-        }
+        ).isNumericallySafe
     }
 
     public func muteOutputForTransition() {
@@ -1830,10 +1795,22 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
     }
 
-    private func stopLocked(_ state: inout ControlState) {
+    #if DEBUG
+    func simulateRenderStallForTesting() {
+        control.withLock { $0.runtime }?.simulateRenderStallForTesting()
+    }
+    #endif
+
+    private func stopLocked(
+        _ state: inout ControlState,
+        restoringDirectPlayback: Bool = true
+    ) {
         state.runtime?.markStopping()
         stopOutputHalfLocked(&state)
-        stopCaptureHalfLocked(&state)
+        stopCaptureHalfLocked(
+            &state,
+            restoringDirectPlayback: restoringDirectPlayback
+        )
         state.activeProfile = nil
         state.profileRevision &+= 1
         state.playbackBufferAdaptationEvidence = PlaybackBufferAdaptationEvidence()
@@ -1930,8 +1907,20 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         state.captureRunning = true
     }
 
-    private func stopCaptureHalfLocked(_ state: inout ControlState) {
+    private func stopCaptureHalfLocked(
+        _ state: inout ControlState,
+        restoringDirectPlayback: Bool = false
+    ) {
         state.runtime?.markStopping()
+
+        // Hand direct playback back to HAL as soon as capture stops. Destroying an
+        // always-muted tap first can leave an active client silent until it rebuilds.
+        if restoringDirectPlayback, state.tapID != kAudioObjectUnknown {
+            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
+                .mutedWhenTapped,
+                tapID: state.tapID
+            )
+        }
 
         if state.aggregateDeviceID != kAudioObjectUnknown, let captureIOProcID = state.captureIOProcID {
             _ = AudioDeviceStop(state.aggregateDeviceID, captureIOProcID)
@@ -2055,7 +2044,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             )
             runtime.drainDSPConfigBoxes()
             runtime.publishPendingDSPConfig(EQRenderConfiguration(
-                profile: Self.dspProfile(from: effectiveProfile),
+                profile: effectiveProfile,
                 sampleRate: runtime.sampleRate,
                 channelCount: runtime.channelCount,
                 maximumUsableFrequency: EQRouteFrequencyPolicy.maximumUsableFrequency(
@@ -2330,12 +2319,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         try? PersistedAudioDeviceRestorationStore.save(records, to: url)
-    }
-
-    private static func dspProfile(from profile: EQProfile) -> EQProfile {
-        var profile = profile
-        profile.isBypassed = false
-        return profile
     }
 
     private func audioEngineFailure(from error: Error) -> AudioEngineFailure {

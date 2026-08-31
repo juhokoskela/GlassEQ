@@ -15,11 +15,15 @@ The normal-rate runtime flow is:
 7. Process tap buffers and write the result to the physical output in one aggregate-device callback.
 8. Rebuild the tap and aggregate when macOS changes the selected output device or stream.
 
+On an explicit stop or profile bypass, GlassEQ changes the tap to mute its source only while the tap is being read, then stops the IOProc and destroys the graph. Direct system playback can resume when the read ends instead of waiting for each active client to recover after an always-muted tap disappears. Route handoffs keep the tap continuously muted until the replacement path is active.
+
 Bluetooth routes at 24 kHz or below initially use a separate-clock compatibility backend. The tap runs in a tap-only aggregate, the physical output has its own HAL callback, and a bounded ring buffer, occupancy servo, and realtime sample-rate converter bridge the two clocks. After the route settles and its physical clock advances at the advertised rate, GlassEQ attempts to replace the bridge with the normal combined aggregate. A failed promotion or later paired timestamp discontinuity returns the route to compatibility mode for the remainder of that output transition.
 
 ## Real-Time Rules
 
-The audio render path must not allocate, lock, touch disk, log, parse text, mutate SwiftUI state, or use Combine. UI and import work produce immutable profile/config values that are swapped into the renderer outside the callback.
+The audio render path must not allocate, lock, touch disk, log, parse text, mutate SwiftUI state, or use Combine. UI and import work build a complete candidate processor bank outside the callback. The callback warms that bank for 20 ms, then blends from the active bank with a sample-accurate 10 ms smoothstep ramp. This permits filter-count, mode, and channel-mode changes without rebuilding the Core Audio graph. Only the newest queued edit is retained, and retired banks are released outside the callback.
+
+A watchdog observes render progress outside the callback. One three-second steady-state stall stops the engine before rebuilding it once. Another stall within 60 seconds leaves GlassEQ stopped, restoring direct system audio until the user explicitly retries.
 
 ## Current Implementation Status
 

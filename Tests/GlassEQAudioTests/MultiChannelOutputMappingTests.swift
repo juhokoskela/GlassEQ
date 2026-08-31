@@ -1,6 +1,7 @@
 import CoreAudio
 import Foundation
 @testable import GlassEQAudio
+import GlassEQCore
 import Testing
 
 @Suite
@@ -404,6 +405,37 @@ struct MultiChannelOutputMappingTests {
         #expect(result.saturated == 2)
     }
 
+    @Test
+    func systemSoundPreampFollowsWholeBankTransitionRamp() {
+        let result = mixedInput(
+            input: [
+                0.1, 0.1,
+                0.1, 0.1,
+                0.1, 0.1,
+                0.1, 0.1
+            ],
+            inputChannelLayout: [2],
+            samples: [Float](repeating: 0, count: 8),
+            frameCount: 4,
+            channelCount: 2,
+            sourceChannelOffset: 0,
+            preampGains: (left: 1, right: 1),
+            incomingPreampGains: (left: 2, right: 3),
+            transition: EQTransitionRenderResult(
+                blendStartFrame: 0,
+                blendFrameCount: 4
+            )
+        )
+
+        #expect(abs(result.samples[0] - 0.1) < 0.000_001)
+        #expect(abs(result.samples[1] - 0.1) < 0.000_001)
+        #expect(result.samples[2] > result.samples[0])
+        #expect(result.samples[4] > result.samples[2])
+        #expect(abs(result.samples[6] - 0.2) < 0.000_001)
+        #expect(abs(result.samples[7] - 0.3) < 0.000_001)
+        #expect(result.saturated == 0)
+    }
+
     // MARK: - Helpers
 
     /// Builds an AudioBufferList with one garbage-prefilled buffer per channelLayout entry,
@@ -507,7 +539,9 @@ struct MultiChannelOutputMappingTests {
         frameCount: Int,
         channelCount: Int,
         sourceChannelOffset: Int,
-        preampGains: (left: Float, right: Float)
+        preampGains: (left: Float, right: Float),
+        incomingPreampGains: (left: Float, right: Float)? = nil,
+        transition: EQTransitionRenderResult = EQTransitionRenderResult()
     ) -> (samples: [Float], saturated: UInt64) {
         var inputOffset = 0
         var samples = samples
@@ -530,7 +564,9 @@ struct MultiChannelOutputMappingTests {
                     frameCount: frameCount,
                     channelCount: channelCount,
                     sourceChannelOffset: sourceChannelOffset,
-                    preampGains: preampGains
+                    preampGains: preampGains,
+                    incomingPreampGains: incomingPreampGains,
+                    transition: transition
                 )
             }
         }

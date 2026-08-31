@@ -361,26 +361,6 @@ struct EQCoreTests {
     }
 
     @Test
-    func dspCallbackPathStaysWithinGenerousDebugBudget() {
-        guard !isThreadSanitizerRuntimeLoaded else {
-            return
-        }
-        let profile = EQProfile.flatGraphic31
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var samples = makeStereoTestBlock(frameCount: 256, sampleRate: 48_000)
-        let clock = ContinuousClock()
-        let start = clock.now
-
-        for _ in 0..<256 {
-            _ = samples.withUnsafeMutableBufferPointer {
-                processor.processInterleavedWithDiagnostics($0, frameCount: 256, channelCount: 2)
-            }
-        }
-
-        #expect(start.duration(to: clock.now) < .seconds(2))
-    }
-
-    @Test
     func preparedRenderConfigurationMatchesConfigurationInitializer() {
         let profile = EQProfile(
             name: "Prepared",
@@ -454,83 +434,6 @@ struct EQCoreTests {
     }
 
     @Test
-    func realtimeCompatiblePreparedConfigurationUpdatesConfigAndResetsChangedState() throws {
-        let initial = EQProfile(
-            name: "Initial",
-            mode: .parametric,
-            preampDB: -2,
-            filters: [
-                EQFilter(kind: .peak, frequency: 500, gainDB: 8, q: 1),
-                EQFilter(kind: .highShelf, frequency: 8_000, gainDB: 1, q: 0.7)
-            ]
-        )
-        var updated = initial
-        updated.name = "Updated"
-        updated.preampDB = -4
-        updated.filters[0].frequency = 2_000
-        updated.filters[0].gainDB = -8
-        updated.filters[1].frequency = 10_000
-        updated.filters[1].gainDB = -3
-        updated.isBypassed = true
-
-        var processor = EQProcessor(configuration: EQConfiguration(profile: initial, sampleRate: 48_000, channelCount: 2))
-        var warmup = makeStereoTestBlock(frameCount: 512, sampleRate: 48_000)
-        processor.processInterleaved(&warmup, channelCount: 2)
-
-        let retiredStorage = processor.applyRealtimeCompatiblePreparedConfiguration(
-            EQRenderConfiguration(profile: updated, sampleRate: 48_000, channelCount: 2)
-        )
-
-        #expect(retiredStorage != nil)
-        #expect(processor.configuration.isBypassed)
-        #expect(processor.configuration.preampLinearGain == EQConfiguration(
-            profile: updated,
-            sampleRate: 48_000,
-            channelCount: 2
-        ).preampLinearGain)
-
-        updated.isBypassed = false
-        _ = processor.applyRealtimeCompatiblePreparedConfiguration(
-            EQRenderConfiguration(profile: updated, sampleRate: 48_000, channelCount: 2)
-        )
-        var fresh = EQProcessor(configuration: EQConfiguration(profile: updated, sampleRate: 48_000, channelCount: 2))
-        var warmedNext = makeStereoTestBlock(frameCount: 128, sampleRate: 48_000)
-        var freshNext = warmedNext
-
-        processor.processInterleaved(&warmedNext, channelCount: 2)
-        fresh.processInterleaved(&freshNext, channelCount: 2)
-
-        let maxDelta = zip(warmedNext, freshNext).map { abs($0 - $1) }.max() ?? 0
-        #expect(maxDelta < 0.000_001)
-    }
-
-    @Test
-    func identicalPreparedConfigurationPreservesWarmedState() {
-        let profile = EQProfile(
-            name: "Stateful",
-            mode: .parametric,
-            filters: [EQFilter(kind: .lowPass, frequency: 1_200, gainDB: 0, q: 0.707)]
-        )
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var warmup = makeStereoTestBlock(frameCount: 512, sampleRate: 48_000)
-        processor.processInterleaved(&warmup, channelCount: 2)
-
-        var withoutApply = processor
-        var withIdenticalApply = processor
-        let retiredStorage = withIdenticalApply.applyRealtimeCompatiblePreparedConfiguration(
-            EQRenderConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2)
-        )
-
-        var expected = makeStereoTestBlock(frameCount: 128, sampleRate: 48_000)
-        var actual = expected
-        withoutApply.processInterleaved(&expected, channelCount: 2)
-        withIdenticalApply.processInterleaved(&actual, channelCount: 2)
-
-        #expect(retiredStorage != nil)
-        #expect(actual == expected)
-    }
-
-    @Test
     func processorCopiesKeepIndependentMutableState() {
         let profile = EQProfile(
             name: "Stateful",
@@ -558,6 +461,200 @@ struct EQCoreTests {
         let copiedOriginalDelta = zip(copiedNext, originalNext).map { abs($0 - $1) }.max() ?? 0
         #expect(copiedFreshDelta < 0.000_001)
         #expect(copiedOriginalDelta > 0.000_001)
+    }
+
+    @Test
+    func wholeBankTransitionUsesSampleAccurateSmoothstepBlend() {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let incoming = EQProfile(
+            name: "Incoming",
+            mode: .parametric,
+            preampDB: 6.020_599_913,
+            filters: []
+        )
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 1_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 4,
+            channelCount: 1,
+            sampleRate: 1_000,
+            warmupSeconds: 0,
+            blendSeconds: 0.004
+        )
+        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+            profile: incoming,
+            sampleRate: 1_000,
+            channelCount: 1
+        )))
+        #expect(didBegin)
+        var samples = [Float](repeating: 0.25, count: 4)
+
+        let result = samples.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+
+        #expect(abs(samples[0] - 0.25) < 0.000_001)
+        #expect(abs(samples[1] - 0.314_814_8) < 0.000_001)
+        #expect(abs(samples[2] - 0.435_185_2) < 0.000_001)
+        #expect(abs(samples[3] - 0.5) < 0.000_001)
+        #expect(result.completedTransition)
+        #expect(result.retiredProcessor != nil)
+        #expect(!transition.isTransitioning)
+    }
+
+    @Test
+    func wholeBankTransitionWarmsIncomingBankBeforeBlending() {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let incoming = EQProfile(
+            name: "Incoming",
+            mode: .parametric,
+            preampDB: 6.020_599_913,
+            filters: []
+        )
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 1_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 4,
+            channelCount: 1,
+            sampleRate: 1_000,
+            warmupSeconds: 0.004,
+            blendSeconds: 0.004
+        )
+        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+            profile: incoming,
+            sampleRate: 1_000,
+            channelCount: 1
+        )))
+        #expect(didBegin)
+        var warmup = [Float](repeating: 0.25, count: 4)
+
+        let warmupResult = warmup.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+
+        #expect(warmup == [0.25, 0.25, 0.25, 0.25])
+        #expect(!warmupResult.completedTransition)
+        #expect(transition.isTransitioning)
+    }
+
+    @Test
+    func wholeBankTransitionAllowsFilterTopologyChanges() {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let incoming = EQProfile(
+            name: "Incoming",
+            mode: .parametric,
+            filters: [
+                EQFilter(kind: .lowShelf, frequency: 120, gainDB: 3, q: 0.7),
+                EQFilter(kind: .peak, frequency: 1_500, gainDB: -4, q: 2)
+            ]
+        )
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 1_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 4,
+            channelCount: 1,
+            sampleRate: 1_000,
+            warmupSeconds: 0,
+            blendSeconds: 0.004
+        )
+
+        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+            profile: incoming,
+            sampleRate: 1_000,
+            channelCount: 1
+        )))
+        #expect(didBegin)
+
+        var samples = [Float](repeating: 0.1, count: 4)
+        let result = samples.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+
+        #expect(result.completedTransition)
+        #expect(transition.activeConfiguration.coefficients.count == 2)
+    }
+
+    @Test
+    func wholeBankTransitionCanBlendToBypass() {
+        let active = EQProfile(
+            name: "Active",
+            mode: .parametric,
+            preampDB: 6.020_599_913,
+            filters: []
+        )
+        var bypassed = active
+        bypassed.isBypassed = true
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 1_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 4,
+            channelCount: 1,
+            sampleRate: 1_000,
+            warmupSeconds: 0,
+            blendSeconds: 0.004
+        )
+        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+            profile: bypassed,
+            sampleRate: 1_000,
+            channelCount: 1
+        )))
+        #expect(didBegin)
+        var samples = [Float](repeating: 0.25, count: 4)
+
+        let result = samples.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+
+        #expect(abs(samples[0] - 0.5) < 0.000_001)
+        #expect(abs(samples[3] - 0.25) < 0.000_001)
+        #expect(result.completedTransition)
+        #expect(transition.activeConfiguration.isBypassed)
+    }
+
+    @Test
+    func renderConfigurationRejectsNonFinitePreamp() {
+        let profile = EQProfile(
+            name: "Invalid",
+            mode: .parametric,
+            preampDB: .nan,
+            filters: []
+        )
+
+        let configuration = EQRenderConfiguration(
+            profile: profile,
+            sampleRate: 48_000,
+            channelCount: 2
+        )
+
+        #expect(!configuration.isNumericallySafe)
     }
 
     @Test
