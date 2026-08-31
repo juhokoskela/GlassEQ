@@ -259,6 +259,24 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func aggregateStartupUsesHALAppliedCallbackSize() {
+        let requestedFrameSize: UInt32 = 16
+        let appliedFrameSize: UInt32 = 64
+        let expectedFrameCount = SystemTapAudioEngine.startupCallbackFrameExpectation(
+            appliedAggregateFrameSize: appliedFrameSize
+        )
+
+        #expect(expectedFrameCount != Int(requestedFrameSize))
+        #expect(SystemTapAudioEngine.startupCallbackIsValid(
+            mainInputFrameCount: Int(appliedFrameSize),
+            systemSoundInputFrameCount: Int(appliedFrameSize),
+            outputFrameCount: Int(appliedFrameSize),
+            expectedFrameCount: expectedFrameCount,
+            timestampsAreStable: true
+        ))
+    }
+
+    @Test
     func aggregateStartupRetriesBeforeUsingOneSaferBufferRung() {
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 16

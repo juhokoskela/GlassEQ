@@ -851,7 +851,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         private let inputChannelOffset: Int
         private let systemSoundInputChannelOffset: Int
-        private let expectedCallbackFrames: Int
+        // The control thread writes this once before publishing qualification as enabled.
+        // The render callback reads it only after the matching acquire load succeeds.
+        private var expectedCallbackFrames: Int
         private let maxCallbackFrames: Int
         private var dspTransition: RealtimeEQTransition
         private var activeSystemSoundPreampGains: (left: Float, right: Float)
@@ -884,6 +886,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let firstRenderCallbackHostTimeNanoseconds = Atomic<UInt64>(0)
         private let startupValidCallbackStreak = Atomic<UInt64>(0)
         private let startupRejectedCallbacks = Atomic<UInt64>(0)
+        private let startupQualificationEnabled = Atomic<Bool>(false)
         private let lastInputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastOutputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastInputHostIntervalErrorNanoseconds = Atomic<Int64>(0)
@@ -988,6 +991,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 return
             }
             let callbackHostTime = AudioGetCurrentHostTime()
+            let startupQualificationWasEnabled = startupQualificationEnabled.load(
+                ordering: .acquiring
+            )
+            let expectedCallbackFrames = startupQualificationWasEnabled
+                ? self.expectedCallbackFrames
+                : 0
             defer {
                 inCallback.store(false, ordering: .releasing)
             }
@@ -1102,11 +1111,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: outputFrameCount,
                     sampleRate: sampleRate
                 )
-                recordStartupCallback(
-                    isValid: startupCallbackCandidate
-                        && entryDeadlineMisses == 0
-                        && executionDeadlineMisses == 0
-                )
+                if startupQualificationWasEnabled {
+                    recordStartupCallback(
+                        isValid: startupCallbackCandidate
+                            && entryDeadlineMisses == 0
+                            && executionDeadlineMisses == 0
+                    )
+                }
                 if entryDeadlineMisses > 0 {
                     callbackStartStarvations.wrappingAdd(1, ordering: .relaxed)
                 }
@@ -1139,7 +1150,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 expectedFrameCount: expectedCallbackFrames,
                 timestampsAreStable: timestampsAreStable
             )
-            renderCallbackObservations.wrappingAdd(1, ordering: .relaxed)
+            if startupQualificationWasEnabled {
+                renderCallbackObservations.wrappingAdd(1, ordering: .relaxed)
+            }
 
             updateMax(maxCaptureCallbackFrames, inputFrameCount)
             updateMax(maxPlaybackCallbackFrames, outputFrameCount)
@@ -1268,6 +1281,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         func activate() {
             outputMutedForTransition.store(false, ordering: .releasing)
+        }
+
+        func beginStartupQualification(expectedCallbackFrames: Int) {
+            self.expectedCallbackFrames = max(expectedCallbackFrames, 1)
+            startupValidCallbackStreak.store(0, ordering: .relaxed)
+            startupRejectedCallbacks.store(0, ordering: .relaxed)
+            renderCallbackObservations.store(0, ordering: .relaxed)
+            startupQualificationEnabled.store(true, ordering: .releasing)
         }
 
         func waitForQualifiedStartup(
@@ -2889,6 +2910,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             traceDiagnostic {
                 "set aggregate IOProc stream usage end device=\(aggregateDeviceID)"
             }
+            preparedRuntime.beginStartupQualification(
+                expectedCallbackFrames: Self.startupCallbackFrameExpectation(
+                    appliedAggregateFrameSize: aggregate.bufferFrameSize
+                )
+            )
 
             var activeOutput = route.output
             activeOutput.bufferFrameSize = aggregate.bufferFrameSize
@@ -2974,7 +3000,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 renderConfiguration: renderConfiguration,
                 inputChannelOffset: expectedTapInputChannelOffsets.main,
                 systemSoundInputChannelOffset: expectedTapInputChannelOffsets.systemSounds,
-                expectedCallbackFrames: Int(targetFrameSize),
+                expectedCallbackFrames: Int(initialAggregate.bufferFrameSize),
                 maxCallbackFrames: Self.maximumSupportedCallbackFrames
             )
             runtime = preparedRuntime
@@ -3088,6 +3114,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 "physical-first aggregate buffer ready device=\(aggregateDeviceID) requested=\(targetFrameSize) actual=\(aggregate.bufferFrameSize)"
             }
             try Self.validatePlaybackCallbackCapacity(for: aggregate)
+            preparedRuntime.beginStartupQualification(
+                expectedCallbackFrames: Self.startupCallbackFrameExpectation(
+                    appliedAggregateFrameSize: aggregate.bufferFrameSize
+                )
+            )
 
             var activeOutput = route.output
             activeOutput.bufferFrameSize = aggregate.bufferFrameSize
@@ -4415,6 +4446,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 || systemSoundInputFrameCount == expectedFrameCount)
             && outputFrameCount == expectedFrameCount
             && timestampsAreStable
+    }
+
+    static func startupCallbackFrameExpectation(
+        appliedAggregateFrameSize: UInt32
+    ) -> Int {
+        max(Int(appliedAggregateFrameSize), 1)
     }
 
     static func shouldUsePhysicalFirstColdStartup(
