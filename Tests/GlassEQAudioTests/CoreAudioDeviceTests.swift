@@ -383,8 +383,15 @@ struct CoreAudioDeviceTests {
             )
             expectation.recordCallback(validation, metDeadlines: true)
         }
+        let inFlightValidation = expectation.validateCallback(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 16,
+            outputFrameCount: 16,
+            timestampsAreStable: true
+        )
 
         expectation.beginProbation()
+        expectation.recordCallback(inFlightValidation, metDeadlines: true)
 
         #expect(expectation.validCallbackStreak == 0)
         for _ in 0..<7 {
