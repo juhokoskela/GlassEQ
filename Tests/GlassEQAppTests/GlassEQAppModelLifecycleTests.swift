@@ -1545,7 +1545,7 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             lookup: lookup,
             observers: observers,
-            outputDelay: .milliseconds(100)
+            outputDelay: .seconds(1)
         )
 
         model.start()
@@ -1558,7 +1558,7 @@ struct GlassEQAppModelLifecycleTests {
         lookup.result = .success(transientOutput)
         observer.emit(.success(transientOutput))
         await waitUntil {
-            engine.muteOutputCallCount == 1
+            model.statusMessage == "Audio output changed; rebuilding..."
         }
 
         lookup.result = .success(runningOutput)
@@ -1566,7 +1566,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.resumeOutputCallCount == 1
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        try? await Task.sleep(for: .milliseconds(1_100))
 
         #expect(engine.startCalls.map(\.output) == [runningOutput])
         #expect(engine.events == ["start:\(runningOutput.uid)", "mute", "resume"])
