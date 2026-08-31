@@ -750,6 +750,42 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func activeOutputProcessDetectionSkipsDisappearingProcessObjects() throws {
+        let hasActiveProcess = try CoreAudioDeviceQuery.hasActiveOutputProcess(
+            using: 100,
+            excluding: [],
+            processObjectIDs: { [10, 20, 30] },
+            isRunningOutput: { processObjectID in
+                if processObjectID == 10 {
+                    throw ActiveProcessQueryTestError.staleProcess
+                }
+                return true
+            },
+            outputDeviceIDs: { processObjectID in
+                if processObjectID == 20 {
+                    throw ActiveProcessQueryTestError.staleProcess
+                }
+                return [100]
+            }
+        )
+
+        #expect(hasActiveProcess)
+    }
+
+    @Test
+    func activeOutputProcessDetectionPreservesProcessListFailures() {
+        #expect(throws: ActiveProcessQueryTestError.self) {
+            try CoreAudioDeviceQuery.hasActiveOutputProcess(
+                using: 100,
+                excluding: [],
+                processObjectIDs: { throw ActiveProcessQueryTestError.processList },
+                isRunningOutput: { _ in true },
+                outputDeviceIDs: { _ in [100] }
+            )
+        }
+    }
+
+    @Test
     func aggregateTapValidationReturnsHALStreamOrder() {
         let systemSounds = aggregateTapEntry(uid: "system-sounds")
         let main = aggregateTapEntry(uid: "main")
@@ -1878,6 +1914,11 @@ private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
         record("release")
         return releaseSucceeds
     }
+}
+
+private enum ActiveProcessQueryTestError: Error {
+    case processList
+    case staleProcess
 }
 
 private final class LockedCounter: @unchecked Sendable {
