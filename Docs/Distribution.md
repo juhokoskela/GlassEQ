@@ -1,6 +1,6 @@
 # Distribution Notes
 
-GlassEQ alpha-0.9.1 is intended for ad hoc-signed distribution to technical testers. It is not Developer ID signed and is not notarized. A later non-alpha build will move to Developer ID distribution outside the Mac App Store.
+GlassEQ alpha-0.9.2 is intended for ad hoc-signed distribution to technical testers. It is not Developer ID signed and is not notarized. A later non-alpha build will move to Developer ID distribution outside the Mac App Store.
 
 ## Current Alpha Distribution
 
@@ -13,7 +13,7 @@ Build the alpha artifact:
 The script produces:
 
 - `.build/release-app/GlassEQ.app`
-- `.build/dist/GlassEQ-alpha-0.9.1-macos26-arm64.zip`
+- `.build/dist/GlassEQ-alpha-0.9.2-macos26-arm64.zip`
 
 The bundle is ad hoc-signed with `codesign --sign -`. It is not Developer ID signed and is not notarized, so this command should reject it:
 
