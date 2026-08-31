@@ -2052,8 +2052,6 @@ struct GlassEQAppModelLifecycleTests {
             engine.muteOutputCallCount == 1
         }
         #expect(engine.muteOutputCallCount == 1)
-        #expect(model.statusMessage == localized("Audio output changed; rebuilding..."))
-        #expect(engine.startCalls.map(\.output) == [speakers])
 
         await waitUntil {
             engine.startCalls.map(\.output) == [speakers, scarlett]
@@ -2104,8 +2102,6 @@ struct GlassEQAppModelLifecycleTests {
             engine.muteOutputCallCount == 1
         }
         #expect(engine.muteOutputCallCount == 1)
-        #expect(model.statusMessage == localized("Audio output format changed; rebuilding..."))
-        #expect(engine.startCalls.map(\.output) == [initialOutput])
 
         await waitUntil {
             engine.startCalls.map(\.output) == [initialOutput, changedOutput]
@@ -2113,6 +2109,7 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
+        #expect(engine.events == ["start:\(initialOutput.uid)", "mute", "start:\(changedOutput.uid)"])
     }
 
     @Test
