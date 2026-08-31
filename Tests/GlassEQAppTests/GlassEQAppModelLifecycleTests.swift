@@ -2276,6 +2276,50 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func incompatibleImpulseResponsePreviewPreservesWorkingEngine() async {
+        let active = makeProfile(name: "Active")
+        let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
+        let store = ProfileStore(
+            profiles: [active, impulse],
+            fallbackProfileID: active.id
+        )
+        let output = makeOutput(
+            uid: "preview-rate-mismatch",
+            name: "44.1 kHz Output",
+            nominalSampleRate: 44_100
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        model.preview(profile: impulse)
+
+        #expect(model.lifecycleState == .running)
+        #expect(model.isRunning)
+        #expect(engine.state == .running(output: output))
+        #expect(engine.stopCallCount == 0)
+        #expect(engine.updateDSPCalls.isEmpty)
+        #expect(model.profileStore == store)
+        #expect(model.activeProfile == active)
+        #expect(model.selectedProfileID == active.id)
+        #expect(model.draftProfile == active)
+        #expect(model.previewReturnProfile == nil)
+        #expect(model.statusMessage.contains("48"))
+        #expect(model.statusMessage.contains("44"))
+    }
+
+    @Test
     func unknownSeparateClockImpulseResponseStaysDryAcrossRetries() async throws {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "Cold Route IR", sampleRate: 48_000)
