@@ -2191,6 +2191,25 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsSnapshotUsesTheActiveDSPRateForAConvertedOutput() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        let snapshot = model.settingsSnapshot()
+
+        #expect(snapshot.currentOutputSampleRate == 24_000)
+        #expect(snapshot.currentProcessingSampleRate == 48_000)
+    }
+
+    @Test
     func stopThenImmediateRestartEnqueuesStopBeforeNewStart() async {
         let output = makeOutput(uid: "restart-output", name: "Restart Output")
         let engine = FakeAudioEngine()
@@ -3483,6 +3502,36 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.programmeComparisonCalls.isEmpty)
         #expect(model.statusMessage.contains("48"))
         #expect(model.statusMessage.contains("44"))
+    }
+
+    @Test
+    func impulseResponseCompatibilityUsesTheActiveDSPRateForConvertedOutput() throws {
+        let fallback = makeProfile(name: "Fallback")
+        let compatible = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
+        let incompatible = makeImpulseResponseProfile(name: "24 kHz IR", sampleRate: 24_000)
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(
+            store: ProfileStore(profiles: [fallback, compatible, incompatible]),
+            engine: engine
+        )
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+        model.currentOutputChannelCount = output.outputChannelCount
+
+        try model.apply(profile: compatible)
+
+        #expect(model.activeProfile == compatible)
+        #expect(throws: SettingsCommandFailure.self) {
+            try model.apply(profile: incompatible)
+        }
+        #expect(model.activeProfile == compatible)
     }
 
     @Test
@@ -5093,6 +5142,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     private let lock = NSLock()
     private var _state: AudioEngineState = .stopped
+    private var _processingSampleRate: Double?
     private var _startError: Error?
     private var _startErrorProfileID: UUID?
     private var _startErrorPreservesRunningState = false
@@ -5138,6 +5188,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var state: AudioEngineState {
         get { withLock { _state } }
         set { withLock { _state = newValue } }
+    }
+
+    var processingSampleRate: Double? {
+        get { withLock { _processingSampleRate } }
+        set { withLock { _processingSampleRate = newValue } }
     }
 
     var isUsingTransitionalHeadsetBackend: Bool {

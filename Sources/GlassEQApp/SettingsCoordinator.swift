@@ -623,6 +623,10 @@ final class SettingsCoordinator: NSObject {
             )
             didPatch = true
         }
+        if previous.currentProcessingSampleRate != snapshot.currentProcessingSampleRate {
+            patch.currentProcessingSampleRate = snapshot.currentProcessingSampleRate
+            didPatch = true
+        }
         if previous.currentOutputMappedProfileID != snapshot.currentOutputMappedProfileID {
             if let profileID = snapshot.currentOutputMappedProfileID {
                 patch.currentOutputMappedProfileID = .set(profileID)
