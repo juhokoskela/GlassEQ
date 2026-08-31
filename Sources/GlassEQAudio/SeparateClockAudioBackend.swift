@@ -1826,9 +1826,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ),
-        equalizedConfig.isNumericallySafe,
-        referenceConfig.isNumericallySafe else {
+        ) else {
             return false
         }
         return control.withLock { state in
@@ -1915,7 +1913,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ))?.isNumericallySafe == true
+        )) != nil
     }
 
     public func muteOutputForTransition() {

@@ -3463,7 +3463,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ), preparedConfig.isNumericallySafe else {
+        ) else {
             return false
         }
         return control.withLock { state in
@@ -3521,9 +3521,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ),
-        equalizedConfig.isNumericallySafe,
-        referenceConfig.isNumericallySafe else {
+        ) else {
             return false
         }
         return control.withLock { state in
@@ -4523,7 +4521,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ))?.isNumericallySafe == true
+        )) != nil
     }
 
     static func supportedRuntimeChannelCount(
