@@ -145,6 +145,24 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func importsGraphicEQWithDisabledParametricFilter() throws {
+        let text = """
+        GraphicEQ: 20 0; 1000 3; 20000 0
+        Filter 1: OFF PK Fc 1000 Hz Gain -2 dB Q 1
+        """
+
+        let profile = try EQProfileTextImporter.importAutoEQ(text)
+
+        #expect(profile.mode == .convolution)
+        guard case .magnitudeCurve(let curve) = profile.convolution else {
+            Issue.record("Expected a magnitude-curve convolution source")
+            return
+        }
+        #expect(curve.points.map(\.frequency) == [20, 1_000, 20_000])
+        #expect(curve.points.map(\.gainDB) == [0, 3, 0])
+    }
+
+    @Test
     func graphicEQExportRoundTripsStereoCurvesAndPreamps() throws {
         let left = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 2),
