@@ -82,7 +82,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 - **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
 - **Bluetooth** headset modes initially use a higher-latency separate-clock compatibility path to avoid periodic combined-aggregate timestamp faults while the route settles. Promotion to the low-latency path is experimental; please report the device model, macOS version, and steps if a route still produces jitter.
-- **Imported impulse responses** must match the output sample rate and contain at most 16,384 taps per channel. GlassEQ rejects mismatched or longer WAV files rather than silently resampling or truncating them.
+- **Imported impulse responses** must match the active DSP processing sample rate and contain at most 16,384 taps per channel. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. GlassEQ rejects mismatched or longer WAV files rather than silently resampling or truncating them.
 - No automatic updates, no crash reporting, no x86_64 build.
 
 <a id="supported-target"></a>
