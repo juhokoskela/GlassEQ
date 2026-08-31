@@ -1607,6 +1607,68 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func unknownSeparateClockImpulseResponseStaysDryAcrossRetries() async throws {
+        let fallback = makeProfile(name: "Fallback")
+        let impulse = makeImpulseResponseProfile(name: "Cold Route IR", sampleRate: 48_000)
+        let output = makeOutput(
+            uid: "cold-ir-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: output.uid,
+                    profileID: impulse.id
+                )
+            ],
+            fallbackProfileID: fallback.id
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.currentOutputUID == output.uid
+                && model.lifecycleState == .stopped
+                && model.statusMessage.contains(impulse.name)
+        }
+
+        #expect(!model.isRunning)
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.profileStore.outputMappings == store.outputMappings)
+        #expect(model.statusMessage.contains("not measured"))
+
+        model.retryAudioEngine()
+        await settleAsyncWork()
+
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage.contains("not measured"))
+
+        try model.apply(profile: fallback)
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        engine.processingSampleRate = 48_000
+
+        try model.apply(profile: impulse)
+
+        #expect(model.activeProfile == impulse)
+        #expect(engine.updateDSPCalls.last == impulse)
+    }
+
+    @Test
     func stopThenImmediateRestartEnqueuesStopBeforeNewStart() async {
         let output = makeOutput(uid: "restart-output", name: "Restart Output")
         let engine = FakeAudioEngine()

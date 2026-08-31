@@ -1645,30 +1645,22 @@ final class GlassEQAppModel {
     }
 
     private func ensureCompatibleWithCurrentOutput(_ profile: EQProfile) throws {
-        guard let mismatch = impulseResponseSampleRateMismatch(
+        guard let message = impulseResponseCompatibilityFailureMessage(
             profile: profile,
             processingSampleRate: knownCurrentProcessingSampleRate(),
             outputChannelCount: currentOutputChannelCount
         ) else {
             return
         }
-        throw SettingsCommandFailure(
-            message: impulseResponseSampleRateMismatchMessage(
-                profileName: profile.name,
-                sourceSampleRate: mismatch.source,
-                processingSampleRate: mismatch.processing
-            )
-        )
+        throw SettingsCommandFailure(message: message)
     }
 
-    private func impulseResponseSampleRateMismatch(
+    private func impulseResponseCompatibilityFailureMessage(
         profile: EQProfile,
         processingSampleRate: Double,
         outputChannelCount: Int
-    ) -> (source: Double, processing: Double)? {
-        guard profile.mode == .convolution,
-              processingSampleRate.isFinite,
-              processingSampleRate > 0 else {
+    ) -> String? {
+        guard profile.mode == .convolution else {
             return nil
         }
 
@@ -1688,11 +1680,33 @@ final class GlassEQAppModel {
             }
         }
 
-        for case .impulseResponse(let impulse)? in sources where
-            abs(impulse.sampleRate - processingSampleRate) >= 0.5 {
-            return (impulse.sampleRate, processingSampleRate)
+        let impulseResponses = sources.compactMap { source -> ImpulseResponseSource? in
+            guard let source,
+                  case .impulseResponse(let impulse) = source else {
+                return nil
+            }
+            return impulse
         }
-        return nil
+        guard !impulseResponses.isEmpty else {
+            return nil
+        }
+        guard processingSampleRate.isFinite,
+              processingSampleRate > 0 else {
+            return localized(
+                "\(profile.name) uses an imported impulse response, but GlassEQ has not measured the current DSP sample rate yet. Select a non-impulse-response profile to start this output first."
+            )
+        }
+
+        guard let mismatch = impulseResponses.first(where: {
+            abs($0.sampleRate - processingSampleRate) >= 0.5
+        }) else {
+            return nil
+        }
+        return impulseResponseSampleRateMismatchMessage(
+            profileName: profile.name,
+            sourceSampleRate: mismatch.sampleRate,
+            processingSampleRate: processingSampleRate
+        )
     }
 
     private func impulseResponseSampleRateMismatchMessage(
@@ -1730,17 +1744,13 @@ final class GlassEQAppModel {
             return
         }
 
-        if let mismatch = impulseResponseSampleRateMismatch(
+        if let message = impulseResponseCompatibilityFailureMessage(
             profile: activeProfile,
             processingSampleRate: knownCurrentProcessingSampleRate(),
             outputChannelCount: currentOutputChannelCount
         ) {
             disableActiveProfileProcessing(updateMetrics: true)
-            statusMessage = impulseResponseSampleRateMismatchMessage(
-                profileName: activeProfile.name,
-                sourceSampleRate: mismatch.source,
-                processingSampleRate: mismatch.processing
-            )
+            statusMessage = message
             notifyModelDidChange()
             return
         }
@@ -1852,17 +1862,13 @@ final class GlassEQAppModel {
 
             if activeProfile.isBypassed {
                 disableActiveProfileProcessing(updateMetrics: false)
-            } else if let mismatch = impulseResponseSampleRateMismatch(
+            } else if let message = impulseResponseCompatibilityFailureMessage(
                 profile: activeProfile,
                 processingSampleRate: knownCurrentProcessingSampleRate(),
                 outputChannelCount: output.outputChannelCount
             ) {
                 disableActiveProfileProcessing(updateMetrics: false)
-                statusMessage = impulseResponseSampleRateMismatchMessage(
-                    profileName: activeProfile.name,
-                    sourceSampleRate: mismatch.source,
-                    processingSampleRate: mismatch.processing
-                )
+                statusMessage = message
             } else {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
@@ -1993,17 +1999,13 @@ final class GlassEQAppModel {
             return
         }
 
-        if let mismatch = impulseResponseSampleRateMismatch(
+        if let message = impulseResponseCompatibilityFailureMessage(
             profile: activeProfile,
             processingSampleRate: knownCurrentProcessingSampleRate(),
             outputChannelCount: currentOutputChannelCount
         ) {
             disableActiveProfileProcessing(updateMetrics: true)
-            statusMessage = impulseResponseSampleRateMismatchMessage(
-                profileName: activeProfile.name,
-                sourceSampleRate: mismatch.source,
-                processingSampleRate: mismatch.processing
-            )
+            statusMessage = message
             return
         }
 
