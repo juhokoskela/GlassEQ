@@ -49,6 +49,7 @@ struct ProfileImportSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var route = ProfileImportRoute.autoEQ
+    @State private var isImportCommitInFlight = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -66,6 +67,7 @@ struct ProfileImportSheet: View {
                 }
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)
+                .disabled(isImportCommitInFlight)
             }
             .frame(width: 190)
             .background(.regularMaterial)
@@ -77,6 +79,7 @@ struct ProfileImportSheet: View {
                 case .autoEQ:
                     AutoEQImportPane(
                         isReadOnly: isReadOnly,
+                        isCommitInFlight: $isImportCommitInFlight,
                         onImport: onImport,
                         onCancel: { dismiss() },
                         onImported: { dismiss() }
@@ -85,6 +88,7 @@ struct ProfileImportSheet: View {
                     TextProfileImportPane(
                         currentProfile: currentProfile,
                         isReadOnly: isReadOnly,
+                        isCommitInFlight: $isImportCommitInFlight,
                         onImport: onImport,
                         onImportParsedProfile: onImportParsedProfile,
                         onChooseImportFiles: onChooseImportFiles,
@@ -96,11 +100,13 @@ struct ProfileImportSheet: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 580)
+        .interactiveDismissDisabled(isImportCommitInFlight)
     }
 }
 
 private struct AutoEQImportPane: View {
     var isReadOnly: Bool
+    @Binding var isCommitInFlight: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onCancel: () -> Void
     var onImported: () -> Void
@@ -315,35 +321,41 @@ private struct AutoEQImportPane: View {
                 try Task.checkCancellation()
                 let text = try await client.profileText(for: selection, kind: kind)
                 try Task.checkCancellation()
-                importPhase = .committing
+                setImportPhase(.committing)
                 if let importError = await onImport(.autoEQ, selection.name, text) {
                     guard !Task.isCancelled else {
                         return
                     }
                     errorMessage = importError
-                    importPhase = .idle
+                    setImportPhase(.idle)
                 } else {
                     guard !Task.isCancelled else {
                         return
                     }
-                    importPhase = .idle
+                    setImportPhase(.idle)
                     onImported()
                 }
             } catch is CancellationError {
-                importPhase = .idle
+                setImportPhase(.idle)
             } catch where Task.isCancelled {
-                importPhase = .idle
+                setImportPhase(.idle)
             } catch {
                 errorMessage = error.localizedDescription
-                importPhase = .idle
+                setImportPhase(.idle)
             }
         }
+    }
+
+    private func setImportPhase(_ phase: ProfileImportTaskPhase) {
+        importPhase = phase
+        isCommitInFlight = phase == .committing
     }
 }
 
 private struct TextProfileImportPane: View {
     var currentProfile: EQProfile
     var isReadOnly: Bool
+    @Binding var isCommitInFlight: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
     var onChooseImportFiles: (SettingsFileImportMode) async -> SettingsFileImportChoice
@@ -692,7 +704,7 @@ private struct TextProfileImportPane: View {
         }
         var profile = importedProfile
         profile.name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        importPhase = .committing
+        setImportPhase(.committing)
         errorMessage = nil
         importTask = Task { @MainActor in
             if let importError = await onImportParsedProfile(profile) {
@@ -700,12 +712,12 @@ private struct TextProfileImportPane: View {
                     return
                 }
                 errorMessage = importError
-                importPhase = .idle
+                setImportPhase(.idle)
             } else {
                 guard !Task.isCancelled else {
                     return
                 }
-                importPhase = .idle
+                setImportPhase(.idle)
                 onImported()
             }
         }
@@ -718,7 +730,7 @@ private struct TextProfileImportPane: View {
         let name = profileName.trimmingCharacters(in: .whitespacesAndNewlines)
         let importedText = text
         let format = ImportedEQTextDetector.format(for: importedText)
-        importPhase = .committing
+        setImportPhase(.committing)
         errorMessage = nil
         importTask = Task { @MainActor in
             if let importError = await onImport(format, name, importedText) {
@@ -726,15 +738,20 @@ private struct TextProfileImportPane: View {
                     return
                 }
                 errorMessage = importError
-                importPhase = .idle
+                setImportPhase(.idle)
             } else {
                 guard !Task.isCancelled else {
                     return
                 }
-                importPhase = .idle
+                setImportPhase(.idle)
                 onImported()
             }
         }
+    }
+
+    private func setImportPhase(_ phase: ProfileImportTaskPhase) {
+        importPhase = phase
+        isCommitInFlight = phase == .committing
     }
 }
 
