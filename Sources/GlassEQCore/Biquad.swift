@@ -279,10 +279,26 @@ public enum FrequencyResponse {
             EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         )
         let upper = log10(upperFrequency)
-        return (0..<max(count, 2)).map { index in
+        let frequencies = (0..<max(count, 2)).map { index in
             let fraction = Double(index) / Double(max(count - 1, 1))
-            let frequency = pow(10, lower + (upper - lower) * fraction)
-            return FrequencyResponsePoint(
+            return pow(10, lower + (upper - lower) * fraction)
+        }
+
+        if case .impulseResponse(let impulse) = source,
+           let spectrum = try? ImpulseResponseSpectrum(
+               impulseResponse: impulse.samples,
+               sampleRate: impulse.sampleRate
+           ) {
+            return frequencies.map { frequency in
+                FrequencyResponsePoint(
+                    frequency: frequency,
+                    magnitudeDB: preampDB + spectrum.magnitudeDB(at: frequency)
+                )
+            }
+        }
+
+        return frequencies.map { frequency in
+            FrequencyResponsePoint(
                 frequency: frequency,
                 magnitudeDB: preampDB + convolutionMagnitudeDB(
                     source: source,
