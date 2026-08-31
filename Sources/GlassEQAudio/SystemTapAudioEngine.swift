@@ -3243,7 +3243,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             traceDiagnostic {
                 "set aggregate IOProc stream usage end device=\(aggregateDeviceID)"
             }
-
             var activeOutput = route.output
             activeOutput.bufferFrameSize = aggregate.bufferFrameSize
             return PreparedCombinedAggregate(
@@ -3328,7 +3327,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 renderConfiguration: renderConfiguration,
                 inputChannelOffset: expectedTapInputChannelOffsets.main,
                 systemSoundInputChannelOffset: expectedTapInputChannelOffsets.systemSounds,
-                expectedCallbackFrames: Int(targetFrameSize),
+                expectedCallbackFrames: Int(initialAggregate.bufferFrameSize),
                 maxCallbackFrames: Self.maximumSupportedCallbackFrames
             )
             runtime = preparedRuntime
