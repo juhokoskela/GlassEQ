@@ -7,6 +7,7 @@ enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     case unsupportedChannelCount(Int)
     case tooManyFrames(count: Int, maximum: Int)
     case invalidSampleRate(Double)
+    case processingSampleRateUnavailable
     case sampleRateMismatch(file: Double, output: Double)
     case separateFilesMustBeMono(leftChannels: Int, rightChannels: Int)
     case channelSampleRateMismatch(left: Double, right: Double)
@@ -23,6 +24,8 @@ enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
             "The impulse response has \(count) taps. GlassEQ currently supports up to \(maximum) taps per channel."
         case .invalidSampleRate(let sampleRate):
             "The WAV file has an invalid sample rate (\(sampleRate) Hz)."
+        case .processingSampleRateUnavailable:
+            "Start audio processing before importing a WAV impulse response so GlassEQ can determine the DSP sample rate."
         case let .sampleRateMismatch(file, output):
             "This impulse response is \(Self.rateLabel(file)); the current output is \(Self.rateLabel(output)). Export a matching WAV from REW."
         case let .separateFilesMustBeMono(leftChannels, rightChannels):
@@ -107,14 +110,17 @@ enum ImpulseResponseWAVImporter {
               ProfilePersistence.impulseSampleRateRange.contains(sampleRate) else {
             throw ImpulseResponseWAVImportError.invalidSampleRate(sampleRate)
         }
-        if let expectedSampleRate,
-           expectedSampleRate.isFinite,
-           expectedSampleRate > 0,
-           abs(sampleRate - expectedSampleRate) >= 0.5 {
-            throw ImpulseResponseWAVImportError.sampleRateMismatch(
-                file: sampleRate,
-                output: expectedSampleRate
-            )
+        if let expectedSampleRate {
+            guard expectedSampleRate.isFinite,
+                  expectedSampleRate > 0 else {
+                throw ImpulseResponseWAVImportError.processingSampleRateUnavailable
+            }
+            if abs(sampleRate - expectedSampleRate) >= 0.5 {
+                throw ImpulseResponseWAVImportError.sampleRateMismatch(
+                    file: sampleRate,
+                    output: expectedSampleRate
+                )
+            }
         }
 
         guard file.length > 0 else {

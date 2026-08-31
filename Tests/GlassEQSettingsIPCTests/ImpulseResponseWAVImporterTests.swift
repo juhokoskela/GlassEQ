@@ -244,6 +244,19 @@ struct ImpulseResponseWAVImporterTests {
         }
     }
 
+    @Test
+    func rejectsWAVWhenProcessingSampleRateIsUnknown() throws {
+        let url = try writeWAV(channels: [[1]])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: ImpulseResponseWAVImportError.processingSampleRateUnavailable) {
+            _ = try ImpulseResponseWAVImporter.load(
+                from: url,
+                expectedSampleRate: 0
+            )
+        }
+    }
+
     private func writeWAV(
         channels: [[Float]],
         sampleRate: Double = 48_000
