@@ -11,8 +11,8 @@ struct AudioRenderDeadlineBurstDetector: Sendable {
 
     private let requiredMisses: UInt64
     private let window: Duration
-    private var windowStartedAt: ContinuousClock.Instant?
-    private var missesInWindow: UInt64 = 0
+    private var observations: [(at: ContinuousClock.Instant, count: UInt64)] = []
+    private var observedMisses: UInt64 = 0
 
     init(
         requiredMisses: UInt64 = Self.defaultRequiredMisses,
@@ -29,26 +29,26 @@ struct AudioRenderDeadlineBurstDetector: Sendable {
         guard newMisses > 0 else {
             return false
         }
-        if let windowStartedAt,
-           windowStartedAt.duration(to: now) <= window {
-            let sum = missesInWindow.addingReportingOverflow(newMisses)
-            missesInWindow = sum.overflow
-                ? requiredMisses
-                : min(sum.partialValue, requiredMisses)
-        } else {
-            windowStartedAt = now
-            missesInWindow = newMisses
+
+        while let oldest = observations.first,
+              oldest.at.duration(to: now) > window {
+            observedMisses -= oldest.count
+            observations.removeFirst()
         }
-        guard missesInWindow >= requiredMisses else {
-            return false
+
+        if newMisses >= requiredMisses - observedMisses {
+            reset()
+            return true
         }
-        reset()
-        return true
+
+        observations.append((at: now, count: newMisses))
+        observedMisses += newMisses
+        return false
     }
 
     mutating func reset() {
-        windowStartedAt = nil
-        missesInWindow = 0
+        observations.removeAll(keepingCapacity: true)
+        observedMisses = 0
     }
 }
 
