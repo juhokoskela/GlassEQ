@@ -899,28 +899,26 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 16)
     }
 
-    @Test(arguments: [
-        (applied: UInt32(64), retry: UInt32(32)),
-        (applied: UInt32(512), retry: UInt32(64))
-    ])
-    func automaticCleanSessionsRetryBelowTheAcceptedRuntimeRung(
-        _ scenario: (applied: UInt32, retry: UInt32)
+    @Test(arguments: [UInt32(64), UInt32(512)])
+    func automaticCleanSessionsAtTheFloorDoNotRestartForLargerAppliedFrameSize(
+        appliedFrameSize: UInt32
     ) async throws {
         let storeURL = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: storeURL) }
         let output = makeOutput(
-            uid: "accepted-clean-rung-\(scenario.applied)",
-            name: "Accepted Clean Rung"
+            uid: "stored-clean-rung-\(appliedFrameSize)",
+            name: "Stored Clean Rung"
         )
         let engine = FakeAudioEngine()
-        engine.forcedAppliedAggregateBufferFrameSize = scenario.applied
+        engine.forcedAppliedAggregateBufferFrameSize = appliedFrameSize
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
             storeURL: storeURL,
             engine: engine,
             observers: observers,
             outputDelay: .zero,
-            aggregateCleanSessionDuration: .milliseconds(100)
+            aggregateCleanSessionDuration: .zero,
+            renderWatchdogPollInterval: .seconds(30)
         )
 
         model.start()
@@ -928,36 +926,39 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             model.lifecycleState == .running
                 && engine.startCalls.count == 1
-                && model.settingsSnapshot().currentOutputBufferFrameSize == scenario.applied
-        }
-        await waitUntil {
-            engine.snapshotMetricsCallCount > 0
+                && model.settingsSnapshot().currentOutputBufferFrameSize == appliedFrameSize
         }
 
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 2
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.startCalls[1].aggregateBufferFrameSize == 32
-        }
-
-        for expectedStartCount in 3...4 {
-            try? await Task.sleep(for: .milliseconds(350))
+        for expectedStartCount in 2...3 {
+            let snapshotCount = engine.snapshotMetricsCallCount
+            await waitUntil {
+                engine.snapshotMetricsCallCount >= snapshotCount + 2
+            }
             try model.setAggregateBufferMode(.automatic)
             await waitUntil {
                 engine.startCalls.count == expectedStartCount
             }
         }
+        let snapshotCount = engine.snapshotMetricsCallCount
         await waitUntil {
-            engine.startCalls.count == 5
+            engine.snapshotMetricsCallCount >= snapshotCount + 2
         }
+        await settleAsyncWork()
 
         #expect(
             engine.startCalls.map(\.aggregateBufferFrameSize)
-                == [16, 32, 32, 32, scenario.retry]
+                == [16, 16, 16]
         )
-        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == scenario.applied)
+        let selection = AggregateBufferPolicyStore(
+            url: storeURL.deletingPathExtension()
+                .appendingPathExtension("aggregate-buffer-policy.json")
+        ).selection(for: AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: 0,
+            nominalSampleRate: output.nominalSampleRate
+        ))
+        #expect(selection.automaticFrameSize == 16)
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == appliedFrameSize)
     }
 
     @Test

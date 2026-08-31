@@ -122,13 +122,13 @@ struct AggregateBufferPolicyTests {
         #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == 32)
         #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == 64)
 
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 64) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 64) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 64) == 32)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == 16)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 16) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == 32)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == 16)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
     }
 
     @Test
@@ -142,38 +142,38 @@ struct AggregateBufferPolicyTests {
             occurrences: 2,
             at: start
         ) == 32)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
         #expect(try store.recordAutomaticFailure(
             for: route,
             at: start.addingTimeInterval(1)
         ) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 32) == 16)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == 16)
     }
 
     @Test
-    func cleanSessionsRetryBelowTheAcceptedRuntimeRung() throws {
+    func cleanSessionsDescendFromTheStoredAutomaticRung() throws {
         let store = AggregateBufferPolicyStore(url: temporaryPolicyURL())
-        let route = fingerprint(uid: "accepted-rung", stream: 0, sampleRate: 48_000)
+        let route = fingerprint(uid: "stored-rung", stream: 0, sampleRate: 48_000)
 
         #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == 32)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 64) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 64) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 64) == 32)
-        #expect(store.selection(for: route).automaticFrameSize == 32)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == 16)
+        #expect(store.selection(for: route).automaticFrameSize == 16)
     }
 
     @Test
-    func cleanSessionsMapRuntimeAboveTheLadderToSixtyFour() throws {
+    func cleanSessionsStopOnceTheStoredRequestReachesTheFloor() throws {
         let store = AggregateBufferPolicyStore(url: temporaryPolicyURL())
-        let route = fingerprint(uid: "clamped-runtime", stream: 0, sampleRate: 48_000)
+        let route = fingerprint(uid: "floor", stream: 0, sampleRate: 48_000)
 
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 512) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 512) == nil)
-        #expect(try store.recordCleanAutomaticSession(for: route, runtimeFrameSize: 512) == 64)
-        #expect(store.selection(for: route).automaticFrameSize == 64)
+        for _ in 0..<6 {
+            #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        }
+        #expect(store.selection(for: route).automaticFrameSize == 16)
     }
 
     @Test
