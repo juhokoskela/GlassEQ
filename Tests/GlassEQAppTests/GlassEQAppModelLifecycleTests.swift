@@ -1574,6 +1574,51 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func revertingUnmutedBufferChangeDoesNotReprimePlayback() async {
+        let runningOutput = makeOutput(
+            uid: "running-output",
+            name: "USB DAC",
+            id: 200,
+            bufferFrameSize: 256
+        )
+        let transientOutput = makeOutput(
+            uid: runningOutput.uid,
+            name: runningOutput.name,
+            id: runningOutput.id,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(runningOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .seconds(1)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(transientOutput)
+        observer.emit(.success(transientOutput))
+        await settleAsyncWork()
+        lookup.result = .success(runningOutput)
+        observer.emit(.success(runningOutput))
+        try? await Task.sleep(for: .milliseconds(1_100))
+
+        #expect(engine.startCalls.map(\.output) == [runningOutput])
+        #expect(engine.muteOutputCallCount == 0)
+        #expect(engine.resumeOutputCallCount == 0)
+        #expect(engine.events == ["start:\(runningOutput.uid)"])
+        #expect(model.lifecycleState == .running)
+    }
+
+    @Test
     func redundantRunningOutputNotificationDoesNotMuteOrRebuild() async {
         let output = makeOutput(
             uid: "stable-output",
