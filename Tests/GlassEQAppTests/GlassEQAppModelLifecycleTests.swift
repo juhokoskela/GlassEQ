@@ -1457,6 +1457,262 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsSnapshotUsesTheActiveDSPRateForAConvertedOutput() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        let snapshot = model.settingsSnapshot()
+
+        #expect(snapshot.currentOutputSampleRate == 24_000)
+        #expect(snapshot.currentProcessingSampleRate == 48_000)
+    }
+
+    @Test
+    func settingsSnapshotPreservesTheDSPRateWhileTheSameRouteIsStopped() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
+
+        engine.state = .stopped
+        engine.processingSampleRate = nil
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
+
+        model.currentOutputSampleRate = 44_100
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func settingsSnapshotDoesNotSubstituteAnUnknownDSPRate() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let model = makeModel(engine: FakeAudioEngine())
+        model.currentOutputUID = output.uid
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        let snapshot = model.settingsSnapshot()
+
+        #expect(snapshot.currentOutputSampleRate == 24_000)
+        #expect(snapshot.currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func settingsSnapshotDoesNotAssociateAStaleRuntimeWithANewRoute() {
+        let oldOutput = makeOutput(
+            uid: "old-output",
+            name: "Speakers",
+            nominalSampleRate: 48_000
+        )
+        let newOutput = makeOutput(
+            uid: "new-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: oldOutput)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputUID = newOutput.uid
+        model.currentOutputSampleRate = newOutput.nominalSampleRate
+
+        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
+    }
+
+    @Test
+    func incompatibleImpulseResponsePreviewPreservesWorkingEngine() async {
+        let active = makeProfile(name: "Active")
+        let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
+        let store = ProfileStore(
+            profiles: [active, impulse],
+            fallbackProfileID: active.id
+        )
+        let output = makeOutput(
+            uid: "preview-rate-mismatch",
+            name: "44.1 kHz Output",
+            nominalSampleRate: 44_100
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        model.preview(profile: impulse)
+
+        #expect(model.lifecycleState == .running)
+        #expect(model.isRunning)
+        #expect(engine.state == .running(output: output))
+        #expect(engine.stopCallCount == 0)
+        #expect(engine.updateDSPCalls.isEmpty)
+        #expect(model.profileStore == store)
+        #expect(model.activeProfile == active)
+        #expect(model.selectedProfileID == active.id)
+        #expect(model.draftProfile == active)
+        #expect(model.previewReturnProfile == nil)
+        #expect(model.statusMessage.contains("48"))
+        #expect(model.statusMessage.contains("44"))
+    }
+
+    @Test
+    func incompatibleMappedImpulseResponseStaysDryUntilTheRouteMatches() async {
+        let fallback = makeProfile(name: "Fallback")
+        let impulse = makeImpulseResponseProfile(name: "Mapped IR", sampleRate: 48_000)
+        let incompatibleOutput = makeOutput(
+            uid: "mapped-ir-output",
+            name: "Mapped Output",
+            nominalSampleRate: 44_100
+        )
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: incompatibleOutput.uid,
+                    profileID: impulse.id
+                )
+            ],
+            fallbackProfileID: fallback.id
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(incompatibleOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(incompatibleOutput))
+        await waitUntil {
+            model.currentOutputUID == incompatibleOutput.uid
+                && model.currentOutputSampleRate == 44_100
+                && model.lifecycleState == .stopped
+                && model.statusMessage.contains(impulse.name)
+        }
+
+        #expect(!model.isRunning)
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.activeProfile == impulse)
+        #expect(model.profileStore.outputMappings == store.outputMappings)
+        #expect(model.statusMessage.contains("48"))
+        #expect(model.statusMessage.contains("44"))
+
+        model.retryAudioEngine()
+        await settleAsyncWork()
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+
+        var compatibleOutput = incompatibleOutput
+        compatibleOutput.nominalSampleRate = 48_000
+        lookup.result = .success(compatibleOutput)
+        observer.emit(.success(compatibleOutput))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.count == 1
+        }
+
+        #expect(engine.startCalls[0].profile == impulse)
+        #expect(model.profileStore.outputMappings == store.outputMappings)
+    }
+
+    @Test
+    func unknownSeparateClockImpulseResponseStaysDryAcrossRetries() async throws {
+        let fallback = makeProfile(name: "Fallback")
+        let impulse = makeImpulseResponseProfile(name: "Cold Route IR", sampleRate: 48_000)
+        let output = makeOutput(
+            uid: "cold-ir-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: output.uid,
+                    profileID: impulse.id
+                )
+            ],
+            fallbackProfileID: fallback.id
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.currentOutputUID == output.uid
+                && model.lifecycleState == .stopped
+                && model.statusMessage.contains(impulse.name)
+        }
+
+        #expect(!model.isRunning)
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.profileStore.outputMappings == store.outputMappings)
+        #expect(model.statusMessage.contains("not measured"))
+
+        model.retryAudioEngine()
+        await settleAsyncWork()
+
+        #expect(engine.startCalls.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage.contains("not measured"))
+
+        try model.apply(profile: fallback)
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        engine.processingSampleRate = 48_000
+
+        try model.apply(profile: impulse)
+
+        #expect(model.activeProfile == impulse)
+        #expect(engine.updateDSPCalls.last == impulse)
+    }
+
+    @Test
     func stopThenImmediateRestartEnqueuesStopBeforeNewStart() async {
         let output = makeOutput(uid: "restart-output", name: "Restart Output")
         let engine = FakeAudioEngine()
@@ -2641,6 +2897,36 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsImportsImpulseResponseProfileWithoutChangingActiveAudio() async throws {
+        let model = makeModel()
+        let activeProfile = model.activeProfile
+        let initialProfileCount = model.profileStore.profiles.count
+        let imported = EQProfile(
+            name: "Room IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25, -0.125]
+            ))
+        )
+
+        let response = try await model.performSettingsCommand(
+            .importParsedProfile(imported)
+        )
+
+        #expect(response.importSucceeded == true)
+        #expect(model.activeProfile == activeProfile)
+        #expect(model.profileStore.profiles.count == initialProfileCount + 1)
+        #expect(model.draftProfile.name == "Room IR")
+        guard case .impulseResponse(let source) = model.draftProfile.convolution else {
+            Issue.record("Expected imported impulse response")
+            return
+        }
+        #expect(source.samples == [1, 0.25, -0.125])
+    }
+
+    @Test
     func metricsPollingCommandReturnsNoSnapshotAndPublishesImmediateMetrics() async throws {
         let engine = FakeAudioEngine()
         engine.metrics = AudioEngineMetrics(
@@ -3364,6 +3650,21 @@ private func makeProfile(name: String) -> EQProfile {
     EQProfile(name: name, mode: .parametric, filters: [])
 }
 
+private func makeImpulseResponseProfile(
+    name: String,
+    sampleRate: Double
+) -> EQProfile {
+    EQProfile(
+        name: name,
+        mode: .convolution,
+        filters: [],
+        convolution: .impulseResponse(ImpulseResponseSource(
+            sampleRate: sampleRate,
+            samples: [1, 0.25, -0.125]
+        ))
+    )
+}
+
 private func makeStore(profileCount: Int) -> ProfileStore {
     let profiles = (0..<profileCount).map { index in
         makeProfile(name: "Profile \(index)")
@@ -3806,6 +4107,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     private let lock = NSLock()
     private var _state: AudioEngineState = .stopped
+    private var _processingSampleRate: Double?
     private var _startError: Error?
     private var _startErrorProfileID: UUID?
     private var _startErrorPreservesRunningState = false
@@ -3840,6 +4142,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var state: AudioEngineState {
         get { withLock { _state } }
         set { withLock { _state = newValue } }
+    }
+
+    var processingSampleRate: Double? {
+        get { withLock { _processingSampleRate } }
+        set { withLock { _processingSampleRate = newValue } }
     }
 
     var isUsingTransitionalHeadsetBackend: Bool {

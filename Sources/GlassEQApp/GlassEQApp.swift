@@ -244,6 +244,7 @@ enum GlassEQAppLifecycleState: Equatable {
 
 protocol AudioEngineControlling: AnyObject, Sendable {
     var state: AudioEngineState { get }
+    var processingSampleRate: Double? { get }
     var isUsingTransitionalHeadsetBackend: Bool { get }
     var isUsingPromotedHeadsetAggregate: Bool { get }
 
@@ -494,6 +495,12 @@ final class GlassEQAppModel {
     private var headsetAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
     private var engineStartTask: Task<Void, Never>?
+    @ObservationIgnored private var lastProcessingSampleRate: (
+        outputUID: String,
+        outputSampleRate: Int64,
+        processingSampleRate: Double
+    )?
+    @ObservationIgnored private var currentOutputUsesSeparateClockBackend = false
     private var activeSettingsCommandCount = 0
     private var acceptsSettingsCommands = true
     private var settingsCommandDrainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -912,6 +919,7 @@ final class GlassEQAppModel {
             currentOutputName: currentOutputName,
             currentOutputUID: currentOutputUID,
             currentOutputSampleRate: currentOutputSampleRate,
+            currentProcessingSampleRate: processingSampleRateForSettings(),
             currentOutputChannelCount: currentOutputChannelCount,
             currentOutputBufferFrameSize: currentOutputBufferFrameSize,
             currentOutputMappedProfileID: currentOutputMappedProfileID,
@@ -924,6 +932,36 @@ final class GlassEQAppModel {
             programmeComparison: settingsProgrammeComparisonSnapshot(),
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
+    }
+
+    private func processingSampleRateForSettings() -> Double {
+        guard !currentOutputUID.isEmpty,
+              currentOutputSampleRate.isFinite,
+              currentOutputSampleRate > 0 else {
+            return 0
+        }
+
+        let outputSampleRate = Int64(currentOutputSampleRate.rounded())
+        if case .running(let activeOutput) = engine.state,
+           activeOutput.uid == currentOutputUID,
+           Int64(activeOutput.nominalSampleRate.rounded()) == outputSampleRate,
+           let processingSampleRate = engine.processingSampleRate,
+           processingSampleRate.isFinite,
+           processingSampleRate > 0 {
+            lastProcessingSampleRate = (
+                currentOutputUID,
+                outputSampleRate,
+                processingSampleRate
+            )
+            return processingSampleRate
+        }
+
+        guard let lastProcessingSampleRate,
+              lastProcessingSampleRate.outputUID == currentOutputUID,
+              lastProcessingSampleRate.outputSampleRate == outputSampleRate else {
+            return 0
+        }
+        return lastProcessingSampleRate.processingSampleRate
     }
 
     private func settingsProgrammeComparisonSnapshot() -> EQProgrammeComparisonSnapshot {
@@ -1093,6 +1131,7 @@ final class GlassEQAppModel {
 
     func apply(profile: EQProfile) throws {
         try ensureProfileStoreWritable()
+        try ensureCompatibleWithCurrentOutput(profile)
         let rollback = profileRollback()
         var store = profileStore
         upsertProfile(profile, in: &store)
@@ -1121,6 +1160,7 @@ final class GlassEQAppModel {
 
     func useForCurrentOutput(profile: EQProfile) throws {
         try ensureProfileStoreWritable()
+        try ensureCompatibleWithCurrentOutput(profile)
         let rollback = profileRollback()
         guard !currentOutputUID.isEmpty else {
             return
@@ -1146,6 +1186,9 @@ final class GlassEQAppModel {
     func setBypass(_ isBypassed: Bool) {
         do {
             try ensureProfileStoreWritable()
+            if !isBypassed {
+                try ensureCompatibleWithCurrentOutput(activeProfile)
+            }
         } catch {
             reportProfileActionFailure(error)
             return
@@ -1256,6 +1299,16 @@ final class GlassEQAppModel {
         }
     }
 
+    func importParsedProfile(_ profile: EQProfile) throws -> Bool {
+        try ensureProfileStoreWritable()
+        try addProfile(
+            profile,
+            name: profile.name,
+            status: localized("Imported \(profile.name)")
+        )
+        return true
+    }
+
     func setFallbackToDraft() {
         do {
             try setFallback(profile: draftProfile)
@@ -1285,6 +1338,7 @@ final class GlassEQAppModel {
         }
         do {
             try ensureProfileStoreWritable()
+            try ensureCompatibleWithCurrentOutput(profile)
         } catch {
             reportProfileActionFailure(error)
             return
@@ -1591,6 +1645,89 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
+    private func ensureCompatibleWithCurrentOutput(_ profile: EQProfile) throws {
+        guard let message = impulseResponseCompatibilityFailureMessage(
+            profile: profile,
+            processingSampleRate: knownCurrentProcessingSampleRate(),
+            outputChannelCount: currentOutputChannelCount
+        ) else {
+            return
+        }
+        throw SettingsCommandFailure(message: message)
+    }
+
+    private func impulseResponseCompatibilityFailureMessage(
+        profile: EQProfile,
+        processingSampleRate: Double,
+        outputChannelCount: Int
+    ) -> String? {
+        guard profile.mode == .convolution else {
+            return nil
+        }
+
+        let sources: [EQConvolutionSource?]
+        if profile.channelMode == .linked {
+            sources = [profile.convolution]
+        } else {
+            sources = (0..<max(outputChannelCount, 1)).map { channel in
+                switch channel {
+                case 0:
+                    profile.leftConvolution
+                case 1:
+                    profile.rightConvolution
+                default:
+                    profile.convolution
+                }
+            }
+        }
+
+        let impulseResponses = sources.compactMap { source -> ImpulseResponseSource? in
+            guard let source,
+                  case .impulseResponse(let impulse) = source else {
+                return nil
+            }
+            return impulse
+        }
+        guard !impulseResponses.isEmpty else {
+            return nil
+        }
+        guard processingSampleRate.isFinite,
+              processingSampleRate > 0 else {
+            return localized(
+                "\(profile.name) uses an imported impulse response, but GlassEQ has not measured the current DSP sample rate yet. Select a non-impulse-response profile to start this output first."
+            )
+        }
+
+        guard let mismatch = impulseResponses.first(where: {
+            abs($0.sampleRate - processingSampleRate) >= 0.5
+        }) else {
+            return nil
+        }
+        return impulseResponseSampleRateMismatchMessage(
+            profileName: profile.name,
+            sourceSampleRate: mismatch.sampleRate,
+            processingSampleRate: processingSampleRate
+        )
+    }
+
+    private func impulseResponseSampleRateMismatchMessage(
+        profileName: String,
+        sourceSampleRate: Double,
+        processingSampleRate: Double
+    ) -> String {
+        localized(
+            "\(profileName) uses a \(localizedFrequency(sourceSampleRate)) impulse response, but the current DSP runs at \(localizedFrequency(processingSampleRate)). Choose a matching output or import an impulse response at this sample rate."
+        )
+    }
+
+    private func knownCurrentProcessingSampleRate() -> Double {
+        let observedSampleRate = processingSampleRateForSettings()
+        if observedSampleRate > 0 {
+            return observedSampleRate
+        }
+        return currentOutputUsesSeparateClockBackend ? 0 : currentOutputSampleRate
+    }
+
     private func profileRollback() -> ProfileRollback {
         ProfileRollback(
             profileStore: profileStore,
@@ -1605,6 +1742,17 @@ final class GlassEQAppModel {
         guard lifecycleState != .terminating,
               lifecycleState != .sleeping,
               lifecycleState != .waking else {
+            return
+        }
+
+        if let message = impulseResponseCompatibilityFailureMessage(
+            profile: activeProfile,
+            processingSampleRate: knownCurrentProcessingSampleRate(),
+            outputChannelCount: currentOutputChannelCount
+        ) {
+            disableActiveProfileProcessing(updateMetrics: true)
+            statusMessage = message
+            notifyModelDidChange()
             return
         }
 
@@ -1692,6 +1840,9 @@ final class GlassEQAppModel {
         currentOutputSampleRate = output.nominalSampleRate
         currentOutputChannelCount = output.outputChannelCount
         currentOutputBufferFrameSize = output.bufferFrameSize
+        currentOutputUsesSeparateClockBackend = SystemTapAudioEngine.shouldUseSeparateClockBackend(
+            for: output
+        )
     }
 
     private func handleDefaultOutputChange(_ result: Result<AudioOutputDevice, Error>) {
@@ -1712,6 +1863,13 @@ final class GlassEQAppModel {
 
             if activeProfile.isBypassed {
                 disableActiveProfileProcessing(updateMetrics: false)
+            } else if let message = impulseResponseCompatibilityFailureMessage(
+                profile: activeProfile,
+                processingSampleRate: knownCurrentProcessingSampleRate(),
+                outputChannelCount: output.outputChannelCount
+            ) {
+                disableActiveProfileProcessing(updateMetrics: false)
+                statusMessage = message
             } else {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
@@ -1839,6 +1997,16 @@ final class GlassEQAppModel {
 
         guard !activeProfile.isBypassed else {
             disableActiveProfileProcessing(updateMetrics: true)
+            return
+        }
+
+        if let message = impulseResponseCompatibilityFailureMessage(
+            profile: activeProfile,
+            processingSampleRate: knownCurrentProcessingSampleRate(),
+            outputChannelCount: currentOutputChannelCount
+        ) {
+            disableActiveProfileProcessing(updateMetrics: true)
+            statusMessage = message
             return
         }
 

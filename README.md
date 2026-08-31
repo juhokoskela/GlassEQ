@@ -18,7 +18,7 @@ GlassEQ takes a different route. It uses **Core Audio process taps**, Apple's mo
 - **No virtual device, no driver, no system extension.** GlassEQ's tap and its aggregate device are both private, so nothing new ever shows up in your Sound settings. It's an ordinary sandboxed app that asks for one thing: audio-capture permission.
 - **macOS stays in charge of routing.** GlassEQ observes the default output and follows it. You never pick an output inside the app.
 - **Per-output profiles.** Each device gets its own EQ curve, matched automatically by its Core Audio UID. Plug in your studio monitors and the monitor profile loads, switch to AirPods and their profile takes over.
-- **Light and real-time-safe.** The DSP is a hand-written biquad cascade (no FFT, no convolution), so the resident footprint stays around **25–30 MB**. The audio render path never allocates, locks, or touches disk, and profile edits hot-swap without dropping a sample.
+- **Light and real-time-safe.** Ordinary filters use a hand-written biquad cascade; response curves use partitioned minimum-phase convolution without adding fixed buffering. The audio render path never allocates, locks, or touches disk, and profile edits hot-swap without dropping a sample.
 - **Native to macOS 26.** A menu bar app built on the system's Liquid Glass styling with a separate settings window for editing.
 
 ![GlassEQ menu bar popover, showing the active output and its mapped profile](Docs/Screenshots/menu-bar.png)
@@ -56,10 +56,11 @@ The current low-latency path requires the output's preferred pair to occupy one 
 
 ## Features
 
-- **Three EQ modes:** parametric, 10-band graphic, and 31-band graphic.
+- **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and minimum-phase response curves.
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
 - **Live frequency-response graph** and instant preview while you edit.
-- **Profile import** from AutoEQ / EqualizerAPO and REW text, allowing you to paste a headphone-correction curve straight in.
+- **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
+- **Built-in AutoEq search** that imports a recommended headphone result as either a full response curve or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
 - **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.
@@ -72,8 +73,8 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ### Security & privacy
 
-- Sandboxed: requests only the audio-capture permission it needs to function.
-- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. There is no networking or shared profile storage.
+- Sandboxed: audio capture is the only privacy permission GlassEQ requests. A file chosen through the import panel is readable only through that user action.
+- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. The helper can download profiles from the official AutoEq repository but has no shared profile storage.
 - No telemetry, no analytics, no cloud sync. Diagnostics run locally and print device details only to your terminal.
 
 ## Known limitations
@@ -81,6 +82,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 - **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
 - **Bluetooth** headset modes initially use a higher-latency separate-clock compatibility path to avoid periodic combined-aggregate timestamp faults while the route settles. Promotion to the low-latency path is experimental; please report the device model, macOS version, and steps if a route still produces jitter.
+- **Imported impulse responses** must match the active DSP processing sample rate and contain at most 16,384 taps per channel. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. GlassEQ rejects mismatched or longer WAV files rather than silently resampling or truncating them.
 - No automatic updates, no crash reporting, no x86_64 build.
 
 <a id="supported-target"></a>
@@ -137,7 +139,7 @@ codesign -d --entitlements :- .build/release-app/GlassEQ.app
 spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 ```
 
-The entitlements output should include `com.apple.security.app-sandbox` and `com.apple.security.device.audio-input`, both set to `true`.
+The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`.
 
 ## Architecture
 

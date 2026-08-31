@@ -5,6 +5,7 @@ public enum MinimumPhaseFIRCompilerError: Error, Equatable, Sendable {
     case invalidSampleRate
     case insufficientPoints
     case invalidPoint
+    case invalidImpulseResponse
     case duplicateFrequency(Double)
     case transformSetupFailed
     case nonFiniteImpulseResponse
@@ -151,6 +152,78 @@ public enum MinimumPhaseFIRCompiler {
             throw MinimumPhaseFIRCompilerError.duplicateFrequency(sorted[index].frequency)
         }
         return sorted
+    }
+}
+
+struct ImpulseResponseSpectrum: Sendable {
+    private let sampleRate: Double
+    private let transformLength: Int
+    private let magnitudes: [Double]
+
+    init(
+        impulseResponse: [Float],
+        sampleRate: Double,
+        cancellationCheck: @Sendable () throws -> Void = {}
+    ) throws {
+        guard sampleRate.isFinite, sampleRate > 0 else {
+            throw MinimumPhaseFIRCompilerError.invalidSampleRate
+        }
+        guard !impulseResponse.isEmpty,
+              impulseResponse.count <= MinimumPhaseFIRCompiler.tapCount else {
+            throw MinimumPhaseFIRCompilerError.invalidImpulseResponse
+        }
+
+        try cancellationCheck()
+        let transformLength = MinimumPhaseFIRCompiler.tapCount
+        let transform = try ComplexDoubleDFT(length: transformLength)
+        var inputReal = [Double](repeating: 0, count: transformLength)
+        for index in impulseResponse.indices {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            let sample = Double(impulseResponse[index])
+            guard sample.isFinite else {
+                throw MinimumPhaseFIRCompilerError.nonFiniteImpulseResponse
+            }
+            inputReal[index] = sample
+        }
+        var inputImaginary = [Double](repeating: 0, count: transformLength)
+        var outputReal = [Double](repeating: 0, count: transformLength)
+        var outputImaginary = [Double](repeating: 0, count: transformLength)
+        try cancellationCheck()
+        transform.forward(
+            real: &inputReal,
+            imaginary: &inputImaginary,
+            outputReal: &outputReal,
+            outputImaginary: &outputImaginary
+        )
+        try cancellationCheck()
+
+        var magnitudes = [Double](repeating: 0, count: transformLength / 2 + 1)
+        for index in magnitudes.indices {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            magnitudes[index] = hypot(outputReal[index], outputImaginary[index])
+        }
+
+        self.sampleRate = sampleRate
+        self.transformLength = transformLength
+        self.magnitudes = magnitudes
+    }
+
+    func magnitudeDB(at frequency: Double) -> Double {
+        guard frequency.isFinite else {
+            return .nan
+        }
+        let boundedFrequency = min(max(frequency, 0), sampleRate / 2)
+        let bin = boundedFrequency * Double(transformLength) / sampleRate
+        let lowerIndex = min(Int(bin.rounded(.down)), magnitudes.count - 1)
+        let upperIndex = min(lowerIndex + 1, magnitudes.count - 1)
+        let fraction = bin - Double(lowerIndex)
+        let magnitude = magnitudes[lowerIndex]
+            + (magnitudes[upperIndex] - magnitudes[lowerIndex]) * fraction
+        return 20 * log10(max(magnitude, .leastNonzeroMagnitude))
     }
 }
 

@@ -279,15 +279,30 @@ public enum FrequencyResponse {
             EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         )
         let upper = log10(upperFrequency)
-        let curve = magnitudePoints(from: source)
-        return (0..<max(count, 2)).map { index in
+        let frequencies = (0..<max(count, 2)).map { index in
             let fraction = Double(index) / Double(max(count - 1, 1))
-            let frequency = pow(10, lower + (upper - lower) * fraction)
-            return FrequencyResponsePoint(
-                frequency: frequency,
-                magnitudeDB: preampDB + MinimumPhaseFIRCompiler.interpolatedGainDB(
+            return pow(10, lower + (upper - lower) * fraction)
+        }
+
+        if case .impulseResponse(let impulse) = source,
+           let spectrum = try? ImpulseResponseSpectrum(
+               impulseResponse: impulse.samples,
+               sampleRate: impulse.sampleRate
+           ) {
+            return frequencies.map { frequency in
+                FrequencyResponsePoint(
                     frequency: frequency,
-                    points: curve
+                    magnitudeDB: preampDB + spectrum.magnitudeDB(at: frequency)
+                )
+            }
+        }
+
+        return frequencies.map { frequency in
+            FrequencyResponsePoint(
+                frequency: frequency,
+                magnitudeDB: preampDB + convolutionMagnitudeDB(
+                    source: source,
+                    frequency: frequency
                 )
             )
         }
@@ -301,25 +316,52 @@ public enum FrequencyResponse {
         let maximumFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
             sampleRate: sampleRate
         )
-        let curve = magnitudePoints(from: source)
-        let relevantGains = curve.lazy
-            .filter { $0.frequency <= maximumFrequency }
-            .map(\.gainDB)
-        let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
-            frequency: maximumFrequency,
-            points: curve
-        )
-        return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
-    }
-
-    private static func magnitudePoints(
-        from source: EQConvolutionSource?
-    ) -> [EQMagnitudePoint] {
         switch source {
         case .magnitudeCurve(let curve):
-            return curve.points.sorted { $0.frequency < $1.frequency }
+            let sortedPoints = curve.points.sorted { $0.frequency < $1.frequency }
+            let relevantGains = sortedPoints.lazy
+                .filter { $0.frequency <= maximumFrequency }
+                .map(\.gainDB)
+            let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
+                frequency: maximumFrequency,
+                points: sortedPoints
+            )
+            return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
+        case .impulseResponse(let impulse):
+            let coefficientL1Norm = impulse.samples.reduce(into: 0.0) { sum, sample in
+                sum += abs(Double(sample))
+            }
+            // The triangle inequality bounds the response at every frequency, including DC.
+            let upperBoundDB = 20 * log10(max(coefficientL1Norm, .leastNonzeroMagnitude))
+            return preampDB + upperBoundDB
         case nil:
-            return []
+            return preampDB
+        }
+    }
+
+    private static func convolutionMagnitudeDB(
+        source: EQConvolutionSource?,
+        frequency: Double
+    ) -> Double {
+        switch source {
+        case .magnitudeCurve(let curve):
+            return MinimumPhaseFIRCompiler.interpolatedGainDB(
+                frequency: frequency,
+                points: curve.points.sorted { $0.frequency < $1.frequency }
+            )
+        case .impulseResponse(let impulse):
+            let boundedFrequency = min(frequency, impulse.sampleRate / 2)
+            let omega = 2 * Double.pi * boundedFrequency / impulse.sampleRate
+            var real = 0.0
+            var imaginary = 0.0
+            for (index, sample) in impulse.samples.enumerated() {
+                let phase = -omega * Double(index)
+                real += Double(sample) * cos(phase)
+                imaginary += Double(sample) * sin(phase)
+            }
+            return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
+        case nil:
+            return 0
         }
     }
 

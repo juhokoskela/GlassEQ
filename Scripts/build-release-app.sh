@@ -42,6 +42,20 @@ fail() {
     exit 1
 }
 
+verify_signed_entitlement() {
+    local bundle_path="$1"
+    local entitlement="$2"
+    local escaped_entitlement="${entitlement//./\\.}"
+    local value
+
+    if ! value="$(
+        codesign -d --entitlements :- "$bundle_path" 2>/dev/null |
+            plutil -extract "$escaped_entitlement" raw -o - -
+    )" || [[ "$value" != "true" ]]; then
+        fail "signed bundle '$bundle_path' is missing required entitlement '$entitlement'"
+    fi
+}
+
 is_dry_run() {
     [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" || "$DRY_RUN" == "yes" ]]
 }
@@ -266,6 +280,13 @@ fi
 
 codesign --verify --strict --verbose=2 "$SETTINGS_APP_DIR" >/dev/null
 codesign --verify --strict --verbose=2 "$APP_DIR" >/dev/null
+verify_signed_entitlement "$APP_DIR" com.apple.security.app-sandbox
+verify_signed_entitlement "$APP_DIR" com.apple.security.device.audio-input
+verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-only
+verify_signed_entitlement "$APP_DIR" com.apple.security.network.client
+verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.app-sandbox
+verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.inherit
+verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.files.user-selected.read-only
 
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     NOTARY_ZIP="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-notary-submit.zip"

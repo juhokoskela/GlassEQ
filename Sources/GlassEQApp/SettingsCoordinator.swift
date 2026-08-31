@@ -531,6 +531,10 @@ final class SettingsCoordinator: NSObject {
             )
             didPatch = true
         }
+        if previous.currentProcessingSampleRate != snapshot.currentProcessingSampleRate {
+            patch.currentProcessingSampleRate = snapshot.currentProcessingSampleRate
+            didPatch = true
+        }
         if previous.currentOutputMappedProfileID != snapshot.currentOutputMappedProfileID {
             if let profileID = snapshot.currentOutputMappedProfileID {
                 patch.currentOutputMappedProfileID = .set(profileID)
@@ -1052,6 +1056,10 @@ extension GlassEQAppModel {
 
         case let .importProfile(format, name, text):
             let imported = try await importProfile(format: format, name: name, text: text)
+            return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
+
+        case .importParsedProfile(let profile):
+            let imported = try importParsedProfile(profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
 
         case .preview(let profile):
