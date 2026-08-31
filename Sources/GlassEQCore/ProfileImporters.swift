@@ -61,6 +61,7 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
     case tooManyFilters(line: Int, channel: String, count: Int, maximum: Int)
     case tooManyTotalFilters(line: Int, count: Int, maximum: Int)
     case tooManyMagnitudePoints(line: Int, count: Int, maximum: Int)
+    case insufficientMagnitudePoints(line: Int, count: Int, minimum: Int)
     case duplicateMagnitudeFrequency(line: Int, frequency: Double)
 
     public var errorDescription: String? {
@@ -104,6 +105,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
             return "Line \(line) adds filter \(count), which exceeds the \(maximum)-filter total limit."
         case let .tooManyMagnitudePoints(line, count, maximum):
             return "Line \(line) contains \(count) magnitude points, which exceeds the \(maximum)-point limit."
+        case let .insufficientMagnitudePoints(line, count, minimum):
+            return "Line \(line) contains \(count) magnitude points, but GraphicEQ requires at least \(minimum)."
         case let .duplicateMagnitudeFrequency(line, frequency):
             return "Line \(line) contains duplicate frequency \(format(frequency))."
         }
@@ -387,6 +390,13 @@ public enum EQProfileTextImporter {
                     frequencies: &parsedFrequencies,
                     line: lineNumber,
                     limits: limits
+                )
+            }
+            guard parsedPoints.count >= 2 else {
+                throw ProfileImportError.insufficientMagnitudePoints(
+                    line: lineNumber,
+                    count: parsedPoints.count,
+                    minimum: 2
                 )
             }
             parsedPoints.sort { $0.frequency < $1.frequency }

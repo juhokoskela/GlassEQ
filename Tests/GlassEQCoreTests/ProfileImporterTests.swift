@@ -109,6 +109,42 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func rejectsEmptyGraphicEQOnOneStereoChannelAtItsDeclaration() {
+        let text = """
+        Channel: L
+        GraphicEQ: 100 1; 200 2
+        Channel: R
+        GraphicEQ:
+        """
+
+        #expect(throws: ProfileImportError.insufficientMagnitudePoints(
+            line: 4,
+            count: 0,
+            minimum: 2
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
+    }
+
+    @Test
+    func rejectsSinglePointGraphicEQOnOneStereoChannelAtItsDeclaration() {
+        let text = """
+        Channel: L
+        GraphicEQ: 100 1; 200 2
+        Channel: R
+        GraphicEQ: 100 1
+        """
+
+        #expect(throws: ProfileImportError.insufficientMagnitudePoints(
+            line: 4,
+            count: 1,
+            minimum: 2
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
+    }
+
+    @Test
     func graphicEQExportRoundTripsStereoCurvesAndPreamps() throws {
         let left = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 2),
