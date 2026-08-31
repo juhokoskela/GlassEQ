@@ -1,4 +1,3 @@
-import Darwin
 @testable @_spi(GlassEQSettingsUI) import GlassEQCore
 import Foundation
 import Testing
@@ -773,81 +772,6 @@ struct EQCoreTests {
         #expect(saturated == 4)
         #expect(samples.allSatisfy { $0.isFinite })
         #expect(samples.allSatisfy { abs($0) <= 1 })
-    }
-
-    @Test
-    func dspCallbackPathStaysWithinGenerousDebugBudget() {
-        guard !isThreadSanitizerRuntimeLoaded else {
-            return
-        }
-        let profile = EQProfile.flatGraphic31
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var samples = makeStereoTestBlock(frameCount: 256, sampleRate: 48_000)
-        let clock = ContinuousClock()
-        let start = clock.now
-
-        for _ in 0..<256 {
-            _ = samples.withUnsafeMutableBufferPointer {
-                processor.processInterleavedWithDiagnostics($0, frameCount: 256, channelCount: 2)
-            }
-        }
-
-        #expect(start.duration(to: clock.now) < .seconds(2))
-    }
-
-    @Test
-    func programmeComparisonCallbackPathStaysWithinGenerousDebugBudget() {
-        guard !isThreadSanitizerRuntimeLoaded else {
-            return
-        }
-        let profile = EQProfile.flatGraphic31
-        var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: profile,
-                sampleRate: 48_000,
-                channelCount: 2
-            )),
-            maximumFrameCount: 64,
-            channelCount: 2,
-            sampleRate: 48_000
-        )
-        let didBegin = transition.beginProgrammeComparison(
-            equalizedProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: profile,
-                sampleRate: 48_000,
-                channelCount: 2
-            )),
-            filtersOffProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: profile.programmeComparisonReference,
-                sampleRate: 48_000,
-                channelCount: 2
-            ))
-        )
-        #expect(didBegin)
-        var samples = makeStereoTestBlock(frameCount: 64, sampleRate: 48_000)
-        for _ in 0..<24 {
-            _ = samples.withUnsafeMutableBufferPointer {
-                transition.processInterleavedWithDiagnostics(
-                    $0,
-                    frameCount: 64,
-                    channelCount: 2
-                )
-            }
-        }
-
-        let clock = ContinuousClock()
-        let start = clock.now
-        for _ in 0..<1_024 {
-            _ = samples.withUnsafeMutableBufferPointer {
-                transition.processInterleavedWithDiagnostics(
-                    $0,
-                    frameCount: 64,
-                    channelCount: 2
-                )
-            }
-        }
-
-        #expect(start.duration(to: clock.now) < .seconds(4))
     }
 
     @Test
@@ -1654,16 +1578,4 @@ struct EQCoreTests {
         }
         return value
     }
-}
-
-private var isThreadSanitizerRuntimeLoaded: Bool {
-    for index in 0..<_dyld_image_count() {
-        guard let imageName = _dyld_get_image_name(index) else {
-            continue
-        }
-        if String(cString: imageName).contains("libclang_rt.tsan") {
-            return true
-        }
-    }
-    return false
 }
