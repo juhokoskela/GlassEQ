@@ -1296,7 +1296,9 @@ private struct ProfileDetail: View {
                         case .editor:
                             EditorTab(
                                 draftProfile: $draftProfile,
-                                sampleRate: snapshot.currentOutputSampleRate,
+                                sampleRate: snapshot.currentProcessingSampleRate > 0
+                                    ? snapshot.currentProcessingSampleRate
+                                    : snapshot.currentOutputSampleRate,
                                 draftEditGeneration: draftEditGeneration
                             )
                             .disabled(
