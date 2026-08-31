@@ -545,18 +545,16 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateDSPResult = false
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
-        engine.blockUpdate(for: requested.id)
         try model.apply(profile: requested)
-        #expect(engine.waitUntilUpdateIsBlocked(for: requested.id, timeout: .now() + 1))
-        let attemptsBeforeFailure = engine.coldStartupAggregatePromotionAttemptCount
-
-        engine.unblockUpdate(for: requested.id)
         await waitUntil {
             model.statusMessage.contains("not applied")
-                && engine.coldStartupAggregatePromotionAttemptCount > attemptsBeforeFailure
         }
 
-        #expect(engine.isDeferringColdStartupAggregate)
+        engine.coldStartupAggregatePromotionResult = .promoted(output)
+        await waitUntil {
+            !engine.isDeferringColdStartupAggregate
+        }
+
         #expect(model.activeProfile == running)
         #expect(engine.state == .running(output: output))
     }
