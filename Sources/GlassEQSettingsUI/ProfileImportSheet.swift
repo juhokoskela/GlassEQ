@@ -325,6 +325,7 @@ private struct TextProfileImportPane: View {
     @State private var importedStereoTextPair: ImportedStereoTextPair?
     @State private var isLoadingFile = false
     @State private var isImporting = false
+    @State private var fileLoadTask: Task<Void, Never>?
     @State private var didCopyCurrentProfile = false
     @State private var errorMessage: String?
 
@@ -464,6 +465,9 @@ private struct TextProfileImportPane: View {
             }
             .padding(16)
         }
+        .onDisappear {
+            fileLoadTask?.cancel()
+        }
     }
 
     private var footerText: String {
@@ -573,10 +577,14 @@ private struct TextProfileImportPane: View {
     }
 
     private func chooseFiles(_ mode: SettingsFileImportMode) {
+        fileLoadTask?.cancel()
         isLoadingFile = true
         errorMessage = nil
-        Task {
+        fileLoadTask = Task { @MainActor in
             let choice = await onChooseImportFiles(mode)
+            guard !Task.isCancelled else {
+                return
+            }
             if let selection = choice.selection {
                 apply(selection)
             }
