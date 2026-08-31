@@ -500,6 +500,7 @@ final class GlassEQAppModel {
         outputSampleRate: Int64,
         processingSampleRate: Double
     )?
+    @ObservationIgnored private var currentOutputUsesSeparateClockBackend = false
     private var activeSettingsCommandCount = 0
     private var acceptsSettingsCommands = true
     private var settingsCommandDrainWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1130,6 +1131,7 @@ final class GlassEQAppModel {
 
     func apply(profile: EQProfile) throws {
         try ensureProfileStoreWritable()
+        try ensureCompatibleWithCurrentOutput(profile)
         let rollback = profileRollback()
         var store = profileStore
         upsertProfile(profile, in: &store)
@@ -1158,6 +1160,7 @@ final class GlassEQAppModel {
 
     func useForCurrentOutput(profile: EQProfile) throws {
         try ensureProfileStoreWritable()
+        try ensureCompatibleWithCurrentOutput(profile)
         let rollback = profileRollback()
         guard !currentOutputUID.isEmpty else {
             return
@@ -1183,6 +1186,9 @@ final class GlassEQAppModel {
     func setBypass(_ isBypassed: Bool) {
         do {
             try ensureProfileStoreWritable()
+            if !isBypassed {
+                try ensureCompatibleWithCurrentOutput(activeProfile)
+            }
         } catch {
             reportProfileActionFailure(error)
             return
@@ -1638,6 +1644,75 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
+    private func ensureCompatibleWithCurrentOutput(_ profile: EQProfile) throws {
+        guard let mismatch = impulseResponseSampleRateMismatch(
+            profile: profile,
+            processingSampleRate: knownCurrentProcessingSampleRate(),
+            outputChannelCount: currentOutputChannelCount
+        ) else {
+            return
+        }
+        throw SettingsCommandFailure(
+            message: impulseResponseSampleRateMismatchMessage(
+                profileName: profile.name,
+                sourceSampleRate: mismatch.source,
+                processingSampleRate: mismatch.processing
+            )
+        )
+    }
+
+    private func impulseResponseSampleRateMismatch(
+        profile: EQProfile,
+        processingSampleRate: Double,
+        outputChannelCount: Int
+    ) -> (source: Double, processing: Double)? {
+        guard profile.mode == .convolution,
+              processingSampleRate.isFinite,
+              processingSampleRate > 0 else {
+            return nil
+        }
+
+        let sources: [EQConvolutionSource?]
+        if profile.channelMode == .linked {
+            sources = [profile.convolution]
+        } else {
+            sources = (0..<max(outputChannelCount, 1)).map { channel in
+                switch channel {
+                case 0:
+                    profile.leftConvolution
+                case 1:
+                    profile.rightConvolution
+                default:
+                    profile.convolution
+                }
+            }
+        }
+
+        for case .impulseResponse(let impulse)? in sources where
+            abs(impulse.sampleRate - processingSampleRate) >= 0.5 {
+            return (impulse.sampleRate, processingSampleRate)
+        }
+        return nil
+    }
+
+    private func impulseResponseSampleRateMismatchMessage(
+        profileName: String,
+        sourceSampleRate: Double,
+        processingSampleRate: Double
+    ) -> String {
+        localized(
+            "\(profileName) uses a \(localizedFrequency(sourceSampleRate)) impulse response, but the current DSP runs at \(localizedFrequency(processingSampleRate)). Choose a matching output or import an impulse response at this sample rate."
+        )
+    }
+
+    private func knownCurrentProcessingSampleRate() -> Double {
+        let observedSampleRate = processingSampleRateForSettings()
+        if observedSampleRate > 0 {
+            return observedSampleRate
+        }
+        return currentOutputUsesSeparateClockBackend ? 0 : currentOutputSampleRate
+    }
+
     private func profileRollback() -> ProfileRollback {
         ProfileRollback(
             profileStore: profileStore,
@@ -1652,6 +1727,21 @@ final class GlassEQAppModel {
         guard lifecycleState != .terminating,
               lifecycleState != .sleeping,
               lifecycleState != .waking else {
+            return
+        }
+
+        if let mismatch = impulseResponseSampleRateMismatch(
+            profile: activeProfile,
+            processingSampleRate: knownCurrentProcessingSampleRate(),
+            outputChannelCount: currentOutputChannelCount
+        ) {
+            disableActiveProfileProcessing(updateMetrics: true)
+            statusMessage = impulseResponseSampleRateMismatchMessage(
+                profileName: activeProfile.name,
+                sourceSampleRate: mismatch.source,
+                processingSampleRate: mismatch.processing
+            )
+            notifyModelDidChange()
             return
         }
 
@@ -1739,6 +1829,9 @@ final class GlassEQAppModel {
         currentOutputSampleRate = output.nominalSampleRate
         currentOutputChannelCount = output.outputChannelCount
         currentOutputBufferFrameSize = output.bufferFrameSize
+        currentOutputUsesSeparateClockBackend = SystemTapAudioEngine.shouldUseSeparateClockBackend(
+            for: output
+        )
     }
 
     private func handleDefaultOutputChange(_ result: Result<AudioOutputDevice, Error>) {
@@ -1759,6 +1852,17 @@ final class GlassEQAppModel {
 
             if activeProfile.isBypassed {
                 disableActiveProfileProcessing(updateMetrics: false)
+            } else if let mismatch = impulseResponseSampleRateMismatch(
+                profile: activeProfile,
+                processingSampleRate: knownCurrentProcessingSampleRate(),
+                outputChannelCount: output.outputChannelCount
+            ) {
+                disableActiveProfileProcessing(updateMetrics: false)
+                statusMessage = impulseResponseSampleRateMismatchMessage(
+                    profileName: activeProfile.name,
+                    sourceSampleRate: mismatch.source,
+                    processingSampleRate: mismatch.processing
+                )
             } else {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
@@ -1886,6 +1990,20 @@ final class GlassEQAppModel {
 
         guard !activeProfile.isBypassed else {
             disableActiveProfileProcessing(updateMetrics: true)
+            return
+        }
+
+        if let mismatch = impulseResponseSampleRateMismatch(
+            profile: activeProfile,
+            processingSampleRate: knownCurrentProcessingSampleRate(),
+            outputChannelCount: currentOutputChannelCount
+        ) {
+            disableActiveProfileProcessing(updateMetrics: true)
+            statusMessage = impulseResponseSampleRateMismatchMessage(
+                profileName: activeProfile.name,
+                sourceSampleRate: mismatch.source,
+                processingSampleRate: mismatch.processing
+            )
             return
         }
 
