@@ -3200,8 +3200,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return .aggregateUnstable
         }
 
+        let promotionResult = try Self.coldStartupPromotionResult(
+            combinedState: control.withLock { $0.state }
+        )
         deferredColdStartupRoute.withLock { $0 = nil }
-        return .promoted(currentDefault)
+        return promotionResult
     }
 
     private func attemptHeadsetAggregatePromotionSerialized() throws
@@ -4467,6 +4470,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         case .running:
             return false
         }
+    }
+
+    static func coldStartupPromotionResult(
+        combinedState: AudioEngineState
+    ) throws -> ColdStartupAggregatePromotionResult {
+        guard case .running(let output) = combinedState else {
+            throw AudioEngineInternalError(
+                message: "The combined aggregate did not publish its active output."
+            )
+        }
+        return .promoted(output)
     }
 
     static func startupAttemptFrameSizes(requestedFrameSize: UInt32) -> [UInt32] {

@@ -331,6 +331,30 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func coldStartupPromotionReturnsTheAppliedAggregateMetadata() throws {
+        let physicalOutput = output(
+            id: 9_101,
+            uid: "cold-promotion-output",
+            channelCount: 2,
+            bufferFrameSize: 512
+        )
+        var aggregateOutput = physicalOutput
+        aggregateOutput.bufferFrameSize = 32
+
+        let result = try SystemTapAudioEngine.coldStartupPromotionResult(
+            combinedState: .running(output: aggregateOutput)
+        )
+
+        guard case .promoted(let promotedOutput) = result else {
+            Issue.record("Expected a promoted output")
+            return
+        }
+        #expect(promotedOutput == aggregateOutput)
+        #expect(promotedOutput.bufferFrameSize == 32)
+        #expect(promotedOutput.bufferFrameSize != physicalOutput.bufferFrameSize)
+    }
+
+    @Test
     func activeOutputProcessDetectionMatchesTheDeviceAndExclusions() throws {
         let processDevices: [AudioObjectID: [AudioObjectID]] = [
             10: [100],
