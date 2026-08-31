@@ -928,15 +928,18 @@ enum SettingsHelperVerifier {
             throw SettingsCommandFailure(message: localized("GlassEQSettings.app has an unexpected code-signing identifier."))
         }
 
-        let processSignature = try? codeSigningValidator.signatureInfo(forProcessIdentifier: processIdentifier)
-        if let processSignature {
-            if let signingIdentifier = processSignature.signingIdentifier,
-               signingIdentifier != helperBundleIdentifier {
-                throw SettingsCommandFailure(message: localized("GlassEQSettings.app has an unexpected code-signing identifier."))
-            }
+        let processSignature = try codeSigningValidator.signatureInfo(forProcessIdentifier: processIdentifier)
+        if let signingIdentifier = processSignature.signingIdentifier,
+           signingIdentifier != helperBundleIdentifier {
+            throw SettingsCommandFailure(message: localized("GlassEQSettings.app has an unexpected code-signing identifier."))
         }
 
-        let hostSignature = try? codeSigningValidator.signatureInfo(for: standardizedHostURL)
+        let hostSignature: SettingsCodeSignatureInfo?
+        if standardizedHostURL.pathExtension == "app" {
+            hostSignature = try codeSigningValidator.signatureInfo(for: standardizedHostURL)
+        } else {
+            hostSignature = try? codeSigningValidator.signatureInfo(for: standardizedHostURL)
+        }
         guard let hostTeamIdentifier = hostSignature?.teamIdentifier,
               !hostTeamIdentifier.isEmpty else {
             return
@@ -944,8 +947,7 @@ enum SettingsHelperVerifier {
         guard helperSignature.teamIdentifier == hostTeamIdentifier else {
             throw SettingsCommandFailure(message: localized("GlassEQSettings.app was not signed by the same team as GlassEQ."))
         }
-        if let processSignature,
-           processSignature.teamIdentifier != hostTeamIdentifier {
+        if processSignature.teamIdentifier != hostTeamIdentifier {
             throw SettingsCommandFailure(message: localized("GlassEQSettings.app was not signed by the same team as GlassEQ."))
         }
     }

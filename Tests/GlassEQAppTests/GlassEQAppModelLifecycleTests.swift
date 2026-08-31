@@ -4235,6 +4235,40 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsHelperRunningValidationRejectsMissingProcessSignature() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperRunningValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Helpers", isDirectory: true)
+            .appendingPathComponent("GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let validator = FakeCodeSigningValidator(signatures: [
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        ])
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try SettingsHelperVerifier.validateRunningProcess(
+                processIdentifier: 123,
+                expectedHelperURL: helperURL,
+                hostBundleURL: hostURL,
+                runningBundleURL: { _ in nil },
+                processExecutableURL: { _ in helperExecutableURL(for: helperURL) },
+                codeSigningValidator: validator
+            )
+        }
+    }
+
+    @Test
     func settingsHelperRunningValidationRejectsUnexpectedResolvedBundleURL() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQHelperRunningValidation-\(UUID().uuidString)", isDirectory: true)
@@ -4613,7 +4647,7 @@ private struct FakeCodeSigningValidator: SettingsCodeSigningValidating {
     }
 
     func signatureInfo(forProcessIdentifier processIdentifier: pid_t) throws -> SettingsCodeSignatureInfo {
-        guard let signature = signatures["pid:\(processIdentifier)"] ?? signatures.values.first else {
+        guard let signature = signatures["pid:\(processIdentifier)"] else {
             throw SettingsCommandFailure(message: "Missing fake process signature")
         }
         return signature
