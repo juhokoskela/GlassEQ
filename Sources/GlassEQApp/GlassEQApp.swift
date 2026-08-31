@@ -570,6 +570,7 @@ final class GlassEQAppModel {
     private var headsetAggregatePromotionTask: Task<Void, Never>?
     private var coldStartupAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
+    private var pendingOutputChangeRequestedMute = false
     private var engineStartTask: Task<Void, Never>?
     @ObservationIgnored private var lastProcessingSampleRate: (
         outputUID: String,
@@ -2075,9 +2076,12 @@ final class GlassEQAppModel {
            lastHandledDefaultOutputConfiguration == DefaultOutputConfiguration(output),
            isRunning || engineStartTask != nil {
             let hadPendingOutputChange = outputChangeTask != nil
+            let shouldResumeOutput = pendingOutputChangeRequestedMute
             invalidatePendingOutputChange()
             if hadPendingOutputChange, isRunning {
-                scheduleEngineResumeAfterCancelledTransition()
+                if shouldResumeOutput {
+                    scheduleEngineResumeAfterCancelledTransition()
+                }
                 statusMessage = runningEngineStatusMessage(for: output)
                 startAggregateStabilityMonitoring()
                 startColdStartupAggregatePromotionIfNeeded()
@@ -2091,7 +2095,9 @@ final class GlassEQAppModel {
         let generation = outputChangeGeneration
         let settlingDelay = outputChangeSettlingDelay(for: result)
         outputChangeTask?.cancel()
-        if shouldMuteForSettlingOutputChange(result) {
+        let shouldMuteOutput = shouldMuteForSettlingOutputChange(result)
+        pendingOutputChangeRequestedMute = pendingOutputChangeRequestedMute || shouldMuteOutput
+        if shouldMuteOutput {
             scheduleEngineMuteForTransition()
             statusMessage = outputChangeStatusMessage(for: result)
             notifyModelDidChange()
@@ -2114,6 +2120,7 @@ final class GlassEQAppModel {
             }
 
             self.outputChangeTask = nil
+            self.pendingOutputChangeRequestedMute = false
             let settledResult = Result { try self.defaultOutputLookup.defaultOutputDevice() }
             self.handleDefaultOutputChange(settledResult)
         }
@@ -3316,6 +3323,7 @@ final class GlassEQAppModel {
         outputChangeGeneration += 1
         let generation = outputChangeGeneration
         outputChangeTask?.cancel()
+        pendingOutputChangeRequestedMute = false
         outputChangeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: self?.wakeReconnectDelayOverride ?? WakeReconnectPolicy.retryDelay)
             guard !Task.isCancelled,
@@ -3721,6 +3729,7 @@ final class GlassEQAppModel {
         outputChangeGeneration += 1
         outputChangeTask?.cancel()
         outputChangeTask = nil
+        pendingOutputChangeRequestedMute = false
     }
 
     private func invalidatePendingEngineStart() {
