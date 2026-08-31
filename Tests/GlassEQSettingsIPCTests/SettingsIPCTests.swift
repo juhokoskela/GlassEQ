@@ -1285,6 +1285,7 @@ struct SettingsIPCTests {
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "isRunning")
         object.removeValue(forKey: "programmeComparison")
+        object.removeValue(forKey: "currentProcessingSampleRate")
 
         let decoded = try JSONDecoder().decode(
             SettingsSnapshotDTO.self,
@@ -1293,6 +1294,7 @@ struct SettingsIPCTests {
 
         #expect(!decoded.isRunning)
         #expect(decoded.programmeComparison == EQProgrammeComparisonSnapshot())
+        #expect(decoded.currentProcessingSampleRate == decoded.currentOutputSampleRate)
     }
 
     @Test

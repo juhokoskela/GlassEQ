@@ -246,6 +246,7 @@ enum GlassEQAppLifecycleState: Equatable {
 protocol AudioEngineControlling: AnyObject, Sendable {
     var state: AudioEngineState { get }
     var isUsingSeparateClockBackend: Bool { get }
+    var processingSampleRate: Double? { get }
     var isUsingTransitionalHeadsetBackend: Bool { get }
     var isUsingPromotedHeadsetAggregate: Bool { get }
     var isDeferringColdStartupAggregate: Bool { get }
@@ -1044,6 +1045,7 @@ final class GlassEQAppModel {
             currentOutputName: currentOutputName,
             currentOutputUID: currentOutputUID,
             currentOutputSampleRate: currentOutputSampleRate,
+            currentProcessingSampleRate: engine.processingSampleRate ?? currentOutputSampleRate,
             currentOutputChannelCount: currentOutputChannelCount,
             currentOutputBufferFrameSize: currentOutputBufferFrameSize,
             currentOutputMappedProfileID: currentOutputMappedProfileID,
@@ -1899,9 +1901,10 @@ final class GlassEQAppModel {
     }
 
     private func ensureCompatibleWithCurrentOutput(_ profile: EQProfile) throws {
+        let processingSampleRate = engine.processingSampleRate ?? currentOutputSampleRate
         guard let mismatch = impulseResponseSampleRateMismatch(
             profile: profile,
-            outputSampleRate: currentOutputSampleRate,
+            processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) else {
             return
@@ -1910,19 +1913,19 @@ final class GlassEQAppModel {
             message: impulseResponseSampleRateMismatchMessage(
                 profileName: profile.name,
                 sourceSampleRate: mismatch.source,
-                outputSampleRate: mismatch.output
+                processingSampleRate: mismatch.processing
             )
         )
     }
 
     private func impulseResponseSampleRateMismatch(
         profile: EQProfile,
-        outputSampleRate: Double,
+        processingSampleRate: Double,
         outputChannelCount: Int
-    ) -> (source: Double, output: Double)? {
+    ) -> (source: Double, processing: Double)? {
         guard profile.mode == .convolution,
-              outputSampleRate.isFinite,
-              outputSampleRate > 0 else {
+              processingSampleRate.isFinite,
+              processingSampleRate > 0 else {
             return nil
         }
 
@@ -1943,8 +1946,8 @@ final class GlassEQAppModel {
         }
 
         for case .impulseResponse(let impulse)? in sources where
-            abs(impulse.sampleRate - outputSampleRate) >= 0.5 {
-            return (impulse.sampleRate, outputSampleRate)
+            abs(impulse.sampleRate - processingSampleRate) >= 0.5 {
+            return (impulse.sampleRate, processingSampleRate)
         }
         return nil
     }
@@ -1952,10 +1955,10 @@ final class GlassEQAppModel {
     private func impulseResponseSampleRateMismatchMessage(
         profileName: String,
         sourceSampleRate: Double,
-        outputSampleRate: Double
+        processingSampleRate: Double
     ) -> String {
         localized(
-            "\(profileName) uses a \(localizedFrequency(sourceSampleRate)) impulse response, but the current output runs at \(localizedFrequency(outputSampleRate)). Choose a matching output or import an impulse response at this sample rate."
+            "\(profileName) uses a \(localizedFrequency(sourceSampleRate)) impulse response, but the current DSP runs at \(localizedFrequency(processingSampleRate)). Choose a matching output or import an impulse response at this sample rate."
         )
     }
 
@@ -1976,16 +1979,17 @@ final class GlassEQAppModel {
             return
         }
 
+        let processingSampleRate = engine.processingSampleRate ?? currentOutputSampleRate
         if let mismatch = impulseResponseSampleRateMismatch(
             profile: activeProfile,
-            outputSampleRate: currentOutputSampleRate,
+            processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) {
             disableActiveProfileProcessing(updateMetrics: true)
             statusMessage = impulseResponseSampleRateMismatchMessage(
                 profileName: activeProfile.name,
                 sourceSampleRate: mismatch.source,
-                outputSampleRate: mismatch.output
+                processingSampleRate: mismatch.processing
             )
             notifyModelDidChange()
             return
@@ -2105,14 +2109,14 @@ final class GlassEQAppModel {
                 disableActiveProfileProcessing(updateMetrics: false)
             } else if let mismatch = impulseResponseSampleRateMismatch(
                 profile: activeProfile,
-                outputSampleRate: output.nominalSampleRate,
+                processingSampleRate: output.nominalSampleRate,
                 outputChannelCount: output.outputChannelCount
             ) {
                 disableActiveProfileProcessing(updateMetrics: false)
                 statusMessage = impulseResponseSampleRateMismatchMessage(
                     profileName: activeProfile.name,
                     sourceSampleRate: mismatch.source,
-                    outputSampleRate: mismatch.output
+                    processingSampleRate: mismatch.processing
                 )
             } else {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
@@ -2254,16 +2258,17 @@ final class GlassEQAppModel {
             return
         }
 
+        let processingSampleRate = engine.processingSampleRate ?? currentOutputSampleRate
         if let mismatch = impulseResponseSampleRateMismatch(
             profile: activeProfile,
-            outputSampleRate: currentOutputSampleRate,
+            processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) {
             disableActiveProfileProcessing(updateMetrics: true)
             statusMessage = impulseResponseSampleRateMismatchMessage(
                 profileName: activeProfile.name,
                 sourceSampleRate: mismatch.source,
-                outputSampleRate: mismatch.output
+                processingSampleRate: mismatch.processing
             )
             return
         }
