@@ -514,6 +514,54 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func rejectedProfileChangeRestartsColdStartupPromotion() async throws {
+        let running = makeProfile(name: "Cold Start Running")
+        let requested = makeProfile(name: "Cold Start Requested")
+        let output = makeOutput(uid: "cold-start-profile-failure", name: "D10s")
+        let store = ProfileStore(
+            profiles: [running, requested],
+            fallbackProfileID: running.id
+        )
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .clientsActive
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.coldStartupAggregatePromotionAttemptCount > 0
+        }
+
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        engine.blockUpdate(for: requested.id)
+        try model.apply(profile: requested)
+        #expect(engine.waitUntilUpdateIsBlocked(for: requested.id, timeout: .now() + 1))
+        let attemptsBeforeFailure = engine.coldStartupAggregatePromotionAttemptCount
+
+        engine.unblockUpdate(for: requested.id)
+        await waitUntil {
+            model.statusMessage.contains("not applied")
+                && engine.coldStartupAggregatePromotionAttemptCount > attemptsBeforeFailure
+        }
+
+        #expect(engine.isDeferringColdStartupAggregate)
+        #expect(model.activeProfile == running)
+        #expect(engine.state == .running(output: output))
+    }
+
+    @Test
     func promotedHeadsetRouteFallsBackAfterOneSteadyStateJump() async {
         let output = makeOutput(
             uid: "headset-demotion",
