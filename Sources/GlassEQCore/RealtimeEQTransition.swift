@@ -228,6 +228,11 @@ public struct RealtimeEQTransition: Sendable {
         frameCount: Int,
         channelCount: Int
     ) -> EQTransitionRenderResult {
+        guard !activeProcessor.configuration.isBypassed else {
+            return EQTransitionRenderResult(
+                programmeComparison: programmeComparisonSnapshot
+            )
+        }
         guard activeProcessor.configuration.usesConvolution else {
             let saturated = activeProcessor.processInterleavedWithDiagnostics(
                 samples,
