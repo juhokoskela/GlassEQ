@@ -335,21 +335,65 @@ public enum FrequencyResponse {
             EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         )
         let upper = log10(upperFrequency)
-        return try (0..<max(count, 2)).map { index in
+        let frequencies = try (0..<max(count, 2)).map { index in
             try cancellationCheck()
             let fraction = Double(index) / Double(max(count - 1, 1))
-            let frequency = pow(10, lower + (upper - lower) * fraction)
-            return FrequencyResponsePoint(
-                frequency: frequency,
-                magnitudeDB: preampDB + (try convolutionMagnitudeDB(
-                    source: source,
-                    frequency: frequency,
-                    maximumUsableFrequency: upperFrequency,
-                    nyquistFrequency: sampleRate / 2,
-                    cancellationCheck: cancellationCheck
-                ))
-            )
+            return pow(10, lower + (upper - lower) * fraction)
         }
+
+        switch source {
+        case .magnitudeCurve(let curve):
+            let sortedPoints = curve.points.sorted { $0.frequency < $1.frequency }
+            let adjustedPoints = MinimumPhaseFIRCompiler.routeAdjustedPoints(
+                sortedPoints,
+                maximumUsableFrequency: upperFrequency,
+                nyquistFrequency: sampleRate / 2
+            )
+            return frequencies.map { frequency in
+                FrequencyResponsePoint(
+                    frequency: frequency,
+                    magnitudeDB: preampDB + MinimumPhaseFIRCompiler.interpolatedGainDB(
+                        frequency: frequency,
+                        points: adjustedPoints
+                    )
+                )
+            }
+        case .impulseResponse(let impulse):
+            return try frequencies.map { frequency in
+                FrequencyResponsePoint(
+                    frequency: frequency,
+                    magnitudeDB: preampDB + (try impulseResponseMagnitudeDB(
+                        impulse,
+                        frequency: frequency,
+                        cancellationCheck: cancellationCheck
+                    ))
+                )
+            }
+        case nil:
+            return frequencies.map {
+                FrequencyResponsePoint(frequency: $0, magnitudeDB: preampDB)
+            }
+        }
+    }
+
+    private static func impulseResponseMagnitudeDB(
+        _ impulse: ImpulseResponseSource,
+        frequency: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> Double {
+        let boundedFrequency = min(frequency, impulse.sampleRate / 2)
+        let omega = 2 * Double.pi * boundedFrequency / impulse.sampleRate
+        var real = 0.0
+        var imaginary = 0.0
+        for (index, sample) in impulse.samples.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            let phase = -omega * Double(index)
+            real += Double(sample) * cos(phase)
+            imaginary += Double(sample) * sin(phase)
+        }
+        return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
     }
 
     public static func peakMagnitudeDB(
@@ -405,43 +449,6 @@ public enum FrequencyResponse {
         }
     }
 
-    private static func convolutionMagnitudeDB(
-        source: EQConvolutionSource?,
-        frequency: Double,
-        maximumUsableFrequency: Double,
-        nyquistFrequency: Double,
-        cancellationCheck: @Sendable () throws -> Void
-    ) rethrows -> Double {
-        switch source {
-        case .magnitudeCurve(let curve):
-            let sortedPoints = curve.points.sorted { $0.frequency < $1.frequency }
-            return MinimumPhaseFIRCompiler.interpolatedGainDB(
-                frequency: frequency,
-                points: MinimumPhaseFIRCompiler.routeAdjustedPoints(
-                    sortedPoints,
-                    maximumUsableFrequency: maximumUsableFrequency,
-                    nyquistFrequency: nyquistFrequency
-                )
-            )
-        case .impulseResponse(let impulse):
-            let boundedFrequency = min(frequency, impulse.sampleRate / 2)
-            let omega = 2 * Double.pi * boundedFrequency / impulse.sampleRate
-            var real = 0.0
-            var imaginary = 0.0
-            for (index, sample) in impulse.samples.enumerated() {
-                if index.isMultiple(of: 256) {
-                    try cancellationCheck()
-                }
-                let phase = -omega * Double(index)
-                real += Double(sample) * cos(phase)
-                imaginary += Double(sample) * sin(phase)
-            }
-            return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
-        case nil:
-            return 0
-        }
-    }
-
     private static func convolutionPeakUpperBoundDB(
         _ impulseResponse: [Float],
         cancellationCheck: @Sendable () throws -> Void
@@ -477,11 +484,11 @@ public enum FrequencyResponse {
         }
 
         let responses = coefficients.map(BiquadMagnitudeSquared.init)
-        var intervals = [PeakSearchInterval(
+        var intervals = PeakSearchQueue(PeakSearchInterval(
             lower: 0,
             upper: 1,
             upperBoundDB: cascadeUpperBoundDB(responses, lower: 0, upper: 1)
-        )]
+        ))
         var bestMagnitudeDB = [0.0, 0.5, 1.0]
             .map { cascadeMagnitudeDB(responses, at: $0) }
             .max() ?? 0
@@ -492,12 +499,9 @@ public enum FrequencyResponse {
             if iteration.isMultiple(of: 16) {
                 try cancellationCheck()
             }
-            guard let highestIndex = intervals.indices.max(by: {
-                intervals[$0].upperBoundDB < intervals[$1].upperBoundDB
-            }) else {
+            guard let interval = intervals.removeMaximum() else {
                 return bestMagnitudeDB
             }
-            let interval = intervals.remove(at: highestIndex)
             guard interval.upperBoundDB.isFinite else {
                 return .infinity
             }
@@ -513,7 +517,7 @@ public enum FrequencyResponse {
                 bestMagnitudeDB,
                 cascadeMagnitudeDB(responses, at: middle)
             )
-            intervals.append(PeakSearchInterval(
+            intervals.insert(PeakSearchInterval(
                 lower: interval.lower,
                 upper: middle,
                 upperBoundDB: cascadeUpperBoundDB(
@@ -522,7 +526,7 @@ public enum FrequencyResponse {
                     upper: middle
                 )
             ))
-            intervals.append(PeakSearchInterval(
+            intervals.insert(PeakSearchInterval(
                 lower: middle,
                 upper: interval.upper,
                 upperBoundDB: cascadeUpperBoundDB(
@@ -536,7 +540,7 @@ public enum FrequencyResponse {
         try cancellationCheck()
         return max(
             bestMagnitudeDB,
-            intervals.map(\.upperBoundDB).max() ?? bestMagnitudeDB
+            intervals.maximumUpperBoundDB ?? bestMagnitudeDB
         )
     }
 
@@ -609,6 +613,60 @@ private struct PeakSearchInterval {
     var lower: Double
     var upper: Double
     var upperBoundDB: Double
+}
+
+private struct PeakSearchQueue {
+    private var storage: [PeakSearchInterval]
+
+    init(_ interval: PeakSearchInterval) {
+        self.storage = [interval]
+    }
+
+    var maximumUpperBoundDB: Double? {
+        storage.first?.upperBoundDB
+    }
+
+    mutating func insert(_ interval: PeakSearchInterval) {
+        storage.append(interval)
+        var child = storage.count - 1
+        while child > 0 {
+            let parent = (child - 1) / 2
+            guard storage[child].upperBoundDB > storage[parent].upperBoundDB else {
+                return
+            }
+            storage.swapAt(child, parent)
+            child = parent
+        }
+    }
+
+    mutating func removeMaximum() -> PeakSearchInterval? {
+        guard !storage.isEmpty else {
+            return nil
+        }
+        guard storage.count > 1 else {
+            return storage.removeLast()
+        }
+        let maximum = storage[0]
+        storage[0] = storage.removeLast()
+        var parent = 0
+        while true {
+            let left = parent * 2 + 1
+            guard left < storage.count else {
+                break
+            }
+            let right = left + 1
+            let child = right < storage.count
+                && storage[right].upperBoundDB > storage[left].upperBoundDB
+                ? right
+                : left
+            guard storage[child].upperBoundDB > storage[parent].upperBoundDB else {
+                break
+            }
+            storage.swapAt(parent, child)
+            parent = child
+        }
+        return maximum
+    }
 }
 
 private struct BiquadMagnitudeSquared {
@@ -708,14 +766,6 @@ private struct BiquadMagnitudeSquared {
 }
 
 public enum EQProfileAnalysis {
-    public static func recommendedPreampDB(profile: EQProfile, sampleRate: Double = 48_000) -> Double {
-        (try? recommendedPreampDB(
-            profile: profile,
-            sampleRate: sampleRate,
-            cancellationCheck: {}
-        )) ?? -.infinity
-    }
-
     @_spi(GlassEQSettingsUI)
     public static func recommendedPreampDB(
         profile: EQProfile,

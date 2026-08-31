@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import GlassEQCore
+@_spi(GlassEQSettingsUI) import GlassEQCore
 import GlassEQSettingsIPC
 import Testing
 @testable import GlassEQSettings
@@ -790,7 +790,7 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func settingsAnalysisUsesCurrentOutputSampleRateWithFallback() {
+    func settingsAnalysisUsesCurrentOutputSampleRateWithFallback() async throws {
         let profile = EQProfile(
             name: "Analysis",
             mode: .parametric,
@@ -799,8 +799,14 @@ struct SettingsIPCTests {
             ]
         )
 
-        let routeAnalysis = EQAnalysisSnapshot(profile: profile, sampleRate: 44_100)
-        let fallbackAnalysis = EQAnalysisSnapshot(profile: profile, sampleRate: 0)
+        let routeAnalysis = try await EQAnalysisSnapshot.analyze(
+            profile: profile,
+            sampleRate: 44_100
+        )
+        let fallbackAnalysis = try await EQAnalysisSnapshot.analyze(
+            profile: profile,
+            sampleRate: 0
+        )
 
         #expect(routeAnalysis.signature.sampleRate == 44_100)
         #expect(fallbackAnalysis.signature.sampleRate == EQAnalysisSignature.defaultSampleRate)
@@ -814,21 +820,22 @@ struct SettingsIPCTests {
             preampDB: profile.preampDB,
             sampleRate: 44_100
         ))
-        #expect(routeAnalysis.recommendedPreampDB == EQProfileAnalysis.recommendedPreampDB(
+        #expect(routeAnalysis.recommendedPreampDB == (try EQProfileAnalysis.recommendedPreampDB(
             profile: profile,
-            sampleRate: 44_100
-        ))
+            sampleRate: 44_100,
+            cancellationCheck: {}
+        )))
     }
 
     @Test
-    func settingsAnalysisTracksResponseCurveChanges() {
+    func settingsAnalysisTracksResponseCurveChanges() async throws {
         var profile = EQProfile.flatConvolution
-        let flat = EQAnalysisSnapshot(profile: profile, sampleRate: 48_000)
+        let flat = try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)
         profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 6),
             EQMagnitudePoint(frequency: 20_000, gainDB: -2)
         ]))
-        let shaped = EQAnalysisSnapshot(profile: profile, sampleRate: 48_000)
+        let shaped = try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)
 
         #expect(flat.signature != shaped.signature)
         #expect(abs((shaped.linkedPoints.first?.magnitudeDB ?? 0) - 6) < 0.000_001)

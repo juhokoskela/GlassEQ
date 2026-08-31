@@ -783,6 +783,18 @@ struct EQAnalysisSignature: Equatable, Sendable {
         }
         return sampleRate
     }
+
+    func hasSameResponseContent(as other: Self) -> Bool {
+        sampleRate == other.sampleRate
+            && mode == other.mode
+            && channelMode == other.channelMode
+            && filters == other.filters
+            && leftFilters == other.leftFilters
+            && rightFilters == other.rightFilters
+            && convolution == other.convolution
+            && leftConvolution == other.leftConvolution
+            && rightConvolution == other.rightConvolution
+    }
 }
 
 struct EQAnalysisSnapshot: Equatable, Sendable {
@@ -794,14 +806,12 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
     var linkedPoints: [FrequencyResponsePoint]
     var leftPoints: [FrequencyResponsePoint]
     var rightPoints: [FrequencyResponsePoint]
-
-    init(profile: EQProfile, sampleRate: Double) {
-        self = try! Self(
-            profile: profile,
-            sampleRate: sampleRate,
-            cancellationCheck: {}
-        )
-    }
+    private var linkedSourcePeakDB: Double?
+    private var leftSourcePeakDB: Double?
+    private var rightSourcePeakDB: Double?
+    private var linkedSourcePoints: [FrequencyResponsePoint]
+    private var leftSourcePoints: [FrequencyResponsePoint]
+    private var rightSourcePoints: [FrequencyResponsePoint]
 
     @concurrent
     static func analyze(
@@ -825,12 +835,6 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         let sampleRate = EQAnalysisSignature.effectiveSampleRate(sampleRate)
         self.signature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
         self.channelMode = profile.channelMode
-        self.recommendedPreampDB = try EQProfileAnalysis.recommendedPreampDB(
-            profile: profile,
-            sampleRate: sampleRate,
-            cancellationCheck: cancellationCheck
-        )
-        try cancellationCheck()
         self.maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
             sampleRate: sampleRate
         )
@@ -841,36 +845,168 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
 
         switch profile.channelMode {
         case .linked:
-            self.linkedPoints = try Self.responsePoints(
+            let sourcePeakDB = try Self.sourcePeakMagnitudeDB(
                 mode: profile.mode,
                 filters: profile.filters,
                 source: profile.convolution,
-                preampDB: profile.preampDB,
                 sampleRate: sampleRate,
                 cancellationCheck: cancellationCheck
             )
+            let sourcePoints = try Self.responsePoints(
+                mode: profile.mode,
+                filters: profile.filters,
+                source: profile.convolution,
+                preampDB: 0,
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
+            )
+            self.linkedSourcePeakDB = sourcePeakDB
+            self.leftSourcePeakDB = nil
+            self.rightSourcePeakDB = nil
+            self.linkedSourcePoints = sourcePoints
+            self.leftSourcePoints = []
+            self.rightSourcePoints = []
+            self.linkedPoints = Self.applyingPreamp(profile.preampDB, to: sourcePoints)
             self.leftPoints = []
             self.rightPoints = []
         case .stereo:
-            self.linkedPoints = []
-            self.leftPoints = try Self.responsePoints(
+            let leftSourcePeakDB = try Self.sourcePeakMagnitudeDB(
                 mode: profile.mode,
                 filters: profile.leftFilters,
                 source: profile.leftConvolution,
-                preampDB: profile.leftPreampDB,
                 sampleRate: sampleRate,
                 cancellationCheck: cancellationCheck
             )
-            self.rightPoints = try Self.responsePoints(
+            let rightSourcePeakDB = try Self.sourcePeakMagnitudeDB(
                 mode: profile.mode,
                 filters: profile.rightFilters,
                 source: profile.rightConvolution,
-                preampDB: profile.rightPreampDB,
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
+            )
+            let leftSourcePoints = try Self.responsePoints(
+                mode: profile.mode,
+                filters: profile.leftFilters,
+                source: profile.leftConvolution,
+                preampDB: 0,
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
+            )
+            let rightSourcePoints = try Self.responsePoints(
+                mode: profile.mode,
+                filters: profile.rightFilters,
+                source: profile.rightConvolution,
+                preampDB: 0,
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
+            )
+            self.linkedSourcePeakDB = nil
+            self.leftSourcePeakDB = leftSourcePeakDB
+            self.rightSourcePeakDB = rightSourcePeakDB
+            self.linkedSourcePoints = []
+            self.leftSourcePoints = leftSourcePoints
+            self.rightSourcePoints = rightSourcePoints
+            self.linkedPoints = []
+            self.leftPoints = Self.applyingPreamp(profile.leftPreampDB, to: leftSourcePoints)
+            self.rightPoints = Self.applyingPreamp(profile.rightPreampDB, to: rightSourcePoints)
+        }
+        self.recommendedPreampDB = Self.recommendedPreampDB(
+            profile: profile,
+            linkedSourcePeakDB: linkedSourcePeakDB,
+            leftSourcePeakDB: leftSourcePeakDB,
+            rightSourcePeakDB: rightSourcePeakDB
+        )
+        try cancellationCheck()
+    }
+
+    func updatingPreamp(profile: EQProfile, sampleRate: Double) -> Self? {
+        let nextSignature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
+        guard signature.hasSameResponseContent(as: nextSignature) else {
+            return nil
+        }
+
+        var updated = self
+        updated.signature = nextSignature
+        switch profile.channelMode {
+        case .linked:
+            updated.linkedPoints = Self.applyingPreamp(
+                profile.preampDB,
+                to: linkedSourcePoints
+            )
+        case .stereo:
+            updated.leftPoints = Self.applyingPreamp(
+                profile.leftPreampDB,
+                to: leftSourcePoints
+            )
+            updated.rightPoints = Self.applyingPreamp(
+                profile.rightPreampDB,
+                to: rightSourcePoints
+            )
+        }
+        updated.recommendedPreampDB = Self.recommendedPreampDB(
+            profile: profile,
+            linkedSourcePeakDB: linkedSourcePeakDB,
+            leftSourcePeakDB: leftSourcePeakDB,
+            rightSourcePeakDB: rightSourcePeakDB
+        )
+        return updated
+    }
+
+    private static func sourcePeakMagnitudeDB(
+        mode: EQMode,
+        filters: [EQFilter],
+        source: EQConvolutionSource?,
+        sampleRate: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
+        if mode == .convolution {
+            return try FrequencyResponse.peakMagnitudeDB(
+                for: source,
+                preampDB: 0,
                 sampleRate: sampleRate,
                 cancellationCheck: cancellationCheck
             )
         }
-        try cancellationCheck()
+        return try FrequencyResponse.peakMagnitudeDB(
+            for: filters,
+            preampDB: 0,
+            sampleRate: sampleRate,
+            cancellationCheck: cancellationCheck
+        )
+    }
+
+    private static func applyingPreamp(
+        _ preampDB: Double,
+        to points: [FrequencyResponsePoint]
+    ) -> [FrequencyResponsePoint] {
+        points.map {
+            FrequencyResponsePoint(
+                frequency: $0.frequency,
+                magnitudeDB: preampDB + $0.magnitudeDB
+            )
+        }
+    }
+
+    private static func recommendedPreampDB(
+        profile: EQProfile,
+        linkedSourcePeakDB: Double?,
+        leftSourcePeakDB: Double?,
+        rightSourcePeakDB: Double?
+    ) -> Double {
+        let activePreampDB: Double
+        let renderedPeakDB: Double
+        switch profile.channelMode {
+        case .linked:
+            activePreampDB = profile.preampDB
+            renderedPeakDB = profile.preampDB + (linkedSourcePeakDB ?? 0)
+        case .stereo:
+            activePreampDB = max(profile.leftPreampDB, profile.rightPreampDB)
+            renderedPeakDB = max(
+                profile.leftPreampDB + (leftSourcePeakDB ?? 0),
+                profile.rightPreampDB + (rightSourcePeakDB ?? 0)
+            )
+        }
+        return activePreampDB - max(renderedPeakDB + 0.5, 0)
     }
 
     private static func responsePoints(
@@ -1552,6 +1688,14 @@ private struct EditorTab: View {
         let sampleRate = sampleRate
         let signature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
         guard analysis?.signature != signature else {
+            return
+        }
+        if let updatedAnalysis = analysis?.updatingPreamp(
+            profile: profile,
+            sampleRate: sampleRate
+        ) {
+            lastRequestedAnalysisSignature = signature
+            analysis = updatedAnalysis
             return
         }
 
