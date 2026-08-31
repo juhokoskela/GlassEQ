@@ -380,6 +380,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             pendingOutputTimestampReset.store(true, ordering: .releasing)
         }
 
+        func resumeOutputAfterCancelledTransition() {
+            reprimePlayback()
+        }
+
         // Stored by the control thread on every output rebuild, before the new output IOProc
         // starts, so the first callback on the new device already maps to the right channels.
         func setPlaybackChannelPair(left: Int, right: Int) {
@@ -1947,6 +1951,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     public func muteOutputForTransition() {
         control.withLock { state in
             state.runtime?.muteOutputForTransition()
+        }
+    }
+
+    public func resumeOutputAfterCancelledTransition() {
+        control.withLock { state in
+            state.runtime?.resumeOutputAfterCancelledTransition()
         }
     }
 
