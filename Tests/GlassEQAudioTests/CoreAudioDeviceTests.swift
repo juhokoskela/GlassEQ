@@ -673,20 +673,20 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func coldStartupDeferralIsConsideredOnlyWhenNoBackendIsRunning() {
-        #expect(SystemTapAudioEngine.shouldConsiderColdStartupDeferral(
+    func physicalFirstColdStartupIsUsedOnlyWhenNoBackendIsRunning() {
+        #expect(SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
             activeBackendIsSeparate: false,
             combinedState: .stopped
         ))
-        #expect(SystemTapAudioEngine.shouldConsiderColdStartupDeferral(
+        #expect(SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
             activeBackendIsSeparate: false,
             combinedState: .failed("Previous startup failed")
         ))
-        #expect(!SystemTapAudioEngine.shouldConsiderColdStartupDeferral(
+        #expect(!SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
             activeBackendIsSeparate: true,
             combinedState: .stopped
         ))
-        #expect(!SystemTapAudioEngine.shouldConsiderColdStartupDeferral(
+        #expect(!SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
             activeBackendIsSeparate: false,
             combinedState: .running(output: AudioOutputDevice(
                 id: 1,
