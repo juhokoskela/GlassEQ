@@ -143,11 +143,11 @@ public enum EQProfileTextImporter {
             if line.lowercased().hasPrefix("graphiceq") {
                 graphicEQLine = graphicEQLine ?? offset + 1
             }
-            let firstToken = line
+            let tokens = line
                 .replacingOccurrences(of: ":", with: " ")
                 .split(whereSeparator: \.isWhitespace)
-                .first
-            if firstToken?.lowercased() == "filter" {
+            if tokens.first?.lowercased() == "filter",
+               !tokens.contains(where: { $0.lowercased() == "off" }) {
                 filterLine = filterLine ?? offset + 1
             }
         }
