@@ -2367,14 +2367,8 @@ final class GlassEQAppModel {
                     let occurrenceCount = nextCount - qualifyingBaseline
                     qualifyingBaseline = nextCount
                     sessionHadQualifyingInterruption = true
-                    if self.engine.isUsingPromotedHeadsetAggregate {
-                        if self.handleQualifyingAggregateInterruption(
-                            on: route,
-                            occurrences: occurrenceCount
-                        ) {
-                            return
-                        }
-                    } else if selection.mode == .automatic {
+                    if self.engine.isUsingPromotedHeadsetAggregate
+                        || selection.mode == .automatic {
                         if self.handleQualifyingAggregateInterruption(
                             on: route,
                             occurrences: occurrenceCount
