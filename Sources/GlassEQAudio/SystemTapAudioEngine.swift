@@ -1629,6 +1629,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             outputMutedForTransition.store(true, ordering: .releasing)
         }
 
+        func resumeOutputAfterCancelledTransition() {
+            outputMutedForTransition.store(false, ordering: .releasing)
+        }
+
         func setPlaybackChannelPair(left: Int, right: Int) {
             playbackChannelPair.store(
                 SystemTapAudioEngine.encodedPlaybackChannelPair(left: left, right: right),
@@ -3824,6 +3828,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
         control.withLock { state in
             state.runtime?.muteOutputForTransition()
+        }
+    }
+
+    public func resumeOutputAfterCancelledTransition() {
+        if activeBackend.withLock({ $0 }) == .separateClock {
+            separateClockBackend.resumeOutputAfterCancelledTransition()
+            return
+        }
+        control.withLock { state in
+            state.runtime?.resumeOutputAfterCancelledTransition()
         }
     }
 

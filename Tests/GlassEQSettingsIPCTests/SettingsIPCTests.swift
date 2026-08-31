@@ -9,6 +9,21 @@ import Testing
 @Suite
 struct SettingsIPCTests {
     @Test
+    func fileImportChoiceClearsExistingSelectionOnlyAfterFailure() {
+        let failure = SettingsFileImportChoice(
+            selection: nil,
+            errorMessage: "Invalid file"
+        )
+        let cancellation = SettingsFileImportChoice(
+            selection: nil,
+            errorMessage: nil
+        )
+
+        #expect(failure.shouldClearExistingSelection)
+        #expect(!cancellation.shouldClearExistingSelection)
+    }
+
+    @Test
     func autoEQCatalogueParserReadsRecommendedResults() throws {
         let markdown = """
         # Recommended Results
