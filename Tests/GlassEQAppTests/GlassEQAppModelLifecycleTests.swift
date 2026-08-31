@@ -1567,6 +1567,25 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsSnapshotUsesTheActiveDSPRateForAConvertedOutput() {
+        let output = makeOutput(
+            uid: "converted-output",
+            name: "Bluetooth headset",
+            nominalSampleRate: 24_000
+        )
+        let engine = FakeAudioEngine()
+        engine.state = .running(output: output)
+        engine.processingSampleRate = 48_000
+        let model = makeModel(engine: engine)
+        model.currentOutputSampleRate = output.nominalSampleRate
+
+        let snapshot = model.settingsSnapshot()
+
+        #expect(snapshot.currentOutputSampleRate == 24_000)
+        #expect(snapshot.currentProcessingSampleRate == 48_000)
+    }
+
+    @Test
     func stopThenImmediateRestartEnqueuesStopBeforeNewStart() async {
         let output = makeOutput(uid: "restart-output", name: "Restart Output")
         let engine = FakeAudioEngine()
@@ -3948,6 +3967,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     private let lock = NSLock()
     private var _state: AudioEngineState = .stopped
+    private var _processingSampleRate: Double?
     private var _startError: Error?
     private var _startErrorProfileID: UUID?
     private var _startErrorPreservesRunningState = false
@@ -3986,6 +4006,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var state: AudioEngineState {
         get { withLock { _state } }
         set { withLock { _state = newValue } }
+    }
+
+    var processingSampleRate: Double? {
+        get { withLock { _processingSampleRate } }
+        set { withLock { _processingSampleRate = newValue } }
     }
 
     var isUsingTransitionalHeadsetBackend: Bool {

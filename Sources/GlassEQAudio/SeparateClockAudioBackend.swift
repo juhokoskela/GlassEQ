@@ -1963,6 +1963,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         return runtime?.snapshotMetrics() ?? AudioEngineMetrics()
     }
 
+    var processingSampleRate: Double? {
+        control.withLock { $0.runtime?.sampleRate }
+    }
+
     public func resetDiagnostics() {
         let runtime = control.withLock { $0.runtime }
         runtime?.resetMetrics()

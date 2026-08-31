@@ -422,7 +422,7 @@ public struct SettingsView: View {
     private func chooseImportFiles(_ mode: SettingsFileImportMode) async -> SettingsFileImportChoice {
         let response = await model.perform(.chooseImportFiles(
             mode: mode,
-            expectedSampleRate: snapshot.currentOutputSampleRate
+            expectedSampleRate: snapshot.currentProcessingSampleRate
         ))
         return SettingsFileImportChoice(
             selection: response?.fileImportSelection,
