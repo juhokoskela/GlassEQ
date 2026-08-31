@@ -47,6 +47,7 @@ public struct ProfileImportLimits: Equatable, Sendable {
 
 public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
     case noSupportedFilters
+    case mixedEqualizerAPOFormats(graphicEQLine: Int, filterLine: Int)
     case inputTooLarge(byteCount: Int, maximum: Int)
     case tooManyLines(lineCount: Int, maximum: Int)
     case invalidNumber(line: Int, field: String, value: String)
@@ -61,6 +62,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
         switch self {
         case .noSupportedFilters:
             return "No supported filters were found in the imported profile."
+        case let .mixedEqualizerAPOFormats(graphicEQLine, filterLine):
+            return "Line \(graphicEQLine) contains GraphicEQ, but line \(filterLine) contains a Filter directive. Import one EqualizerAPO format at a time."
         case let .inputTooLarge(byteCount, maximum):
             return "Imported profile is \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
         case let .tooManyLines(lineCount, maximum):
@@ -101,12 +104,34 @@ public enum EQProfileTextImporter {
     ) throws -> EQProfile {
         try validateInput(text, limits: limits)
 
-        if text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-            .contains(where: {
-                $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                    .hasPrefix("graphiceq")
-            }) {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        var graphicEQLine: Int?
+        var filterLine: Int?
+        for (offset, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("#") else {
+                continue
+            }
+            if line.lowercased().hasPrefix("graphiceq") {
+                graphicEQLine = graphicEQLine ?? offset + 1
+            }
+            let firstToken = line
+                .replacingOccurrences(of: ":", with: " ")
+                .split(whereSeparator: \.isWhitespace)
+                .first
+            if firstToken?.lowercased() == "filter" {
+                filterLine = filterLine ?? offset + 1
+            }
+        }
+
+        if let graphicEQLine, let filterLine {
+            throw ProfileImportError.mixedEqualizerAPOFormats(
+                graphicEQLine: graphicEQLine,
+                filterLine: filterLine
+            )
+        }
+
+        if graphicEQLine != nil {
             return try importGraphicEQ(
                 text,
                 profileName: profileName,
