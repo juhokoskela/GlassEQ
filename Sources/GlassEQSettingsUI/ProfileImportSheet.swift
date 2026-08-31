@@ -32,6 +32,10 @@ private enum ProfileImportRoute: String, CaseIterable, Identifiable {
 struct SettingsFileImportChoice {
     var selection: SettingsFileImportSelectionDTO?
     var errorMessage: String?
+
+    var shouldClearExistingSelection: Bool {
+        selection == nil && errorMessage != nil
+    }
 }
 
 enum ProfileImportNameValidation: Equatable {
@@ -699,16 +703,15 @@ private struct TextProfileImportPane: View {
             }
             if let selection = choice.selection {
                 apply(selection)
+            } else if choice.shouldClearExistingSelection {
+                clearFileSelection()
             }
             errorMessage = choice.errorMessage
         }
     }
 
     private func apply(_ selection: SettingsFileImportSelectionDTO) {
-        importedFilename = nil
-        importedImpulseResponse = nil
-        importedStereoTextPair = nil
-        text = ""
+        clearFileSelection()
 
         switch selection {
         case let .text(suggestedName, filename, importedText):
@@ -742,6 +745,13 @@ private struct TextProfileImportPane: View {
                 rightFilename: rightFilename
             )
         }
+    }
+
+    private func clearFileSelection() {
+        importedFilename = nil
+        importedImpulseResponse = nil
+        importedStereoTextPair = nil
+        text = ""
     }
 
     private func importSelectedProfile() {

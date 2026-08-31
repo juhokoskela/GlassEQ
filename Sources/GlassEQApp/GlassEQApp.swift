@@ -266,6 +266,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
     func muteOutputForTransition()
+    func resumeOutputAfterCancelledTransition()
     func stop()
     func snapshotMetrics() -> AudioEngineMetrics
     func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata?
@@ -2073,6 +2074,16 @@ final class GlassEQAppModel {
         if case .success(let output) = result,
            lastHandledDefaultOutputConfiguration == DefaultOutputConfiguration(output),
            isRunning || engineStartTask != nil {
+            let hadPendingOutputChange = outputChangeTask != nil
+            invalidatePendingOutputChange()
+            if hadPendingOutputChange, isRunning {
+                scheduleEngineResumeAfterCancelledTransition()
+                statusMessage = runningEngineStatusMessage(for: output)
+                startAggregateStabilityMonitoring()
+                startColdStartupAggregatePromotionIfNeeded()
+                startHeadsetAggregatePromotionIfNeeded()
+                notifyModelDidChange()
+            }
             return
         }
 
@@ -2102,6 +2113,7 @@ final class GlassEQAppModel {
                 return
             }
 
+            self.outputChangeTask = nil
             let settledResult = Result { try self.defaultOutputLookup.defaultOutputDevice() }
             self.handleDefaultOutputChange(settledResult)
         }
@@ -2398,6 +2410,14 @@ final class GlassEQAppModel {
         }
     }
 
+    private func scheduleEngineResumeAfterCancelledTransition() {
+        let engine = engine
+        let engineWorkExecutor = engineWorkExecutor
+        engineWorkExecutor.enqueue(priority: .userInitiated) {
+            engine.resumeOutputAfterCancelledTransition()
+        }
+    }
+
     private func stopEngineOffMain() async -> AudioEngineMetrics {
         await enqueueEngineStop().value
     }
@@ -2580,21 +2600,7 @@ final class GlassEQAppModel {
             isRunning = true
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
-            if engine.isDeferringColdStartupAggregate {
-                statusMessage = localized(
-                    "Processing \(output.name) in compatibility mode until active playback releases the output"
-                )
-            } else if engine.isUsingTransitionalHeadsetBackend,
-               headsetPromotionAttemptedOutputGeneration == outputChangeGeneration {
-                statusMessage = localized(
-                    "Processing \(output.name) with \(activeProfile.name) in compatibility mode"
-                )
-            } else {
-                statusMessage = processingStatus(
-                    outputName: output.name,
-                    profileName: activeProfile.name
-                )
-            }
+            statusMessage = runningEngineStatusMessage(for: output)
             completePendingAggregateBufferIncreaseIfNeeded(output: output)
             startAggregateStabilityMonitoring()
             startColdStartupAggregatePromotionIfNeeded()
@@ -2641,6 +2647,24 @@ final class GlassEQAppModel {
             renderWatchdog.pause()
         }
         notifyModelDidChange()
+    }
+
+    private func runningEngineStatusMessage(for output: AudioOutputDevice) -> String {
+        if engine.isDeferringColdStartupAggregate {
+            return localized(
+                "Processing \(output.name) in compatibility mode until active playback releases the output"
+            )
+        }
+        if engine.isUsingTransitionalHeadsetBackend,
+           headsetPromotionAttemptedOutputGeneration == outputChangeGeneration {
+            return localized(
+                "Processing \(output.name) with \(activeProfile.name) in compatibility mode"
+            )
+        }
+        return processingStatus(
+            outputName: output.name,
+            profileName: activeProfile.name
+        )
     }
 
     private func clearFixedBufferRecoveryIfRouteChanged() {

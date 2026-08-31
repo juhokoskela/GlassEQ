@@ -2159,6 +2159,45 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func returningToRunningOutputBeforeSettlementCancelsPendingRebuild() async {
+        let runningOutput = makeOutput(uid: "running-output", name: "USB DAC", id: 200)
+        let transientOutput = makeOutput(uid: "transient-output", name: "Display", id: 300)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(runningOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .milliseconds(100)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(transientOutput)
+        observer.emit(.success(transientOutput))
+        await waitUntil {
+            engine.muteOutputCallCount == 1
+        }
+
+        lookup.result = .success(runningOutput)
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            engine.resumeOutputCallCount == 1
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+
+        #expect(engine.startCalls.map(\.output) == [runningOutput])
+        #expect(engine.events == ["start:\(runningOutput.uid)", "mute", "resume"])
+        #expect(model.lifecycleState == .running)
+    }
+
+    @Test
     func redundantRunningOutputNotificationDoesNotMuteOrRebuild() async {
         let output = makeOutput(
             uid: "stable-output",
@@ -5381,6 +5420,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
+    private var _resumeOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
     private var _snapshotMetricsCallCount = 0
     private var _events: [String] = []
@@ -5514,6 +5554,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var muteOutputCallCount: Int {
         get { withLock { _muteOutputCallCount } }
         set { withLock { _muteOutputCallCount = newValue } }
+    }
+
+    private(set) var resumeOutputCallCount: Int {
+        get { withLock { _resumeOutputCallCount } }
+        set { withLock { _resumeOutputCallCount = newValue } }
     }
 
     var metrics: AudioEngineMetrics {
@@ -5824,6 +5869,13 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _playbackBufferRenegotiationHandler
         }
         handler?(renegotiation)
+    }
+
+    func resumeOutputAfterCancelledTransition() {
+        withLock {
+            _events.append("resume")
+            _resumeOutputCallCount += 1
+        }
     }
 
     func setRuntimeFailureHandler(
