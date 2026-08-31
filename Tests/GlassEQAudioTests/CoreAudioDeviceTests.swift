@@ -738,6 +738,22 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func matchingDeferredColdStartupStaysOnCompatibilityBackend() {
+        #expect(SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: true,
+            deferredRouteMatches: true
+        ))
+        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: false,
+            deferredRouteMatches: true
+        ))
+        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: true,
+            deferredRouteMatches: false
+        ))
+    }
+
+    @Test
     func coldStartupPromotionReturnsTheAppliedAggregateMetadata() throws {
         let physicalOutput = output(
             id: 9_101,
