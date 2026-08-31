@@ -35,6 +35,45 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func autoEQCatalogueParserDeduplicatesResultPaths() throws {
+        let markdown = """
+        - [First](./source/over-ear/model)
+        - [Duplicate](./source/over-ear/model)
+        """
+
+        let entries = try AutoEQCatalogueParser.parse(markdown)
+
+        #expect(entries.map(\.name) == ["First"])
+    }
+
+    @Test
+    func autoEQCatalogueParserRejectsEntryCountAmplification() {
+        let markdown = """
+        - [One](./source/over-ear/one)
+        - [Two](./source/over-ear/two)
+        - [Three](./source/over-ear/three)
+        """
+
+        #expect(throws: AutoEQRepositoryError.catalogueTooLarge) {
+            _ = try AutoEQCatalogueParser.parse(markdown, maximumEntryCount: 2)
+        }
+    }
+
+    @Test
+    func autoEQCatalogueParserSkipsOversizedAndEncodedSeparatorComponents() throws {
+        let longName = String(repeating: "x", count: 513)
+        let markdown = """
+        - [\(longName)](./source/over-ear/long-name)
+        - [Encoded separator](./source%2Fother/over-ear/model)
+        - [Valid](./source/over-ear/valid)
+        """
+
+        let entries = try AutoEQCatalogueParser.parse(markdown)
+
+        #expect(entries.map(\.name) == ["Valid"])
+    }
+
+    @Test
     func autoEQProfileURLPreservesResultPathAndEncodesFilename() throws {
         let entry = AutoEQCatalogueEntry(
             name: "Sennheiser HD 58X",
@@ -86,6 +125,30 @@ struct SettingsIPCTests {
         AutoEQTestURLProtocol.register(
             statusCode: 200,
             body: Data(repeating: 0x78, count: 33),
+            for: url
+        )
+        defer { AutoEQTestURLProtocol.unregister(url) }
+        let session = autoEQTestSession()
+        defer { session.invalidateAndCancel() }
+        let client = AutoEQRepositoryClient(
+            session: session,
+            maximumProfileBytes: 32
+        )
+
+        await #expect(throws: AutoEQRepositoryError.profileTooLarge) {
+            try await client.profileText(for: entry, kind: .parametric)
+        }
+    }
+
+    @Test
+    func autoEQProfileDownloadBoundsResponsesWithoutAContentLength() async throws {
+        let entry = autoEQNetworkTestEntry(named: "Unknown Length")
+        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .parametric)
+        AutoEQTestURLProtocol.register(
+            statusCode: 200,
+            body: Data(repeating: 0x78, count: 33),
+            includesContentLength: false,
+            chunkSize: 8,
             for: url
         )
         defer { AutoEQTestURLProtocol.unregister(url) }
@@ -1262,6 +1325,8 @@ private func autoEQTestSession() -> URLSession {
 private struct AutoEQTestURLResponse: Sendable {
     let statusCode: Int
     let body: Data
+    let includesContentLength: Bool
+    let chunkSize: Int?
 }
 
 private final class AutoEQTestURLResponseStore: @unchecked Sendable {
@@ -1290,9 +1355,20 @@ private final class AutoEQTestURLResponseStore: @unchecked Sendable {
 private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
     private static let responseStore = AutoEQTestURLResponseStore()
 
-    static func register(statusCode: Int, body: Data, for url: URL) {
+    static func register(
+        statusCode: Int,
+        body: Data,
+        includesContentLength: Bool = true,
+        chunkSize: Int? = nil,
+        for url: URL
+    ) {
         responseStore.register(
-            AutoEQTestURLResponse(statusCode: statusCode, body: body),
+            AutoEQTestURLResponse(
+                statusCode: statusCode,
+                body: body,
+                includesContentLength: includesContentLength,
+                chunkSize: chunkSize
+            ),
             for: url
         )
     }
@@ -1316,14 +1392,23 @@ private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
                   url: url,
                   statusCode: stub.statusCode,
                   httpVersion: "HTTP/1.1",
-                  headerFields: ["Content-Length": String(stub.body.count)]
+                  headerFields: stub.includesContentLength
+                      ? ["Content-Length": String(stub.body.count)]
+                      : nil
               ) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }
 
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: stub.body)
+        if let chunkSize = stub.chunkSize {
+            for start in stride(from: 0, to: stub.body.count, by: chunkSize) {
+                let end = min(start + chunkSize, stub.body.count)
+                client?.urlProtocol(self, didLoad: stub.body[start..<end])
+            }
+        } else {
+            client?.urlProtocol(self, didLoad: stub.body)
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 
