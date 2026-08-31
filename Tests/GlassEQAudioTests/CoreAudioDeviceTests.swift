@@ -370,6 +370,44 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func aggregateStartupProbationCountsOnlyPostActivationCallbacks() {
+        let expectation = SystemTapAudioEngine.AggregateCallbackFrameExpectation(
+            frameCount: 16
+        )
+        for _ in 0..<40 {
+            let validation = expectation.validateCallback(
+                mainInputFrameCount: 16,
+                systemSoundInputFrameCount: 16,
+                outputFrameCount: 16,
+                timestampsAreStable: true
+            )
+            expectation.recordCallback(validation, metDeadlines: true)
+        }
+
+        expectation.beginProbation()
+
+        #expect(expectation.validCallbackStreak == 0)
+        for _ in 0..<7 {
+            let validation = expectation.validateCallback(
+                mainInputFrameCount: 16,
+                systemSoundInputFrameCount: 16,
+                outputFrameCount: 16,
+                timestampsAreStable: true
+            )
+            expectation.recordCallback(validation, metDeadlines: true)
+        }
+        #expect(expectation.validCallbackStreak == 7)
+        let validation = expectation.validateCallback(
+            mainInputFrameCount: 16,
+            systemSoundInputFrameCount: 16,
+            outputFrameCount: 16,
+            timestampsAreStable: true
+        )
+        expectation.recordCallback(validation, metDeadlines: true)
+        #expect(expectation.validCallbackStreak == 8)
+    }
+
+    @Test
     func aggregateStartupRetriesBeforeUsingOneSaferBufferRung() {
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 16
