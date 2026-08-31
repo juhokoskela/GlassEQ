@@ -463,6 +463,36 @@ struct EQCoreTests {
     }
 
     @Test
+    func maximumLengthImpulseResponseGraphMatchesDirectMagnitude() {
+        let sampleRate = 48_000.0
+        var samples = [Float](
+            repeating: 0,
+            count: ImpulseResponseSource.maximumFrameCount
+        )
+        samples[0] = 1
+        samples[1] = 0.2
+        let response = FrequencyResponse.points(
+            for: .impulseResponse(ImpulseResponseSource(
+                sampleRate: sampleRate,
+                samples: samples
+            )),
+            preampDB: -3,
+            sampleRate: sampleRate,
+            count: 17
+        )
+
+        #expect(response.count == 17)
+        for point in response {
+            let expected = -3 + impulseMagnitudeDB(
+                samples: samples,
+                frequency: point.frequency,
+                sampleRate: sampleRate
+            )
+            #expect(abs(point.magnitudeDB - expected) < 0.000_001)
+        }
+    }
+
+    @Test
     func responseCurveRecommendationBoundsCompiledUnsortedCurve() throws {
         let sampleRate = 16_000.0
         let routeCeiling = EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)

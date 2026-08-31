@@ -153,6 +153,35 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func loadMigratesSchemaTwoImpulseResponseStore() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        var profile = EQProfile.flatConvolution
+        profile.name = "Imported IR"
+        profile.convolution = .impulseResponse(ImpulseResponseSource(
+            sampleRate: 48_000,
+            samples: [1, 0.25, -0.125]
+        ))
+        let store = ProfileStore(
+            schemaVersion: 2,
+            profiles: [profile],
+            fallbackProfileID: profile.id
+        )
+        let schemaTwoData = try ProfilePersistence.encoder.encode(store)
+        try schemaTwoData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        var expectedStore = store
+        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        #expect(ProfileStore.currentSchemaVersion == 3)
+        #expect(result.status == .loaded)
+        #expect(result.store == expectedStore)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)
+        #expect(try Data(contentsOf: url) != schemaTwoData)
+    }
+
+    @Test
     func loadMigratesSchemaLessStore() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
