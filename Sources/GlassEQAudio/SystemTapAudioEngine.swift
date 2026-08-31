@@ -980,6 +980,20 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
         }
 
+        func beginProbation() {
+            while true {
+                let current = state.load(ordering: .acquiring)
+                let exchange = state.compareExchange(
+                    expected: current,
+                    desired: current & ~Self.streakMask,
+                    ordering: .acquiringAndReleasing
+                )
+                if exchange.exchanged {
+                    return
+                }
+            }
+        }
+
         func validateCallback(
             mainInputFrameCount: Int,
             systemSoundInputFrameCount: Int,
@@ -1584,6 +1598,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         func updateExpectedCallbackFrames(appliedFrameCount: UInt32) {
             callbackFrameExpectation.update(appliedFrameCount: appliedFrameCount)
+        }
+
+        func beginStartupProbation() {
+            callbackFrameExpectation.beginProbation()
         }
 
         func waitForQualifiedStartup(
@@ -3002,8 +3020,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 )
             }
             prepared.runtime.activate()
-            let probationCallbacks = qualificationCallbacks
-                + Self.startupProbationCallbacks
+            prepared.runtime.beginStartupProbation()
+            let probationCallbacks = Self.startupProbationCallbacks
             let probation = prepared.runtime.waitForQualifiedStartup(
                 minimumConsecutiveCallbacks: probationCallbacks,
                 timeout: Self.startupQualificationTimeout(
