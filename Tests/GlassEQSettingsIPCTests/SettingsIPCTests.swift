@@ -340,21 +340,48 @@ struct SettingsIPCTests {
         #expect(metrics.maximumCaptureCallbackFrames == 0)
         #expect(metrics.maximumPlaybackCallbackFrames == 0)
         #expect(metrics.renderDeadlineMisses == 0)
+        #expect(metrics.callbackStartStarvations == 0)
+        #expect(metrics.renderOverruns == 0)
+        #expect(metrics.pairedTimestampDiscontinuities == 0)
         #expect(metrics.droppedInputFrames == 0)
         #expect(metrics.tapToOutputLatencyObservations == 0)
         #expect(metrics.minimumTapToOutputLatencyNanoseconds == 0)
         #expect(metrics.maximumTapToOutputLatencyNanoseconds == 0)
         #expect(metrics.averageTapToOutputLatencyNanoseconds == 0)
+        #expect(metrics.renderTiming == SettingsAudioRenderTimingDTO())
     }
 
     @Test
     func audioMetricsRoundTripTapToOutputLatency() throws {
         let metrics = SettingsAudioMetricsDTO(
+            pairedTimestampDiscontinuities: 4,
             renderDeadlineMisses: 7,
+            callbackStartStarvations: 5,
+            renderOverruns: 2,
             tapToOutputLatencyObservations: 500,
             minimumTapToOutputLatencyNanoseconds: 1_250_000,
             maximumTapToOutputLatencyNanoseconds: 2_750_000,
-            averageTapToOutputLatencyNanoseconds: 1_500_000
+            averageTapToOutputLatencyNanoseconds: 1_500_000,
+            renderTiming: SettingsAudioRenderTimingDTO(
+                callbackStartLatenessObservations: 10_000,
+                callbackStartLatenessP9999Nanoseconds: 125_000,
+                maximumCallbackStartLatenessNanoseconds: 330_000,
+                directHeadObservations: 10_000,
+                directHeadP9999Nanoseconds: 4_000,
+                maximumDirectHeadNanoseconds: 12_000,
+                tailWorkObservations: 10_000,
+                tailWorkP9999Nanoseconds: 3_000,
+                maximumTailWorkNanoseconds: 9_000,
+                totalRenderObservations: 10_000,
+                totalRenderP9999Nanoseconds: 15_000,
+                maximumTotalRenderNanoseconds: 42_000,
+                completionLatenessObservations: 10_000,
+                completionLatenessP9999Nanoseconds: 0,
+                maximumCompletionLatenessNanoseconds: 8_000,
+                tailCompletionObservations: 625,
+                minimumTailCompletionSlackFrames: 16,
+                tailDeadlineMisses: 0
+            )
         )
 
         let data = try JSONEncoder().encode(metrics)
@@ -392,6 +419,21 @@ struct SettingsIPCTests {
             profile: profile,
             sampleRate: 44_100
         ))
+    }
+
+    @Test
+    func settingsAnalysisTracksResponseCurveChanges() {
+        var profile = EQProfile.flatConvolution
+        let flat = EQAnalysisSnapshot(profile: profile, sampleRate: 48_000)
+        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 6),
+            EQMagnitudePoint(frequency: 20_000, gainDB: -2)
+        ]))
+        let shaped = EQAnalysisSnapshot(profile: profile, sampleRate: 48_000)
+
+        #expect(flat.signature != shaped.signature)
+        #expect(abs((shaped.linkedPoints.first?.magnitudeDB ?? 0) - 6) < 0.000_001)
+        #expect(shaped.recommendedPreampDB == -6.5)
     }
 
     @Test

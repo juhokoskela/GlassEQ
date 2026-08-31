@@ -5,7 +5,7 @@ import GlassEQCore
 
 let arguments = Array(CommandLine.arguments.dropFirst().drop { $0 == "--" })
 if arguments.first == "dsp-benchmark" || arguments.first == "--dsp-benchmark" {
-    runDSPBenchmark()
+    runDSPBenchmark(curvePath: arguments.dropFirst().first)
     exit(0)
 }
 
@@ -354,6 +354,43 @@ private func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
     print("Max capture callback frames: \(metrics.maximumCaptureCallbackFrames)")
     print("Max playback callback frames: \(metrics.maximumPlaybackCallbackFrames)")
     print("Render deadline misses: \(metrics.renderDeadlineMisses)")
+    print("Start starvations: \(metrics.callbackStartStarvations)")
+    print("Render overruns: \(metrics.renderOverruns)")
+    printExtremeDuration(
+        "Callback start late",
+        observations: metrics.renderTiming.callbackStartLatenessObservations,
+        p9999Nanoseconds: metrics.renderTiming.callbackStartLatenessP9999Nanoseconds,
+        maximumNanoseconds: metrics.renderTiming.maximumCallbackStartLatenessNanoseconds
+    )
+    if metrics.renderTiming.directHeadObservations > 0 {
+        printExtremeDuration(
+            "FIR head",
+            observations: metrics.renderTiming.directHeadObservations,
+            p9999Nanoseconds: metrics.renderTiming.directHeadP9999Nanoseconds,
+            maximumNanoseconds: metrics.renderTiming.maximumDirectHeadNanoseconds
+        )
+        printExtremeDuration(
+            "FIR tail",
+            observations: metrics.renderTiming.tailWorkObservations,
+            p9999Nanoseconds: metrics.renderTiming.tailWorkP9999Nanoseconds,
+            maximumNanoseconds: metrics.renderTiming.maximumTailWorkNanoseconds
+        )
+        print(
+            "Tail completion slack: \(metrics.renderTiming.minimumTailCompletionSlackFrames) frames minimum, \(metrics.renderTiming.tailDeadlineMisses) misses"
+        )
+    }
+    printExtremeDuration(
+        "Total render",
+        observations: metrics.renderTiming.totalRenderObservations,
+        p9999Nanoseconds: metrics.renderTiming.totalRenderP9999Nanoseconds,
+        maximumNanoseconds: metrics.renderTiming.maximumTotalRenderNanoseconds
+    )
+    printExtremeDuration(
+        "Completion late",
+        observations: metrics.renderTiming.completionLatenessObservations,
+        p9999Nanoseconds: metrics.renderTiming.completionLatenessP9999Nanoseconds,
+        maximumNanoseconds: metrics.renderTiming.maximumCompletionLatenessNanoseconds
+    )
     if metrics.tapToOutputLatencyObservations > 0 {
         print(String(
             format: "Tap-to-output latency: %.3f ms average, %.3f to %.3f ms",
@@ -383,6 +420,24 @@ private func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
         print("Input age: unavailable")
         print("Output lead: unavailable")
     }
+}
+
+private func printExtremeDuration(
+    _ label: String,
+    observations: UInt64,
+    p9999Nanoseconds: UInt64,
+    maximumNanoseconds: UInt64
+) {
+    guard observations > 0 else {
+        print("\(label): unavailable")
+        return
+    }
+    print(String(
+        format: "\(label): %.3f us p99.99, %.3f us maximum over %llu published callbacks",
+        Double(p9999Nanoseconds) / 1_000,
+        Double(maximumNanoseconds) / 1_000,
+        observations
+    ))
 }
 
 private func printTimestampProbeRecords(_ records: [AudioTimestampProbeRecord]) {
@@ -420,9 +475,33 @@ private struct DSPBenchmarkCase {
     var sampleRate: Double
     var channelCount: Int
     var frameCount: Int
+
+    var usesConvolution: Bool {
+        profile.mode == .convolution
+    }
 }
 
-private func runDSPBenchmark() {
+private func runDSPBenchmark(curvePath: String?) {
+    let convolutionProfile: EQProfile
+    if let curvePath {
+        do {
+            let text = try String(contentsOfFile: curvePath, encoding: .utf8)
+            convolutionProfile = try EQProfileTextImporter.importAutoEQ(
+                text,
+                profileName: URL(fileURLWithPath: curvePath).deletingPathExtension().lastPathComponent
+            )
+            guard convolutionProfile.mode == .convolution else {
+                print("DSP benchmark curve is not an EqualizerAPO GraphicEQ response: \(curvePath)")
+                return
+            }
+        } catch {
+            print("DSP benchmark could not load curve \(curvePath): \(error)")
+            return
+        }
+    } else {
+        convolutionProfile = benchmarkConvolutionProfile()
+    }
+
     let cases = [
         DSPBenchmarkCase(
             name: "Flat parametric",
@@ -458,19 +537,43 @@ private func runDSPBenchmark() {
             sampleRate: 48_000,
             channelCount: 2,
             frameCount: 16
+        ),
+        DSPBenchmarkCase(
+            name: "16k minimum-phase FIR at 48 kHz",
+            profile: convolutionProfile,
+            sampleRate: 48_000,
+            channelCount: 2,
+            frameCount: 16
+        ),
+        DSPBenchmarkCase(
+            name: "16k minimum-phase FIR at 96 kHz",
+            profile: convolutionProfile,
+            sampleRate: 96_000,
+            channelCount: 2,
+            frameCount: 16
+        ),
+        DSPBenchmarkCase(
+            name: "16k minimum-phase FIR at 192 kHz",
+            profile: convolutionProfile,
+            sampleRate: 192_000,
+            channelCount: 2,
+            frameCount: 16
         )
     ]
 
     print("GlassEQ DSP benchmark")
     print("Measures the 16-frame DSP workload; Core Audio buffering and device latency are not included.")
     print("Biquad EQ is in-place and has no fixed block/sample delay; recursive filters still have frequency-dependent phase/group delay.")
+    print("The hybrid minimum-phase FIR also adds no fixed buffering delay: its 512-tap head renders directly while partitioned tail work completes ahead of its deadline.")
     print("")
 
     for benchmarkCase in cases {
         run(benchmarkCase)
     }
-    for transitionCase in cases where transitionCase.name.hasPrefix("31-band graphic")
-        && transitionCase.sampleRate != 96_000 {
+    for transitionCase in cases where (
+        transitionCase.name.hasPrefix("31-band graphic")
+            || transitionCase.usesConvolution
+    ) && transitionCase.sampleRate != 96_000 {
         runTransition(transitionCase)
     }
 }
@@ -483,13 +586,15 @@ private func run(_ benchmarkCase: DSPBenchmarkCase) {
         sampleRate: benchmarkCase.sampleRate
     )
     var samples = originalSamples
-    var processor = EQProcessor(
-        configuration: EQConfiguration(
-            profile: benchmarkCase.profile,
-            sampleRate: benchmarkCase.sampleRate,
-            channelCount: benchmarkCase.channelCount
-        )
-    )
+    guard let renderConfiguration = try? EQRenderConfiguration.prepare(
+        profile: benchmarkCase.profile,
+        sampleRate: benchmarkCase.sampleRate,
+        channelCount: benchmarkCase.channelCount
+    ) else {
+        print("\(benchmarkCase.name): failed to prepare DSP")
+        return
+    }
+    var processor = EQProcessor(renderConfiguration: renderConfiguration)
 
     for _ in 0..<warmupIterations {
         samples = originalSamples
@@ -498,13 +603,25 @@ private func run(_ benchmarkCase: DSPBenchmarkCase) {
 
     let start = DispatchTime.now().uptimeNanoseconds
     var saturatedSamples: UInt64 = 0
+    var callbackDurations = benchmarkCase.usesConvolution
+        ? [UInt64]()
+        : []
+    callbackDurations.reserveCapacity(benchmarkCase.usesConvolution ? iterations : 0)
     for _ in 0..<iterations {
         samples = originalSamples
+        let callbackStart = benchmarkCase.usesConvolution
+            ? DispatchTime.now().uptimeNanoseconds
+            : 0
         saturatedSamples &+= samples.withUnsafeMutableBufferPointer {
             processor.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: benchmarkCase.frameCount,
                 channelCount: benchmarkCase.channelCount
+            )
+        }
+        if benchmarkCase.usesConvolution {
+            callbackDurations.append(
+                DispatchTime.now().uptimeNanoseconds - callbackStart
             )
         }
     }
@@ -521,6 +638,29 @@ private func run(_ benchmarkCase: DSPBenchmarkCase) {
     print(String(format: "  Avg DSP time: %.3f us/buffer", averageMicroseconds))
     print(String(format: "  Callback budget: %.3f us (%.3f%% used)", callbackBudgetMicroseconds, budgetPercent))
     print(String(format: "  Avg per sample: %.3f ns", perSampleNanoseconds))
+    if benchmarkCase.usesConvolution {
+        let sorted = callbackDurations.sorted()
+        let percentileIndex = min(
+            Int((Double(sorted.count - 1) * 0.999).rounded(.up)),
+            sorted.count - 1
+        )
+        let extremePercentileIndex = min(
+            Int((Double(sorted.count - 1) * 0.9999).rounded(.up)),
+            sorted.count - 1
+        )
+        print(String(
+            format: "  p99.9 DSP time: %.3f us/buffer",
+            Double(sorted[percentileIndex]) / 1_000
+        ))
+        print(String(
+            format: "  p99.99 DSP time: %.3f us/buffer",
+            Double(sorted[extremePercentileIndex]) / 1_000
+        ))
+        print(String(
+            format: "  Max DSP time: %.3f us/buffer",
+            Double(sorted.last ?? 0) / 1_000
+        ))
+    }
     print("  Saturated samples during benchmark: \(saturatedSamples)")
     print("")
 }
@@ -533,23 +673,30 @@ private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
         sampleRate: benchmarkCase.sampleRate
     )
     var samples = originalSamples
+    guard let activeConfiguration = try? EQRenderConfiguration.prepare(
+        profile: benchmarkCase.profile,
+        sampleRate: benchmarkCase.sampleRate,
+        channelCount: benchmarkCase.channelCount
+    ),
+    let incomingConfiguration = try? EQRenderConfiguration.prepare(
+        profile: benchmarkCase.profile,
+        sampleRate: benchmarkCase.sampleRate,
+        channelCount: benchmarkCase.channelCount
+    ) else {
+        print("Whole-bank transition: \(benchmarkCase.name): failed to prepare DSP")
+        return
+    }
     var transition = RealtimeEQTransition(
-        activeProcessor: EQProcessor(configuration: EQConfiguration(
-            profile: benchmarkCase.profile,
-            sampleRate: benchmarkCase.sampleRate,
-            channelCount: benchmarkCase.channelCount
-        )),
+        activeProcessor: EQProcessor(renderConfiguration: activeConfiguration),
         maximumFrameCount: benchmarkCase.frameCount,
         channelCount: benchmarkCase.channelCount,
         sampleRate: benchmarkCase.sampleRate,
         warmupSeconds: 0,
         blendSeconds: 3_600
     )
-    precondition(transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
-        profile: benchmarkCase.profile,
-        sampleRate: benchmarkCase.sampleRate,
-        channelCount: benchmarkCase.channelCount
-    ))))
+    precondition(transition.beginTransition(to: EQProcessor(
+        renderConfiguration: incomingConfiguration
+    )))
 
     for _ in 0..<warmupIterations {
         samples = originalSamples
@@ -564,14 +711,26 @@ private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
 
     let start = DispatchTime.now().uptimeNanoseconds
     var saturatedSamples: UInt64 = 0
+    var callbackDurations = benchmarkCase.usesConvolution
+        ? [UInt64]()
+        : []
+    callbackDurations.reserveCapacity(benchmarkCase.usesConvolution ? iterations : 0)
     for _ in 0..<iterations {
         samples = originalSamples
+        let callbackStart = benchmarkCase.usesConvolution
+            ? DispatchTime.now().uptimeNanoseconds
+            : 0
         saturatedSamples &+= samples.withUnsafeMutableBufferPointer {
             transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: benchmarkCase.frameCount,
                 channelCount: benchmarkCase.channelCount
             ).saturatedSamples
+        }
+        if benchmarkCase.usesConvolution {
+            callbackDurations.append(
+                DispatchTime.now().uptimeNanoseconds - callbackStart
+            )
         }
     }
     let elapsed = DispatchTime.now().uptimeNanoseconds - start
@@ -594,6 +753,29 @@ private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
         callbackBudgetMicroseconds,
         budgetPercent
     ))
+    if benchmarkCase.usesConvolution {
+        let sorted = callbackDurations.sorted()
+        let percentileIndex = min(
+            Int((Double(sorted.count - 1) * 0.999).rounded(.up)),
+            sorted.count - 1
+        )
+        let extremePercentileIndex = min(
+            Int((Double(sorted.count - 1) * 0.9999).rounded(.up)),
+            sorted.count - 1
+        )
+        print(String(
+            format: "  p99.9 DSP time: %.3f us/buffer",
+            Double(sorted[percentileIndex]) / 1_000
+        ))
+        print(String(
+            format: "  p99.99 DSP time: %.3f us/buffer",
+            Double(sorted[extremePercentileIndex]) / 1_000
+        ))
+        print(String(
+            format: "  Max DSP time: %.3f us/buffer",
+            Double(sorted.last ?? 0) / 1_000
+        ))
+    }
     print("  Saturated samples during benchmark: \(saturatedSamples)")
     print("")
 }
@@ -619,6 +801,24 @@ private func complexStereoProfile() -> EQProfile {
             EQFilter(kind: .highShelf, frequency: 12_000, gainDB: 2, q: 0.9),
             EQFilter(kind: .peak, frequency: 72, gainDB: 3, q: 5)
         ]
+    )
+}
+
+private func benchmarkConvolutionProfile() -> EQProfile {
+    EQProfile(
+        name: "Benchmark Response Curve",
+        mode: .convolution,
+        preampDB: -6,
+        filters: [],
+        convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 4),
+            EQMagnitudePoint(frequency: 80, gainDB: -2),
+            EQMagnitudePoint(frequency: 250, gainDB: 3),
+            EQMagnitudePoint(frequency: 1_000, gainDB: -4),
+            EQMagnitudePoint(frequency: 4_000, gainDB: 5),
+            EQMagnitudePoint(frequency: 10_000, gainDB: -3),
+            EQMagnitudePoint(frequency: 20_000, gainDB: 1)
+        ]))
     )
 }
 

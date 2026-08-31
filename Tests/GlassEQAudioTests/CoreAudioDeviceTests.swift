@@ -81,6 +81,113 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func realtimeOutputDeclickerSmoothsAcrossCallbacks() {
+        var declicker = RealtimeOutputDeclicker(
+            sampleRate: 4,
+            channelCount: 1,
+            durationSeconds: 1
+        )
+        var previous = [Float(2)]
+        previous.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 1, channelCount: 1)
+        }
+
+        declicker.markDiscontinuity()
+        var firstCallback = [Float](repeating: 10, count: 2)
+        firstCallback.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 2, channelCount: 1)
+        }
+        var secondCallback = [Float](repeating: 10, count: 2)
+        secondCallback.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 2, channelCount: 1)
+        }
+
+        #expect(abs(firstCallback[0] - 2) < 0.000_001)
+        #expect(abs(firstCallback[1] - 4.074_074) < 0.000_001)
+        #expect(abs(secondCallback[0] - 7.925_926) < 0.000_001)
+        #expect(abs(secondCallback[1] - 10) < 0.000_001)
+
+        var steadyState = [Float(11)]
+        steadyState.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 1, channelCount: 1)
+        }
+        #expect(steadyState == [11])
+    }
+
+    @Test
+    func realtimeOutputDeclickerTreatsChannelsIndependently() {
+        var declicker = RealtimeOutputDeclicker(
+            sampleRate: 4,
+            channelCount: 2,
+            durationSeconds: 1
+        )
+        var previous: [Float] = [2, -3]
+        previous.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 1, channelCount: 2)
+        }
+
+        declicker.markDiscontinuity()
+        var samples: [Float] = [10, 20, 10, 20, 10, 20, 10, 20]
+        samples.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 4, channelCount: 2)
+        }
+
+        #expect(abs(samples[0] - 2) < 0.000_001)
+        #expect(abs(samples[1] + 3) < 0.000_001)
+        #expect(abs(samples[6] - 10) < 0.000_001)
+        #expect(abs(samples[7] - 20) < 0.000_001)
+    }
+
+    @Test
+    func realtimeOutputDeclickerRestartsFromLastEmittedSample() {
+        var declicker = RealtimeOutputDeclicker(
+            sampleRate: 4,
+            channelCount: 1,
+            durationSeconds: 1
+        )
+        var previous = [Float(2)]
+        previous.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 1, channelCount: 1)
+        }
+
+        declicker.markDiscontinuity()
+        var interrupted = [Float](repeating: 10, count: 2)
+        interrupted.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 2, channelCount: 1)
+        }
+
+        declicker.markDiscontinuity()
+        var restarted = [Float](repeating: -5, count: 4)
+        restarted.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 4, channelCount: 1)
+        }
+
+        #expect(abs(restarted[0] - interrupted[1]) < 0.000_001)
+        #expect(abs(restarted[3] + 5) < 0.000_001)
+    }
+
+    @Test
+    func realtimeOutputDeclickerDoesNotOvershootReversingWaveform() {
+        var declicker = RealtimeOutputDeclicker(
+            sampleRate: 4,
+            channelCount: 1,
+            durationSeconds: 1
+        )
+        var previous = [Float(1)]
+        previous.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 1, channelCount: 1)
+        }
+
+        declicker.markDiscontinuity()
+        var samples: [Float] = [-1, 1, -1, 1]
+        samples.withUnsafeMutableBufferPointer {
+            declicker.apply(to: $0, frameCount: 4, channelCount: 1)
+        }
+
+        #expect(samples.allSatisfy { (-1...1).contains($0) })
+    }
+
+    @Test
     func defaultOutputQueryDoesNotCrash() throws {
         let device = try CoreAudioDeviceQuery.defaultOutputDevice()
 
@@ -670,6 +777,42 @@ struct CoreAudioDeviceTests {
             frameCount: 16,
             sampleRate: 48_000
         ) == 12)
+    }
+
+    @Test
+    func renderOverrunBeginsAfterOneCallbackPeriod() {
+        #expect(!SystemTapAudioEngine.renderOverranPeriod(
+            elapsedNanoseconds: 333_333,
+            frameCount: 16,
+            sampleRate: 48_000
+        ))
+        #expect(SystemTapAudioEngine.renderOverranPeriod(
+            elapsedNanoseconds: 333_334,
+            frameCount: 16,
+            sampleRate: 48_000
+        ))
+    }
+
+    @Test
+    func extremeDurationTrackerPublishesP9999AndResetsWithoutClearingOnControlThread() {
+        let tracker = RealtimeExtremeDurationTracker()
+        for microseconds in 1...1_024 {
+            tracker.record(UInt64(microseconds) * 1_000)
+        }
+
+        let measured = tracker.snapshot()
+        #expect(measured.observations == 1_024)
+        #expect(measured.p9999Nanoseconds == 1_024_000)
+        #expect(measured.maximumNanoseconds == 1_024_000)
+
+        tracker.reset()
+        #expect(tracker.snapshot().observations == 0)
+
+        tracker.record(250)
+        let afterReset = tracker.snapshot()
+        #expect(afterReset.observations == 1)
+        #expect(afterReset.p9999Nanoseconds == 250)
+        #expect(afterReset.maximumNanoseconds == 250)
     }
 
     @Test

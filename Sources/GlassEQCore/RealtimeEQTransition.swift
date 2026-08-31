@@ -6,6 +6,7 @@ public struct EQTransitionRenderResult: Sendable {
     public var blendStartFrame: Int?
     public var blendFrameCount: Int
     public var programmeComparison: EQProgrammeComparisonSnapshot
+    public var workTiming: EQRenderWorkTiming
 
     public init(
         saturatedSamples: UInt64 = 0,
@@ -14,7 +15,8 @@ public struct EQTransitionRenderResult: Sendable {
         secondRetiredProcessor: EQProcessor? = nil,
         blendStartFrame: Int? = nil,
         blendFrameCount: Int = 0,
-        programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot()
+        programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
+        workTiming: EQRenderWorkTiming = EQRenderWorkTiming()
     ) {
         self.saturatedSamples = saturatedSamples
         self.completedTransition = completedTransition
@@ -23,6 +25,7 @@ public struct EQTransitionRenderResult: Sendable {
         self.blendStartFrame = blendStartFrame
         self.blendFrameCount = blendFrameCount
         self.programmeComparison = programmeComparison
+        self.workTiming = workTiming
     }
 
     @inline(__always)
@@ -191,14 +194,10 @@ public struct RealtimeEQTransition: Sendable {
         }
         guard channels == self.channelCount,
               availableFrames * channels <= alternateSamples.count else {
-            let saturated = activeProcessor.processInterleavedWithDiagnostics(
+            return processActiveProcessor(
                 samples,
                 frameCount: availableFrames,
                 channelCount: channels
-            )
-            return EQTransitionRenderResult(
-                saturatedSamples: saturated,
-                programmeComparison: programmeComparisonSnapshot
             )
         }
 
@@ -217,14 +216,45 @@ public struct RealtimeEQTransition: Sendable {
             )
         }
 
-        let saturated = activeProcessor.processInterleavedWithDiagnostics(
+        return processActiveProcessor(
             samples,
             frameCount: availableFrames,
             channelCount: channels
         )
+    }
+
+    private mutating func processActiveProcessor(
+        _ samples: UnsafeMutableBufferPointer<Float>,
+        frameCount: Int,
+        channelCount: Int
+    ) -> EQTransitionRenderResult {
+        guard !activeProcessor.configuration.isBypassed else {
+            return EQTransitionRenderResult(
+                programmeComparison: programmeComparisonSnapshot
+            )
+        }
+        guard activeProcessor.configuration.usesConvolution else {
+            let saturated = activeProcessor.processInterleavedWithDiagnostics(
+                samples,
+                frameCount: frameCount,
+                channelCount: channelCount
+            )
+            return EQTransitionRenderResult(
+                saturatedSamples: saturated,
+                programmeComparison: programmeComparisonSnapshot
+            )
+        }
+
+        let diagnostics = activeProcessor.processInterleavedLinearlyWithDiagnostics(
+            samples,
+            frameCount: frameCount,
+            channelCount: channelCount
+        )
         return EQTransitionRenderResult(
-            saturatedSamples: saturated,
-            programmeComparison: programmeComparisonSnapshot
+            saturatedSamples: diagnostics.nonFiniteSamples
+                &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
+            programmeComparison: programmeComparisonSnapshot,
+            workTiming: diagnostics.workTiming
         )
     }
 
@@ -251,13 +281,16 @@ public struct RealtimeEQTransition: Sendable {
                 frameCount: frameCount,
                 channelCount: channelCount
             )
+            var workTiming = activeDiagnostics.workTiming
+            workTiming.merge(incomingDiagnostics.workTiming)
 
             if warmupFramesRemaining > 0 {
                 warmupFramesRemaining = max(warmupFramesRemaining - frameCount, 0)
                 return EQTransitionRenderResult(
                     saturatedSamples: activeDiagnostics.nonFiniteSamples
                         &+ incomingDiagnostics.nonFiniteSamples
-                        &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+                        &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
+                    workTiming: workTiming
                 )
             }
 
@@ -286,7 +319,8 @@ public struct RealtimeEQTransition: Sendable {
                 return EQTransitionRenderResult(
                     saturatedSamples: saturated,
                     blendStartFrame: renderedBlendStartFrame,
-                    blendFrameCount: blendFrameCount
+                    blendFrameCount: blendFrameCount,
+                    workTiming: workTiming
                 )
             }
 
@@ -315,7 +349,8 @@ public struct RealtimeEQTransition: Sendable {
                 retiredProcessor: retiredProcessor,
                 secondRetiredProcessor: secondRetiredProcessor,
                 blendStartFrame: renderedBlendStartFrame,
-                blendFrameCount: blendFrameCount
+                blendFrameCount: blendFrameCount,
+                workTiming: workTiming
             )
         }
         result.programmeComparison = programmeComparisonSnapshot
@@ -355,6 +390,8 @@ public struct RealtimeEQTransition: Sendable {
                     frameCount: frameCount,
                     channelCount: channelCount
                 )
+            var workTiming = equalizedDiagnostics.workTiming
+            workTiming.merge(filtersOffDiagnostics.workTiming)
 
             if comparisonWarmupFramesRemaining > 0 {
                 comparisonWarmupFramesRemaining = max(
@@ -367,7 +404,8 @@ public struct RealtimeEQTransition: Sendable {
                 return EQTransitionRenderResult(
                     saturatedSamples: equalizedDiagnostics.nonFiniteSamples
                         &+ filtersOffDiagnostics.nonFiniteSamples
-                        &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+                        &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
+                    workTiming: workTiming
                 )
             }
 
@@ -424,7 +462,8 @@ public struct RealtimeEQTransition: Sendable {
             return EQTransitionRenderResult(
                 saturatedSamples: equalizedDiagnostics.nonFiniteSamples
                     &+ filtersOffDiagnostics.nonFiniteSamples
-                    &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+                    &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
+                workTiming: workTiming
             )
         }
         if shouldFinishComparison {
@@ -469,7 +508,8 @@ public struct RealtimeEQTransition: Sendable {
         return EQTransitionRenderResult(
             saturatedSamples: diagnostics.nonFiniteSamples
                 &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
-            programmeComparison: programmeComparisonSnapshot
+            programmeComparison: programmeComparisonSnapshot,
+            workTiming: diagnostics.workTiming
         )
     }
 
@@ -488,7 +528,10 @@ public struct RealtimeEQTransition: Sendable {
     }
 
     private mutating func beginStandardTransition() {
-        warmupFramesRemaining = warmupFrameCount
+        warmupFramesRemaining = max(
+            warmupFrameCount,
+            incomingProcessor?.requiredWarmupFrames ?? 0
+        )
         blendedFrames = 0
     }
 

@@ -6,6 +6,12 @@ public extension EQProfile {
         reference.filters = []
         reference.leftFilters = []
         reference.rightFilters = []
+        reference.convolution = nil
+        reference.leftConvolution = nil
+        reference.rightConvolution = nil
+        if reference.mode == .convolution {
+            reference.mode = .parametric
+        }
         reference.isBypassed = false
         return reference
     }

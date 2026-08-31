@@ -22,6 +22,131 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func importsEqualizerAPOGraphicEQAsMagnitudeCurve() throws {
+        let text = """
+        Preamp: -6.2 dB
+        GraphicEQ: 20 -0.2; 100 3.5; 1000 -2.1; 20000 0.4
+        """
+
+        let profile = try EQProfileTextImporter.importAutoEQ(text)
+
+        #expect(profile.mode == .convolution)
+        #expect(profile.preampDB == -6.2)
+        #expect(profile.filters.isEmpty)
+        guard case .magnitudeCurve(let curve) = profile.convolution else {
+            Issue.record("Expected a magnitude-curve convolution source")
+            return
+        }
+        #expect(curve.synthesisVersion == MinimumPhaseFIRCompiler.synthesisVersion)
+        #expect(curve.points.map(\.frequency) == [20, 100, 1_000, 20_000])
+        #expect(curve.points.map(\.gainDB) == [-0.2, 3.5, -2.1, 0.4])
+    }
+
+    @Test
+    func importsUnsortedGraphicEQPointsInFrequencyOrder() throws {
+        let profile = try EQProfileTextImporter.importAutoEQ(
+            "GraphicEQ: 1000 -2; 20 1; 20000 0"
+        )
+
+        guard case .magnitudeCurve(let curve) = profile.convolution else {
+            Issue.record("Expected a magnitude-curve convolution source")
+            return
+        }
+        #expect(curve.points.map(\.frequency) == [20, 1_000, 20_000])
+    }
+
+    @Test
+    func rejectsDuplicateGraphicEQFrequencies() throws {
+        #expect(throws: ProfileImportError.duplicateMagnitudeFrequency(
+            line: 1,
+            frequency: 100
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(
+                "GraphicEQ: 20 0; 100 1; 100 -1"
+            )
+        }
+    }
+
+    @Test
+    func rejectsMixedGraphicEQAndFilterDirectives() throws {
+        let text = """
+        Preamp: -4 dB
+        GraphicEQ: 20 0; 1000 3; 20000 0
+        Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1
+        """
+
+        #expect(throws: ProfileImportError.mixedEqualizerAPOFormats(
+            graphicEQLine: 2,
+            filterLine: 3
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
+    }
+
+    @Test
+    func importsGraphicEQWithDisabledParametricFilter() throws {
+        let text = """
+        GraphicEQ: 20 0; 1000 3; 20000 0
+        Filter 1: OFF PK Fc 1000 Hz Gain -2 dB Q 1
+        """
+
+        let profile = try EQProfileTextImporter.importAutoEQ(text)
+
+        #expect(profile.mode == .convolution)
+        guard case .magnitudeCurve(let curve) = profile.convolution else {
+            Issue.record("Expected a magnitude-curve convolution source")
+            return
+        }
+        #expect(curve.points.map(\.frequency) == [20, 1_000, 20_000])
+        #expect(curve.points.map(\.gainDB) == [0, 3, 0])
+    }
+
+    @Test
+    func graphicEQExportRoundTripsStereoCurvesAndPreamps() throws {
+        let left = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 2),
+            EQMagnitudePoint(frequency: 20_000, gainDB: -1)
+        ]))
+        let right = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: -3),
+            EQMagnitudePoint(frequency: 20_000, gainDB: 1.5)
+        ]))
+        let profile = EQProfile(
+            name: "Stereo Curve",
+            mode: .convolution,
+            channelMode: .stereo,
+            preampDB: -4,
+            filters: [],
+            leftPreampDB: -5,
+            leftFilters: [],
+            rightPreampDB: -6,
+            rightFilters: [],
+            leftConvolution: left,
+            rightConvolution: right
+        )
+
+        let exported = EQProfileTextExporter.exportEqualizerAPO(profile)
+        let imported = try EQProfileTextImporter.importAutoEQ(exported)
+
+        #expect(imported.mode == .convolution)
+        #expect(imported.channelMode == .stereo)
+        #expect(imported.preampDB == -4)
+        #expect(imported.leftPreampDB == -5)
+        #expect(imported.rightPreampDB == -6)
+        guard case .magnitudeCurve(let importedLeft) = imported.leftConvolution,
+              case .magnitudeCurve(let importedRight) = imported.rightConvolution,
+              case .magnitudeCurve(let expectedLeft) = left,
+              case .magnitudeCurve(let expectedRight) = right else {
+            Issue.record("Expected stereo magnitude curves")
+            return
+        }
+        #expect(importedLeft.points.map(\.frequency) == expectedLeft.points.map(\.frequency))
+        #expect(importedLeft.points.map(\.gainDB) == expectedLeft.points.map(\.gainDB))
+        #expect(importedRight.points.map(\.frequency) == expectedRight.points.map(\.frequency))
+        #expect(importedRight.points.map(\.gainDB) == expectedRight.points.map(\.gainDB))
+    }
+
+    @Test
     func ignoresDisabledEqualizerAPOFilters() throws {
         let text = """
         Filter 1: OFF PK Fc 1000 Hz Gain 6 dB Q 1
