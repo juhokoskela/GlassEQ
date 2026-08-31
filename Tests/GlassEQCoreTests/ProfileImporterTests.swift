@@ -68,6 +68,22 @@ struct ProfileImporterTests {
     }
 
     @Test
+    func rejectsMixedGraphicEQAndFilterDirectives() throws {
+        let text = """
+        Preamp: -4 dB
+        GraphicEQ: 20 0; 1000 3; 20000 0
+        Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1
+        """
+
+        #expect(throws: ProfileImportError.mixedEqualizerAPOFormats(
+            graphicEQLine: 2,
+            filterLine: 3
+        )) {
+            _ = try EQProfileTextImporter.importAutoEQ(text)
+        }
+    }
+
+    @Test
     func graphicEQExportRoundTripsStereoCurvesAndPreamps() throws {
         let left = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 2),
