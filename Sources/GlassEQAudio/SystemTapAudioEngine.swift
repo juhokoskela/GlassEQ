@@ -2511,6 +2511,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
+    public var processingSampleRate: Double? {
+        switch activeBackend.withLock({ $0 }) {
+        case .combinedAggregate:
+            control.withLock { $0.runtime?.sampleRate }
+        case .separateClock:
+            separateClockBackend.processingSampleRate
+        }
+    }
+
     public var isUsingTransitionalHeadsetBackend: Bool {
         guard activeBackend.withLock({ $0 }) == .separateClock,
               case .running(let output) = separateClockBackend.state else {

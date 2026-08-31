@@ -70,6 +70,9 @@ public final class GlassEQSettingsViewModel {
             snapshot.currentOutputChannelCount = currentOutput.channelCount
             snapshot.currentOutputBufferFrameSize = currentOutput.bufferFrameSize
         }
+        if let currentProcessingSampleRate = patch.currentProcessingSampleRate {
+            snapshot.currentProcessingSampleRate = currentProcessingSampleRate
+        }
         if let profileStoreProtection = patch.profileStoreProtection {
             snapshot.profileStoreProtection = profileStoreProtection
         }
