@@ -335,7 +335,7 @@ public struct ProfileStoreRepairSummary: Equatable, Sendable {
 
 public struct ProfileStore: Codable, Equatable, Sendable {
     static let initialSchemaVersion = 1
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
     public static let defaultProfiles: [EQProfile] = [.flatGraphic31, .flatGraphic10, .flatParametric]
 
     public var schemaVersion: Int

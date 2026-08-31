@@ -359,15 +359,31 @@ public enum FrequencyResponse {
                 )
             }
         case .impulseResponse(let impulse):
-            return try frequencies.map { frequency in
-                FrequencyResponsePoint(
-                    frequency: frequency,
-                    magnitudeDB: preampDB + (try impulseResponseMagnitudeDB(
-                        impulse,
-                        frequency: frequency,
-                        cancellationCheck: cancellationCheck
-                    ))
+            do {
+                let spectrum = try ImpulseResponseSpectrum(
+                    impulseResponse: impulse.samples,
+                    sampleRate: impulse.sampleRate,
+                    cancellationCheck: cancellationCheck
                 )
+                return try frequencies.map { frequency in
+                    try cancellationCheck()
+                    return FrequencyResponsePoint(
+                        frequency: frequency,
+                        magnitudeDB: preampDB + spectrum.magnitudeDB(at: frequency)
+                    )
+                }
+            } catch {
+                try cancellationCheck()
+                return try frequencies.map { frequency in
+                    FrequencyResponsePoint(
+                        frequency: frequency,
+                        magnitudeDB: preampDB + (try impulseResponseMagnitudeDB(
+                            impulse,
+                            frequency: frequency,
+                            cancellationCheck: cancellationCheck
+                        ))
+                    )
+                }
             }
         case nil:
             return frequencies.map {
