@@ -718,6 +718,42 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func outputBufferSummaryInterpolatesFixedAndAutomaticFrameSizes() {
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .frames16,
+                automaticFrameSize: 16,
+                isAvailable: true
+            ),
+            currentFrameSize: 16
+        ) == "16 frames")
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .frames16,
+                automaticFrameSize: 16,
+                isAvailable: true
+            ),
+            currentFrameSize: 32
+        ) == "16 selected, 32 frames active")
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .automatic,
+                automaticFrameSize: 64,
+                isAvailable: true
+            ),
+            currentFrameSize: 64
+        ) == "Automatic, 64 frames active")
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .automatic,
+                automaticFrameSize: 16,
+                isAvailable: false
+            ),
+            currentFrameSize: 480
+        ) == "480 frames, compatibility path")
+    }
+
+    @Test
     func audioMetricsDecodeOldPayloadsWithDefaultedNewFields() throws {
         let data = Data("""
         {

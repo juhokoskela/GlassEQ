@@ -2842,6 +2842,7 @@ private struct OutputTab: View {
     var onRetryAutomaticAggregateBuffer: () -> Void
     var onRetryAudioEngine: () -> Void
     var onOpenPrivacySettings: () -> Void
+    @State private var showsNerdStats = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
@@ -2852,10 +2853,6 @@ private struct OutputTab: View {
                     Text(snapshot.currentOutputName)
                         .font(.title3.weight(.semibold))
                         .lineLimit(1)
-                    LabeledContent(localized("UID"), value: snapshot.currentOutputUID)
-                    LabeledContent(localized("Sample Rate"), value: sampleRateLabel)
-                    LabeledContent(localized("Channels"), value: localizedInteger(snapshot.currentOutputChannelCount))
-                    LabeledContent(localized("Buffer"), value: localizedFrameCount(snapshot.currentOutputBufferFrameSize))
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .cardPanel(padding: 16)
@@ -2927,8 +2924,22 @@ private struct OutputTab: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(localized("Engine Status"))
                         .font(.headline)
-                    LabeledContent(localized("Status"), value: snapshot.statusMessage)
+                    LabeledContent(localized("Status"), value: statusSummary)
+                    LabeledContent(localized("Mode"), value: routeModeSummary)
+                    LabeledContent(localized("Current Output"), value: snapshot.currentOutputName)
                     LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
+                    LabeledContent(localized("Buffer"), value: bufferSummary)
+                    LabeledContent(localized("Added Latency"), value: addedLatencyLabel)
+                    LabeledContent(
+                        localized("Underrun Events"),
+                        value: snapshot.metrics.playbackUnderrunEvents == 0
+                            ? localized("None")
+                            : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
+                    )
+                    Text(snapshot.statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button(localized("Retry audio engine")) {
                             onRetryAudioEngine()
@@ -2945,94 +2956,94 @@ private struct OutputTab: View {
                 .cardPanel(padding: 16)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(localized("Diagnostics"))
-                        .font(.headline)
-                    LabeledContent(localized("Captured"), value: localizedInteger(snapshot.metrics.capturedFrames))
-                    LabeledContent(localized("Played"), value: localizedInteger(snapshot.metrics.playedFrames))
-                    LabeledContent(localized("Underruns"), value: localizedInteger(snapshot.metrics.playbackUnderrunFrames))
-                    LabeledContent(localized("Dropped Input"), value: localizedInteger(snapshot.metrics.droppedInputFrames))
-                    LabeledContent(localized("Saturated Samples"), value: localizedInteger(snapshot.metrics.saturatedSamples))
-                    LabeledContent(localized("Capture Callback Peak"), value: localizedFrameCount(snapshot.metrics.maximumCaptureCallbackFrames))
-                    LabeledContent(localized("Output Callback Peak"), value: localizedFrameCount(snapshot.metrics.maximumPlaybackCallbackFrames))
-                    if usesSeparateClockDiagnostics {
-                        LabeledContent(localized("Dropped Buffered"), value: localizedInteger(snapshot.metrics.droppedBufferedFrames))
-                        LabeledContent(localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures))
-                        LabeledContent(localized("Buffered"), value: localizedFrameCount(snapshot.metrics.currentBufferedFrames))
-                        LabeledContent(localized("Peak Buffer"), value: localizedFrameCount(snapshot.metrics.maximumPlaybackBufferedFrames))
-                        LabeledContent(localized("Output Timing Gaps"), value: localizedInteger(snapshot.metrics.playbackTimestampDiscontinuities))
-                        LabeledContent(
-                            localized("Sample Rate Conversion"),
-                            value: snapshot.metrics.playbackSampleRateConversionActive
-                                ? localized("Active")
-                                : localized("Inactive")
-                        )
-                        LabeledContent(localized("Clock Correction"), value: playbackRateCorrectionLabel)
-                        LabeledContent(localized("Servo Buffer"), value: servoBufferLabel)
-                        LabeledContent(localized("Bridge Latency"), value: bridgeLatencyLabel)
-                        LabeledContent(localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
-                    } else {
-                        LabeledContent(localized("Render Deadline Misses"), value: localizedInteger(snapshot.metrics.renderDeadlineMisses))
-                        LabeledContent(localized("Start Starvations"), value: localizedInteger(snapshot.metrics.callbackStartStarvations))
-                        LabeledContent(localized("Render Overruns"), value: localizedInteger(snapshot.metrics.renderOverruns))
-                        LabeledContent(localized("Paired Discontinuities"), value: localizedInteger(snapshot.metrics.pairedTimestampDiscontinuities))
-                        LabeledContent(
-                            localized("Callback Start Late p99.99 / Max"),
-                            value: extremeDurationLabel(
-                                observations: snapshot.metrics.renderTiming.callbackStartLatenessObservations,
-                                p9999Nanoseconds: snapshot.metrics.renderTiming.callbackStartLatenessP9999Nanoseconds,
-                                maximumNanoseconds: snapshot.metrics.renderTiming.maximumCallbackStartLatenessNanoseconds
-                            )
-                        )
-                        if snapshot.metrics.renderTiming.directHeadObservations > 0 {
+                    DisclosureGroup(isExpanded: $showsNerdStats) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            diagnosticSectionTitle(localized("Observation"))
+                            LabeledContent(localized("Reset"), value: diagnosticsResetLabel)
+                            LabeledContent(localized("Observed"), value: observationDurationLabel)
+                            LabeledContent(localized("Current Runtime"), value: runtimeDurationLabel)
+
+                            Divider()
+                            diagnosticSectionTitle(localized("Timing"))
+                            Text(localized("p50 / p99 / p99.9 / p99.99 / max"))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                            timingRows
+
+                            Divider()
+                            diagnosticSectionTitle(localized("Reliability"))
+                            LabeledContent(localized("Captured Frames"), value: localizedInteger(snapshot.metrics.capturedFrames))
+                            LabeledContent(localized("Played Frames"), value: localizedInteger(snapshot.metrics.playedFrames))
+                            LabeledContent(localized("Underrun Events / Frames"), value: underrunDetailLabel)
+                            LabeledContent(localized("Dropped Input / Buffered"), value: droppedFramesLabel)
+                            LabeledContent(localized("Saturated Samples"), value: localizedInteger(snapshot.metrics.saturatedSamples))
+                            LabeledContent(localized("Deadline Misses"), value: deadlineMissesLabel)
+                            LabeledContent(localized("Discontinuities"), value: discontinuityLabel)
+                            if usesSeparateClockDiagnostics {
+                                LabeledContent(localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures))
+                                LabeledContent(localized("Buffered / Peak"), value: bufferedFramesLabel)
+                                LabeledContent(localized("Clock Correction"), value: playbackRateCorrectionLabel)
+                                LabeledContent(localized("Servo Buffer"), value: servoBufferLabel)
+                                LabeledContent(localized("Bridge Latency"), value: bridgeLatencyLabel)
+                                LabeledContent(localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
+                            }
+
+                            Divider()
+                            diagnosticSectionTitle(localized("Recovery"))
+                            LabeledContent(localized("Runtime Rebuilds"), value: localizedInteger(diagnostics.recovery.runtimeRebuilds))
+                            LabeledContent(localized("Automatic Recoveries"), value: localizedInteger(diagnostics.recovery.automaticRecoveries))
+                            LabeledContent(localized("Buffer Escalations"), value: localizedInteger(diagnostics.recovery.bufferEscalations))
+                            LabeledContent(localized("Headset Fallbacks"), value: localizedInteger(diagnostics.recovery.headsetFallbacks))
+                            LabeledContent(localized("Last Recovery"), value: lastRecoveryLabel)
+
+                            Divider()
+                            diagnosticSectionTitle(localized("Callback Sizes"))
+                            LabeledContent(localized("Capture"), value: callbackSizeHistogramLabel(snapshot.metrics.captureCallbackSizeObservations))
+                            LabeledContent(localized("Output"), value: callbackSizeHistogramLabel(snapshot.metrics.playbackCallbackSizeObservations))
+                            LabeledContent(localized("Capture / Output Peak"), value: callbackPeaksLabel)
+
+                            Divider()
+                            diagnosticSectionTitle(localized("Timestamps"))
+                            LabeledContent(localized("Last Sample-Time Jumps"), value: timestampJumpLabel)
+                            LabeledContent(localized("Last Host-Time Errors"), value: hostIntervalErrorLabel)
+                            LabeledContent(localized("Jump Interval min / avg / max"), value: timestampJumpIntervalLabel)
+                            LabeledContent(localized("Input Age min / avg / max"), value: inputAgeLabel)
+                            LabeledContent(localized("Output Lead min / avg / max"), value: outputLeadLabel)
+
+                            Divider()
+                            diagnosticSectionTitle(localized("Route"))
+                            LabeledContent(localized("Output UID"), value: snapshot.currentOutputUID.isEmpty ? localized("Unavailable") : snapshot.currentOutputUID)
+                            LabeledContent(localized("Transport"), value: diagnostics.route.transport)
+                            LabeledContent(localized("Observed / Active Rate"), value: observedAndActiveRateLabel)
+                            LabeledContent(localized("Processing Rate"), value: processingRateLabel)
+                            LabeledContent(localized("Native Output Stream"), value: nativeOutputStreamLabel)
+                            LabeledContent(localized("Physical Output Streams"), value: streamChannelCountsLabel(diagnostics.route.physicalOutputStreamChannelCounts))
+                            LabeledContent(localized("Aggregate Input / Output Streams"), value: aggregateStreamCountsLabel)
+                            LabeledContent(localized("Physical / Aggregate Buffer"), value: routeBufferSizesLabel)
+                            LabeledContent(localized("Physical Safety Offsets in / out"), value: physicalSafetyOffsetsLabel)
+                            LabeledContent(localized("Aggregate Safety Offsets in / out"), value: aggregateSafetyOffsetsLabel)
                             LabeledContent(
-                                localized("FIR Head p99.99 / Max"),
-                                value: extremeDurationLabel(
-                                    observations: snapshot.metrics.renderTiming.directHeadObservations,
-                                    p9999Nanoseconds: snapshot.metrics.renderTiming.directHeadP9999Nanoseconds,
-                                    maximumNanoseconds: snapshot.metrics.renderTiming.maximumDirectHeadNanoseconds
-                                )
+                                localized("Sample Rate Conversion"),
+                                value: snapshot.metrics.playbackSampleRateConversionActive
+                                    ? localized("Active")
+                                    : localized("Inactive")
                             )
-                            LabeledContent(
-                                localized("FIR Tail p99.99 / Max"),
-                                value: extremeDurationLabel(
-                                    observations: snapshot.metrics.renderTiming.tailWorkObservations,
-                                    p9999Nanoseconds: snapshot.metrics.renderTiming.tailWorkP9999Nanoseconds,
-                                    maximumNanoseconds: snapshot.metrics.renderTiming.maximumTailWorkNanoseconds
-                                )
-                            )
-                            LabeledContent(
-                                localized("Tail Completion Slack"),
-                                value: tailCompletionSlackLabel
-                            )
+
+                            Text(localized("Failure categories can overlap. Timing percentiles use bounded realtime histograms and publish every 1,024 callbacks."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Button(localized("Reset metrics")) {
+                                onResetDiagnostics()
+                            }
+                            .controlSize(.large)
                         }
-                        LabeledContent(
-                            localized("Total Render p99.99 / Max"),
-                            value: extremeDurationLabel(
-                                observations: snapshot.metrics.renderTiming.totalRenderObservations,
-                                p9999Nanoseconds: snapshot.metrics.renderTiming.totalRenderP9999Nanoseconds,
-                                maximumNanoseconds: snapshot.metrics.renderTiming.maximumTotalRenderNanoseconds
-                            )
-                        )
-                        LabeledContent(
-                            localized("Completion Late p99.99 / Max"),
-                            value: extremeDurationLabel(
-                                observations: snapshot.metrics.renderTiming.completionLatenessObservations,
-                                p9999Nanoseconds: snapshot.metrics.renderTiming.completionLatenessP9999Nanoseconds,
-                                maximumNanoseconds: snapshot.metrics.renderTiming.maximumCompletionLatenessNanoseconds
-                            )
-                        )
-                        LabeledContent(localized("Input Timestamp Jumps"), value: localizedInteger(snapshot.metrics.inputTimestampDiscontinuities))
-                        LabeledContent(localized("Output Timestamp Jumps"), value: localizedInteger(snapshot.metrics.outputTimestampDiscontinuities))
-                        LabeledContent(localized("Tap-to-Output Latency"), value: tapToOutputLatencyLabel)
-                        LabeledContent(localized("Tap-to-Output Range"), value: tapToOutputLatencyRangeLabel)
-                        Text(localized("Failure categories can overlap. Timing percentiles use bounded realtime histograms and update every 1,024 callbacks."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        .padding(.top, 8)
+                    } label: {
+                        Text(localized("Stats for nerds"))
+                            .font(.headline)
                     }
-                    Button(localized("Reset metrics")) {
-                        onResetDiagnostics()
-                    }
-                    .controlSize(.large)
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .cardPanel(padding: 16)
@@ -3083,11 +3094,164 @@ private struct OutputTab: View {
         }
     }
 
-    private var sampleRateLabel: String {
-        guard snapshot.currentOutputSampleRate > 0 else {
-            return localized("Unknown")
+    private var diagnostics: SettingsAudioDiagnosticsDTO {
+        snapshot.metrics.diagnostics
+    }
+
+    private var statusSummary: String {
+        switch diagnostics.status.health {
+        case .stopped:
+            return localized("Stopped")
+        case .stable:
+            return diagnostics.status.isUsingSaferBuffer
+                ? localized("Stable, using safer buffer")
+                : localized("Stable")
+        case .recovering:
+            return localized("Recovering")
+        case .needsAttention:
+            return localized("Needs attention")
         }
-        return localizedFrequency(snapshot.currentOutputSampleRate)
+    }
+
+    private var routeModeSummary: String {
+        switch diagnostics.status.routeMode {
+        case .unavailable:
+            return localized("Unavailable")
+        case .lowLatency:
+            return localized("Low-latency path")
+        case .compatibility:
+            return localized("Compatibility path")
+        case .headsetCompatibility:
+            return localized("Headset compatibility path")
+        }
+    }
+
+    private var bufferSummary: String {
+        outputBufferSummary(
+            aggregateBuffer: snapshot.aggregateBuffer,
+            currentFrameSize: snapshot.currentOutputBufferFrameSize
+        )
+    }
+
+    private var addedLatencyLabel: String {
+        if usesSeparateClockDiagnostics {
+            guard snapshot.metrics.playbackBufferObservations > 0 else {
+                return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
+            }
+            return bridgeLatencyLabel
+        }
+        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
+            return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
+        }
+        return tapToOutputLatencyLabel
+    }
+
+    private func diagnosticSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+    }
+
+    @ViewBuilder
+    private var timingRows: some View {
+        let timing = snapshot.metrics.renderTiming
+        LabeledContent(
+            localized("Callback Start Lateness"),
+            value: durationPercentilesLabel(
+                observations: timing.callbackStartLatenessObservations,
+                p50: timing.callbackStartLatenessP50Nanoseconds,
+                p99: timing.callbackStartLatenessP99Nanoseconds,
+                p999: timing.callbackStartLatenessP999Nanoseconds,
+                p9999: timing.callbackStartLatenessP9999Nanoseconds,
+                maximum: timing.maximumCallbackStartLatenessNanoseconds
+            )
+        )
+        if timing.directHeadObservations > 0 {
+            LabeledContent(
+                localized("FIR Head"),
+                value: durationPercentilesLabel(
+                    observations: timing.directHeadObservations,
+                    p50: timing.directHeadP50Nanoseconds,
+                    p99: timing.directHeadP99Nanoseconds,
+                    p999: timing.directHeadP999Nanoseconds,
+                    p9999: timing.directHeadP9999Nanoseconds,
+                    maximum: timing.maximumDirectHeadNanoseconds
+                )
+            )
+            LabeledContent(
+                localized("FIR Tail"),
+                value: durationPercentilesLabel(
+                    observations: timing.tailWorkObservations,
+                    p50: timing.tailWorkP50Nanoseconds,
+                    p99: timing.tailWorkP99Nanoseconds,
+                    p999: timing.tailWorkP999Nanoseconds,
+                    p9999: timing.tailWorkP9999Nanoseconds,
+                    maximum: timing.maximumTailWorkNanoseconds
+                )
+            )
+            LabeledContent(localized("Tail Slack Minimum / Misses"), value: tailCompletionSlackLabel)
+            LabeledContent(
+                localized("FIR Partition Misses"),
+                value: localizedInteger(timing.tailDeadlineMisses)
+            )
+        }
+        LabeledContent(
+            localized("Total Render"),
+            value: durationPercentilesLabel(
+                observations: timing.totalRenderObservations,
+                p50: timing.totalRenderP50Nanoseconds,
+                p99: timing.totalRenderP99Nanoseconds,
+                p999: timing.totalRenderP999Nanoseconds,
+                p9999: timing.totalRenderP9999Nanoseconds,
+                maximum: timing.maximumTotalRenderNanoseconds
+            )
+        )
+        LabeledContent(
+            localized("Completion Lateness"),
+            value: durationPercentilesLabel(
+                observations: timing.completionLatenessObservations,
+                p50: timing.completionLatenessP50Nanoseconds,
+                p99: timing.completionLatenessP99Nanoseconds,
+                p999: timing.completionLatenessP999Nanoseconds,
+                p9999: timing.completionLatenessP9999Nanoseconds,
+                maximum: timing.maximumCompletionLatenessNanoseconds
+            )
+        )
+    }
+
+    private func durationPercentilesLabel(
+        observations: UInt64,
+        p50: UInt64,
+        p99: UInt64,
+        p999: UInt64,
+        p9999: UInt64,
+        maximum: UInt64
+    ) -> String {
+        guard observations > 0 else {
+            return localized("No samples")
+        }
+        let values = [
+            durationPercentileValue(p50, observations: observations, minimum: 2),
+            durationPercentileValue(p99, observations: observations, minimum: 100),
+            durationPercentileValue(p999, observations: observations, minimum: 1_000),
+            durationPercentileValue(p9999, observations: observations, minimum: 10_000),
+            durationPercentileValue(maximum, observations: observations, minimum: 1)
+        ]
+        return localized("\(values.joined(separator: " / ")) us")
+    }
+
+    private func durationPercentileValue(
+        _ nanoseconds: UInt64,
+        observations: UInt64,
+        minimum: UInt64
+    ) -> String {
+        guard observations >= minimum else {
+            return "–"
+        }
+        return localizedDecimal(
+            Double(nanoseconds) / 1_000,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        )
     }
 
     private var tapToOutputLatencyLabel: String {
@@ -3113,28 +3277,8 @@ private struct OutputTab: View {
     }
 
     private var usesSeparateClockDiagnostics: Bool {
-        snapshot.metrics.playbackBufferObservations > 0
-    }
-
-    private func extremeDurationLabel(
-        observations: UInt64,
-        p9999Nanoseconds: UInt64,
-        maximumNanoseconds: UInt64
-    ) -> String {
-        guard observations > 0 else {
-            return localized("No samples")
-        }
-        let percentile = localizedDecimal(
-            Double(p9999Nanoseconds) / 1_000,
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        )
-        let maximum = localizedDecimal(
-            Double(maximumNanoseconds) / 1_000,
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        )
-        return localized("\(percentile) / \(maximum) us")
+        diagnostics.status.routeMode == .compatibility
+            || diagnostics.status.routeMode == .headsetCompatibility
     }
 
     private var tailCompletionSlackLabel: String {
@@ -3145,6 +3289,270 @@ private struct OutputTab: View {
         return localized(
             "\(localizedInteger(timing.minimumTailCompletionSlackFrames)) frames, \(localizedInteger(timing.tailDeadlineMisses)) misses"
         )
+    }
+
+    private var diagnosticsResetLabel: String {
+        diagnostics.observation.resetAt?.formatted(date: .abbreviated, time: .standard)
+            ?? localized("Unknown")
+    }
+
+    private var observationDurationLabel: String {
+        diagnosticDurationLabel(diagnostics.observation.observationDurationSeconds)
+    }
+
+    private var runtimeDurationLabel: String {
+        guard let startedAt = diagnostics.observation.runtimeStartedAt else {
+            return localized("Not running")
+        }
+        let duration = diagnosticDurationLabel(
+            diagnostics.observation.runtimeDurationSeconds
+        )
+        return localized(
+            "\(duration), since \(startedAt.formatted(date: .omitted, time: .standard))"
+        )
+    }
+
+    private func diagnosticDurationLabel(_ seconds: Double) -> String {
+        let total = max(Int(seconds.rounded(.down)), 0)
+        if total < 60 {
+            return localized("\(total) seconds")
+        }
+        if total < 3_600 {
+            return localized("\(total / 60) min \(total % 60) sec")
+        }
+        return localized(
+            "\(total / 3_600) hr \((total % 3_600) / 60) min \(total % 60) sec"
+        )
+    }
+
+    private var underrunDetailLabel: String {
+        localized(
+            "\(localizedInteger(snapshot.metrics.playbackUnderrunEvents)) / \(localizedInteger(snapshot.metrics.playbackUnderrunFrames))"
+        )
+    }
+
+    private var droppedFramesLabel: String {
+        localized(
+            "\(localizedInteger(snapshot.metrics.droppedInputFrames)) / \(localizedInteger(snapshot.metrics.droppedBufferedFrames))"
+        )
+    }
+
+    private var deadlineMissesLabel: String {
+        localized(
+            "\(localizedInteger(snapshot.metrics.renderDeadlineMisses)) total, \(localizedInteger(snapshot.metrics.callbackStartStarvations)) start, \(localizedInteger(snapshot.metrics.renderOverruns)) render"
+        )
+    }
+
+    private var discontinuityLabel: String {
+        localized(
+            "\(localizedInteger(snapshot.metrics.inputTimestampDiscontinuities)) input, \(localizedInteger(snapshot.metrics.outputTimestampDiscontinuities)) output, \(localizedInteger(snapshot.metrics.pairedTimestampDiscontinuities)) paired, \(localizedInteger(snapshot.metrics.qualifyingPairedTimestampDiscontinuities)) qualifying"
+        )
+    }
+
+    private var bufferedFramesLabel: String {
+        localized(
+            "\(localizedInteger(snapshot.metrics.currentBufferedFrames)) / \(localizedInteger(snapshot.metrics.maximumPlaybackBufferedFrames)) frames"
+        )
+    }
+
+    private var lastRecoveryLabel: String {
+        guard let reason = diagnostics.recovery.lastReason,
+              let date = diagnostics.recovery.lastRecoveryAt else {
+            return localized("None")
+        }
+        return localized(
+            "\(recoveryReasonLabel(reason)), \(date.formatted(date: .omitted, time: .standard))"
+        )
+    }
+
+    private func recoveryReasonLabel(_ reason: SettingsAudioRecoveryReason) -> String {
+        switch reason {
+        case .renderStall:
+            localized("render stall")
+        case .deadlineMisses:
+            localized("deadline misses")
+        case .timestampDiscontinuity:
+            localized("timestamp discontinuity")
+        case .headsetInstability:
+            localized("headset instability")
+        case .playbackUnderrun:
+            localized("playback underrun")
+        case .adaptiveRenderFailure:
+            localized("adaptive render failure")
+        }
+    }
+
+    private func callbackSizeHistogramLabel(
+        _ observations: [SettingsAudioCallbackSizeObservationDTO]
+    ) -> String {
+        let values = observations.compactMap { observation -> String? in
+            guard observation.observations > 0 else {
+                return nil
+            }
+            let frameSize = observation.frameCount.map(localizedInteger)
+                ?? localized("Other")
+            return "\(frameSize): \(localizedInteger(observation.observations))"
+        }
+        return values.isEmpty ? localized("No samples") : values.joined(separator: ", ")
+    }
+
+    private var callbackPeaksLabel: String {
+        localized(
+            "\(localizedInteger(snapshot.metrics.maximumCaptureCallbackFrames)) / \(localizedInteger(snapshot.metrics.maximumPlaybackCallbackFrames)) frames"
+        )
+    }
+
+    private var timestampJumpLabel: String {
+        guard snapshot.metrics.inputTimestampDiscontinuities > 0
+                || snapshot.metrics.outputTimestampDiscontinuities > 0 else {
+            return localized("No samples")
+        }
+        let input = localizedDecimal(
+            snapshot.metrics.lastInputTimestampJumpFrames,
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1,
+            signed: true
+        )
+        let output = localizedDecimal(
+            snapshot.metrics.lastOutputTimestampJumpFrames,
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1,
+            signed: true
+        )
+        return localized("\(input) input / \(output) output frames")
+    }
+
+    private var hostIntervalErrorLabel: String {
+        guard snapshot.metrics.inputTimestampDiscontinuities > 0
+                || snapshot.metrics.outputTimestampDiscontinuities > 0 else {
+            return localized("No samples")
+        }
+        let input = localizedDecimal(
+            Double(snapshot.metrics.lastInputHostIntervalErrorNanoseconds) / 1_000,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+            signed: true
+        )
+        let output = localizedDecimal(
+            Double(snapshot.metrics.lastOutputHostIntervalErrorNanoseconds) / 1_000,
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+            signed: true
+        )
+        return localized("\(input) input / \(output) output us")
+    }
+
+    private var timestampJumpIntervalLabel: String {
+        guard snapshot.metrics.timestampJumpIntervalObservations > 0 else {
+            return localized("No samples")
+        }
+        return minAverageMaxMilliseconds(
+            minimum: snapshot.metrics.minimumTimestampJumpIntervalNanoseconds,
+            average: snapshot.metrics.averageTimestampJumpIntervalNanoseconds,
+            maximum: snapshot.metrics.maximumTimestampJumpIntervalNanoseconds
+        )
+    }
+
+    private var inputAgeLabel: String {
+        guard snapshot.metrics.callbackTimingObservations > 0 else {
+            return localized("No samples")
+        }
+        return minAverageMaxMilliseconds(
+            minimum: snapshot.metrics.minimumInputAgeNanoseconds,
+            average: snapshot.metrics.averageInputAgeNanoseconds,
+            maximum: snapshot.metrics.maximumInputAgeNanoseconds
+        )
+    }
+
+    private var outputLeadLabel: String {
+        guard snapshot.metrics.callbackTimingObservations > 0 else {
+            return localized("No samples")
+        }
+        return minAverageMaxMilliseconds(
+            minimum: snapshot.metrics.minimumOutputLeadNanoseconds,
+            average: snapshot.metrics.averageOutputLeadNanoseconds,
+            maximum: snapshot.metrics.maximumOutputLeadNanoseconds
+        )
+    }
+
+    private func minAverageMaxMilliseconds(
+        minimum: UInt64,
+        average: Double,
+        maximum: UInt64
+    ) -> String {
+        let values = [Double(minimum), average, Double(maximum)].map {
+            localizedDecimal(
+                $0 / 1_000_000,
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            )
+        }
+        return localized("\(values.joined(separator: " / ")) ms")
+    }
+
+    private var observedAndActiveRateLabel: String {
+        let observed = frequencyOrUnknown(diagnostics.route.observedDeviceSampleRate)
+        let active = frequencyOrUnknown(diagnostics.route.activeDeviceSampleRate)
+        return localized("\(observed) / \(active)")
+    }
+
+    private var processingRateLabel: String {
+        frequencyOrUnknown(diagnostics.route.processingSampleRate)
+    }
+
+    private func frequencyOrUnknown(_ sampleRate: Double) -> String {
+        sampleRate > 0 ? localizedFrequency(sampleRate) : localized("Unknown")
+    }
+
+    private var nativeOutputStreamLabel: String {
+        diagnostics.route.nativeOutputStreamIndex.map {
+            localized("Stream \($0 + 1)")
+        } ?? localized("Unavailable")
+    }
+
+    private func streamChannelCountsLabel(_ counts: [Int]) -> String {
+        guard !counts.isEmpty else {
+            return localized("Unavailable")
+        }
+        return counts.map(localizedInteger).joined(separator: " + ")
+    }
+
+    private var aggregateStreamCountsLabel: String {
+        let input = streamChannelCountsLabel(
+            diagnostics.route.aggregateInputStreamChannelCounts
+        )
+        let output = streamChannelCountsLabel(
+            diagnostics.route.aggregateOutputStreamChannelCounts
+        )
+        return localized("\(input) / \(output)")
+    }
+
+    private var routeBufferSizesLabel: String {
+        let physical = optionalFrameCount(diagnostics.route.physicalDeviceBufferFrameSize)
+        let aggregate = optionalFrameCount(diagnostics.route.aggregateBufferFrameSize)
+        return localized("\(physical) / \(aggregate)")
+    }
+
+    private var physicalSafetyOffsetsLabel: String {
+        safetyOffsetsLabel(
+            input: diagnostics.route.physicalInputSafetyOffsetFrames,
+            output: diagnostics.route.physicalOutputSafetyOffsetFrames
+        )
+    }
+
+    private var aggregateSafetyOffsetsLabel: String {
+        safetyOffsetsLabel(
+            input: diagnostics.route.aggregateInputSafetyOffsetFrames,
+            output: diagnostics.route.aggregateOutputSafetyOffsetFrames
+        )
+    }
+
+    private func safetyOffsetsLabel(input: UInt32?, output: UInt32?) -> String {
+        localized("\(optionalFrameCount(input)) / \(optionalFrameCount(output))")
+    }
+
+    private func optionalFrameCount(_ frames: UInt32?) -> String {
+        frames.map(localizedFrameCount) ?? localized("Unavailable")
     }
 
     private var bridgeLatencyLabel: String {
@@ -3193,6 +3601,41 @@ private struct OutputTab: View {
         return localized("\(occupancy) / \(target) frames")
     }
 
+}
+
+func outputBufferSummary(
+    aggregateBuffer: SettingsAggregateBufferDTO,
+    currentFrameSize: UInt32
+) -> String {
+    guard aggregateBuffer.isAvailable else {
+        guard currentFrameSize > 0 else {
+            return localized("Unavailable")
+        }
+        return localized("\(currentFrameSize) frames, compatibility path")
+    }
+    switch aggregateBuffer.mode {
+    case .automatic:
+        return localized(
+            "Automatic, \(aggregateBuffer.automaticFrameSize) frames active"
+        )
+    case .frames16, .frames32, .frames64:
+        let selected: UInt32 = switch aggregateBuffer.mode {
+        case .automatic:
+            aggregateBuffer.automaticFrameSize
+        case .frames16:
+            16
+        case .frames32:
+            32
+        case .frames64:
+            64
+        }
+        if currentFrameSize != selected {
+            return localized(
+                "\(selected) selected, \(currentFrameSize) frames active"
+            )
+        }
+        return localized("\(selected) frames")
+    }
 }
 
 private extension EQMode {

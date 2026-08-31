@@ -85,9 +85,11 @@ The command prints output device metadata and post-run callback metrics:
 - Average and range of tap-to-output latency from Core Audio's I/O timestamps.
 - Samples that reached the soft clipper.
 
-The p99.99 values come from fixed, callback-owned histograms. Normal timings use 0.25 microsecond buckets, timings above 64 microseconds use 4 microsecond buckets, and maxima remain exact. GlassEQ publishes one histogram roughly every 1,024 callbacks and staggers the five scans so the measurement work does not land in one callback. Resetting metrics changes a generation counter; it does not clear histogram storage on the realtime thread.
+The timing percentiles come from fixed, callback-owned histograms. Normal timings use 0.25 microsecond buckets, timings above 64 microseconds use 4 microsecond buckets, and maxima remain exact. Each bounded scan publishes p50, p99, p99.9, p99.99, and maximum roughly every 1,024 callbacks. GlassEQ staggers the five scans so the measurement work does not land in one callback. Resetting metrics changes a generation counter; it does not clear histogram storage on the realtime thread.
 
 The separate-clock fallback reports its additional bridge diagnostics instead: buffered frames, occupancy-derived bridge latency, clock correction, output timing gaps, sample-rate conversion, and reservoir target. Its bridge-latency number is not the same measurement as the combined path's timestamp-derived tap-to-output latency.
+
+The Settings Output tab keeps the normal view to route health, route mode, output, active profile, selected and active buffer, measured added latency, and underrun events. Its collapsed **Stats for nerds** section exposes the timing percentiles, FIR head and tail timing, tail deadline margin, reliability counters, callback-size histograms, timestamp deltas, current route metadata, stream layouts, and device and aggregate safety offsets. App-owned observation, rebuild, recovery, escalation, and headset-fallback context survives runtime replacement; callback timing and frame counters describe only the current engine runtime. Resetting metrics starts both contexts at one visible timestamp.
 
 The diagnostic follows the current macOS output device and does not switch outputs itself.
 
