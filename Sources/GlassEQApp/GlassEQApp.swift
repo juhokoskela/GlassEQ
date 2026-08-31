@@ -256,6 +256,9 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32)
     func update(profile: EQProfile) throws
     @discardableResult func updateDSP(profile: EQProfile) -> Bool
+    @discardableResult func beginProgrammeComparison(profile: EQProfile) -> Bool
+    func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
+    func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
     func muteOutputForTransition()
     func stop()
     func snapshotMetrics() -> AudioEngineMetrics
@@ -267,6 +270,14 @@ protocol AudioEngineControlling: AnyObject, Sendable {
 }
 
 extension AudioEngineControlling {
+    func beginProgrammeComparison(profile _: EQProfile) -> Bool { false }
+
+    func setProgrammeComparisonSelection(_: EQProgrammeComparisonSelection) {}
+
+    func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+        EQProgrammeComparisonSnapshot()
+    }
+
     func setRuntimeFailureHandler(
         _: (@Sendable (AudioEngineFailure) -> Void)?
     ) {}
@@ -346,6 +357,7 @@ extension SettingsAudioMetricsDTO {
             outputTimestampDiscontinuities: metrics.outputTimestampDiscontinuities,
             maximumCaptureCallbackFrames: metrics.maximumCaptureCallbackFrames,
             maximumPlaybackCallbackFrames: metrics.maximumPlaybackCallbackFrames,
+            renderDeadlineMisses: metrics.renderDeadlineMisses,
             playbackTimestampDiscontinuities: metrics.playbackTimestampDiscontinuities,
             playbackBufferRenegotiations: metrics.playbackBufferRenegotiations,
             adaptivePlaybackRenderFailures: metrics.adaptivePlaybackRenderFailures,
@@ -430,6 +442,8 @@ final class GlassEQAppModel {
     var importText = ""
     var engineMetrics = AudioEngineMetrics()
     var previewReturnProfile: EQProfile?
+    var programmeComparison = EQProgrammeComparisonSnapshot()
+    private var programmeComparisonReturnProfile: EQProfile?
     private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped
 
     private let engine: any AudioEngineControlling
@@ -442,6 +456,7 @@ final class GlassEQAppModel {
     private let saveDebounceDelay: Duration
     private var observer: (any DefaultOutputObserving)?
     private var metricsTask: Task<Void, Never>?
+    private var programmeComparisonTask: Task<Void, Never>?
     private var renderWatchdogTask: Task<Void, Never>?
     private var renderWatchdog: AudioRenderWatchdog
     private let renderWatchdogPollInterval: Duration
@@ -468,6 +483,7 @@ final class GlassEQAppModel {
     private var headsetPromotionAttemptedOutputGeneration: Int?
     private let aggregateBufferNotifier: any AggregateBufferChangeNotifying
     private var pendingAggregateBufferIncrease: PendingAggregateBufferIncrease?
+    private var fixedBufferRecovery: FixedBufferRecovery?
     private let storeWriter: ProfileStoreWriter
     private var profilePersistenceMode: ProfilePersistenceMode = .normal
     @ObservationIgnored private let engineWorkExecutor = EngineWorkExecutor()
@@ -499,10 +515,23 @@ final class GlassEQAppModel {
     }
 
     private struct PendingAggregateBufferIncrease: Sendable {
+        enum Kind: Sendable {
+            case automatic
+            case fixedRebuild
+            case fixedTemporaryIncrease
+        }
+
         var route: AggregateAudioRouteFingerprint
         var outputName: String
         var previousFrameSize: UInt32
         var newFrameSize: UInt32
+        var kind: Kind = .automatic
+    }
+
+    private struct FixedBufferRecovery: Sendable {
+        var route: AggregateAudioRouteFingerprint
+        var preferredFrameSize: UInt32
+        var session: FixedBufferRecoverySession
     }
 
     private struct EngineProfileConfirmation: Sendable {
@@ -862,8 +891,18 @@ final class GlassEQAppModel {
             metrics: SettingsAudioMetricsDTO(engineMetrics),
             isRunning: isRunning,
             isPreviewing: previewReturnProfile != nil,
+            programmeComparison: settingsProgrammeComparisonSnapshot(),
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
+    }
+
+    private func settingsProgrammeComparisonSnapshot() -> EQProgrammeComparisonSnapshot {
+        guard programmeComparisonReturnProfile != nil else {
+            return EQProgrammeComparisonSnapshot()
+        }
+        var snapshot = programmeComparison
+        snapshot.isActive = true
+        return snapshot
     }
 
     private func aggregateBufferSnapshot() -> SettingsAggregateBufferDTO {
@@ -997,6 +1036,7 @@ final class GlassEQAppModel {
         renderWatchdog.reset()
         scheduleEngineStop(updateMetrics: true)
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         lifecycleState = .stopped
         isRunning = false
         statusMessage = localized("Stopped")
@@ -1202,6 +1242,9 @@ final class GlassEQAppModel {
     }
 
     func preview(profile: EQProfile) {
+        guard programmeComparisonReturnProfile == nil else {
+            return
+        }
         do {
             try ensureProfileStoreWritable()
         } catch {
@@ -1250,6 +1293,7 @@ final class GlassEQAppModel {
         }
         let rollback = profileRollback()
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
@@ -1264,6 +1308,110 @@ final class GlassEQAppModel {
             restartEngineWithActiveProfile(rollback: rollback)
         }
         notifyModelDidChange()
+    }
+
+    func startProgrammeComparison(profile: EQProfile) throws {
+        guard programmeComparisonReturnProfile == nil else {
+            return
+        }
+        guard previewReturnProfile == nil else {
+            throw SettingsCommandFailure(
+                message: localized("Stop the profile preview before starting A/B comparison.")
+            )
+        }
+        guard lifecycleState == .running,
+              isRunning,
+              engineStartTask == nil,
+              engineIsRunning else {
+            throw SettingsCommandFailure(
+                message: localized("Start GlassEQ before comparing the profile.")
+            )
+        }
+        guard !profile.isBypassed else {
+            throw SettingsCommandFailure(
+                message: localized("Enable the profile before comparing it.")
+            )
+        }
+
+        engine.setProgrammeComparisonSelection(.equalized)
+        guard engine.beginProgrammeComparison(profile: profile) else {
+            throw SettingsCommandFailure(
+                message: localized("The audio engine could not start A/B comparison.")
+            )
+        }
+
+        programmeComparisonReturnProfile = activeProfile
+        programmeComparison = EQProgrammeComparisonSnapshot(
+            isActive: true,
+            selection: .equalized
+        )
+        statusMessage = localized("Comparing EQ with filters off")
+        startProgrammeComparisonPolling()
+        notifyModelDidChange()
+    }
+
+    func selectProgrammeComparison(_ selection: EQProgrammeComparisonSelection) {
+        guard programmeComparisonReturnProfile != nil else {
+            return
+        }
+        programmeComparison.selection = selection
+        engine.setProgrammeComparisonSelection(selection)
+        notifyModelDidChange()
+    }
+
+    func stopProgrammeComparison() {
+        guard let returnProfile = programmeComparisonReturnProfile else {
+            return
+        }
+        engine.setProgrammeComparisonSelection(.equalized)
+        clearProgrammeComparisonSession()
+        if lifecycleState == .running,
+           isRunning,
+           engineStartTask == nil {
+            if engine.updateDSP(profile: returnProfile) {
+                statusMessage = processingStatus(
+                    outputName: currentOutputName,
+                    profileName: returnProfile.name
+                )
+            } else {
+                restartEngineWithActiveProfile()
+            }
+        }
+        notifyModelDidChange()
+    }
+
+    private func startProgrammeComparisonPolling() {
+        programmeComparisonTask?.cancel()
+        programmeComparisonTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self,
+                      self.programmeComparisonReturnProfile != nil else {
+                    return
+                }
+                var next = self.engine.snapshotProgrammeComparison()
+                next.isActive = true
+                guard next != self.programmeComparison else {
+                    continue
+                }
+                self.programmeComparison = next
+                self.notifyModelDidChange()
+            }
+        }
+    }
+
+    private func clearProgrammeComparisonSession(
+        restoringEqualizedRendererIfRunning: Bool = false
+    ) {
+        if restoringEqualizedRendererIfRunning,
+           programmeComparisonReturnProfile != nil,
+           case .running = engine.state {
+            engine.setProgrammeComparisonSelection(.equalized)
+        }
+        programmeComparisonTask?.cancel()
+        programmeComparisonTask = nil
+        programmeComparisonReturnProfile = nil
+        programmeComparison = EQProgrammeComparisonSnapshot()
     }
 
     func resetDiagnostics() {
@@ -1508,6 +1656,7 @@ final class GlassEQAppModel {
             return
         }
 
+        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         let rollback = profileRollback()
         previewReturnProfile = nil
         switch result {
@@ -1605,7 +1754,7 @@ final class GlassEQAppModel {
     ) {
         let route = try? engine.aggregateRouteFingerprint(for: output)
         let frameSize = requestedFrameSize
-            ?? route.map { aggregateBufferPolicyStore.selection(for: $0).frameSize }
+            ?? route.map { aggregateBufferFrameSize(for: $0) }
             ?? 16
         scheduleEngineWork(.start(
             output: output,
@@ -1613,6 +1762,29 @@ final class GlassEQAppModel {
             rollback: rollback,
             aggregateBufferFrameSize: frameSize
         ))
+    }
+
+    private func aggregateBufferFrameSize(
+        for route: AggregateAudioRouteFingerprint
+    ) -> UInt32 {
+        let selection = aggregateBufferPolicyStore.selection(for: route)
+        guard selection.mode != .automatic,
+              let fixedBufferRecovery,
+              fixedBufferRecovery.route == route,
+              fixedBufferRecovery.preferredFrameSize == selection.frameSize else {
+            return selection.frameSize
+        }
+        return fixedBufferRecovery.session.runtimeFrameSize
+    }
+
+    private func clearFixedBufferRecoveryAndRestorePreference() {
+        guard let fixedBufferRecovery else {
+            return
+        }
+        engine.setPreferredAggregateBufferFrameSize(
+            fixedBufferRecovery.preferredFrameSize
+        )
+        self.fixedBufferRecovery = nil
     }
 
     private func synchronizeActiveProfileProcessing(rollback: ProfileRollback? = nil) {
@@ -1650,6 +1822,8 @@ final class GlassEQAppModel {
     }
 
     private func disableActiveProfileProcessing(updateMetrics: Bool) {
+        clearProgrammeComparisonSession()
+        clearFixedBufferRecoveryAndRestorePreference()
         let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
@@ -1865,6 +2039,7 @@ final class GlassEQAppModel {
         case .success(let output):
             refreshCurrentOutputMetadata(from: output)
             activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            clearFixedBufferRecoveryIfRouteChanged()
             lifecycleState = .running
             isRunning = true
             wakeReconnectAttempts = 0
@@ -1886,6 +2061,7 @@ final class GlassEQAppModel {
         case .profileChangeNotApplied(_, let output, let reconciliation):
             refreshCurrentOutputMetadata(from: output)
             activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            clearFixedBufferRecoveryIfRouteChanged()
             if let reconciliation {
                 restoreEngineProfileReconciliation(reconciliation, persist: true)
                 confirmedEngineProfileState.acknowledge(reconciliation)
@@ -1924,6 +2100,18 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
+    private func clearFixedBufferRecoveryIfRouteChanged() {
+        guard let fixedBufferRecovery else {
+            return
+        }
+        let selection = aggregateBufferPolicyStore.selection(for: fixedBufferRecovery.route)
+        if activeAggregateRoute != fixedBufferRecovery.route
+            || selection.mode == .automatic
+            || selection.frameSize != fixedBufferRecovery.preferredFrameSize {
+            self.fixedBufferRecovery = nil
+        }
+    }
+
     private func startAggregateStabilityMonitoring() {
         aggregateStabilityTask?.cancel()
         aggregateStabilityTask = nil
@@ -1931,9 +2119,6 @@ final class GlassEQAppModel {
             return
         }
         let selection = aggregateBufferPolicyStore.selection(for: route)
-        guard selection.mode == .automatic else {
-            return
-        }
         let engineGeneration = engineStartGeneration
         let outputGeneration = outputChangeGeneration
         let settlingDelay = aggregateStabilitySettlingDelay
@@ -1949,8 +2134,10 @@ final class GlassEQAppModel {
                   ) else {
                 return
             }
-            var qualifyingBaseline = self.engine.snapshotMetrics()
-                .qualifyingPairedTimestampDiscontinuities
+            let initialMetrics = self.engine.snapshotMetrics()
+            var qualifyingBaseline = initialMetrics.qualifyingPairedTimestampDiscontinuities
+            var deadlineBaseline = initialMetrics.renderDeadlineMisses
+            var deadlineBurstDetector = AudioRenderDeadlineBurstDetector()
             var sessionHadQualifyingInterruption = false
             var cleanSessionRecorded = false
             let cleanSessionDeadline = ContinuousClock.now.advanced(
@@ -1966,8 +2153,24 @@ final class GlassEQAppModel {
                       ) else {
                     return
                 }
-                let nextCount = self.engine.snapshotMetrics()
-                    .qualifyingPairedTimestampDiscontinuities
+                let metrics = self.engine.snapshotMetrics()
+                let nextDeadlineCount = metrics.renderDeadlineMisses
+                if selection.mode != .automatic {
+                    if nextDeadlineCount > deadlineBaseline {
+                        let newMisses = nextDeadlineCount - deadlineBaseline
+                        deadlineBaseline = nextDeadlineCount
+                        if deadlineBurstDetector.observe(newMisses: newMisses),
+                           self.handleFixedAggregateDeadlineBurst(on: route) {
+                            return
+                        }
+                    } else if nextDeadlineCount < deadlineBaseline {
+                        deadlineBaseline = nextDeadlineCount
+                        deadlineBurstDetector.reset()
+                    }
+                    continue
+                }
+
+                let nextCount = metrics.qualifyingPairedTimestampDiscontinuities
                 if nextCount > qualifyingBaseline {
                     let occurrenceCount = nextCount - qualifyingBaseline
                     qualifyingBaseline = nextCount
@@ -2099,6 +2302,90 @@ final class GlassEQAppModel {
             && Int64(currentOutputSampleRate.rounded()) == route.nominalSampleRate
     }
 
+    private func handleFixedAggregateDeadlineBurst(
+        on route: AggregateAudioRouteFingerprint
+    ) -> Bool {
+        guard activeAggregateRoute == route,
+              lifecycleState == .running,
+              engineStartTask == nil,
+              case .running(let output) = engine.state else {
+            return false
+        }
+        let selection = aggregateBufferPolicyStore.selection(for: route)
+        guard selection.mode != .automatic else {
+            return false
+        }
+
+        var recovery: FixedBufferRecovery
+        if let fixedBufferRecovery,
+           fixedBufferRecovery.route == route,
+           fixedBufferRecovery.preferredFrameSize == selection.frameSize {
+            recovery = fixedBufferRecovery
+        } else {
+            recovery = FixedBufferRecovery(
+                route: route,
+                preferredFrameSize: selection.frameSize,
+                session: FixedBufferRecoverySession(
+                    runtimeFrameSize: selection.frameSize
+                )
+            )
+        }
+        let previousFrameSize = recovery.session.runtimeFrameSize
+        let action = recovery.session.observeFailure()
+        fixedBufferRecovery = recovery
+
+        switch action {
+        case .rebuild(let frameSize):
+            pendingAggregateBufferIncrease = PendingAggregateBufferIncrease(
+                route: route,
+                outputName: output.name,
+                previousFrameSize: frameSize,
+                newFrameSize: frameSize,
+                kind: .fixedRebuild
+            )
+            statusMessage = localized(
+                "Audio deadlines were missed; rebuilding \(output.name) with \(frameSize)-frame buffers..."
+            )
+            notifyModelDidChange()
+            scheduleEngineStart(
+                output: output,
+                profile: activeProfile,
+                rollback: nil,
+                aggregateBufferFrameSize: frameSize
+            )
+        case .temporarilyIncrease(let frameSize):
+            pendingAggregateBufferIncrease = PendingAggregateBufferIncrease(
+                route: route,
+                outputName: output.name,
+                previousFrameSize: previousFrameSize,
+                newFrameSize: frameSize,
+                kind: .fixedTemporaryIncrease
+            )
+            statusMessage = localized(
+                "\(selection.frameSize)-frame processing became unstable; temporarily switching \(output.name) to \(frameSize)-frame buffers..."
+            )
+            notifyModelDidChange()
+            scheduleEngineStart(
+                output: output,
+                profile: activeProfile,
+                rollback: nil,
+                aggregateBufferFrameSize: frameSize
+            )
+        case .stop:
+            pendingAggregateBufferIncrease = nil
+            invalidatePendingEngineStart()
+            scheduleEngineStop(updateMetrics: true)
+            lifecycleState = .stopped
+            isRunning = false
+            renderWatchdog.pause()
+            statusMessage = localized(
+                "64-frame processing missed audio deadlines again, so GlassEQ stopped processing. Retry the audio engine when ready."
+            )
+            notifyModelDidChange()
+        }
+        return true
+    }
+
     private func handleQualifyingAggregateInterruption(
         on route: AggregateAudioRouteFingerprint,
         occurrences: UInt64
@@ -2202,11 +2489,28 @@ final class GlassEQAppModel {
             return
         }
         self.pendingAggregateBufferIncrease = nil
-        aggregateBufferNotifier.notifyBufferIncrease(
-            outputName: pendingAggregateBufferIncrease.outputName,
-            previousFrameSize: pendingAggregateBufferIncrease.previousFrameSize,
-            newFrameSize: pendingAggregateBufferIncrease.newFrameSize
-        )
+        switch pendingAggregateBufferIncrease.kind {
+        case .automatic:
+            aggregateBufferNotifier.notifyBufferIncrease(
+                outputName: pendingAggregateBufferIncrease.outputName,
+                previousFrameSize: pendingAggregateBufferIncrease.previousFrameSize,
+                newFrameSize: pendingAggregateBufferIncrease.newFrameSize
+            )
+        case .fixedRebuild:
+            aggregateBufferNotifier.notifyFixedBufferRebuild(
+                outputName: pendingAggregateBufferIncrease.outputName,
+                frameSize: pendingAggregateBufferIncrease.newFrameSize
+            )
+        case .fixedTemporaryIncrease:
+            let preferredFrameSize = aggregateBufferPolicyStore.selection(
+                for: pendingAggregateBufferIncrease.route
+            ).frameSize
+            aggregateBufferNotifier.notifyTemporaryBufferIncrease(
+                outputName: pendingAggregateBufferIncrease.outputName,
+                preferredFrameSize: preferredFrameSize,
+                runtimeFrameSize: pendingAggregateBufferIncrease.newFrameSize
+            )
+        }
     }
 
     private func restoreProfileRollback(_ rollback: ProfileRollback, persist: Bool) {
@@ -2433,6 +2737,7 @@ final class GlassEQAppModel {
         selectedProfileID = activeProfile.id
         draftProfile = activeProfile
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         statusMessage = localized("Profiles reset for this GlassEQ version; previous store backed up to \(result.backupURL.lastPathComponent).")
         notifyModelDidChange()
     }
@@ -2469,6 +2774,23 @@ final class GlassEQAppModel {
             return
         }
         renderWatchdog.reset()
+        let restoredFixedFrameSize = fixedBufferRecovery?.preferredFrameSize
+        clearFixedBufferRecoveryAndRestorePreference()
+        if let restoredFixedFrameSize,
+           case .running(let output) = engine.state {
+            pendingAggregateBufferIncrease = nil
+            statusMessage = localized(
+                "Rebuilding \(output.name) with \(restoredFixedFrameSize)-frame buffers..."
+            )
+            notifyModelDidChange()
+            scheduleEngineStart(
+                output: output,
+                profile: activeProfile,
+                rollback: nil,
+                aggregateBufferFrameSize: restoredFixedFrameSize
+            )
+            return
+        }
         restartEngineWithActiveProfile()
     }
 
@@ -2482,6 +2804,7 @@ final class GlassEQAppModel {
                 message: localized("Automatic buffer tuning is unavailable on this output route.")
             )
         }
+        fixedBufferRecovery = nil
         try aggregateBufferPolicyStore.setMode(mode, for: activeAggregateRoute)
         let selection = aggregateBufferPolicyStore.selection(for: activeAggregateRoute)
         pendingAggregateBufferIncrease = nil
@@ -2507,6 +2830,7 @@ final class GlassEQAppModel {
                 message: localized("Automatic buffer tuning is unavailable on this output route.")
             )
         }
+        fixedBufferRecovery = nil
         try aggregateBufferPolicyStore.retryAutomaticBuffer(for: activeAggregateRoute)
         pendingAggregateBufferIncrease = nil
         statusMessage = localized(
@@ -2640,7 +2964,7 @@ final class GlassEQAppModel {
         switch action {
         case .restart:
             let frameSize = activeAggregateRoute.map {
-                aggregateBufferPolicyStore.selection(for: $0).frameSize
+                aggregateBufferFrameSize(for: $0)
             } ?? 16
             statusMessage = localized(
                 "Audio rendering stalled; rebuilding \(output.name)..."
@@ -2704,6 +3028,7 @@ final class GlassEQAppModel {
         pendingEngineStartOutput = nil
         activeAggregateRoute = nil
         pendingAggregateBufferIncrease = nil
+        fixedBufferRecovery = nil
     }
 
     private func installLifecycleObservers() {
@@ -2756,6 +3081,8 @@ final class GlassEQAppModel {
         stopObserver()
         scheduleEngineStop(updateMetrics: false)
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
+        clearFixedBufferRecoveryAndRestorePreference()
         lifecycleState = .sleeping
         isRunning = false
         statusMessage = localized("Paused for system sleep")
@@ -2861,6 +3188,7 @@ final class GlassEQAppModel {
         metricsTask = nil
         stopObserver()
         previewReturnProfile = nil
+        clearProgrammeComparisonSession()
         isRunning = false
         if shutdownSettings {
             settingsCoordinator.shutdown()
@@ -2907,6 +3235,7 @@ final class GlassEQAppModel {
               case .failed = engine.state else {
             return
         }
+        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         invalidatePendingEngineStart()
         lifecycleState = .stopped
         isRunning = false

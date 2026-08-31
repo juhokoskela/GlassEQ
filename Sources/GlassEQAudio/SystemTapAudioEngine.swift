@@ -66,6 +66,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public var averageTimestampJumpIntervalNanoseconds: Double
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
+    public var renderDeadlineMisses: UInt64
     public var playbackTimestampDiscontinuities: UInt64
     public var playbackBufferRenegotiations: UInt64
     public var adaptivePlaybackRenderFailures: UInt64
@@ -115,6 +116,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         averageTimestampJumpIntervalNanoseconds: Double = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
+        renderDeadlineMisses: UInt64 = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
         playbackBufferRenegotiations: UInt64 = 0,
         adaptivePlaybackRenderFailures: UInt64 = 0,
@@ -163,6 +165,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         self.averageTimestampJumpIntervalNanoseconds = averageTimestampJumpIntervalNanoseconds
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
+        self.renderDeadlineMisses = renderDeadlineMisses
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
         self.playbackBufferRenegotiations = playbackBufferRenegotiations
         self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
@@ -479,14 +482,29 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     private final class PreparedDSPConfigBox: @unchecked Sendable {
         var processor: EQProcessor?
+        var comparisonReferenceProcessor: EQProcessor?
         let systemSoundPreampGains: (left: Float, right: Float)
         var retiredProcessor: EQProcessor?
+        var secondRetiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
         init(config: EQRenderConfiguration) {
             self.processor = EQProcessor(renderConfiguration: config)
             self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: config
+            )
+        }
+
+        init(
+            equalizedConfig: EQRenderConfiguration,
+            referenceConfig: EQRenderConfiguration
+        ) {
+            self.processor = EQProcessor(renderConfiguration: equalizedConfig)
+            self.comparisonReferenceProcessor = EQProcessor(
+                renderConfiguration: referenceConfig
+            )
+            self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
+                for: equalizedConfig
             )
         }
     }
@@ -548,6 +566,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let totalTimestampJumpIntervalNanoseconds = Atomic<UInt64>(0)
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
+        private let renderDeadlineMisses = Atomic<UInt64>(0)
+        private var previousRenderStartNanoseconds: UInt64?
+        private var previousRenderFrameCount = 0
         private let tapToOutputLatencyObservations = Atomic<UInt64>(0)
         private let minTapToOutputLatencyNanoseconds = Atomic<UInt64>(.max)
         private let maxTapToOutputLatencyNanoseconds = Atomic<UInt64>(0)
@@ -561,6 +582,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let totalOutputLeadNanoseconds = Atomic<UInt64>(0)
         private let outputMutedForTransition = Atomic<Bool>(true)
         private let outputIsMuted = Atomic<Bool>(true)
+        private let programmeComparisonSelection = Atomic<UInt>(
+            UInt(EQProgrammeComparisonSelection.equalized.rawValue)
+        )
+        private let programmeComparisonActive = Atomic<Bool>(false)
+        private let programmeComparisonReady = Atomic<Bool>(false)
+        private let equalizedAttenuationMilliDB = Atomic<Int64>(0)
+        private let filtersOffAttenuationMilliDB = Atomic<Int64>(0)
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
@@ -651,6 +679,38 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 : rawSystemSoundFrameCount
             let inputFrameCount = min(mainInputFrameCount, systemSoundFrameCount)
 
+            let renderStartNanoseconds = AudioConvertHostTimeToNanos(callbackHostTime)
+            let entryDeadlineMisses = previousRenderStartNanoseconds.map {
+                SystemTapAudioEngine.missedRenderDeadlines(
+                    elapsedNanoseconds: renderStartNanoseconds >= $0
+                        ? renderStartNanoseconds - $0
+                        : 0,
+                    frameCount: previousRenderFrameCount,
+                    sampleRate: sampleRate
+                )
+            } ?? 0
+            previousRenderStartNanoseconds = renderStartNanoseconds
+            previousRenderFrameCount = outputFrameCount
+            defer {
+                let renderEndNanoseconds = AudioConvertHostTimeToNanos(
+                    AudioGetCurrentHostTime()
+                )
+                let executionDeadlineMisses = SystemTapAudioEngine.missedRenderDeadlines(
+                    elapsedNanoseconds: renderEndNanoseconds >= renderStartNanoseconds
+                        ? renderEndNanoseconds - renderStartNanoseconds
+                        : 0,
+                    frameCount: outputFrameCount,
+                    sampleRate: sampleRate
+                )
+                let missedDeadlines = max(entryDeadlineMisses, executionDeadlineMisses)
+                if missedDeadlines > 0 {
+                    renderDeadlineMisses.wrappingAdd(
+                        1,
+                        ordering: .relaxed
+                    )
+                }
+            }
+
             recordTimestampContinuity(
                 inputTime: inputTime,
                 inputFrameCount: inputFrameCount,
@@ -687,6 +747,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 outputTime: outputTime
             )
             prepareDSPAndOutputFade()
+            if programmeComparisonActive.load(ordering: .relaxed) {
+                dspTransition.setProgrammeComparisonSelection(
+                    selectedProgrammeComparisonBranch()
+                )
+            }
             let sampleCount = frameCount * channelCount
             scratchSamples.withUnsafeMutableBufferPointer { scratch in
                 let samples = UnsafeMutableBufferPointer(
@@ -706,6 +771,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: frameCount,
                     channelCount: channelCount
                 )
+                if transitionResult.programmeComparison.isActive
+                    || programmeComparisonActive.load(ordering: .relaxed) {
+                    publishProgrammeComparisonSnapshot(
+                        transitionResult.programmeComparison
+                    )
+                }
                 if transitionResult.saturatedSamples > 0 {
                     saturatedSamples.wrappingAdd(
                         transitionResult.saturatedSamples,
@@ -832,6 +903,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             totalTimestampJumpIntervalNanoseconds.store(0, ordering: .relaxed)
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
+            renderDeadlineMisses.store(0, ordering: .relaxed)
             tapToOutputLatencyObservations.store(0, ordering: .relaxed)
             minTapToOutputLatencyNanoseconds.store(.max, ordering: .relaxed)
             maxTapToOutputLatencyNanoseconds.store(0, ordering: .relaxed)
@@ -902,6 +974,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     : Double(totalJumpInterval) / Double(jumpIntervalObservations),
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
+                renderDeadlineMisses: renderDeadlineMisses.load(ordering: .relaxed),
                 tapToOutputLatencyObservations: latencyObservations,
                 minimumTapToOutputLatencyNanoseconds: latencyObservations == 0 || minimumLatency == .max
                     ? 0
@@ -944,6 +1017,44 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         func publishPendingDSPConfig(_ config: EQRenderConfiguration) {
             let box = PreparedDSPConfigBox(config: config)
+            publishPendingDSPConfigBox(box)
+        }
+
+        func publishPendingProgrammeComparison(
+            equalizedConfig: EQRenderConfiguration,
+            referenceConfig: EQRenderConfiguration
+        ) {
+            let box = PreparedDSPConfigBox(
+                equalizedConfig: equalizedConfig,
+                referenceConfig: referenceConfig
+            )
+            publishPendingDSPConfigBox(box)
+        }
+
+        func setProgrammeComparisonSelection(
+            _ selection: EQProgrammeComparisonSelection
+        ) {
+            programmeComparisonSelection.store(
+                UInt(selection.rawValue),
+                ordering: .releasing
+            )
+        }
+
+        func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+            EQProgrammeComparisonSnapshot(
+                isActive: programmeComparisonActive.load(ordering: .acquiring),
+                isReady: programmeComparisonReady.load(ordering: .acquiring),
+                selection: selectedProgrammeComparisonBranch(),
+                equalizedAttenuationDB: Double(
+                    equalizedAttenuationMilliDB.load(ordering: .relaxed)
+                ) / 1_000,
+                filtersOffAttenuationDB: Double(
+                    filtersOffAttenuationMilliDB.load(ordering: .relaxed)
+                ) / 1_000
+            )
+        }
+
+        private func publishPendingDSPConfigBox(_ box: PreparedDSPConfigBox) {
             let rawPointer = UInt(bitPattern: Unmanaged.passRetained(box).toOpaque())
             let oldPointer = pendingDSPConfigPointer.exchange(
                 rawPointer,
@@ -991,12 +1102,25 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
-            guard let processor = box.processor,
-                  dspTransition.beginTransition(to: processor) else {
+            guard let processor = box.processor else {
+                pushRetiredDSPConfigBox(rawPointer)
+                return
+            }
+            let didBegin: Bool
+            if let referenceProcessor = box.comparisonReferenceProcessor {
+                didBegin = dspTransition.beginProgrammeComparison(
+                    equalizedProcessor: processor,
+                    filtersOffProcessor: referenceProcessor
+                )
+            } else {
+                didBegin = dspTransition.beginTransition(to: processor)
+            }
+            guard didBegin else {
                 pushRetiredDSPConfigBox(rawPointer)
                 return
             }
             box.processor = nil
+            box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
         }
 
@@ -1012,8 +1136,32 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
             box.retiredProcessor = result.retiredProcessor
+            box.secondRetiredProcessor = result.secondRetiredProcessor
             activeSystemSoundPreampGains = box.systemSoundPreampGains
             pushRetiredDSPConfigBox(rawPointer)
+        }
+
+        private func selectedProgrammeComparisonBranch() -> EQProgrammeComparisonSelection {
+            EQProgrammeComparisonSelection(
+                rawValue: UInt8(
+                    programmeComparisonSelection.load(ordering: .acquiring)
+                )
+            ) ?? .equalized
+        }
+
+        private func publishProgrammeComparisonSnapshot(
+            _ snapshot: EQProgrammeComparisonSnapshot
+        ) {
+            programmeComparisonActive.store(snapshot.isActive, ordering: .releasing)
+            programmeComparisonReady.store(snapshot.isReady, ordering: .releasing)
+            equalizedAttenuationMilliDB.store(
+                Int64((snapshot.equalizedAttenuationDB * 1_000).rounded()),
+                ordering: .relaxed
+            )
+            filtersOffAttenuationMilliDB.store(
+                Int64((snapshot.filtersOffAttenuationDB * 1_000).rounded()),
+                ordering: .relaxed
+            )
         }
 
         private func incomingSystemSoundPreampGains() -> (left: Float, right: Float)? {
@@ -2059,6 +2207,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             ) else {
                 return false
             }
+            runtime.setProgrammeComparisonSelection(.equalized)
             runtime.drainDSPConfigBoxes()
             runtime.publishPendingDSPConfig(
                 EQRenderConfiguration(
@@ -2071,6 +2220,67 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             state.activeProfile = profile
             return true
         }
+    }
+
+    @discardableResult
+    public func beginProgrammeComparison(profile: EQProfile) -> Bool {
+        guard !profile.isBypassed else {
+            return false
+        }
+        if activeBackend.withLock({ $0 }) == .separateClock {
+            return separateClockBackend.beginProgrammeComparison(profile: profile)
+        }
+        return control.withLock { state in
+            guard let runtime = state.runtime else {
+                return false
+            }
+            let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
+                sampleRate: runtime.sampleRate
+            )
+            let equalizedConfig = EQRenderConfiguration(
+                profile: profile,
+                sampleRate: runtime.sampleRate,
+                channelCount: runtime.channelCount,
+                maximumUsableFrequency: maximumUsableFrequency
+            )
+            let referenceConfig = EQRenderConfiguration(
+                profile: profile.programmeComparisonReference,
+                sampleRate: runtime.sampleRate,
+                channelCount: runtime.channelCount,
+                maximumUsableFrequency: maximumUsableFrequency
+            )
+            guard equalizedConfig.isNumericallySafe,
+                  referenceConfig.isNumericallySafe else {
+                return false
+            }
+            runtime.setProgrammeComparisonSelection(.equalized)
+            runtime.drainDSPConfigBoxes()
+            runtime.publishPendingProgrammeComparison(
+                equalizedConfig: equalizedConfig,
+                referenceConfig: referenceConfig
+            )
+            return true
+        }
+    }
+
+    public func setProgrammeComparisonSelection(
+        _ selection: EQProgrammeComparisonSelection
+    ) {
+        if activeBackend.withLock({ $0 }) == .separateClock {
+            separateClockBackend.setProgrammeComparisonSelection(selection)
+            return
+        }
+        control.withLock { state in
+            state.runtime?.setProgrammeComparisonSelection(selection)
+        }
+    }
+
+    public func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+        if activeBackend.withLock({ $0 }) == .separateClock {
+            return separateClockBackend.snapshotProgrammeComparison()
+        }
+        return control.withLock { $0.runtime }?.snapshotProgrammeComparison()
+            ?? EQProgrammeComparisonSnapshot()
     }
 
     public func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32) {
@@ -3326,6 +3536,23 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             data[destinationIndex] = samples[sourceIndex]
         }
+    }
+
+    static func missedRenderDeadlines(
+        elapsedNanoseconds: UInt64,
+        frameCount: Int,
+        sampleRate: Double
+    ) -> UInt64 {
+        guard frameCount > 0,
+              sampleRate.isFinite,
+              sampleRate > 0 else {
+            return 0
+        }
+        let expectedNanoseconds = UInt64(
+            max((Double(frameCount) * 1_000_000_000 / sampleRate).rounded(), 1)
+        )
+        let elapsedPeriods = elapsedNanoseconds / expectedNanoseconds
+        return elapsedPeriods >= 2 ? elapsedPeriods - 1 : 0
     }
 
     static func preferredBufferFrameSize(for _: AudioOutputDevice) -> UInt32 {

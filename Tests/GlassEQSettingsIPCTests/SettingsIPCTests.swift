@@ -45,6 +45,9 @@ struct SettingsIPCTests {
 
         snapshot.isPreviewing = false
         #expect(settingsCanDeleteSelectedProfile(snapshot))
+
+        snapshot.programmeComparison.isActive = true
+        #expect(!settingsCanDeleteSelectedProfile(snapshot))
     }
 
     @Test
@@ -284,6 +287,28 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func programmeComparisonCommandsRoundTrip() throws {
+        let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
+        let commands: [SettingsCommand] = [
+            .startProgrammeComparison(profile),
+            .selectProgrammeComparison(.filtersOff),
+            .stopProgrammeComparison
+        ]
+
+        for (index, command) in commands.enumerated() {
+            let message = SettingsPipeMessage.request(
+                sessionToken: "token",
+                id: "comparison-\(index)",
+                kind: .command,
+                command: command
+            )
+            let encoded = try SettingsPipeCodec.encodeLine(message)
+            let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
+            #expect(decoded == message)
+        }
+    }
+
+    @Test
     func aggregateBufferSnapshotDefaultsLegacyPayloadToAutomaticSixteen() throws {
         let decoded = try JSONDecoder().decode(
             SettingsAggregateBufferDTO.self,
@@ -314,6 +339,7 @@ struct SettingsIPCTests {
         #expect(metrics.saturatedSamples == 2)
         #expect(metrics.maximumCaptureCallbackFrames == 0)
         #expect(metrics.maximumPlaybackCallbackFrames == 0)
+        #expect(metrics.renderDeadlineMisses == 0)
         #expect(metrics.droppedInputFrames == 0)
         #expect(metrics.tapToOutputLatencyObservations == 0)
         #expect(metrics.minimumTapToOutputLatencyNanoseconds == 0)
@@ -324,6 +350,7 @@ struct SettingsIPCTests {
     @Test
     func audioMetricsRoundTripTapToOutputLatency() throws {
         let metrics = SettingsAudioMetricsDTO(
+            renderDeadlineMisses: 7,
             tapToOutputLatencyObservations: 500,
             minimumTapToOutputLatencyNanoseconds: 1_250_000,
             maximumTapToOutputLatencyNanoseconds: 2_750_000,
@@ -653,6 +680,12 @@ struct SettingsIPCTests {
         let patch = SettingsSnapshotPatchDTO(
             statusMessage: "Running",
             isRunning: true,
+            programmeComparison: EQProgrammeComparisonSnapshot(
+                isActive: true,
+                isReady: true,
+                selection: .filtersOff,
+                equalizedAttenuationDB: -2.5
+            ),
             activeProfileID: profileID,
             activeProfileName: "Flat",
             currentOutput: SettingsOutputDTO(
@@ -683,6 +716,7 @@ struct SettingsIPCTests {
         let encoded = try JSONEncoder().encode(snapshot)
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         object.removeValue(forKey: "isRunning")
+        object.removeValue(forKey: "programmeComparison")
 
         let decoded = try JSONDecoder().decode(
             SettingsSnapshotDTO.self,
@@ -690,6 +724,7 @@ struct SettingsIPCTests {
         )
 
         #expect(!decoded.isRunning)
+        #expect(decoded.programmeComparison == EQProgrammeComparisonSnapshot())
     }
 
     @Test

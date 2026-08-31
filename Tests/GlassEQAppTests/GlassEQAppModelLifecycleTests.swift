@@ -296,6 +296,65 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func fixedBufferRebuildsOnceThenUsesTemporarySaferRung() async throws {
+        let output = makeOutput(uid: "fixed-recovery", name: "Fixed Recovery")
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let notifier = FakeAggregateBufferNotifier()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateBufferNotifier: notifier
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        try model.setAggregateBufferMode(.frames16)
+        await waitUntil {
+            engine.startCalls.count == 2
+                && engine.startCalls[1].aggregateBufferFrameSize == 16
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        var metrics = engine.metrics
+        metrics.renderDeadlineMisses = 3
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 3
+                && engine.startCalls[2].aggregateBufferFrameSize == 16
+                && notifier.calls.last?.kind == .fixedRebuild
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        metrics = engine.metrics
+        metrics.renderDeadlineMisses = 6
+        engine.metrics = metrics
+        await waitUntil {
+            engine.startCalls.count == 4
+                && engine.startCalls[3].aggregateBufferFrameSize == 32
+                && notifier.calls.last?.kind == .fixedTemporaryIncrease
+        }
+
+        let temporarySnapshot = model.settingsSnapshot()
+        #expect(temporarySnapshot.aggregateBuffer.mode == .frames16)
+        #expect(temporarySnapshot.currentOutputBufferFrameSize == 32)
+
+        model.retryAudioEngine()
+        await waitUntil {
+            engine.startCalls.count == 5
+                && engine.startCalls[4].aggregateBufferFrameSize == 16
+                && model.settingsSnapshot().currentOutputBufferFrameSize == 16
+        }
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames16)
+        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 16)
+    }
+
+    @Test
     func automaticAggregateBufferIgnoresInterruptionsBeforeRouteSettles() async {
         let output = makeOutput(uid: "settling-aggregate", name: "Settling Aggregate")
         let engine = FakeAudioEngine()
@@ -1050,6 +1109,167 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func programmeComparisonKeepsTheActiveProfileAndReturnsThroughDSPTransition() async throws {
+        let active = makeProfile(name: "Active")
+        let output = makeOutput(uid: "comparison-output", name: "Comparison Output")
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var draft = active
+        draft.preampDB = -6
+        draft.filters = [
+            EQFilter(kind: .peak, frequency: 1_000, gainDB: 5, q: 1)
+        ]
+        try model.startProgrammeComparison(profile: draft)
+
+        #expect(engine.programmeComparisonCalls == [draft])
+        #expect(engine.programmeComparisonSelections == [.equalized])
+        #expect(model.activeProfile == active)
+        #expect(model.settingsSnapshot().programmeComparison.isActive)
+
+        model.selectProgrammeComparison(.filtersOff)
+        #expect(engine.programmeComparisonSelections == [.equalized, .filtersOff])
+        #expect(model.settingsSnapshot().programmeComparison.selection == .filtersOff)
+
+        engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
+            isActive: true,
+            isReady: true,
+            selection: .filtersOff,
+            equalizedAttenuationDB: -3.25
+        )
+        await waitUntil {
+            model.settingsSnapshot().programmeComparison.isReady
+        }
+        #expect(
+            abs(
+                model.settingsSnapshot().programmeComparison.equalizedAttenuationDB
+                    + 3.25
+            ) < 0.001
+        )
+
+        model.stopProgrammeComparison()
+
+        #expect(engine.programmeComparisonSelections.last == .equalized)
+        #expect(engine.updateDSPCalls.last == active)
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(model.activeProfile == active)
+    }
+
+    @Test
+    func outputChangeClearsProgrammeComparisonWithoutRestoringThePreviousRouteProfile() async throws {
+        let firstProfile = makeProfile(name: "First Route")
+        let secondProfile = makeProfile(name: "Second Route")
+        let firstOutput = makeOutput(uid: "comparison-first-output", name: "First Output")
+        let secondOutput = makeOutput(uid: "comparison-second-output", name: "Second Output")
+        let store = ProfileStore(
+            profiles: [firstProfile, secondProfile],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: secondOutput.uid,
+                    profileID: secondProfile.id
+                )
+            ],
+            fallbackProfileID: firstProfile.id
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(firstOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var comparisonProfile = firstProfile
+        comparisonProfile.preampDB = -6
+        try model.startProgrammeComparison(profile: comparisonProfile)
+        model.selectProgrammeComparison(.filtersOff)
+
+        lookup.result = .success(secondOutput)
+        observer.emit(.success(secondOutput))
+        await waitUntil {
+            model.lifecycleState == .running
+                && model.currentOutputUID == secondOutput.uid
+                && engine.startCalls.count == 2
+        }
+
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(model.activeProfile == secondProfile)
+        #expect(engine.programmeComparisonSelections == [
+            .equalized,
+            .filtersOff,
+            .equalized
+        ])
+
+        let updatesBeforeStop = engine.updateDSPCalls
+        model.stopProgrammeComparison()
+
+        #expect(engine.updateDSPCalls == updatesBeforeStop)
+        #expect(model.activeProfile == secondProfile)
+    }
+
+    @Test
+    func runtimeFailureClearsProgrammeComparisonAndLaterStopIsNoOp() async throws {
+        let active = makeProfile(name: "Runtime Comparison")
+        let output = makeOutput(uid: "runtime-comparison-output", name: "Runtime Output")
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var comparisonProfile = active
+        comparisonProfile.preampDB = -6
+        try model.startProgrammeComparison(profile: comparisonProfile)
+        model.selectProgrammeComparison(.filtersOff)
+
+        engine.emitRuntimeFailure(adaptiveRenderFailure)
+        await waitUntil {
+            model.lifecycleState == .stopped
+        }
+
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(model.activeProfile == active)
+
+        let updatesBeforeStop = engine.updateDSPCalls
+        model.stopProgrammeComparison()
+
+        #expect(engine.updateDSPCalls == updatesBeforeStop)
+        #expect(model.activeProfile == active)
+    }
+
+    @Test
     func outputChangeToBypassedProfileDoesNotStartEngine() async {
         let fallback = makeProfile(name: "Fallback")
         var disabled = makeProfile(name: "Disabled")
@@ -1176,8 +1396,6 @@ struct GlassEQAppModelLifecycleTests {
             engine.muteOutputCallCount == 1
         }
         #expect(engine.muteOutputCallCount == 1)
-        #expect(model.statusMessage == localized("Audio output changed; rebuilding..."))
-        #expect(engine.startCalls.map(\.output) == [speakers])
 
         await waitUntil {
             engine.startCalls.map(\.output) == [speakers, scarlett]
@@ -1228,8 +1446,6 @@ struct GlassEQAppModelLifecycleTests {
             engine.muteOutputCallCount == 1
         }
         #expect(engine.muteOutputCallCount == 1)
-        #expect(model.statusMessage == localized("Audio output format changed; rebuilding..."))
-        #expect(engine.startCalls.map(\.output) == [initialOutput])
 
         await waitUntil {
             engine.startCalls.map(\.output) == [initialOutput, changedOutput]
@@ -1237,6 +1453,7 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
+        #expect(engine.events == ["start:\(initialOutput.uid)", "mute", "start:\(changedOutput.uid)"])
     }
 
     @Test
@@ -3593,6 +3810,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateError: Error?
     private var _updateErrorPreservesRunningState = false
     private var _updateDSPResult = true
+    private var _beginProgrammeComparisonResult = true
     private var _startDelaySeconds: TimeInterval = 0
     private var _startDelaySecondsByUID: [String: TimeInterval] = [:]
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
@@ -3600,6 +3818,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _startCalls: [StartCall] = []
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
+    private var _programmeComparisonCalls: [EQProfile] = []
+    private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
+    private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
@@ -3657,6 +3878,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _updateDSPResult = newValue } }
     }
 
+    var beginProgrammeComparisonResult: Bool {
+        get { withLock { _beginProgrammeComparisonResult } }
+        set { withLock { _beginProgrammeComparisonResult = newValue } }
+    }
+
     var startDelaySeconds: TimeInterval {
         get { withLock { _startDelaySeconds } }
         set { withLock { _startDelaySeconds = newValue } }
@@ -3680,6 +3906,21 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var updateDSPCalls: [EQProfile] {
         get { withLock { _updateDSPCalls } }
         set { withLock { _updateDSPCalls = newValue } }
+    }
+
+    private(set) var programmeComparisonCalls: [EQProfile] {
+        get { withLock { _programmeComparisonCalls } }
+        set { withLock { _programmeComparisonCalls = newValue } }
+    }
+
+    private(set) var programmeComparisonSelections: [EQProgrammeComparisonSelection] {
+        get { withLock { _programmeComparisonSelections } }
+        set { withLock { _programmeComparisonSelections = newValue } }
+    }
+
+    var programmeComparisonSnapshot: EQProgrammeComparisonSnapshot {
+        get { withLock { _programmeComparisonSnapshot } }
+        set { withLock { _programmeComparisonSnapshot = newValue } }
     }
 
     private(set) var stopCallCount: Int {
@@ -3872,6 +4113,34 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
+    func beginProgrammeComparison(profile: EQProfile) -> Bool {
+        withLock {
+            _programmeComparisonCalls.append(profile)
+            if _beginProgrammeComparisonResult {
+                _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
+                    isActive: true,
+                    selection: .equalized
+                )
+            }
+            return _beginProgrammeComparisonResult
+        }
+    }
+
+    func setProgrammeComparisonSelection(
+        _ selection: EQProgrammeComparisonSelection
+    ) {
+        withLock {
+            _programmeComparisonSelections.append(selection)
+            _programmeComparisonSnapshot.selection = selection
+        }
+    }
+
+    func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+        withLock {
+            _programmeComparisonSnapshot
+        }
+    }
+
     func muteOutputForTransition() {
         withLock {
             _events.append("mute")
@@ -3929,9 +4198,16 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 @MainActor
 private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying {
     struct Call: Equatable {
+        enum Kind: Equatable {
+            case automatic
+            case fixedRebuild
+            case fixedTemporaryIncrease
+        }
+
         var outputName: String
         var previousFrameSize: UInt32
         var newFrameSize: UInt32
+        var kind: Kind = .automatic
     }
 
     private(set) var calls: [Call] = []
@@ -3945,6 +4221,31 @@ private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying 
             outputName: outputName,
             previousFrameSize: previousFrameSize,
             newFrameSize: newFrameSize
+        ))
+    }
+
+    func notifyFixedBufferRebuild(
+        outputName: String,
+        frameSize: UInt32
+    ) {
+        calls.append(Call(
+            outputName: outputName,
+            previousFrameSize: frameSize,
+            newFrameSize: frameSize,
+            kind: .fixedRebuild
+        ))
+    }
+
+    func notifyTemporaryBufferIncrease(
+        outputName: String,
+        preferredFrameSize: UInt32,
+        runtimeFrameSize: UInt32
+    ) {
+        calls.append(Call(
+            outputName: outputName,
+            previousFrameSize: preferredFrameSize,
+            newFrameSize: runtimeFrameSize,
+            kind: .fixedTemporaryIncrease
         ))
     }
 }

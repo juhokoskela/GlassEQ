@@ -210,11 +210,23 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private final class PreparedDSPConfigBox: @unchecked Sendable {
         var processor: EQProcessor?
+        var comparisonReferenceProcessor: EQProcessor?
         var retiredProcessor: EQProcessor?
+        var secondRetiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
         init(config: EQRenderConfiguration) {
             self.processor = EQProcessor(renderConfiguration: config)
+        }
+
+        init(
+            equalizedConfig: EQRenderConfiguration,
+            referenceConfig: EQRenderConfiguration
+        ) {
+            self.processor = EQProcessor(renderConfiguration: equalizedConfig)
+            self.comparisonReferenceProcessor = EQProcessor(
+                renderConfiguration: referenceConfig
+            )
         }
     }
 
@@ -281,6 +293,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
+        private let programmeComparisonSelection = Atomic<UInt>(
+            UInt(EQProgrammeComparisonSelection.equalized.rawValue)
+        )
+        private let programmeComparisonActive = Atomic<Bool>(false)
+        private let programmeComparisonReady = Atomic<Bool>(false)
+        private let equalizedAttenuationMilliDB = Atomic<Int64>(0)
+        private let filtersOffAttenuationMilliDB = Atomic<Int64>(0)
         private let stopping = Atomic<Bool>(false)
         private let captureInCallback = Atomic<Bool>(false)
         private let playbackInCallback = Atomic<Bool>(false)
@@ -527,6 +546,44 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
         func publishPendingDSPConfig(_ config: EQRenderConfiguration) {
             let box = PreparedDSPConfigBox(config: config)
+            publishPendingDSPConfigBox(box)
+        }
+
+        func publishPendingProgrammeComparison(
+            equalizedConfig: EQRenderConfiguration,
+            referenceConfig: EQRenderConfiguration
+        ) {
+            let box = PreparedDSPConfigBox(
+                equalizedConfig: equalizedConfig,
+                referenceConfig: referenceConfig
+            )
+            publishPendingDSPConfigBox(box)
+        }
+
+        func setProgrammeComparisonSelection(
+            _ selection: EQProgrammeComparisonSelection
+        ) {
+            programmeComparisonSelection.store(
+                UInt(selection.rawValue),
+                ordering: .releasing
+            )
+        }
+
+        func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+            EQProgrammeComparisonSnapshot(
+                isActive: programmeComparisonActive.load(ordering: .acquiring),
+                isReady: programmeComparisonReady.load(ordering: .acquiring),
+                selection: selectedProgrammeComparisonBranch(),
+                equalizedAttenuationDB: Double(
+                    equalizedAttenuationMilliDB.load(ordering: .relaxed)
+                ) / 1_000,
+                filtersOffAttenuationDB: Double(
+                    filtersOffAttenuationMilliDB.load(ordering: .relaxed)
+                ) / 1_000
+            )
+        }
+
+        private func publishPendingDSPConfigBox(_ box: PreparedDSPConfigBox) {
             let rawPointer = UInt(bitPattern: Unmanaged.passRetained(box).toOpaque())
             let oldPointer = pendingDSPConfigPointer.exchange(rawPointer, ordering: .acquiringAndReleasing)
             releaseDSPConfigBox(oldPointer)
@@ -568,6 +625,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
 
             beginPendingDSPTransitionIfPossible()
+            if programmeComparisonActive.load(ordering: .relaxed) {
+                dspTransition.setProgrammeComparisonSelection(
+                    selectedProgrammeComparisonBranch()
+                )
+            }
 
             var saturatedSampleCount: UInt64 = 0
             captureScratchSamples.withUnsafeMutableBufferPointer { scratch in
@@ -591,6 +653,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                         frameCount: chunkFrames,
                         channelCount: channelCount
                     )
+                    if transitionResult.programmeComparison.isActive
+                        || programmeComparisonActive.load(ordering: .relaxed) {
+                        publishProgrammeComparisonSnapshot(
+                            transitionResult.programmeComparison
+                        )
+                    }
                     finishDSPTransition(transitionResult)
                     saturatedSampleCount += transitionResult.saturatedSamples
                     recordWriteResult(
@@ -1068,12 +1136,25 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
             let pointer = UnsafeRawPointer(bitPattern: rawPointer)!
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
-            guard let processor = box.processor,
-                  dspTransition.beginTransition(to: processor) else {
+            guard let processor = box.processor else {
+                pushRetiredDSPConfigBox(rawPointer)
+                return
+            }
+            let didBegin: Bool
+            if let referenceProcessor = box.comparisonReferenceProcessor {
+                didBegin = dspTransition.beginProgrammeComparison(
+                    equalizedProcessor: processor,
+                    filtersOffProcessor: referenceProcessor
+                )
+            } else {
+                didBegin = dspTransition.beginTransition(to: processor)
+            }
+            guard didBegin else {
                 pushRetiredDSPConfigBox(rawPointer)
                 return
             }
             box.processor = nil
+            box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
         }
 
@@ -1087,7 +1168,31 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             activeDSPConfigPointer = 0
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
             box.retiredProcessor = result.retiredProcessor
+            box.secondRetiredProcessor = result.secondRetiredProcessor
             pushRetiredDSPConfigBox(rawPointer)
+        }
+
+        private func selectedProgrammeComparisonBranch() -> EQProgrammeComparisonSelection {
+            EQProgrammeComparisonSelection(
+                rawValue: UInt8(
+                    programmeComparisonSelection.load(ordering: .acquiring)
+                )
+            ) ?? .equalized
+        }
+
+        private func publishProgrammeComparisonSnapshot(
+            _ snapshot: EQProgrammeComparisonSnapshot
+        ) {
+            programmeComparisonActive.store(snapshot.isActive, ordering: .releasing)
+            programmeComparisonReady.store(snapshot.isReady, ordering: .releasing)
+            equalizedAttenuationMilliDB.store(
+                Int64((snapshot.equalizedAttenuationDB * 1_000).rounded()),
+                ordering: .relaxed
+            )
+            filtersOffAttenuationMilliDB.store(
+                Int64((snapshot.filtersOffAttenuationDB * 1_000).rounded()),
+                ordering: .relaxed
+            )
         }
 
         private func pushRetiredDSPConfigBox(_ rawPointer: UInt) {
@@ -1651,6 +1756,57 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    public func beginProgrammeComparison(profile: EQProfile) -> Bool {
+        guard !profile.isBypassed else {
+            return false
+        }
+        return control.withLock { state in
+            guard let runtime = state.runtime else {
+                return false
+            }
+            let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
+                sampleRate: state.activeOutput?.nominalSampleRate ?? runtime.sampleRate
+            )
+            let equalizedConfig = EQRenderConfiguration(
+                profile: profile,
+                sampleRate: runtime.sampleRate,
+                channelCount: runtime.channelCount,
+                maximumUsableFrequency: maximumUsableFrequency
+            )
+            let referenceConfig = EQRenderConfiguration(
+                profile: profile.programmeComparisonReference,
+                sampleRate: runtime.sampleRate,
+                channelCount: runtime.channelCount,
+                maximumUsableFrequency: maximumUsableFrequency
+            )
+            guard equalizedConfig.isNumericallySafe,
+                  referenceConfig.isNumericallySafe else {
+                return false
+            }
+            runtime.setProgrammeComparisonSelection(.equalized)
+            runtime.drainDSPConfigBoxes()
+            runtime.publishPendingProgrammeComparison(
+                equalizedConfig: equalizedConfig,
+                referenceConfig: referenceConfig
+            )
+            return true
+        }
+    }
+
+    public func setProgrammeComparisonSelection(
+        _ selection: EQProgrammeComparisonSelection
+    ) {
+        control.withLock { state in
+            state.runtime?.setProgrammeComparisonSelection(selection)
+        }
+    }
+
+    public func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
+        control.withLock { $0.runtime }?.snapshotProgrammeComparison()
+            ?? EQProgrammeComparisonSnapshot()
+    }
+
     private func updateDSPLocked(
         _ state: inout ControlState,
         profile: EQProfile,
@@ -1680,6 +1836,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
         )
+        runtime.setProgrammeComparisonSelection(.equalized)
         runtime.drainDSPConfigBoxes()
         runtime.publishPendingDSPConfig(preparedConfig)
         state.activeProfile = profile

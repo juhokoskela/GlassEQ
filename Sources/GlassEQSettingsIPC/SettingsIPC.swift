@@ -112,6 +112,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var outputTimestampDiscontinuities: UInt64
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
+    public var renderDeadlineMisses: UInt64
     public var playbackTimestampDiscontinuities: UInt64
     public var playbackBufferRenegotiations: UInt64
     public var adaptivePlaybackRenderFailures: UInt64
@@ -144,6 +145,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case outputTimestampDiscontinuities
         case maximumCaptureCallbackFrames
         case maximumPlaybackCallbackFrames
+        case renderDeadlineMisses
         case playbackTimestampDiscontinuities
         case playbackBufferRenegotiations
         case adaptivePlaybackRenderFailures
@@ -177,6 +179,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         outputTimestampDiscontinuities: UInt64 = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
+        renderDeadlineMisses: UInt64 = 0,
         playbackTimestampDiscontinuities: UInt64 = 0,
         playbackBufferRenegotiations: UInt64 = 0,
         adaptivePlaybackRenderFailures: UInt64 = 0,
@@ -208,6 +211,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.outputTimestampDiscontinuities = outputTimestampDiscontinuities
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
+        self.renderDeadlineMisses = renderDeadlineMisses
         self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
         self.playbackBufferRenegotiations = playbackBufferRenegotiations
         self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
@@ -243,6 +247,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             outputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .outputTimestampDiscontinuities) ?? 0,
             maximumCaptureCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumCaptureCallbackFrames) ?? 0,
             maximumPlaybackCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumPlaybackCallbackFrames) ?? 0,
+            renderDeadlineMisses: try container.decodeIfPresent(UInt64.self, forKey: .renderDeadlineMisses) ?? 0,
             playbackTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
             playbackBufferRenegotiations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferRenegotiations) ?? 0,
             adaptivePlaybackRenderFailures: try container.decodeIfPresent(UInt64.self, forKey: .adaptivePlaybackRenderFailures) ?? 0,
@@ -305,6 +310,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var isRunning: Bool?
     public var isPreviewing: Bool?
+    public var programmeComparison: EQProgrammeComparisonSnapshot?
     public var selectedProfileID: UUID?
     public var draftProfile: EQProfile?
     public var activeProfileID: UUID?
@@ -319,6 +325,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         statusMessage: String? = nil,
         isRunning: Bool? = nil,
         isPreviewing: Bool? = nil,
+        programmeComparison: EQProgrammeComparisonSnapshot? = nil,
         selectedProfileID: UUID? = nil,
         draftProfile: EQProfile? = nil,
         activeProfileID: UUID? = nil,
@@ -332,6 +339,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.statusMessage = statusMessage
         self.isRunning = isRunning
         self.isPreviewing = isPreviewing
+        self.programmeComparison = programmeComparison
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile
         self.activeProfileID = activeProfileID
@@ -362,6 +370,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var metrics: SettingsAudioMetricsDTO
     public var isRunning: Bool
     public var isPreviewing: Bool
+    public var programmeComparison: EQProgrammeComparisonSnapshot
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO
 
     private enum CodingKeys: String, CodingKey {
@@ -382,6 +391,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case metrics
         case isRunning
         case isPreviewing
+        case programmeComparison
         case profileStoreProtection
     }
 
@@ -403,6 +413,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         metrics: SettingsAudioMetricsDTO,
         isRunning: Bool,
         isPreviewing: Bool,
+        programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
         profileStoreProtection: SettingsProfileStoreProtectionDTO = .unprotected
     ) {
         self.profiles = profiles
@@ -422,6 +433,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.metrics = metrics
         self.isRunning = isRunning
         self.isPreviewing = isPreviewing
+        self.programmeComparison = programmeComparison
         self.profileStoreProtection = profileStoreProtection
     }
 
@@ -448,6 +460,10 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             metrics: try container.decode(SettingsAudioMetricsDTO.self, forKey: .metrics),
             isRunning: try container.decodeIfPresent(Bool.self, forKey: .isRunning) ?? false,
             isPreviewing: try container.decode(Bool.self, forKey: .isPreviewing),
+            programmeComparison: try container.decodeIfPresent(
+                EQProgrammeComparisonSnapshot.self,
+                forKey: .programmeComparison
+            ) ?? EQProgrammeComparisonSnapshot(),
             profileStoreProtection: try container.decode(
                 SettingsProfileStoreProtectionDTO.self,
                 forKey: .profileStoreProtection
@@ -475,6 +491,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             metrics: SettingsAudioMetricsDTO(),
             isRunning: false,
             isPreviewing: false,
+            programmeComparison: EQProgrammeComparisonSnapshot(),
             profileStoreProtection: .unprotected
         )
     }
@@ -490,6 +507,9 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case importProfile(format: SettingsImportFormat, name: String, text: String)
     case preview(EQProfile)
     case stopPreview
+    case startProgrammeComparison(EQProfile)
+    case selectProgrammeComparison(EQProgrammeComparisonSelection)
+    case stopProgrammeComparison
     case resetDiagnostics
     case setAggregateBufferMode(SettingsAggregateBufferMode)
     case retryAutomaticAggregateBuffer
