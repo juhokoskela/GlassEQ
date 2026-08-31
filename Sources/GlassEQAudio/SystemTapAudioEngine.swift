@@ -717,33 +717,71 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     final class StartupCallbackQualification: @unchecked Sendable {
-        private let validCallbackStreak = Atomic<UInt64>(0)
+        struct Callback {
+            fileprivate var generation: UInt64
+        }
+
+        private static let streakMask = UInt64(UInt32.max)
+        // Keep the generation and streak in one atomic so a reset cannot land
+        // between a callback's generation check and its streak update.
+        private let state = Atomic<UInt64>(0)
         private let rejectedCallbacks = Atomic<UInt64>(0)
 
         func reset() {
-            validCallbackStreak.store(0, ordering: .releasing)
+            advanceGeneration()
             rejectedCallbacks.store(0, ordering: .relaxed)
         }
 
         func beginProbation() {
-            validCallbackStreak.store(0, ordering: .releasing)
+            advanceGeneration()
         }
 
-        func record(isValid: Bool) {
-            if isValid {
-                validCallbackStreak.wrappingAdd(1, ordering: .releasing)
-            } else {
-                validCallbackStreak.store(0, ordering: .releasing)
+        func beginCallback() -> Callback {
+            Callback(
+                generation: state.load(ordering: .acquiring) & ~Self.streakMask
+            )
+        }
+
+        func record(_ callback: Callback, isValid: Bool) {
+            let current = state.load(ordering: .acquiring)
+            guard current & ~Self.streakMask == callback.generation else {
+                return
+            }
+            let currentStreak = current & Self.streakMask
+            let nextStreak = isValid
+                ? min(currentStreak + 1, Self.streakMask)
+                : 0
+            let exchange = state.compareExchange(
+                expected: current,
+                desired: callback.generation | nextStreak,
+                ordering: .acquiringAndReleasing
+            )
+            if exchange.exchanged, !isValid {
                 rejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
             }
         }
 
         var validStreak: UInt64 {
-            validCallbackStreak.load(ordering: .acquiring)
+            state.load(ordering: .acquiring) & Self.streakMask
         }
 
         var rejectedCount: UInt64 {
             rejectedCallbacks.load(ordering: .acquiring)
+        }
+
+        private func advanceGeneration() {
+            while true {
+                let current = state.load(ordering: .acquiring)
+                let generation = UInt32(truncatingIfNeeded: current >> 32) &+ 1
+                let exchange = state.compareExchange(
+                    expected: current,
+                    desired: UInt64(generation) << 32,
+                    ordering: .acquiringAndReleasing
+                )
+                if exchange.exchanged {
+                    return
+                }
+            }
         }
     }
 
@@ -1024,6 +1062,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let startupQualificationWasEnabled = startupQualificationEnabled.load(
                 ordering: .acquiring
             )
+            let startupQualificationCallback = startupQualificationWasEnabled
+                ? startupQualification.beginCallback()
+                : nil
             let expectedCallbackFrames = startupQualificationWasEnabled
                 ? self.expectedCallbackFrames
                 : 0
@@ -1141,8 +1182,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: outputFrameCount,
                     sampleRate: sampleRate
                 )
-                if startupQualificationWasEnabled {
+                if let startupQualificationCallback {
                     recordStartupCallback(
+                        startupQualificationCallback,
                         isValid: startupCallbackCandidate
                             && entryDeadlineMisses == 0
                             && executionDeadlineMisses == 0
@@ -1346,8 +1388,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return value == 0 ? nil : value
         }
 
-        private func recordStartupCallback(isValid: Bool) {
-            startupQualification.record(isValid: isValid)
+        private func recordStartupCallback(
+            _ callback: StartupCallbackQualification.Callback,
+            isValid: Bool
+        ) {
+            startupQualification.record(callback, isValid: isValid)
         }
 
         func markStopping() {

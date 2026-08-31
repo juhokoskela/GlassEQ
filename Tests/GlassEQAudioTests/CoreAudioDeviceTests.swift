@@ -280,17 +280,28 @@ struct CoreAudioDeviceTests {
     func aggregateStartupProbationCountsOnlyPostActivationCallbacks() {
         let qualification = SystemTapAudioEngine.StartupCallbackQualification()
         for _ in 0..<40 {
-            qualification.record(isValid: true)
+            qualification.record(
+                qualification.beginCallback(),
+                isValid: true
+            )
         }
+        let inFlightCallback = qualification.beginCallback()
 
         qualification.beginProbation()
+        qualification.record(inFlightCallback, isValid: true)
 
         #expect(qualification.validStreak == 0)
         for _ in 0..<7 {
-            qualification.record(isValid: true)
+            qualification.record(
+                qualification.beginCallback(),
+                isValid: true
+            )
         }
         #expect(qualification.validStreak == 7)
-        qualification.record(isValid: true)
+        qualification.record(
+            qualification.beginCallback(),
+            isValid: true
+        )
         #expect(qualification.validStreak == 8)
     }
 
