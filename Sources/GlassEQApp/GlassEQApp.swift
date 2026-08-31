@@ -245,6 +245,7 @@ enum GlassEQAppLifecycleState: Equatable {
 
 protocol AudioEngineControlling: AnyObject, Sendable {
     var state: AudioEngineState { get }
+    var isUsingSeparateClockBackend: Bool { get }
     var isUsingTransitionalHeadsetBackend: Bool { get }
     var isUsingPromotedHeadsetAggregate: Bool { get }
     var isDeferringColdStartupAggregate: Bool { get }
@@ -266,6 +267,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func muteOutputForTransition()
     func stop()
     func snapshotMetrics() -> AudioEngineMetrics
+    func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata?
     func resetDiagnostics()
     func setPlaybackBufferRenegotiationHandler(
         _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
@@ -277,6 +279,8 @@ protocol AudioEngineControlling: AnyObject, Sendable {
 }
 
 extension AudioEngineControlling {
+    var isUsingSeparateClockBackend: Bool { false }
+
     func beginProgrammeComparison(profile _: EQProfile) -> Bool { false }
 
     func setProgrammeComparisonSelection(_: EQProgrammeComparisonSelection) {}
@@ -284,6 +288,8 @@ extension AudioEngineControlling {
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
         EQProgrammeComparisonSnapshot()
     }
+
+    func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? { nil }
 
     func setPlaybackBufferRenegotiationHandler(
         _: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
@@ -349,10 +355,14 @@ protocol WorkspaceOpening {
 extension NSWorkspace: WorkspaceOpening {}
 
 extension SettingsAudioMetricsDTO {
-    init(_ metrics: AudioEngineMetrics) {
+    init(
+        _ metrics: AudioEngineMetrics,
+        diagnostics: SettingsAudioDiagnosticsDTO = SettingsAudioDiagnosticsDTO()
+    ) {
         self.init(
             capturedFrames: metrics.capturedFrames,
             playedFrames: metrics.playedFrames,
+            playbackUnderrunEvents: metrics.playbackUnderrunEvents,
             playbackUnderrunFrames: metrics.playbackUnderrunFrames,
             droppedInputFrames: metrics.droppedInputFrames,
             droppedBufferedFrames: metrics.droppedBufferedFrames,
@@ -367,8 +377,35 @@ extension SettingsAudioMetricsDTO {
             inputTimestampDiscontinuities: metrics.inputTimestampDiscontinuities,
             outputTimestampDiscontinuities: metrics.outputTimestampDiscontinuities,
             pairedTimestampDiscontinuities: metrics.pairedTimestampDiscontinuities,
+            qualifyingPairedTimestampDiscontinuities:
+                metrics.qualifyingPairedTimestampDiscontinuities,
+            lastInputTimestampJumpFrames: metrics.lastInputTimestampJumpFrames,
+            lastOutputTimestampJumpFrames: metrics.lastOutputTimestampJumpFrames,
+            lastInputHostIntervalErrorNanoseconds:
+                metrics.lastInputHostIntervalErrorNanoseconds,
+            lastOutputHostIntervalErrorNanoseconds:
+                metrics.lastOutputHostIntervalErrorNanoseconds,
+            timestampJumpIntervalObservations: metrics.timestampJumpIntervalObservations,
+            minimumTimestampJumpIntervalNanoseconds:
+                metrics.minimumTimestampJumpIntervalNanoseconds,
+            maximumTimestampJumpIntervalNanoseconds:
+                metrics.maximumTimestampJumpIntervalNanoseconds,
+            averageTimestampJumpIntervalNanoseconds:
+                metrics.averageTimestampJumpIntervalNanoseconds,
             maximumCaptureCallbackFrames: metrics.maximumCaptureCallbackFrames,
             maximumPlaybackCallbackFrames: metrics.maximumPlaybackCallbackFrames,
+            captureCallbackSizeObservations: metrics.captureCallbackSizeObservations.map {
+                SettingsAudioCallbackSizeObservationDTO(
+                    frameCount: $0.frameCount,
+                    observations: $0.observations
+                )
+            },
+            playbackCallbackSizeObservations: metrics.playbackCallbackSizeObservations.map {
+                SettingsAudioCallbackSizeObservationDTO(
+                    frameCount: $0.frameCount,
+                    observations: $0.observations
+                )
+            },
             renderDeadlineMisses: metrics.renderDeadlineMisses,
             callbackStartStarvations: metrics.callbackStartStarvations,
             renderOverruns: metrics.renderOverruns,
@@ -385,24 +422,52 @@ extension SettingsAudioMetricsDTO {
             minimumTapToOutputLatencyNanoseconds: metrics.minimumTapToOutputLatencyNanoseconds,
             maximumTapToOutputLatencyNanoseconds: metrics.maximumTapToOutputLatencyNanoseconds,
             averageTapToOutputLatencyNanoseconds: metrics.averageTapToOutputLatencyNanoseconds,
+            callbackTimingObservations: metrics.callbackTimingObservations,
+            minimumInputAgeNanoseconds: metrics.minimumInputAgeNanoseconds,
+            maximumInputAgeNanoseconds: metrics.maximumInputAgeNanoseconds,
+            averageInputAgeNanoseconds: metrics.averageInputAgeNanoseconds,
+            minimumOutputLeadNanoseconds: metrics.minimumOutputLeadNanoseconds,
+            maximumOutputLeadNanoseconds: metrics.maximumOutputLeadNanoseconds,
+            averageOutputLeadNanoseconds: metrics.averageOutputLeadNanoseconds,
             renderTiming: SettingsAudioRenderTimingDTO(
                 callbackStartLatenessObservations:
                     metrics.renderTiming.callbackStartLatenessObservations,
+                callbackStartLatenessP50Nanoseconds:
+                    metrics.renderTiming.callbackStartLatenessP50Nanoseconds,
+                callbackStartLatenessP99Nanoseconds:
+                    metrics.renderTiming.callbackStartLatenessP99Nanoseconds,
+                callbackStartLatenessP999Nanoseconds:
+                    metrics.renderTiming.callbackStartLatenessP999Nanoseconds,
                 callbackStartLatenessP9999Nanoseconds:
                     metrics.renderTiming.callbackStartLatenessP9999Nanoseconds,
                 maximumCallbackStartLatenessNanoseconds:
                     metrics.renderTiming.maximumCallbackStartLatenessNanoseconds,
                 directHeadObservations: metrics.renderTiming.directHeadObservations,
+                directHeadP50Nanoseconds: metrics.renderTiming.directHeadP50Nanoseconds,
+                directHeadP99Nanoseconds: metrics.renderTiming.directHeadP99Nanoseconds,
+                directHeadP999Nanoseconds: metrics.renderTiming.directHeadP999Nanoseconds,
                 directHeadP9999Nanoseconds: metrics.renderTiming.directHeadP9999Nanoseconds,
                 maximumDirectHeadNanoseconds: metrics.renderTiming.maximumDirectHeadNanoseconds,
                 tailWorkObservations: metrics.renderTiming.tailWorkObservations,
+                tailWorkP50Nanoseconds: metrics.renderTiming.tailWorkP50Nanoseconds,
+                tailWorkP99Nanoseconds: metrics.renderTiming.tailWorkP99Nanoseconds,
+                tailWorkP999Nanoseconds: metrics.renderTiming.tailWorkP999Nanoseconds,
                 tailWorkP9999Nanoseconds: metrics.renderTiming.tailWorkP9999Nanoseconds,
                 maximumTailWorkNanoseconds: metrics.renderTiming.maximumTailWorkNanoseconds,
                 totalRenderObservations: metrics.renderTiming.totalRenderObservations,
+                totalRenderP50Nanoseconds: metrics.renderTiming.totalRenderP50Nanoseconds,
+                totalRenderP99Nanoseconds: metrics.renderTiming.totalRenderP99Nanoseconds,
+                totalRenderP999Nanoseconds: metrics.renderTiming.totalRenderP999Nanoseconds,
                 totalRenderP9999Nanoseconds: metrics.renderTiming.totalRenderP9999Nanoseconds,
                 maximumTotalRenderNanoseconds: metrics.renderTiming.maximumTotalRenderNanoseconds,
                 completionLatenessObservations:
                     metrics.renderTiming.completionLatenessObservations,
+                completionLatenessP50Nanoseconds:
+                    metrics.renderTiming.completionLatenessP50Nanoseconds,
+                completionLatenessP99Nanoseconds:
+                    metrics.renderTiming.completionLatenessP99Nanoseconds,
+                completionLatenessP999Nanoseconds:
+                    metrics.renderTiming.completionLatenessP999Nanoseconds,
                 completionLatenessP9999Nanoseconds:
                     metrics.renderTiming.completionLatenessP9999Nanoseconds,
                 maximumCompletionLatenessNanoseconds:
@@ -411,7 +476,8 @@ extension SettingsAudioMetricsDTO {
                 minimumTailCompletionSlackFrames:
                     metrics.renderTiming.minimumTailCompletionSlackFrames,
                 tailDeadlineMisses: metrics.renderTiming.tailDeadlineMisses
-            )
+            ),
+            diagnostics: diagnostics
         )
     }
 }
@@ -525,6 +591,20 @@ final class GlassEQAppModel {
     private let aggregateBufferNotifier: any AggregateBufferChangeNotifying
     private var pendingAggregateBufferIncrease: PendingAggregateBufferIncrease?
     private var fixedBufferRecovery: FixedBufferRecovery?
+    private var diagnosticsResetAt = Date()
+    private var diagnosticsResetInstant = ContinuousClock.now
+    private var diagnosticsRuntimeStartedAt: Date?
+    private var diagnosticsRuntimeStartedInstant: ContinuousClock.Instant?
+    private var diagnosticsHasStartedRuntime = false
+    private var diagnosticsRuntimeRebuilds: UInt64 = 0
+    private var diagnosticsAutomaticRecoveries: UInt64 = 0
+    private var diagnosticsBufferEscalations: UInt64 = 0
+    private var diagnosticsHeadsetFallbacks: UInt64 = 0
+    private var diagnosticsLastRecoveryReason: SettingsAudioRecoveryReason?
+    private var diagnosticsLastRecoveryAt: Date?
+    private var diagnosticsObservedDeviceSampleRate = 0.0
+    private var diagnosticsTransportType: UInt32?
+    private var diagnosticsLatencyMetadata: AudioEngineLatencyMetadata?
     private let storeWriter: ProfileStoreWriter
     private var profilePersistenceMode: ProfilePersistenceMode = .normal
     @ObservationIgnored private let engineWorkExecutor = EngineWorkExecutor()
@@ -780,19 +860,19 @@ final class GlassEQAppModel {
     }
 
     private enum EngineWorkResult: Sendable {
-        case success(AudioOutputDevice)
+        case success(AudioOutputDevice, AudioEngineLatencyMetadata?)
         case profileChangeNotApplied(any Error, AudioOutputDevice, EngineProfileReconciliation?)
         case failure(any Error, AudioOutputDevice?)
         case cancelled
     }
 
     private enum HeadsetPromotionWorkResult: Sendable {
-        case success(HeadsetAggregatePromotionResult)
+        case success(HeadsetAggregatePromotionResult, AudioEngineLatencyMetadata?)
         case failure(String)
     }
 
     private enum ColdStartupPromotionWorkResult: Sendable {
-        case success(ColdStartupAggregatePromotionResult)
+        case success(ColdStartupAggregatePromotionResult, AudioEngineLatencyMetadata?)
         case failure(String)
     }
 
@@ -970,7 +1050,7 @@ final class GlassEQAppModel {
             aggregateBuffer: aggregateBufferSnapshot(),
             fallbackProfileID: profileStore.fallbackProfileID,
             statusMessage: statusMessage,
-            metrics: SettingsAudioMetricsDTO(engineMetrics),
+            metrics: settingsMetricsSnapshot(),
             isRunning: isRunning,
             isPreviewing: previewReturnProfile != nil,
             programmeComparison: settingsProgrammeComparisonSnapshot(),
@@ -1005,6 +1085,145 @@ final class GlassEQAppModel {
                 && engineStartTask == nil
                 && engineIsRunning
         )
+    }
+
+    func settingsMetricsSnapshot() -> SettingsAudioMetricsDTO {
+        SettingsAudioMetricsDTO(
+            engineMetrics,
+            diagnostics: settingsAudioDiagnosticsSnapshot()
+        )
+    }
+
+    private func settingsAudioDiagnosticsSnapshot() -> SettingsAudioDiagnosticsDTO {
+        let buffer = aggregateBufferSnapshot()
+        let selectedFrameSize: UInt32 = switch buffer.mode {
+        case .automatic:
+            buffer.automaticFrameSize
+        case .frames16:
+            16
+        case .frames32:
+            32
+        case .frames64:
+            64
+        }
+        let selectedBufferIsSafer = switch buffer.mode {
+        case .automatic:
+            buffer.automaticFrameSize > 16
+        case .frames16, .frames32, .frames64:
+            currentOutputBufferFrameSize > selectedFrameSize
+        }
+        let isUsingSaferBuffer = buffer.isAvailable && selectedBufferIsSafer
+        let health: SettingsAudioHealth
+        if engineStartTask != nil || lifecycleState == .waking {
+            health = .recovering
+        } else if isRunning {
+            health = .stable
+        } else if lifecycleState == .stopped || lifecycleState == .sleeping
+            || lifecycleState == .terminating || activeProfile.isBypassed {
+            health = .stopped
+        } else {
+            health = .needsAttention
+        }
+        let routeMode: SettingsAudioRouteMode
+        if engine.isUsingTransitionalHeadsetBackend {
+            routeMode = .headsetCompatibility
+        } else if engine.isUsingSeparateClockBackend {
+            routeMode = .compatibility
+        } else if isRunning {
+            routeMode = .lowLatency
+        } else {
+            routeMode = .unavailable
+        }
+        let latency = diagnosticsLatencyMetadata
+        let processingSampleRate = engineMetrics.playbackBufferSampleRate > 0
+            ? engineMetrics.playbackBufferSampleRate
+            : currentOutputSampleRate
+        return SettingsAudioDiagnosticsDTO(
+            status: SettingsAudioStatusDTO(
+                health: health,
+                routeMode: routeMode,
+                isUsingSaferBuffer: isUsingSaferBuffer
+            ),
+            route: SettingsAudioRouteDTO(
+                transport: Self.transportDescription(diagnosticsTransportType),
+                observedDeviceSampleRate: diagnosticsObservedDeviceSampleRate,
+                activeDeviceSampleRate: currentOutputSampleRate,
+                processingSampleRate: processingSampleRate,
+                nativeOutputStreamIndex: activeAggregateRoute?.nativeOutputStreamIndex,
+                physicalDeviceBufferFrameSize: latency?.physicalDevice.bufferFrameSize,
+                aggregateBufferFrameSize: latency?.aggregateDevice.bufferFrameSize,
+                physicalOutputStreamChannelCounts:
+                    latency?.physicalDevice.outputStreamChannelCounts ?? [],
+                aggregateInputStreamChannelCounts:
+                    latency?.aggregateDevice.inputStreamChannelCounts ?? [],
+                aggregateOutputStreamChannelCounts:
+                    latency?.aggregateDevice.outputStreamChannelCounts ?? [],
+                physicalInputSafetyOffsetFrames:
+                    latency?.physicalDevice.inputSafetyOffsetFrames,
+                physicalOutputSafetyOffsetFrames:
+                    latency?.physicalDevice.outputSafetyOffsetFrames,
+                aggregateInputSafetyOffsetFrames:
+                    latency?.aggregateDevice.inputSafetyOffsetFrames,
+                aggregateOutputSafetyOffsetFrames:
+                    latency?.aggregateDevice.outputSafetyOffsetFrames
+            ),
+            observation: SettingsAudioObservationDTO(
+                resetAt: diagnosticsResetAt,
+                observationDurationSeconds: Self.durationSeconds(
+                    diagnosticsResetInstant.duration(to: .now)
+                ),
+                runtimeStartedAt: diagnosticsRuntimeStartedAt,
+                runtimeDurationSeconds: diagnosticsRuntimeStartedInstant.map {
+                    Self.durationSeconds($0.duration(to: .now))
+                } ?? 0
+            ),
+            recovery: SettingsAudioRecoveryDTO(
+                runtimeRebuilds: diagnosticsRuntimeRebuilds,
+                automaticRecoveries: diagnosticsAutomaticRecoveries,
+                bufferEscalations: diagnosticsBufferEscalations,
+                headsetFallbacks: diagnosticsHeadsetFallbacks,
+                lastReason: diagnosticsLastRecoveryReason,
+                lastRecoveryAt: diagnosticsLastRecoveryAt
+            )
+        )
+    }
+
+    private static func durationSeconds(_ duration: Duration) -> Double {
+        let components = duration.components
+        return floor(max(
+            Double(components.seconds)
+                + Double(components.attoseconds) / 1_000_000_000_000_000_000,
+            0
+        ))
+    }
+
+    private static func transportDescription(_ transportType: UInt32?) -> String {
+        guard let transportType else {
+            return localized("Unknown")
+        }
+        switch transportType {
+        case kAudioDeviceTransportTypeBuiltIn:
+            return localized("Built-in")
+        case kAudioDeviceTransportTypeBluetooth:
+            return localized("Bluetooth")
+        case kAudioDeviceTransportTypeBluetoothLE:
+            return localized("Bluetooth LE")
+        case kAudioDeviceTransportTypeUSB:
+            return localized("USB")
+        case kAudioDeviceTransportTypeHDMI:
+            return localized("HDMI")
+        case kAudioDeviceTransportTypeDisplayPort:
+            return localized("DisplayPort")
+        case kAudioDeviceTransportTypeAirPlay:
+            return localized("AirPlay")
+        case kAudioDeviceTransportTypeAggregate:
+            return localized("Aggregate")
+        case kAudioDeviceTransportTypeVirtual:
+            return localized("Virtual")
+        default:
+            return formatOSStatusFourCC(Int32(bitPattern: transportType))
+                ?? String(format: "0x%08X", transportType)
+        }
     }
 
     private var engineIsRunning: Bool {
@@ -1494,8 +1713,56 @@ final class GlassEQAppModel {
 
     func resetDiagnostics() {
         engine.resetDiagnostics()
+        let now = Date()
+        diagnosticsResetAt = now
+        diagnosticsResetInstant = .now
+        diagnosticsRuntimeRebuilds = 0
+        diagnosticsAutomaticRecoveries = 0
+        diagnosticsBufferEscalations = 0
+        diagnosticsHeadsetFallbacks = 0
+        diagnosticsLastRecoveryReason = nil
+        diagnosticsLastRecoveryAt = nil
+        if isRunning {
+            diagnosticsRuntimeStartedAt = now
+            diagnosticsRuntimeStartedInstant = .now
+            diagnosticsHasStartedRuntime = true
+        } else {
+            diagnosticsRuntimeStartedAt = nil
+            diagnosticsRuntimeStartedInstant = nil
+            diagnosticsHasStartedRuntime = false
+        }
         engineMetrics = engine.snapshotMetrics()
         notifyModelDidChange()
+    }
+
+    private func recordDiagnosticsRuntimeStart(
+        latencyMetadata: AudioEngineLatencyMetadata?
+    ) {
+        if diagnosticsHasStartedRuntime {
+            diagnosticsRuntimeRebuilds &+= 1
+        }
+        diagnosticsHasStartedRuntime = true
+        diagnosticsRuntimeStartedAt = Date()
+        diagnosticsRuntimeStartedInstant = .now
+        diagnosticsLatencyMetadata = latencyMetadata
+    }
+
+    private func recordDiagnosticsRuntimeStop() {
+        diagnosticsRuntimeStartedAt = nil
+        diagnosticsRuntimeStartedInstant = nil
+        diagnosticsLatencyMetadata = nil
+    }
+
+    private func recordAutomaticRecovery(
+        _ reason: SettingsAudioRecoveryReason,
+        headsetFallback: Bool = false
+    ) {
+        diagnosticsAutomaticRecoveries &+= 1
+        if headsetFallback {
+            diagnosticsHeadsetFallbacks &+= 1
+        }
+        diagnosticsLastRecoveryReason = reason
+        diagnosticsLastRecoveryAt = Date()
     }
 
     #if DEBUG
@@ -1826,6 +2093,8 @@ final class GlassEQAppModel {
         previewReturnProfile = nil
         switch result {
         case .success(let output):
+            diagnosticsObservedDeviceSampleRate = output.nominalSampleRate
+            diagnosticsTransportType = output.transportType
             lastHandledDefaultOutputConfiguration = DefaultOutputConfiguration(output)
             refreshCurrentOutputMetadata(from: output)
             activeProfile = profileStore.profile(forOutputUID: output.uid)
@@ -1849,6 +2118,9 @@ final class GlassEQAppModel {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
         case .failure(let error):
+            diagnosticsObservedDeviceSampleRate = 0
+            diagnosticsTransportType = nil
+            diagnosticsLatencyMetadata = nil
             lastHandledDefaultOutputConfiguration = nil
             if lifecycleState == .waking {
                 scheduleWakeReconnectRetry(status: localized("Waiting for audio output after wake: \(error.localizedDescription)"))
@@ -2045,6 +2317,7 @@ final class GlassEQAppModel {
     }
 
     private func scheduleEngineStop(updateMetrics: Bool) {
+        recordDiagnosticsRuntimeStop()
         let stopTask = enqueueEngineStop()
         Task { @MainActor [weak self] in
             guard let self else {
@@ -2196,7 +2469,7 @@ final class GlassEQAppModel {
                 }
             }
             confirmedState.confirm(confirmation)
-            return .success(output)
+            return .success(output, engine.snapshotLatencyMetadata())
         } catch {
             switch engine.state {
             case .running:
@@ -2239,8 +2512,9 @@ final class GlassEQAppModel {
         pendingEngineStartOutput = nil
 
         switch result {
-        case .success(let output):
+        case .success(let output, let latencyMetadata):
             refreshCurrentOutputMetadata(from: output)
+            recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
             activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             lifecycleState = .running
@@ -2294,6 +2568,7 @@ final class GlassEQAppModel {
             }
             lifecycleState = .stopped
             isRunning = false
+            recordDiagnosticsRuntimeStop()
             activeAggregateRoute = nil
             pendingAggregateBufferIncrease = nil
             statusMessage = audioEngineStatusMessage(error)
@@ -2433,7 +2708,8 @@ final class GlassEQAppModel {
                 let work = self.engineWorkExecutor.enqueue(priority: .userInitiated) {
                     do {
                         return ColdStartupPromotionWorkResult.success(
-                            try engine.attemptColdStartupAggregatePromotion()
+                            try engine.attemptColdStartupAggregatePromotion(),
+                            engine.snapshotLatencyMetadata()
                         )
                     } catch {
                         return ColdStartupPromotionWorkResult.failure(
@@ -2448,7 +2724,7 @@ final class GlassEQAppModel {
                       self.outputChangeGeneration == outputGeneration else {
                     return
                 }
-                if case .success(.clientsActive) = result {
+                if case .success(.clientsActive, _) = result {
                     continue
                 }
                 self.coldStartupAggregatePromotionTask = nil
@@ -2462,8 +2738,9 @@ final class GlassEQAppModel {
         _ workResult: ColdStartupPromotionWorkResult
     ) {
         switch workResult {
-        case .success(.promoted(let output)):
+        case .success(.promoted(let output), let latencyMetadata):
             refreshCurrentOutputMetadata(from: output)
+            recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
             activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
             engineMetrics = engine.snapshotMetrics()
             statusMessage = processingStatus(
@@ -2471,14 +2748,14 @@ final class GlassEQAppModel {
                 profileName: activeProfile.name
             )
             startAggregateStabilityMonitoring()
-        case .success(.clientsActive):
+        case .success(.clientsActive, _):
             return
-        case .success(.aggregateUnstable):
+        case .success(.aggregateUnstable, _):
             activeAggregateRoute = nil
             statusMessage = localized(
                 "The low-latency startup path was unstable; compatibility mode remains active."
             )
-        case .success(.notApplicable):
+        case .success(.notApplicable, _):
             statusMessage = processingStatus(
                 outputName: currentOutputName,
                 profileName: activeProfile.name
@@ -2534,7 +2811,8 @@ final class GlassEQAppModel {
             let work = self.engineWorkExecutor.enqueue(priority: .userInitiated) {
                 do {
                     return HeadsetPromotionWorkResult.success(
-                        try engine.attemptHeadsetAggregatePromotion()
+                        try engine.attemptHeadsetAggregatePromotion(),
+                        engine.snapshotLatencyMetadata()
                     )
                 } catch {
                     return HeadsetPromotionWorkResult.failure(error.localizedDescription)
@@ -2556,24 +2834,25 @@ final class GlassEQAppModel {
         _ workResult: HeadsetPromotionWorkResult
     ) {
         switch workResult {
-        case .success(.promoted(let output)):
+        case .success(.promoted(let output), let latencyMetadata):
             refreshCurrentOutputMetadata(from: output)
+            recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
             activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
             engineMetrics = engine.snapshotMetrics()
             statusMessage = localized(
                 "Processing \(output.name) with \(activeProfile.name) on the low-latency headset path"
             )
             startAggregateStabilityMonitoring()
-        case .success(.clockUnstable):
+        case .success(.clockUnstable, _):
             statusMessage = localized(
                 "The headset clock is still settling; compatibility mode remains active."
             )
-        case .success(.aggregateUnstable):
+        case .success(.aggregateUnstable, _):
             activeAggregateRoute = nil
             statusMessage = localized(
                 "The headset aggregate was still unstable; compatibility mode remains active."
             )
-        case .success(.notApplicable):
+        case .success(.notApplicable, _):
             statusMessage = processingStatus(
                 outputName: currentOutputName,
                 profileName: activeProfile.name
@@ -2642,6 +2921,7 @@ final class GlassEQAppModel {
 
         switch action {
         case .rebuild(let frameSize):
+            recordAutomaticRecovery(.deadlineMisses)
             pendingAggregateBufferIncrease = PendingAggregateBufferIncrease(
                 route: route,
                 outputName: output.name,
@@ -2660,6 +2940,7 @@ final class GlassEQAppModel {
                 aggregateBufferFrameSize: frameSize
             )
         case .temporarilyIncrease(let frameSize):
+            recordAutomaticRecovery(.deadlineMisses)
             pendingAggregateBufferIncrease = PendingAggregateBufferIncrease(
                 route: route,
                 outputName: output.name,
@@ -2703,6 +2984,7 @@ final class GlassEQAppModel {
             return false
         }
         if engine.isUsingPromotedHeadsetAggregate {
+            recordAutomaticRecovery(.headsetInstability, headsetFallback: true)
             engine.rejectHeadsetAggregatePromotion()
             pendingAggregateBufferIncrease = nil
             statusMessage = localized(
@@ -2726,6 +3008,7 @@ final class GlassEQAppModel {
                 ) else {
                 return false
             }
+            recordAutomaticRecovery(.timestampDiscontinuity)
             pendingAggregateBufferIncrease = PendingAggregateBufferIncrease(
                 route: route,
                 outputName: output.name,
@@ -2796,6 +3079,15 @@ final class GlassEQAppModel {
             return
         }
         self.pendingAggregateBufferIncrease = nil
+        if pendingAggregateBufferIncrease.newFrameSize
+            > pendingAggregateBufferIncrease.previousFrameSize {
+            switch pendingAggregateBufferIncrease.kind {
+            case .automatic, .fixedTemporaryIncrease:
+                diagnosticsBufferEscalations &+= 1
+            case .fixedRebuild:
+                break
+            }
+        }
         switch pendingAggregateBufferIncrease.kind {
         case .automatic:
             aggregateBufferNotifier.notifyBufferIncrease(
@@ -3198,11 +3490,7 @@ final class GlassEQAppModel {
                 guard let self else {
                     return
                 }
-                let nextMetrics = self.engine.snapshotMetrics()
-                guard nextMetrics != self.engineMetrics else {
-                    continue
-                }
-                self.engineMetrics = nextMetrics
+                self.engineMetrics = self.engine.snapshotMetrics()
                 self.notifyMetricsDidChange()
             }
         }
@@ -3225,6 +3513,16 @@ final class GlassEQAppModel {
               abs(output.nominalSampleRate - renegotiation.sampleRate) < 0.5,
               abs(output.nominalSampleRate - currentOutputSampleRate) < 0.5 else {
             return
+        }
+        if case .instability(let reason) = renegotiation.cause {
+            recordAutomaticRecovery(
+                reason == .underrun ? .playbackUnderrun : .adaptiveRenderFailure
+            )
+            if renegotiation.frameSize > renegotiation.previousFrameSize
+                || renegotiation.playbackTargetFrames
+                    > renegotiation.previousPlaybackTargetFrames {
+                diagnosticsBufferEscalations &+= 1
+            }
         }
         refreshCurrentOutputMetadata(from: output)
         notifyModelDidChange()
@@ -3289,6 +3587,7 @@ final class GlassEQAppModel {
 
         switch action {
         case .restart:
+            recordAutomaticRecovery(.renderStall)
             let frameSize = activeAggregateRoute.map {
                 aggregateBufferFrameSize(for: $0)
             } ?? 16

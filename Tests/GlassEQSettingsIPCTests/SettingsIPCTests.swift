@@ -748,12 +748,38 @@ struct SettingsIPCTests {
         #expect(metrics.maximumTapToOutputLatencyNanoseconds == 0)
         #expect(metrics.averageTapToOutputLatencyNanoseconds == 0)
         #expect(metrics.renderTiming == SettingsAudioRenderTimingDTO())
+        #expect(metrics.playbackUnderrunEvents == 0)
+        #expect(metrics.captureCallbackSizeObservations.isEmpty)
+        #expect(metrics.playbackCallbackSizeObservations.isEmpty)
+        #expect(metrics.diagnostics == SettingsAudioDiagnosticsDTO())
     }
 
     @Test
     func audioMetricsRoundTripTapToOutputLatency() throws {
         let metrics = SettingsAudioMetricsDTO(
+            playbackUnderrunEvents: 3,
             pairedTimestampDiscontinuities: 4,
+            qualifyingPairedTimestampDiscontinuities: 2,
+            lastInputTimestampJumpFrames: 16,
+            lastOutputTimestampJumpFrames: -8,
+            lastInputHostIntervalErrorNanoseconds: 125_000,
+            lastOutputHostIntervalErrorNanoseconds: -250_000,
+            timestampJumpIntervalObservations: 2,
+            minimumTimestampJumpIntervalNanoseconds: 1_000_000,
+            maximumTimestampJumpIntervalNanoseconds: 3_000_000,
+            averageTimestampJumpIntervalNanoseconds: 2_000_000,
+            captureCallbackSizeObservations: [
+                SettingsAudioCallbackSizeObservationDTO(
+                    frameCount: 16,
+                    observations: 20
+                )
+            ],
+            playbackCallbackSizeObservations: [
+                SettingsAudioCallbackSizeObservationDTO(
+                    frameCount: nil,
+                    observations: 1
+                )
+            ],
             renderDeadlineMisses: 7,
             callbackStartStarvations: 5,
             renderOverruns: 2,
@@ -761,25 +787,82 @@ struct SettingsIPCTests {
             minimumTapToOutputLatencyNanoseconds: 1_250_000,
             maximumTapToOutputLatencyNanoseconds: 2_750_000,
             averageTapToOutputLatencyNanoseconds: 1_500_000,
+            callbackTimingObservations: 500,
+            minimumInputAgeNanoseconds: 250_000,
+            maximumInputAgeNanoseconds: 750_000,
+            averageInputAgeNanoseconds: 500_000,
+            minimumOutputLeadNanoseconds: 1_000_000,
+            maximumOutputLeadNanoseconds: 2_000_000,
+            averageOutputLeadNanoseconds: 1_500_000,
             renderTiming: SettingsAudioRenderTimingDTO(
                 callbackStartLatenessObservations: 10_000,
+                callbackStartLatenessP50Nanoseconds: 25_000,
+                callbackStartLatenessP99Nanoseconds: 80_000,
+                callbackStartLatenessP999Nanoseconds: 100_000,
                 callbackStartLatenessP9999Nanoseconds: 125_000,
                 maximumCallbackStartLatenessNanoseconds: 330_000,
                 directHeadObservations: 10_000,
+                directHeadP50Nanoseconds: 1_000,
+                directHeadP99Nanoseconds: 2_000,
+                directHeadP999Nanoseconds: 3_000,
                 directHeadP9999Nanoseconds: 4_000,
                 maximumDirectHeadNanoseconds: 12_000,
                 tailWorkObservations: 10_000,
+                tailWorkP50Nanoseconds: 750,
+                tailWorkP99Nanoseconds: 1_500,
+                tailWorkP999Nanoseconds: 2_250,
                 tailWorkP9999Nanoseconds: 3_000,
                 maximumTailWorkNanoseconds: 9_000,
                 totalRenderObservations: 10_000,
+                totalRenderP50Nanoseconds: 5_000,
+                totalRenderP99Nanoseconds: 10_000,
+                totalRenderP999Nanoseconds: 12_000,
                 totalRenderP9999Nanoseconds: 15_000,
                 maximumTotalRenderNanoseconds: 42_000,
                 completionLatenessObservations: 10_000,
+                completionLatenessP50Nanoseconds: 0,
+                completionLatenessP99Nanoseconds: 0,
+                completionLatenessP999Nanoseconds: 0,
                 completionLatenessP9999Nanoseconds: 0,
                 maximumCompletionLatenessNanoseconds: 8_000,
                 tailCompletionObservations: 625,
                 minimumTailCompletionSlackFrames: 16,
                 tailDeadlineMisses: 0
+            ),
+            diagnostics: SettingsAudioDiagnosticsDTO(
+                status: SettingsAudioStatusDTO(
+                    health: .stable,
+                    routeMode: .lowLatency,
+                    isUsingSaferBuffer: true
+                ),
+                route: SettingsAudioRouteDTO(
+                    transport: "USB",
+                    observedDeviceSampleRate: 48_000,
+                    activeDeviceSampleRate: 48_000,
+                    processingSampleRate: 48_000,
+                    nativeOutputStreamIndex: 1,
+                    physicalDeviceBufferFrameSize: 32,
+                    aggregateBufferFrameSize: 32,
+                    physicalOutputStreamChannelCounts: [2],
+                    aggregateInputStreamChannelCounts: [2],
+                    aggregateOutputStreamChannelCounts: [2],
+                    physicalOutputSafetyOffsetFrames: 71,
+                    aggregateOutputSafetyOffsetFrames: 64
+                ),
+                observation: SettingsAudioObservationDTO(
+                    resetAt: Date(timeIntervalSince1970: 1_000),
+                    observationDurationSeconds: 30,
+                    runtimeStartedAt: Date(timeIntervalSince1970: 1_010),
+                    runtimeDurationSeconds: 20
+                ),
+                recovery: SettingsAudioRecoveryDTO(
+                    runtimeRebuilds: 2,
+                    automaticRecoveries: 1,
+                    bufferEscalations: 1,
+                    headsetFallbacks: 0,
+                    lastReason: .deadlineMisses,
+                    lastRecoveryAt: Date(timeIntervalSince1970: 1_020)
+                )
             )
         )
 

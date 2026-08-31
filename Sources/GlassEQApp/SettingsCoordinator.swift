@@ -198,7 +198,7 @@ final class SettingsCoordinator: NSObject {
               let model else {
             return
         }
-        let metrics = SettingsAudioMetricsDTO(model.engineMetrics)
+        let metrics = model.settingsMetricsSnapshot()
         guard lastSentSnapshot?.metrics != metrics else {
             return
         }
@@ -1109,7 +1109,7 @@ extension GlassEQAppModel {
     }
 
     func refreshInProcessSettingsMetrics() {
-        inProcessSettingsViewModelStorage?.accept(metrics: SettingsAudioMetricsDTO(engineMetrics))
+        inProcessSettingsViewModelStorage?.accept(metrics: settingsMetricsSnapshot())
     }
 
     func notifyModelDidChangeFromCoordinator() {

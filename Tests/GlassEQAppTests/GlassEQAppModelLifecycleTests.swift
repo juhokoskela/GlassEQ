@@ -11,6 +11,130 @@ import Testing
 @Suite
 struct GlassEQAppModelLifecycleTests {
     @Test
+    func outputDiagnosticsDescribeTheRuntimeAndSurviveRebuilds() async throws {
+        let output = makeOutput(
+            uid: "diagnostic-output",
+            name: "Diagnostic Output",
+            bufferFrameSize: 16,
+            transportType: kAudioDeviceTransportTypeUSB
+        )
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        engine.latencyMetadata = AudioEngineLatencyMetadata(
+            physicalDevice: AudioDeviceLatencyMetadata(
+                objectID: output.id,
+                bufferFrameSize: 16,
+                inputStreamChannelCounts: [],
+                outputStreamChannelCounts: [2],
+                inputLatencyFrames: 0,
+                inputSafetyOffsetFrames: 0,
+                inputSafetyOffsetSettable: false,
+                outputLatencyFrames: 10,
+                outputSafetyOffsetFrames: 71,
+                outputSafetyOffsetSettable: false
+            ),
+            aggregateDevice: AudioDeviceLatencyMetadata(
+                objectID: 200,
+                bufferFrameSize: 16,
+                inputStreamChannelCounts: [2],
+                outputStreamChannelCounts: [2],
+                inputLatencyFrames: 0,
+                inputSafetyOffsetFrames: 32,
+                inputSafetyOffsetSettable: false,
+                outputLatencyFrames: 0,
+                outputSafetyOffsetFrames: 64,
+                outputSafetyOffsetSettable: false
+            )
+        )
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var diagnostics = model.settingsSnapshot().metrics.diagnostics
+        #expect(diagnostics.status.health == .stable)
+        #expect(diagnostics.status.routeMode == .lowLatency)
+        #expect(!diagnostics.status.isUsingSaferBuffer)
+        #expect(diagnostics.route.transport == "USB")
+        #expect(diagnostics.route.observedDeviceSampleRate == 48_000)
+        #expect(diagnostics.route.activeDeviceSampleRate == 48_000)
+        #expect(diagnostics.route.physicalOutputStreamChannelCounts == [2])
+        #expect(diagnostics.route.aggregateInputSafetyOffsetFrames == 32)
+        #expect(diagnostics.recovery.runtimeRebuilds == 0)
+        #expect(diagnostics.observation.runtimeStartedAt != nil)
+
+        try model.setAggregateBufferMode(.frames32)
+        await waitUntil {
+            engine.startCalls.count == 2 && model.currentOutputBufferFrameSize == 32
+        }
+
+        diagnostics = model.settingsSnapshot().metrics.diagnostics
+        #expect(diagnostics.recovery.runtimeRebuilds == 1)
+        #expect(diagnostics.status.isUsingSaferBuffer == false)
+
+        model.resetDiagnostics()
+        diagnostics = model.settingsSnapshot().metrics.diagnostics
+        #expect(diagnostics.recovery.runtimeRebuilds == 0)
+        #expect(diagnostics.observation.runtimeStartedAt != nil)
+        #expect(diagnostics.observation.observationDurationSeconds >= 0)
+    }
+
+    @Test
+    func playbackInstabilityAddsRecoveryAndEscalationContext() async {
+        let output = makeOutput(
+            uid: "diagnostic-adaptive-output",
+            name: "Diagnostic Adaptive Output",
+            bufferFrameSize: 480
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+        model.resetDiagnostics()
+
+        var renegotiatedOutput = output
+        renegotiatedOutput.bufferFrameSize = 512
+        engine.state = .running(output: renegotiatedOutput)
+        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
+            outputName: output.name,
+            outputUID: output.uid,
+            sampleRate: output.nominalSampleRate,
+            previousFrameSize: 480,
+            frameSize: 512,
+            previousPlaybackTargetFrames: 512,
+            playbackTargetFrames: 1_024,
+            cause: .instability(.underrun)
+        ))
+        await waitUntil {
+            model.currentOutputBufferFrameSize == 512
+        }
+
+        let recovery = model.settingsSnapshot().metrics.diagnostics.recovery
+        #expect(recovery.automaticRecoveries == 1)
+        #expect(recovery.bufferEscalations == 1)
+        #expect(recovery.lastReason == .playbackUnderrun)
+        #expect(recovery.lastRecoveryAt != nil)
+    }
+
+    @Test
     func separateClockRenegotiationRefreshesCurrentOutputMetadata() async {
         let output = makeOutput(
             uid: "adaptive-output",
@@ -3919,11 +4043,12 @@ struct GlassEQAppModelLifecycleTests {
         let baselineMessageCount = launcher.receivedAppMessages.count
 
         model.engineMetrics = AudioEngineMetrics(capturedFrames: 42)
+        let expectedMetrics = model.settingsMetricsSnapshot()
         coordinator.modelDidChange()
 
         let expectedMessage = SettingsPipeMessage.event(
             sessionToken: token,
-            event: .metricsChanged(SettingsAudioMetricsDTO(capturedFrames: 42))
+            event: .metricsChanged(expectedMetrics)
         )
         await waitUntil {
             launcher.receivedAppMessages
@@ -5000,6 +5125,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _coldStartupAggregatePromotionResult = ColdStartupAggregatePromotionResult.notApplicable
     private var _coldStartupAggregatePromotionAttemptCount = 0
     private var _isDeferringColdStartupAggregate = false
+    private var _latencyMetadata: AudioEngineLatencyMetadata?
     private var _playbackBufferRenegotiationHandler:
         (@Sendable (PlaybackBufferRenegotiation) -> Void)?
     private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
@@ -5011,6 +5137,12 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     var isUsingTransitionalHeadsetBackend: Bool {
         withLock { _isUsingTransitionalHeadsetBackend }
+    }
+
+    var isUsingSeparateClockBackend: Bool {
+        withLock {
+            _isUsingTransitionalHeadsetBackend || _isDeferringColdStartupAggregate
+        }
     }
 
     var isUsingPromotedHeadsetAggregate: Bool {
@@ -5109,6 +5241,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var metrics: AudioEngineMetrics {
         get { withLock { _metrics } }
         set { withLock { _metrics = newValue } }
+    }
+
+    var latencyMetadata: AudioEngineLatencyMetadata? {
+        get { withLock { _latencyMetadata } }
+        set { withLock { _latencyMetadata = newValue } }
     }
 
     var snapshotMetricsCallCount: Int {
@@ -5445,6 +5582,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _snapshotMetricsCallCount += 1
             return _metrics
         }
+    }
+
+    func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? {
+        withLock { _latencyMetadata }
     }
 
     func resetDiagnostics() {
