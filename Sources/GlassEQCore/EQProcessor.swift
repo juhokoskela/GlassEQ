@@ -1,5 +1,9 @@
 import Foundation
 
+public enum EQRenderConfigurationError: Error, Equatable, Sendable {
+    case numericallyUnsafe
+}
+
 public struct EQChannelConfiguration: Equatable, Sendable {
     public var preampLinearGain: Float
     public var coefficients: [BiquadCoefficients]
@@ -165,12 +169,16 @@ public struct EQRenderConfiguration: Sendable {
         channelCount: Int,
         maximumUsableFrequency: Double? = nil
     ) throws -> EQRenderConfiguration {
-        try EQRenderConfiguration(preparing: EQConfiguration(
+        let renderConfiguration = try EQRenderConfiguration(preparing: EQConfiguration(
             profile: profile,
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
         ))
+        guard renderConfiguration.isNumericallySafe else {
+            throw EQRenderConfigurationError.numericallyUnsafe
+        }
+        return renderConfiguration
     }
 
     private init(preparing configuration: EQConfiguration) throws {
@@ -193,13 +201,6 @@ public struct EQRenderConfiguration: Sendable {
         self.preampLinearGains = renderLayout.preampLinearGains
         self.convolvers = Array(repeating: nil, count: configuration.channelCount)
         self.preparationSucceeded = !configuration.usesConvolution
-    }
-
-    public func hasRealtimeCompatibleTopology(with other: EQRenderConfiguration) -> Bool {
-        configuration.sampleRate == other.configuration.sampleRate
-            && configuration.channelCount == other.configuration.channelCount
-            && configuration.usesConvolution == other.configuration.usesConvolution
-            && channelFilterCounts == other.channelFilterCounts
     }
 
     public var isNumericallySafe: Bool {
@@ -238,7 +239,8 @@ public struct EQRenderConfiguration: Sendable {
                     kernel = try PreparedConvolutionKernel(
                         impulseResponse: MinimumPhaseFIRCompiler.compile(
                             points: curve.points,
-                            sampleRate: configuration.sampleRate
+                            sampleRate: configuration.sampleRate,
+                            maximumUsableFrequency: configuration.maximumUsableFrequency
                         )
                     )
                 case .impulseResponse(let impulse):
@@ -259,31 +261,7 @@ public struct EQRenderConfiguration: Sendable {
     }
 
     private static func isNumericallySafe(_ coefficients: RenderBiquadCoefficients) -> Bool {
-        let values = [
-            coefficients.b0,
-            coefficients.b1,
-            coefficients.b2,
-            coefficients.a1,
-            coefficients.a2
-        ]
-        guard values.allSatisfy(\.isFinite) else {
-            return false
-        }
-
-        let a1 = Double(coefficients.a1)
-        let a2 = Double(coefficients.a2)
-        let discriminant = a1 * a1 - 4 * a2
-        let maximumPoleMagnitude: Double
-        if discriminant >= 0 {
-            let root = sqrt(discriminant)
-            maximumPoleMagnitude = max(
-                abs((-a1 + root) / 2),
-                abs((-a1 - root) / 2)
-            )
-        } else {
-            maximumPoleMagnitude = sqrt(max(a2, 0))
-        }
-        return maximumPoleMagnitude <= 1.000_001
+        coefficients.isNumericallySafe
     }
 }
 
@@ -570,43 +548,6 @@ public struct EQProcessor: Sendable {
             }
         }
         return saturatedSamples
-    }
-
-    public mutating func processNonInterleaved(_ channels: inout [[Float]]) {
-        guard !configuration.isBypassed else {
-            return
-        }
-
-        if configuration.usesConvolution {
-            for channelIndex in channels.indices {
-                for sampleIndex in channels[channelIndex].indices {
-                    channels[channelIndex][sampleIndex] = processSample(
-                        channels[channelIndex][sampleIndex],
-                        channel: channelIndex
-                    )
-                }
-            }
-            return
-        }
-
-        withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
-            for channelIndex in channels.indices {
-                guard channelIndex < channelStartBuffer.count else {
-                    continue
-                }
-                for sampleIndex in channels[channelIndex].indices {
-                    channels[channelIndex][sampleIndex] = Self.processSampleWithDiagnosticsUnchecked(
-                        channels[channelIndex][sampleIndex],
-                        channel: channelIndex,
-                        states: stateBuffer,
-                        coefficients: coefficientBuffer,
-                        channelStarts: channelStartBuffer,
-                        channelFilterCounts: channelFilterCountBuffer,
-                        preampLinearGains: preampLinearGainBuffer
-                    ).sample
-                }
-            }
-        }
     }
 
     public mutating func processSample(_ input: Float, channel: Int) -> Float {

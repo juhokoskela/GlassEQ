@@ -154,6 +154,29 @@ struct AggregateBufferPolicyTests {
     }
 
     @Test
+    func cleanSessionsDescendFromTheStoredAutomaticRung() throws {
+        let store = AggregateBufferPolicyStore(url: temporaryPolicyURL())
+        let route = fingerprint(uid: "stored-rung", stream: 0, sampleRate: 48_000)
+
+        #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == 32)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        #expect(try store.recordCleanAutomaticSession(for: route) == 16)
+        #expect(store.selection(for: route).automaticFrameSize == 16)
+    }
+
+    @Test
+    func cleanSessionsStopOnceTheStoredRequestReachesTheFloor() throws {
+        let store = AggregateBufferPolicyStore(url: temporaryPolicyURL())
+        let route = fingerprint(uid: "floor", stream: 0, sampleRate: 48_000)
+
+        for _ in 0..<6 {
+            #expect(try store.recordCleanAutomaticSession(for: route) == nil)
+        }
+        #expect(store.selection(for: route).automaticFrameSize == 16)
+    }
+
+    @Test
     func legacyOneShotLearningIsResetButFixedModeIsPreserved() throws {
         let url = temporaryPolicyURL()
         let data = Data(
@@ -197,6 +220,40 @@ struct AggregateBufferPolicyTests {
         #expect(store.selection(for: automatic).frameSize == 16)
         #expect(store.selection(for: fixed).mode == .frames32)
         #expect(store.selection(for: fixed).frameSize == 32)
+    }
+
+    @Test
+    func persistedPolicyRejectsOversizedFilesAndRecordAmplification() throws {
+        let url = temporaryPolicyURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let route = fingerprint(uid: "route-0", stream: 0, sampleRate: 48_000)
+
+        try Data(
+            repeating: 0x20,
+            count: AggregateBufferPolicyStore.maximumStoreBytes + 1
+        ).write(to: url)
+        #expect(AggregateBufferPolicyStore(url: url).selection(for: route).frameSize == 16)
+
+        let records: [[String: Any]] = (0...AggregateBufferPolicyStore.maximumRecordCount).map { index in
+            [
+                "automaticFrameSize": 64,
+                "mode": "automatic",
+                "route": [
+                    "nativeOutputStreamIndex": 0,
+                    "nominalSampleRate": 48_000,
+                    "outputDeviceUID": "route-\(index)"
+                ]
+            ]
+        }
+        let data = try JSONSerialization.data(withJSONObject: [
+            "records": records,
+            "schemaVersion": 2
+        ])
+        try data.write(to: url)
+
+        #expect(AggregateBufferPolicyStore(url: url).selection(for: route).frameSize == 16)
     }
 
     private func fingerprint(

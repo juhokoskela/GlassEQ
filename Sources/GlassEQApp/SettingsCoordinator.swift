@@ -82,6 +82,7 @@ struct DefaultSettingsHelperLaunchValidator: SettingsHelperLaunchValidating {
 final class SettingsCoordinator: NSObject {
     private struct ActiveCommand {
         var token: UUID
+        var isFileImportPicker: Bool
         var task: Task<Void, Never>
     }
 
@@ -89,10 +90,7 @@ final class SettingsCoordinator: NSObject {
     private let helperLauncher: any SettingsHelperLaunching
     private let helperValidator: any SettingsHelperLaunchValidating
     private let settingsHelperURLProvider: () throws -> URL
-    private let fileImportPicker: @MainActor (
-        SettingsFileImportMode,
-        Double
-    ) async throws -> SettingsFileImportSelectionDTO?
+    private let fileImportPicker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO?
     private var launchToken: String?
     private var runningApplication: NSRunningApplication?
     private var helperProcess: Process?
@@ -115,14 +113,8 @@ final class SettingsCoordinator: NSObject {
         helperLauncher: any SettingsHelperLaunching = ProcessSettingsHelperLauncher(),
         helperValidator: any SettingsHelperLaunchValidating = DefaultSettingsHelperLaunchValidator(),
         settingsHelperURLProvider: (() throws -> URL)? = nil,
-        fileImportPicker: @escaping @MainActor (
-            SettingsFileImportMode,
-            Double
-        ) async throws -> SettingsFileImportSelectionDTO? = { mode, expectedSampleRate in
-            try await SettingsFileImportPicker.choose(
-                mode: mode,
-                expectedSampleRate: expectedSampleRate
-            )
+        fileImportPicker: @escaping @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
+            try await SettingsFileImportPicker.choose(mode: mode)
         }
     ) {
         self.model = model
@@ -178,6 +170,21 @@ final class SettingsCoordinator: NSObject {
         await cleanupSessionAndWait(terminateHelper: true)
     }
 
+    func cancelPendingFileImportPickers() async {
+        let commands = commandTasks.filter(\.value.isFileImportPicker)
+        for (requestID, command) in commands {
+            guard commandTasks[requestID]?.token == command.token else {
+                continue
+            }
+            commandTasks[requestID] = nil
+            command.task.cancel()
+            sendError("GlassEQ is shutting down.", requestID: requestID)
+        }
+        for command in commands.values {
+            await command.task.value
+        }
+    }
+
     func modelDidChange() {
         guard suppressedModelChangeDepth == 0,
               let model else {
@@ -191,7 +198,7 @@ final class SettingsCoordinator: NSObject {
               let model else {
             return
         }
-        let metrics = SettingsAudioMetricsDTO(model.engineMetrics)
+        let metrics = model.settingsMetricsSnapshot()
         guard lastSentSnapshot?.metrics != metrics else {
             return
         }
@@ -308,14 +315,15 @@ final class SettingsCoordinator: NSObject {
     #endif
 
     private func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        guard let model else {
+            throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
+        }
         if let response = try await fileImportPickerResponse(
             for: command,
+            model: model,
             picker: fileImportPicker
         ) {
             return response
-        }
-        guard let model else {
-            throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
         return try await model.performSettingsCommand(command)
     }
@@ -473,12 +481,20 @@ final class SettingsCoordinator: NSObject {
             return
         }
         let commandToken = UUID()
+        let isFileImportPicker: Bool
+        if case .chooseImportFiles = command {
+            isFileImportPicker = true
+        } else {
+            isFileImportPicker = false
+        }
         let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
-            guard !Task.isCancelled,
-                  launchToken == commandSessionToken else {
+            guard !Task.isCancelled else {
+                return
+            }
+            guard launchToken == commandSessionToken else {
                 return
             }
             defer {
@@ -524,7 +540,11 @@ final class SettingsCoordinator: NSObject {
                 sendError(error.localizedDescription, requestID: requestID)
             }
         }
-        commandTasks[requestID] = ActiveCommand(token: commandToken, task: task)
+        commandTasks[requestID] = ActiveCommand(
+            token: commandToken,
+            isFileImportPicker: isFileImportPicker,
+            task: task
+        )
     }
 
     private func cancelCommand(requestID: String) {
@@ -912,15 +932,18 @@ enum SettingsHelperVerifier {
             throw SettingsCommandFailure(message: localized("GlassEQSettings.app has an unexpected code-signing identifier."))
         }
 
-        let processSignature = try? codeSigningValidator.signatureInfo(forProcessIdentifier: processIdentifier)
-        if let processSignature {
-            if let signingIdentifier = processSignature.signingIdentifier,
-               signingIdentifier != helperBundleIdentifier {
-                throw SettingsCommandFailure(message: localized("GlassEQSettings.app has an unexpected code-signing identifier."))
-            }
+        let processSignature = try codeSigningValidator.signatureInfo(forProcessIdentifier: processIdentifier)
+        if let signingIdentifier = processSignature.signingIdentifier,
+           signingIdentifier != helperBundleIdentifier {
+            throw SettingsCommandFailure(message: localized("GlassEQSettings.app has an unexpected code-signing identifier."))
         }
 
-        let hostSignature = try? codeSigningValidator.signatureInfo(for: standardizedHostURL)
+        let hostSignature: SettingsCodeSignatureInfo?
+        if standardizedHostURL.pathExtension == "app" {
+            hostSignature = try codeSigningValidator.signatureInfo(for: standardizedHostURL)
+        } else {
+            hostSignature = try? codeSigningValidator.signatureInfo(for: standardizedHostURL)
+        }
         guard let hostTeamIdentifier = hostSignature?.teamIdentifier,
               !hostTeamIdentifier.isEmpty else {
             return
@@ -928,8 +951,7 @@ enum SettingsHelperVerifier {
         guard helperSignature.teamIdentifier == hostTeamIdentifier else {
             throw SettingsCommandFailure(message: localized("GlassEQSettings.app was not signed by the same team as GlassEQ."))
         }
-        if let processSignature,
-           processSignature.teamIdentifier != hostTeamIdentifier {
+        if processSignature.teamIdentifier != hostTeamIdentifier {
             throw SettingsCommandFailure(message: localized("GlassEQSettings.app was not signed by the same team as GlassEQ."))
         }
     }
@@ -1091,7 +1113,7 @@ extension GlassEQAppModel {
     }
 
     func refreshInProcessSettingsMetrics() {
-        inProcessSettingsViewModelStorage?.accept(metrics: SettingsAudioMetricsDTO(engineMetrics))
+        inProcessSettingsViewModelStorage?.accept(metrics: settingsMetricsSnapshot())
     }
 
     func notifyModelDidChangeFromCoordinator() {
@@ -1220,34 +1242,30 @@ private final class InProcessSettingsClient: SettingsCommanding {
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        if let response = try await fileImportPickerResponse(for: command) {
-            return response
-        }
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
+        }
+        if let response = try await fileImportPickerResponse(for: command, model: model) {
+            return response
         }
         return try await model.performSettingsCommand(command)
     }
 }
 
 @MainActor
-private func fileImportPickerResponse(
+func fileImportPickerResponse(
     for command: SettingsCommand,
-    picker: @MainActor (
-        SettingsFileImportMode,
-        Double
-    ) async throws -> SettingsFileImportSelectionDTO? = { mode, expectedSampleRate in
-        try await SettingsFileImportPicker.choose(
-            mode: mode,
-            expectedSampleRate: expectedSampleRate
-        )
+    model: GlassEQAppModel,
+    picker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
+        try await SettingsFileImportPicker.choose(mode: mode)
     }
 ) async throws -> SettingsCommandResponse? {
-    guard case let .chooseImportFiles(mode, expectedSampleRate) = command else {
+    guard case let .chooseImportFiles(mode) = command else {
         return nil
     }
-    return SettingsCommandResponse(fileImportSelection: try await picker(
-        mode,
-        expectedSampleRate
-    ))
+    try model.beginSettingsCommand()
+    defer {
+        model.finishSettingsCommand()
+    }
+    return SettingsCommandResponse(fileImportSelection: try await picker(mode))
 }

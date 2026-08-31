@@ -10,6 +10,14 @@ struct AggregateBufferSelection: Equatable, Sendable {
 
 @MainActor
 final class AggregateBufferPolicyStore {
+    static let maximumStoreBytes = 262_144
+    static let maximumRecordCount = 256
+
+    private enum PersistenceError: Error {
+        case storeTooLarge
+        case tooManyRecords
+    }
+
     private struct Record: Codable, Equatable {
         var route: AggregateAudioRouteFingerprint
         var mode: SettingsAggregateBufferMode
@@ -224,6 +232,9 @@ final class AggregateBufferPolicyStore {
             index = existingIndex
             inserted = false
         } else {
+            guard records.count < Self.maximumRecordCount else {
+                throw PersistenceError.tooManyRecords
+            }
             records.append(Record(
                 route: route,
                 mode: .automatic,
@@ -251,6 +262,9 @@ final class AggregateBufferPolicyStore {
     }
 
     private func write() throws {
+        guard records.count <= Self.maximumRecordCount else {
+            throw PersistenceError.tooManyRecords
+        }
         let document = Document(
             schemaVersion: Document.schemaVersion,
             records: records.sorted {
@@ -266,6 +280,9 @@ final class AggregateBufferPolicyStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(document)
+        guard data.count <= Self.maximumStoreBytes else {
+            throw PersistenceError.storeTooLarge
+        }
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -274,9 +291,10 @@ final class AggregateBufferPolicyStore {
     }
 
     private static func load(from url: URL) -> [Record] {
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? readBoundedData(from: url),
               let document = try? JSONDecoder().decode(Document.self, from: data),
-              [1, Document.schemaVersion].contains(document.schemaVersion) else {
+              [1, Document.schemaVersion].contains(document.schemaVersion),
+              document.records.count <= maximumRecordCount else {
             return []
         }
         return document.records.compactMap { record in
@@ -297,6 +315,23 @@ final class AggregateBufferPolicyStore {
             )
             return record
         }
+    }
+
+    private static func readBoundedData(from url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = Data()
+        while data.count <= maximumStoreBytes {
+            let remaining = maximumStoreBytes + 1 - data.count
+            guard let chunk = try handle.read(upToCount: remaining), !chunk.isEmpty else {
+                break
+            }
+            data.append(chunk)
+        }
+        guard data.count <= maximumStoreBytes else {
+            throw PersistenceError.storeTooLarge
+        }
+        return data
     }
 
     private static func validatedAutomaticFrameSize(_ frameSize: UInt32) -> UInt32 {

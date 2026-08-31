@@ -479,57 +479,6 @@ public enum CoreAudioDeviceQuery {
         return value as String
     }
 
-    static func setProcessTapMuteBehavior(
-        _ muteBehavior: CATapMuteBehavior,
-        tapID: AudioObjectID
-    ) throws {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioTapPropertyDescription,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var description: Unmanaged<CATapDescription>?
-        var size = UInt32(MemoryLayout<Unmanaged<CATapDescription>?>.size)
-        try checkOSStatus(
-            AudioObjectGetPropertyData(
-                tapID,
-                &address,
-                0,
-                nil,
-                &size,
-                &description
-            ),
-            operation: "AudioObjectGetPropertyData(tap description)"
-        )
-        try validatePropertySize(
-            actual: size,
-            expected: UInt32(MemoryLayout<Unmanaged<CATapDescription>?>.size),
-            operation: "AudioObjectGetPropertyData(tap description)",
-            objectID: tapID
-        )
-        guard let description else {
-            throw CoreAudioError(
-                operation: "AudioObjectGetPropertyData(tap description) nil",
-                status: kAudioHardwareBadObjectError
-            )
-        }
-
-        let tapDescription = description.takeUnretainedValue()
-        tapDescription.muteBehavior = muteBehavior
-        var updatedDescription = Unmanaged.passUnretained(tapDescription)
-        try checkOSStatus(
-            AudioObjectSetPropertyData(
-                tapID,
-                &address,
-                0,
-                nil,
-                UInt32(MemoryLayout<Unmanaged<CATapDescription>>.size),
-                &updatedDescription
-            ),
-            operation: "AudioObjectSetPropertyData(tap description)"
-        )
-    }
-
     /// The device's preferred stereo pair as raw 1-based channel numbers; callers sanitize
     /// (the HAL reports zeros when the pair was never configured).
     static func preferredStereoChannels(objectID: AudioObjectID) throws -> (left: UInt32, right: UInt32) {

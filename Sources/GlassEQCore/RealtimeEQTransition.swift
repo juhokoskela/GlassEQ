@@ -114,10 +114,6 @@ public struct RealtimeEQTransition: Sendable {
         pendingComparisonReferenceProcessor != nil || comparisonReferenceProcessor != nil
     }
 
-    public var activeConfiguration: EQConfiguration {
-        activeProcessor.configuration
-    }
-
     @discardableResult
     public mutating func beginTransition(to processor: EQProcessor) -> Bool {
         guard incomingProcessor == nil,

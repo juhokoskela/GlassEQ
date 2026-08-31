@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import GlassEQCore
+@_spi(GlassEQSettingsUI) import GlassEQCore
 import GlassEQSettingsIPC
 import Testing
 @testable import GlassEQSettings
@@ -47,6 +47,45 @@ struct SettingsIPCTests {
                 form: "In-ear"
             )
         ])
+    }
+
+    @Test
+    func autoEQCatalogueParserDeduplicatesResultPaths() throws {
+        let markdown = """
+        - [First](./source/over-ear/model)
+        - [Duplicate](./source/over-ear/model)
+        """
+
+        let entries = try AutoEQCatalogueParser.parse(markdown)
+
+        #expect(entries.map(\.name) == ["First"])
+    }
+
+    @Test
+    func autoEQCatalogueParserRejectsEntryCountAmplification() {
+        let markdown = """
+        - [One](./source/over-ear/one)
+        - [Two](./source/over-ear/two)
+        - [Three](./source/over-ear/three)
+        """
+
+        #expect(throws: AutoEQRepositoryError.catalogueTooLarge) {
+            _ = try AutoEQCatalogueParser.parse(markdown, maximumEntryCount: 2)
+        }
+    }
+
+    @Test
+    func autoEQCatalogueParserSkipsOversizedAndEncodedSeparatorComponents() throws {
+        let longName = String(repeating: "x", count: 513)
+        let markdown = """
+        - [\(longName)](./source/over-ear/long-name)
+        - [Encoded separator](./source%2Fother/over-ear/model)
+        - [Valid](./source/over-ear/valid)
+        """
+
+        let entries = try AutoEQCatalogueParser.parse(markdown)
+
+        #expect(entries.map(\.name) == ["Valid"])
     }
 
     @Test
@@ -101,6 +140,30 @@ struct SettingsIPCTests {
         AutoEQTestURLProtocol.register(
             statusCode: 200,
             body: Data(repeating: 0x78, count: 33),
+            for: url
+        )
+        defer { AutoEQTestURLProtocol.unregister(url) }
+        let session = autoEQTestSession()
+        defer { session.invalidateAndCancel() }
+        let client = AutoEQRepositoryClient(
+            session: session,
+            maximumProfileBytes: 32
+        )
+
+        await #expect(throws: AutoEQRepositoryError.profileTooLarge) {
+            try await client.profileText(for: entry, kind: .parametric)
+        }
+    }
+
+    @Test
+    func autoEQProfileDownloadBoundsResponsesWithoutAContentLength() async throws {
+        let entry = autoEQNetworkTestEntry(named: "Unknown Length")
+        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .parametric)
+        AutoEQTestURLProtocol.register(
+            statusCode: 200,
+            body: Data(repeating: 0x78, count: 33),
+            includesContentLength: false,
+            chunkSize: 8,
             for: url
         )
         defer { AutoEQTestURLProtocol.unregister(url) }
@@ -448,10 +511,7 @@ struct SettingsIPCTests {
             readPump.invalidate(handle: pipe.fileHandleForReading)
         }
         let requestTask = Task { @MainActor in
-            try await client.perform(.chooseImportFiles(
-                mode: .single,
-                expectedSampleRate: 48_000
-            ))
+            try await client.perform(.chooseImportFiles(mode: .single))
         }
         for _ in 0..<100 where recorder.snapshot().messages.isEmpty {
             try await Task.sleep(for: .milliseconds(10))
@@ -480,6 +540,7 @@ struct SettingsIPCTests {
                 command: nil
             ))
         }
+
     }
 
     @Test
@@ -491,21 +552,6 @@ struct SettingsIPCTests {
 
         #expect(decoded == message)
         try decoded.validateSessionToken("bootstrap-token")
-    }
-
-    @Test @MainActor
-    func cancelledCommandDoesNotBecomeAVisibleSettingsError() async {
-        let model = GlassEQSettingsViewModel(
-            client: CancellingSettingsCommandClient()
-        )
-
-        let response = await model.perform(.chooseImportFiles(
-            mode: .single,
-            expectedSampleRate: 48_000
-        ))
-
-        #expect(response == nil)
-        #expect(model.commandErrorMessage == nil)
     }
 
     @Test
@@ -553,6 +599,19 @@ struct SettingsIPCTests {
             let encoded = try SettingsPipeCodec.encodeLine(message)
             let decoded = try SettingsPipeCodec.decodeLine(Data(encoded.dropLast()))
             #expect(decoded == message)
+        }
+    }
+
+    @Test
+    func settingsSectionCodableOnlyAcceptsOutput() throws {
+        let decoder = JSONDecoder()
+
+        #expect(try decoder.decode(SettingsSection.self, from: Data(#""output""#.utf8)) == .output)
+        #expect(throws: DecodingError.self) {
+            _ = try decoder.decode(SettingsSection.self, from: Data(#""editor""#.utf8))
+        }
+        #expect(throws: DecodingError.self) {
+            _ = try decoder.decode(SettingsSection.self, from: Data(#""importer""#.utf8))
         }
     }
 
@@ -615,8 +674,8 @@ struct SettingsIPCTests {
             ))
         )
         let commands: [SettingsCommand] = [
-            .chooseImportFiles(mode: .single, expectedSampleRate: 48_000),
-            .chooseImportFiles(mode: .stereoPair, expectedSampleRate: 96_000)
+            .chooseImportFiles(mode: .single),
+            .chooseImportFiles(mode: .stereoPair)
         ]
         let selections: [SettingsFileImportSelectionDTO] = [
             .text(
@@ -674,6 +733,42 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func outputBufferSummaryInterpolatesFixedAndAutomaticFrameSizes() {
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .frames16,
+                automaticFrameSize: 16,
+                isAvailable: true
+            ),
+            currentFrameSize: 16
+        ) == "16 frames")
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .frames16,
+                automaticFrameSize: 16,
+                isAvailable: true
+            ),
+            currentFrameSize: 32
+        ) == "16 selected, 32 frames active")
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .automatic,
+                automaticFrameSize: 64,
+                isAvailable: true
+            ),
+            currentFrameSize: 64
+        ) == "Automatic, 64 frames active")
+        #expect(outputBufferSummary(
+            aggregateBuffer: SettingsAggregateBufferDTO(
+                mode: .automatic,
+                automaticFrameSize: 16,
+                isAvailable: false
+            ),
+            currentFrameSize: 480
+        ) == "480 frames, compatibility path")
+    }
+
+    @Test
     func audioMetricsDecodeOldPayloadsWithDefaultedNewFields() throws {
         let data = Data("""
         {
@@ -704,12 +799,38 @@ struct SettingsIPCTests {
         #expect(metrics.maximumTapToOutputLatencyNanoseconds == 0)
         #expect(metrics.averageTapToOutputLatencyNanoseconds == 0)
         #expect(metrics.renderTiming == SettingsAudioRenderTimingDTO())
+        #expect(metrics.playbackUnderrunEvents == 0)
+        #expect(metrics.captureCallbackSizeObservations.isEmpty)
+        #expect(metrics.playbackCallbackSizeObservations.isEmpty)
+        #expect(metrics.diagnostics == SettingsAudioDiagnosticsDTO())
     }
 
     @Test
     func audioMetricsRoundTripTapToOutputLatency() throws {
         let metrics = SettingsAudioMetricsDTO(
+            playbackUnderrunEvents: 3,
             pairedTimestampDiscontinuities: 4,
+            qualifyingPairedTimestampDiscontinuities: 2,
+            lastInputTimestampJumpFrames: 16,
+            lastOutputTimestampJumpFrames: -8,
+            lastInputHostIntervalErrorNanoseconds: 125_000,
+            lastOutputHostIntervalErrorNanoseconds: -250_000,
+            timestampJumpIntervalObservations: 2,
+            minimumTimestampJumpIntervalNanoseconds: 1_000_000,
+            maximumTimestampJumpIntervalNanoseconds: 3_000_000,
+            averageTimestampJumpIntervalNanoseconds: 2_000_000,
+            captureCallbackSizeObservations: [
+                SettingsAudioCallbackSizeObservationDTO(
+                    frameCount: 16,
+                    observations: 20
+                )
+            ],
+            playbackCallbackSizeObservations: [
+                SettingsAudioCallbackSizeObservationDTO(
+                    frameCount: nil,
+                    observations: 1
+                )
+            ],
             renderDeadlineMisses: 7,
             callbackStartStarvations: 5,
             renderOverruns: 2,
@@ -717,25 +838,82 @@ struct SettingsIPCTests {
             minimumTapToOutputLatencyNanoseconds: 1_250_000,
             maximumTapToOutputLatencyNanoseconds: 2_750_000,
             averageTapToOutputLatencyNanoseconds: 1_500_000,
+            callbackTimingObservations: 500,
+            minimumInputAgeNanoseconds: 250_000,
+            maximumInputAgeNanoseconds: 750_000,
+            averageInputAgeNanoseconds: 500_000,
+            minimumOutputLeadNanoseconds: 1_000_000,
+            maximumOutputLeadNanoseconds: 2_000_000,
+            averageOutputLeadNanoseconds: 1_500_000,
             renderTiming: SettingsAudioRenderTimingDTO(
                 callbackStartLatenessObservations: 10_000,
+                callbackStartLatenessP50Nanoseconds: 25_000,
+                callbackStartLatenessP99Nanoseconds: 80_000,
+                callbackStartLatenessP999Nanoseconds: 100_000,
                 callbackStartLatenessP9999Nanoseconds: 125_000,
                 maximumCallbackStartLatenessNanoseconds: 330_000,
                 directHeadObservations: 10_000,
+                directHeadP50Nanoseconds: 1_000,
+                directHeadP99Nanoseconds: 2_000,
+                directHeadP999Nanoseconds: 3_000,
                 directHeadP9999Nanoseconds: 4_000,
                 maximumDirectHeadNanoseconds: 12_000,
                 tailWorkObservations: 10_000,
+                tailWorkP50Nanoseconds: 750,
+                tailWorkP99Nanoseconds: 1_500,
+                tailWorkP999Nanoseconds: 2_250,
                 tailWorkP9999Nanoseconds: 3_000,
                 maximumTailWorkNanoseconds: 9_000,
                 totalRenderObservations: 10_000,
+                totalRenderP50Nanoseconds: 5_000,
+                totalRenderP99Nanoseconds: 10_000,
+                totalRenderP999Nanoseconds: 12_000,
                 totalRenderP9999Nanoseconds: 15_000,
                 maximumTotalRenderNanoseconds: 42_000,
                 completionLatenessObservations: 10_000,
+                completionLatenessP50Nanoseconds: 0,
+                completionLatenessP99Nanoseconds: 0,
+                completionLatenessP999Nanoseconds: 0,
                 completionLatenessP9999Nanoseconds: 0,
                 maximumCompletionLatenessNanoseconds: 8_000,
                 tailCompletionObservations: 625,
                 minimumTailCompletionSlackFrames: 16,
                 tailDeadlineMisses: 0
+            ),
+            diagnostics: SettingsAudioDiagnosticsDTO(
+                status: SettingsAudioStatusDTO(
+                    health: .stable,
+                    routeMode: .lowLatency,
+                    isUsingSaferBuffer: true
+                ),
+                route: SettingsAudioRouteDTO(
+                    transport: "USB",
+                    observedDeviceSampleRate: 48_000,
+                    activeDeviceSampleRate: 48_000,
+                    processingSampleRate: 48_000,
+                    nativeOutputStreamIndex: 1,
+                    physicalDeviceBufferFrameSize: 32,
+                    aggregateBufferFrameSize: 32,
+                    physicalOutputStreamChannelCounts: [2],
+                    aggregateInputStreamChannelCounts: [2],
+                    aggregateOutputStreamChannelCounts: [2],
+                    physicalOutputSafetyOffsetFrames: 71,
+                    aggregateOutputSafetyOffsetFrames: 64
+                ),
+                observation: SettingsAudioObservationDTO(
+                    resetAt: Date(timeIntervalSince1970: 1_000),
+                    observationDurationSeconds: 30,
+                    runtimeStartedAt: Date(timeIntervalSince1970: 1_010),
+                    runtimeDurationSeconds: 20
+                ),
+                recovery: SettingsAudioRecoveryDTO(
+                    runtimeRebuilds: 2,
+                    automaticRecoveries: 1,
+                    bufferEscalations: 1,
+                    headsetFallbacks: 0,
+                    lastReason: .deadlineMisses,
+                    lastRecoveryAt: Date(timeIntervalSince1970: 1_020)
+                )
             )
         )
 
@@ -746,7 +924,7 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func settingsAnalysisUsesCurrentOutputSampleRateWithFallback() {
+    func settingsAnalysisUsesCurrentOutputSampleRateWithFallback() async throws {
         let profile = EQProfile(
             name: "Analysis",
             mode: .parametric,
@@ -755,8 +933,14 @@ struct SettingsIPCTests {
             ]
         )
 
-        let routeAnalysis = EQAnalysisSnapshot(profile: profile, sampleRate: 44_100)
-        let fallbackAnalysis = EQAnalysisSnapshot(profile: profile, sampleRate: 0)
+        let routeAnalysis = try await EQAnalysisSnapshot.analyze(
+            profile: profile,
+            sampleRate: 44_100
+        )
+        let fallbackAnalysis = try await EQAnalysisSnapshot.analyze(
+            profile: profile,
+            sampleRate: 0
+        )
 
         #expect(routeAnalysis.signature.sampleRate == 44_100)
         #expect(fallbackAnalysis.signature.sampleRate == EQAnalysisSignature.defaultSampleRate)
@@ -770,25 +954,27 @@ struct SettingsIPCTests {
             preampDB: profile.preampDB,
             sampleRate: 44_100
         ))
-        #expect(routeAnalysis.recommendedPreampDB == EQProfileAnalysis.recommendedPreampDB(
+        #expect(routeAnalysis.recommendedPreampDB == (try EQProfileAnalysis.recommendedPreampDB(
             profile: profile,
-            sampleRate: 44_100
-        ))
+            sampleRate: 44_100,
+            cancellationCheck: {}
+        )))
     }
 
     @Test
-    func settingsAnalysisTracksResponseCurveChanges() {
+    func settingsAnalysisTracksResponseCurveChanges() async throws {
         var profile = EQProfile.flatConvolution
-        let flat = EQAnalysisSnapshot(profile: profile, sampleRate: 48_000)
+        let flat = try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)
         profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 6),
             EQMagnitudePoint(frequency: 20_000, gainDB: -2)
         ]))
-        let shaped = EQAnalysisSnapshot(profile: profile, sampleRate: 48_000)
+        let shaped = try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)
 
         #expect(flat.signature != shaped.signature)
         #expect(abs((shaped.linkedPoints.first?.magnitudeDB ?? 0) - 6) < 0.000_001)
-        #expect(shaped.recommendedPreampDB == -6.5)
+        #expect(shaped.recommendedPreampDB < -6.6)
+        #expect(shaped.recommendedPreampDB > -6.8)
     }
 
     @Test
@@ -1139,6 +1325,20 @@ struct SettingsIPCTests {
     }
 
     @Test
+    @MainActor
+    func cancelledCommandDoesNotBecomeAVisibleSettingsError() async {
+        let model = GlassEQSettingsViewModel(
+            client: CancellingSettingsCommandClient()
+        )
+        model.commandErrorMessage = "Earlier command failed."
+
+        let response = await model.perform(.chooseImportFiles(mode: .single))
+
+        #expect(response == nil)
+        #expect(model.commandErrorMessage == nil)
+    }
+
+    @Test
     func settingsHostValidationChecksProcessParentAndBundleID() throws {
         let launchInfo = try #require(SettingsLaunchInfo(commandLineArguments: [
             "GlassEQSettings",
@@ -1269,6 +1469,8 @@ private func autoEQTestSession() -> URLSession {
 private struct AutoEQTestURLResponse: Sendable {
     let statusCode: Int
     let body: Data
+    let includesContentLength: Bool
+    let chunkSize: Int?
 }
 
 private final class AutoEQTestURLResponseStore: @unchecked Sendable {
@@ -1297,9 +1499,20 @@ private final class AutoEQTestURLResponseStore: @unchecked Sendable {
 private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
     private static let responseStore = AutoEQTestURLResponseStore()
 
-    static func register(statusCode: Int, body: Data, for url: URL) {
+    static func register(
+        statusCode: Int,
+        body: Data,
+        includesContentLength: Bool = true,
+        chunkSize: Int? = nil,
+        for url: URL
+    ) {
         responseStore.register(
-            AutoEQTestURLResponse(statusCode: statusCode, body: body),
+            AutoEQTestURLResponse(
+                statusCode: statusCode,
+                body: body,
+                includesContentLength: includesContentLength,
+                chunkSize: chunkSize
+            ),
             for: url
         )
     }
@@ -1323,14 +1536,23 @@ private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
                   url: url,
                   statusCode: stub.statusCode,
                   httpVersion: "HTTP/1.1",
-                  headerFields: ["Content-Length": String(stub.body.count)]
+                  headerFields: stub.includesContentLength
+                      ? ["Content-Length": String(stub.body.count)]
+                      : nil
               ) else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }
 
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: stub.body)
+        if let chunkSize = stub.chunkSize {
+            for start in stride(from: 0, to: stub.body.count, by: chunkSize) {
+                let end = min(start + chunkSize, stub.body.count)
+                client?.urlProtocol(self, didLoad: stub.body[start..<end])
+            }
+        } else {
+            client?.urlProtocol(self, didLoad: stub.body)
+        }
         client?.urlProtocolDidFinishLoading(self)
     }
 
@@ -1378,6 +1600,13 @@ private final class FakeSettingsPipeClientFactory: SettingsPipeClientMaking {
 }
 
 @MainActor
+private final class CancellingSettingsCommandClient: SettingsCommanding {
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        throw CancellationError()
+    }
+}
+
+@MainActor
 private final class FakeSettingsPipeClient: SettingsPipeClientConnection, @unchecked Sendable {
     let token: String? = "fake-token"
     private let snapshot: SettingsSnapshotDTO
@@ -1412,32 +1641,6 @@ private func launchArguments() -> [String] {
         "GlassEQSettings",
         "--glasseq-main-pid", "123"
     ]
-}
-
-@MainActor
-private final class CancellingSettingsCommandClient: SettingsCommanding {
-    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        throw CancellationError()
-    }
-}
-
-@MainActor
-private final class TestFileImportPanel {
-    private(set) var didBegin = false
-    private(set) var cancelCallCount = 0
-    private var completion: ((NSApplication.ModalResponse) -> Void)?
-
-    func begin(_ completion: @escaping (NSApplication.ModalResponse) -> Void) {
-        didBegin = true
-        self.completion = completion
-    }
-
-    func cancel() {
-        cancelCallCount += 1
-        let completion = completion
-        self.completion = nil
-        completion?(.cancel)
-    }
 }
 
 private final class SettingsPipePumpRecorder: @unchecked Sendable {
@@ -1486,6 +1689,25 @@ private final class SettingsPipePumpRecorder: @unchecked Sendable {
             lock.unlock()
         }
         return (messages, errorCount, endOfFileCount)
+    }
+}
+
+@MainActor
+private final class TestFileImportPanel {
+    private(set) var didBegin = false
+    private(set) var cancelCallCount = 0
+    private var completion: ((NSApplication.ModalResponse) -> Void)?
+
+    func begin(_ completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        didBegin = true
+        self.completion = completion
+    }
+
+    func cancel() {
+        cancelCallCount += 1
+        let completion = completion
+        self.completion = nil
+        completion?(.cancel)
     }
 }
 

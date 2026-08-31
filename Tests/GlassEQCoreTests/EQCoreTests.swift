@@ -1,4 +1,4 @@
-@testable import GlassEQCore
+@testable @_spi(GlassEQSettingsUI) import GlassEQCore
 import Foundation
 import Testing
 
@@ -76,7 +76,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func outputRouteCeilingDisablesFilterWithoutChangingDSPRateOrTopology() {
+    func outputRouteCeilingDisablesFilterWithoutChangingDSPRateOrFilterCount() {
         let profile = EQProfile(
             name: "Low-rate route",
             mode: .parametric,
@@ -98,7 +98,7 @@ struct EQCoreTests {
         #expect(lowRateRoute.configuration.sampleRate == 48_000)
         #expect(lowRateRoute.configuration.maximumUsableFrequency == 7_200)
         #expect(lowRateRoute.configuration.coefficients == [.identity])
-        #expect(lowRateRoute.hasRealtimeCompatibleTopology(with: fullRate))
+        #expect(lowRateRoute.configuration.coefficients.count == fullRate.configuration.coefficients.count)
     }
 
     @Test
@@ -147,7 +147,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func recommendedPreampUsesLouderStereoChannel() {
+    func recommendedPreampUsesLouderStereoChannel() throws {
         let profile = EQProfile(
             name: "Stereo Headroom",
             mode: .parametric,
@@ -158,14 +158,14 @@ struct EQCoreTests {
             rightFilters: [EQFilter(kind: .peak, frequency: 1_000, gainDB: -6, q: 1)]
         )
 
-        let recommended = EQProfileAnalysis.recommendedPreampDB(profile: profile, sampleRate: 48_000)
+        let recommended = try testRecommendedPreampDB(profile: profile, sampleRate: 48_000)
 
         #expect(recommended < -11.5)
         #expect(recommended > -13.0)
     }
 
     @Test
-    func recommendedPreampFallbackUsesQuieterStereoPreamp() {
+    func recommendedPreampPreservesSafeStereoBalance() throws {
         let profile = EQProfile(
             name: "Stereo Cut",
             mode: .parametric,
@@ -178,13 +178,186 @@ struct EQCoreTests {
             rightFilters: [EQFilter(kind: .peak, frequency: 1_000, gainDB: -3, q: 1)]
         )
 
-        let recommended = EQProfileAnalysis.recommendedPreampDB(profile: profile, sampleRate: 48_000)
+        let recommended = try testRecommendedPreampDB(profile: profile, sampleRate: 48_000)
 
-        #expect(recommended == -9)
+        #expect(recommended == -3)
     }
 
     @Test
-    func responseCurveAnalysisUsesCurvePeakAndLogFrequencyInterpolation() {
+    func recommendedPreampUsesUniformStereoAttenuation() throws {
+        let profile = EQProfile(
+            name: "Stereo balance",
+            mode: .parametric,
+            channelMode: .stereo,
+            preampDB: 0,
+            filters: [],
+            leftPreampDB: 0,
+            leftFilters: [],
+            rightPreampDB: -20,
+            rightFilters: [EQFilter(kind: .peak, frequency: 1_000, gainDB: 30, q: 1)]
+        )
+
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: 48_000
+        )
+
+        #expect(recommended < -10.49)
+        #expect(recommended > -10.6)
+    }
+
+    @Test
+    func recommendedPreampIsAnAbsoluteTargetAtNonzeroPreamp() throws {
+        let profile = EQProfile(
+            name: "Absolute headroom",
+            mode: .parametric,
+            preampDB: -6,
+            filters: [EQFilter(kind: .peak, frequency: 1_000, gainDB: 12, q: 1)]
+        )
+
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: 48_000
+        )
+
+        #expect(recommended < -12.49)
+        #expect(recommended > -12.6)
+    }
+
+    @Test
+    func recommendedPreampBoundsNarrowLowFrequencyFloatPeak() throws {
+        let filter = EQFilter(kind: .peak, frequency: 10, gainDB: 12, q: 100)
+        let peak = FrequencyResponse.peakMagnitudeDB(
+            for: [filter],
+            preampDB: 0,
+            sampleRate: 48_000
+        )
+        let profile = EQProfile(
+            name: "Low narrow peak",
+            mode: .parametric,
+            filters: [filter]
+        )
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: 48_000
+        )
+
+        #expect(peak > 11.9)
+        #expect(peak < 12.1)
+        #expect(peak + recommended <= -0.49)
+    }
+
+    @Test
+    func recommendedPreampBoundsNarrowHighFrequencyFloatPeak() throws {
+        let filter = EQFilter(
+            kind: .peak,
+            frequency: 19_641.5878,
+            gainDB: 12,
+            q: 100
+        )
+        let peak = FrequencyResponse.peakMagnitudeDB(
+            for: [filter],
+            preampDB: 0,
+            sampleRate: 48_000
+        )
+        let profile = EQProfile(
+            name: "High narrow peak",
+            mode: .parametric,
+            filters: [filter]
+        )
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: 48_000
+        )
+
+        #expect(peak > 11.9)
+        #expect(peak < 12.1)
+        #expect(peak + recommended <= -0.49)
+    }
+
+    @Test
+    func recommendedPreampIncludesHighShelfResponseAboveGraphCeiling() throws {
+        let filter = EQFilter(
+            kind: .highShelf,
+            frequency: 18_000,
+            gainDB: 12,
+            q: 0.707
+        )
+
+        let peak = FrequencyResponse.peakMagnitudeDB(
+            for: [filter],
+            preampDB: 0,
+            sampleRate: 48_000
+        )
+        let profile = EQProfile(
+            name: "High shelf",
+            mode: .parametric,
+            filters: [filter]
+        )
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: 48_000
+        )
+
+        #expect(peak > 11.9)
+        #expect(peak < 12.1)
+        #expect(peak + recommended <= -0.49)
+    }
+
+    @Test
+    func separatedBoostsDoNotProduceSummedHeadroomRecommendation() {
+        let filters = [80.0, 180, 400, 900, 2_000, 4_500, 10_000, 18_000].map {
+            EQFilter(kind: .peak, frequency: $0, gainDB: 6, q: 20)
+        }
+
+        let peak = FrequencyResponse.peakMagnitudeDB(
+            for: filters,
+            preampDB: 0,
+            sampleRate: 48_000
+        )
+
+        #expect(peak > 5.9)
+        #expect(peak < 8)
+    }
+
+    @Test
+    func renderConfigurationRejectsMarginalFloatRoundedPole() {
+        let filter = EQFilter(
+            kind: .peak,
+            frequency: 1,
+            gainDB: -12,
+            q: 0.707
+        )
+        let profile = EQProfile(
+            name: "Marginal pole",
+            mode: .parametric,
+            filters: [filter]
+        )
+
+        let configuration = EQRenderConfiguration(
+            profile: profile,
+            sampleRate: 48_000,
+            channelCount: 1
+        )
+        let peak = FrequencyResponse.peakMagnitudeDB(
+            for: [filter],
+            preampDB: 0,
+            sampleRate: 48_000
+        )
+
+        #expect(!configuration.isNumericallySafe)
+        #expect(peak.isInfinite)
+        #expect(throws: EQRenderConfigurationError.numericallyUnsafe) {
+            _ = try EQRenderConfiguration.prepare(
+                profile: profile,
+                sampleRate: 48_000,
+                channelCount: 1
+            )
+        }
+    }
+
+    @Test
+    func responseCurveAnalysisUsesCurvePeakAndLogFrequencyInterpolation() throws {
         var profile = EQProfile.flatConvolution
         profile.preampDB = -2
         profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
@@ -193,7 +366,7 @@ struct EQCoreTests {
             EQMagnitudePoint(frequency: 20_000, gainDB: -3)
         ]))
 
-        let recommended = EQProfileAnalysis.recommendedPreampDB(
+        let recommended = try testRecommendedPreampDB(
             profile: profile,
             sampleRate: 48_000
         )
@@ -204,13 +377,14 @@ struct EQCoreTests {
             count: 3
         )
 
-        #expect(recommended == -6.5)
+        #expect(recommended < -8.5)
+        #expect(recommended > -8.8)
         #expect(abs(response[0].magnitudeDB + 2) < 0.000_001)
         #expect(response.count == 3)
     }
 
     @Test
-    func impulseResponseRecommendationBoundsNarrowInterProbePeak() {
+    func impulseResponseRecommendationBoundsNarrowInterProbePeak() throws {
         let sampleRate = 48_000.0
         let frameCount = ImpulseResponseSource.maximumFrameCount
         let frequencyBin = 4_041
@@ -237,7 +411,7 @@ struct EQCoreTests {
             frequency: frequency,
             sampleRate: sampleRate
         )
-        let recommended = EQProfileAnalysis.recommendedPreampDB(
+        let recommended = try testRecommendedPreampDB(
             profile: profile,
             sampleRate: sampleRate
         )
@@ -245,6 +419,47 @@ struct EQCoreTests {
         #expect(samples.count == ImpulseResponseSource.maximumFrameCount)
         #expect(abs(renderedPeak - 12) < 0.001)
         #expect(renderedPeak + recommended <= -0.49)
+        #expect(recommended > -12.8)
+        #expect(recommended < -12.5)
+    }
+
+    @Test
+    func importedImpulseRecommendationUsesCertifiedNonPowerOfTwoBound() throws {
+        let sampleRate = 48_000.0
+        let frameCount = 1_000
+        let frequencyBin = 37
+        let frequency = sampleRate * Double(frequencyBin) / Double(frameCount)
+        let targetMagnitude = pow(10, 12.0 / 20)
+        let coefficientScale = 2 * targetMagnitude / Double(frameCount)
+        let samples = (0..<frameCount).map { index in
+            Float(coefficientScale * cos(
+                2 * Double.pi * Double(frequencyBin * index) / Double(frameCount)
+            ))
+        }
+        let profile = EQProfile(
+            name: "Non-power-of-two impulse",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: sampleRate,
+                samples: samples
+            ))
+        )
+
+        let renderedPeak = impulseMagnitudeDB(
+            samples: samples,
+            frequency: frequency,
+            sampleRate: sampleRate
+        )
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: sampleRate
+        )
+
+        #expect(abs(renderedPeak - 12) < 0.001)
+        #expect(renderedPeak + recommended <= -0.49)
+        #expect(recommended > -12.8)
+        #expect(recommended < -12.5)
     }
 
     @Test
@@ -298,7 +513,8 @@ struct EQCoreTests {
         )
         let impulse = try MinimumPhaseFIRCompiler.compile(
             points: curve.points,
-            sampleRate: sampleRate
+            sampleRate: sampleRate,
+            maximumUsableFrequency: routeCeiling
         )
 
         let compiledPeak = impulseMagnitudeDB(
@@ -306,13 +522,119 @@ struct EQCoreTests {
             frequency: frequency,
             sampleRate: sampleRate
         )
-        let recommended = EQProfileAnalysis.recommendedPreampDB(
+        let recommended = try testRecommendedPreampDB(
+            profile: profile,
+            sampleRate: sampleRate
+        )
+        let response = FrequencyResponse.points(
+            for: profile.convolution,
+            preampDB: profile.preampDB,
+            sampleRate: sampleRate,
+            count: 8
+        )
+        let displayedPeak = response.last?.magnitudeDB ?? -.infinity
+
+        #expect(compiledPeak > 10.2)
+        #expect(compiledPeak < 10.4)
+        #expect(displayedPeak > 10.2)
+        #expect(displayedPeak < 10.4)
+        #expect(compiledPeak + recommended <= -0.49)
+    }
+
+    @Test
+    func responseCurveRecommendationBoundsRouteCeilingTransition() throws {
+        let sampleRate = 16_000.0
+        let routeCeiling = EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
+        let curve = MagnitudeCurveSource(points: [
+            EQMagnitudePoint(frequency: 20, gainDB: 0),
+            EQMagnitudePoint(frequency: 7_000, gainDB: 12),
+            EQMagnitudePoint(frequency: 7_200, gainDB: 12),
+            EQMagnitudePoint(frequency: 7_300, gainDB: 0)
+        ])
+        let profile = EQProfile(
+            name: "Route boundary",
+            mode: .convolution,
+            filters: [],
+            convolution: .magnitudeCurve(curve)
+        )
+        let impulse = try MinimumPhaseFIRCompiler.compile(
+            points: curve.points,
+            sampleRate: sampleRate,
+            maximumUsableFrequency: routeCeiling
+        )
+
+        let compiledPeak = impulseMagnitudeDB(
+            samples: impulse,
+            frequency: 7_197.8,
+            sampleRate: sampleRate
+        )
+        let recommended = try testRecommendedPreampDB(
             profile: profile,
             sampleRate: sampleRate
         )
 
-        #expect(compiledPeak > 10)
+        #expect(compiledPeak > 11.9)
+        #expect(compiledPeak < 12.1)
         #expect(compiledPeak + recommended <= -0.49)
+    }
+
+    @Test
+    func convolutionRuntimeUsesIdentityAboveRouteCeiling() throws {
+        let sampleRate = 16_000.0
+        let profile = EQProfile(
+            name: "Route-limited curve",
+            mode: .convolution,
+            filters: [],
+            convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_200, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_300, gainDB: 12)
+            ]))
+        )
+        let renderConfiguration = try EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: sampleRate,
+            channelCount: 1
+        )
+        var processor = EQProcessor(renderConfiguration: renderConfiguration)
+        var impulse = [Float](repeating: 0, count: MinimumPhaseFIRCompiler.tapCount)
+        impulse[0] = 1
+
+        processor.processInterleaved(&impulse, channelCount: 1)
+
+        #expect(renderConfiguration.configuration.maximumUsableFrequency == 7_200)
+        #expect(abs(impulseMagnitudeDB(
+            samples: impulse,
+            frequency: 7_300,
+            sampleRate: sampleRate
+        )) < 0.05)
+    }
+
+    @Test
+    func routeCeilingDoesNotAlterImportedImpulseResponse() throws {
+        let samples: [Float] = [0.5, -0.25, 0.125, -0.0625]
+        let profile = EQProfile(
+            name: "Imported impulse",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(
+                sampleRate: 16_000,
+                samples: samples
+            ))
+        )
+        let renderConfiguration = try EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: 16_000,
+            channelCount: 1,
+            maximumUsableFrequency: 4_000
+        )
+        var processor = EQProcessor(renderConfiguration: renderConfiguration)
+        var impulse = [Float](repeating: 0, count: 16)
+        impulse[0] = 1
+
+        processor.processInterleaved(&impulse, channelCount: 1)
+
+        #expect(Array(impulse.prefix(samples.count)) == samples)
     }
 
     @Test
@@ -333,7 +655,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func processorPassesThroughOutOfRangeChannels() {
+    func processorPassesThroughOutOfRangeChannel() {
         let profile = EQProfile(
             name: "Gain",
             mode: .parametric,
@@ -341,18 +663,9 @@ struct EQCoreTests {
             filters: []
         )
         var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var channels: [[Float]] = [
-            [0.1, 0.2],
-            [0.1, 0.2],
-            [0.1, 0.2]
-        ]
 
-        processor.processNonInterleaved(&channels)
         let outOfRange = processor.processSampleWithDiagnostics(0.25, channel: 4)
 
-        #expect(channels[0][0] > 0.1)
-        #expect(channels[1][0] > 0.1)
-        #expect(channels[2] == [0.1, 0.2])
         #expect(outOfRange.sample == 0.25)
         #expect(!outOfRange.saturated)
     }
@@ -788,7 +1101,7 @@ struct EQCoreTests {
         }
 
         #expect(result.completedTransition)
-        #expect(transition.activeConfiguration.coefficients.count == 2)
+        #expect(!transition.isTransitioning)
     }
 
     @Test
@@ -832,7 +1145,17 @@ struct EQCoreTests {
         #expect(abs(samples[0] - 0.5) < 0.000_001)
         #expect(abs(samples[3] - 0.25) < 0.000_001)
         #expect(result.completedTransition)
-        #expect(transition.activeConfiguration.isBypassed)
+
+        var steadyState = [Float](repeating: 0.25, count: 4)
+        let steadyStateResult = steadyState.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: 4,
+                channelCount: 1
+            )
+        }
+        #expect(steadyState == [0.25, 0.25, 0.25, 0.25])
+        #expect(!steadyStateResult.completedTransition)
     }
 
     @Test
@@ -1232,6 +1555,17 @@ struct EQCoreTests {
 
         #expect(decoded.profiles.count == store.profiles.count)
         #expect(decoded.outputMappings == store.outputMappings)
+    }
+
+    private func testRecommendedPreampDB(
+        profile: EQProfile,
+        sampleRate: Double
+    ) throws -> Double {
+        try EQProfileAnalysis.recommendedPreampDB(
+            profile: profile,
+            sampleRate: sampleRate,
+            cancellationCheck: {}
+        )
     }
 
     private func makeStereoTestBlock(frameCount: Int, sampleRate: Double) -> [Float] {

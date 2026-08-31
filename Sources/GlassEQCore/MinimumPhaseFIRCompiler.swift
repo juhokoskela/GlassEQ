@@ -14,27 +14,53 @@ public enum MinimumPhaseFIRCompilerError: Error, Equatable, Sendable {
 public enum MinimumPhaseFIRCompiler {
     public static let synthesisVersion: UInt16 = 1
     public static let tapCount = 16_384
+    private static let peakAnalysisOversamplingFactor = 16
 
     public static func compile(
         points: [EQMagnitudePoint],
-        sampleRate: Double
+        sampleRate: Double,
+        maximumUsableFrequency: Double? = nil
     ) throws -> [Float] {
+        try compile(
+            points: points,
+            sampleRate: sampleRate,
+            maximumUsableFrequency: maximumUsableFrequency,
+            cancellationCheck: {}
+        )
+    }
+
+    static func compile(
+        points: [EQMagnitudePoint],
+        sampleRate: Double,
+        maximumUsableFrequency: Double?,
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> [Float] {
+        try cancellationCheck()
         guard sampleRate.isFinite, sampleRate > 0 else {
             throw MinimumPhaseFIRCompilerError.invalidSampleRate
         }
 
         let sortedPoints = try validatedPoints(points)
+        let nyquist = sampleRate / 2
+        let synthesisPoints = routeAdjustedPoints(
+            sortedPoints,
+            maximumUsableFrequency: maximumUsableFrequency,
+            nyquistFrequency: nyquist
+        )
+        try cancellationCheck()
         let transform = try ComplexDoubleDFT(length: tapCount)
         let halfCount = tapCount / 2
-        let nyquist = sampleRate / 2
         var logMagnitudeReal = [Double](repeating: 0, count: tapCount)
         var logMagnitudeImaginary = [Double](repeating: 0, count: tapCount)
 
         for bin in 0...halfCount {
+            if bin.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             let frequency = Double(bin) * nyquist / Double(halfCount)
             let gainDB = interpolatedGainDB(
                 frequency: frequency,
-                points: sortedPoints
+                points: synthesisPoints
             )
             let logAmplitude = gainDB * log(10) / 20
             logMagnitudeReal[bin] = logAmplitude
@@ -45,35 +71,51 @@ public enum MinimumPhaseFIRCompiler {
 
         var cepstrumReal = [Double](repeating: 0, count: tapCount)
         var cepstrumImaginary = [Double](repeating: 0, count: tapCount)
+        try cancellationCheck()
         transform.inverse(
             real: &logMagnitudeReal,
             imaginary: &logMagnitudeImaginary,
             outputReal: &cepstrumReal,
             outputImaginary: &cepstrumImaginary
         )
+        try cancellationCheck()
         let inverseScale = 1 / Double(tapCount)
         cepstrumReal[0] *= inverseScale
         for index in 1..<halfCount {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             cepstrumReal[index] *= 2 * inverseScale
         }
         cepstrumReal[halfCount] *= inverseScale
         for index in (halfCount + 1)..<tapCount {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             cepstrumReal[index] = 0
         }
         for index in cepstrumImaginary.indices {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             cepstrumImaginary[index] = 0
         }
 
         var minimumPhaseLogReal = [Double](repeating: 0, count: tapCount)
         var minimumPhaseLogImaginary = [Double](repeating: 0, count: tapCount)
+        try cancellationCheck()
         transform.forward(
             real: &cepstrumReal,
             imaginary: &cepstrumImaginary,
             outputReal: &minimumPhaseLogReal,
             outputImaginary: &minimumPhaseLogImaginary
         )
+        try cancellationCheck()
 
         for index in 0..<tapCount {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             let amplitude = exp(minimumPhaseLogReal[index])
             let phase = minimumPhaseLogImaginary[index]
             minimumPhaseLogReal[index] = amplitude * cos(phase)
@@ -82,15 +124,20 @@ public enum MinimumPhaseFIRCompiler {
 
         var impulseReal = [Double](repeating: 0, count: tapCount)
         var impulseImaginary = [Double](repeating: 0, count: tapCount)
+        try cancellationCheck()
         transform.inverse(
             real: &minimumPhaseLogReal,
             imaginary: &minimumPhaseLogImaginary,
             outputReal: &impulseReal,
             outputImaginary: &impulseImaginary
         )
+        try cancellationCheck()
 
         var impulse = [Float](repeating: 0, count: tapCount)
         for index in 0..<tapCount {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
             let value = impulseReal[index] * inverseScale
             guard value.isFinite else {
                 throw MinimumPhaseFIRCompilerError.nonFiniteImpulseResponse
@@ -98,6 +145,135 @@ public enum MinimumPhaseFIRCompiler {
             impulse[index] = Float(value)
         }
         return impulse
+    }
+
+    static func routeAdjustedPoints(
+        _ points: [EQMagnitudePoint],
+        maximumUsableFrequency: Double?,
+        nyquistFrequency: Double
+    ) -> [EQMagnitudePoint] {
+        guard let maximumUsableFrequency,
+              maximumUsableFrequency.isFinite,
+              nyquistFrequency.isFinite,
+              maximumUsableFrequency > 0,
+              maximumUsableFrequency < nyquistFrequency else {
+            return points
+        }
+
+        let ceilingGainDB = interpolatedGainDB(
+            frequency: maximumUsableFrequency,
+            points: points
+        )
+        var adjusted = points.filter { $0.frequency < maximumUsableFrequency }
+        if let ceilingPoint = points.first(where: { $0.frequency == maximumUsableFrequency }) {
+            adjusted.append(ceilingPoint)
+        } else {
+            adjusted.append(EQMagnitudePoint(
+                frequency: maximumUsableFrequency,
+                gainDB: ceilingGainDB
+            ))
+        }
+        adjusted.append(contentsOf: points.lazy
+            .filter {
+                $0.frequency > maximumUsableFrequency
+                    && $0.frequency < nyquistFrequency
+            }
+            .map { EQMagnitudePoint(frequency: $0.frequency, gainDB: 0) })
+        adjusted.append(EQMagnitudePoint(frequency: nyquistFrequency, gainDB: 0))
+        return adjusted
+    }
+
+    static func certifiedPeakMagnitudeDB(
+        impulseResponse: [Float],
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
+        try cancellationCheck()
+        guard !impulseResponse.isEmpty else {
+            return -.infinity
+        }
+
+        guard impulseResponse.count <= ImpulseResponseSource.maximumFrameCount else {
+            return try coefficientL1UpperBoundDB(
+                impulseResponse,
+                cancellationCheck: cancellationCheck
+            )
+        }
+        let minimumSampleCount = impulseResponse.count * peakAnalysisOversamplingFactor
+        var sampleCount = 1
+        while sampleCount < minimumSampleCount {
+            sampleCount *= 2
+        }
+        let transform = try ComplexDoubleDFT(length: sampleCount)
+        var inputReal = [Double](repeating: 0, count: sampleCount)
+        for index in impulseResponse.indices {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            let sample = Double(impulseResponse[index])
+            guard sample.isFinite else {
+                return .infinity
+            }
+            inputReal[index] = sample
+        }
+        var inputImaginary = [Double](repeating: 0, count: sampleCount)
+        var outputReal = [Double](repeating: 0, count: sampleCount)
+        var outputImaginary = [Double](repeating: 0, count: sampleCount)
+        try cancellationCheck()
+        transform.forward(
+            real: &inputReal,
+            imaginary: &inputImaginary,
+            outputReal: &outputReal,
+            outputImaginary: &outputImaginary
+        )
+        try cancellationCheck()
+
+        var sampledPeak = 0.0
+        for index in outputReal.indices {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            sampledPeak = max(sampledPeak, hypot(outputReal[index], outputImaginary[index]))
+        }
+
+        // Bernstein's inequality bounds the unsampled response of this finite
+        // trigonometric polynomial from its nearest oversampled FFT bin.
+        let polynomialDegree = impulseResponse.count - 1
+        let samplingCorrection = cos(
+            Double.pi * Double(polynomialDegree) / Double(sampleCount)
+        )
+        guard samplingCorrection.isFinite, samplingCorrection > 0 else {
+            return try coefficientL1UpperBoundDB(
+                impulseResponse,
+                cancellationCheck: cancellationCheck
+            )
+        }
+        let upperBound = sampledPeak / samplingCorrection
+        let sampledUpperBoundDB = 20 * log10(max(upperBound, .leastNonzeroMagnitude))
+        return min(
+            sampledUpperBoundDB,
+            try coefficientL1UpperBoundDB(
+                impulseResponse,
+                cancellationCheck: cancellationCheck
+            )
+        )
+    }
+
+    static func coefficientL1UpperBoundDB(
+        _ impulseResponse: [Float],
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
+        var coefficientL1Norm = 0.0
+        for (index, sample) in impulseResponse.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            let sample = Double(sample)
+            guard sample.isFinite else {
+                return .infinity
+            }
+            coefficientL1Norm += abs(sample)
+        }
+        return 20 * log10(max(coefficientL1Norm, .leastNonzeroMagnitude))
     }
 
     public static func interpolatedGainDB(

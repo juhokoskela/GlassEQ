@@ -54,7 +54,7 @@ struct ProfilePersistenceTests {
     }
 
     @Test
-    func loadBacksUpOversizedStoreBeforeDecode() throws {
+    func loadLeavesOversizedStoreUntouched() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let oversizedData = Data(repeating: 0, count: ProfilePersistence.maxStoreBytes + 1)
@@ -62,12 +62,41 @@ struct ProfilePersistenceTests {
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
-        guard case .recoveredDefaults(let backupURL) = result.status else {
-            Issue.record("Expected oversized store recovery, got \(result.status)")
-            return
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .oversizedStore(
+            byteCount: oversizedData.count,
+            maximum: ProfilePersistence.maxStoreBytes
+        ))
+        #expect(try Data(contentsOf: url) == oversizedData)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
+    }
+
+    @Test
+    func loadLeavesOversizedFutureSchemaStoreUntouched() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let futureVersion = ProfileStore.currentSchemaVersion + 1
+        let data = Data("""
+        {
+          "padding" : "\(String(repeating: "x", count: ProfilePersistence.maxStoreBytes))",
+          "schemaVersion" : \(futureVersion)
         }
-        #expect((try Data(contentsOf: backupURL)).count == oversizedData.count)
-        #expect(try ProfilePersistence.decode(Data(contentsOf: url)).profiles == ProfileStore.defaultProfiles)
+        """.utf8)
+        try data.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .oversizedStore(
+            byteCount: data.count,
+            maximum: ProfilePersistence.maxStoreBytes
+        ))
+        #expect(try Data(contentsOf: url) == data)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
     }
 
     @Test
@@ -240,6 +269,61 @@ struct ProfilePersistenceTests {
             maximumSupported: ProfileStore.currentSchemaVersion
         ))
         #expect(try Data(contentsOf: url) == data)
+    }
+
+    @Test
+    func loadFutureSchemaWithIncompatiblePayloadDoesNotModifyStore() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let futureVersion = ProfileStore.currentSchemaVersion + 1
+        let data = Data("""
+        {
+          "fallbackProfileID" : { "reference" : "future" },
+          "outputMappings" : "future mappings",
+          "profiles" : { "storage" : "future profiles" },
+          "schemaVersion" : \(futureVersion)
+        }
+        """.utf8)
+        try data.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.store.profiles == ProfileStore.defaultProfiles)
+        #expect(result.status == .unsupportedSchemaVersion(
+            version: futureVersion,
+            maximumSupported: ProfileStore.currentSchemaVersion
+        ))
+        #expect(try Data(contentsOf: url) == data)
+        #expect(!FileManager.default.fileExists(
+            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+        ))
+    }
+
+    @Test
+    func loadRepairsSchemaOneInvalidProfileAsCurrentSchema() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let valid = EQProfile(name: "Valid", mode: .parametric, filters: [])
+        let invalid = EQProfile(name: "", mode: .parametric, filters: [])
+        let store = ProfileStore(
+            schemaVersion: 1,
+            profiles: [valid, invalid],
+            fallbackProfileID: valid.id
+        )
+        let invalidData = try ProfilePersistence.encoder.encode(store)
+        try invalidData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        guard case .repairedInvalidStore(let backupURL, let summary) = result.status else {
+            Issue.record("Expected invalid profile repair, got \(result.status)")
+            return
+        }
+        #expect(try Data(contentsOf: backupURL) == invalidData)
+        #expect(result.store.schemaVersion == ProfileStore.currentSchemaVersion)
+        #expect(result.store.profiles == [valid])
+        #expect(summary.removedInvalidProfiles == 1)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == result.store)
     }
 
     @Test
@@ -665,6 +749,31 @@ struct ProfilePersistenceTests {
         let decoded = try ProfilePersistence.decode(ProfilePersistence.encode(store))
 
         #expect(decoded == store)
+    }
+
+    @Test
+    func linkedImpulseResponseIsEncodedOnce() throws {
+        let source = ImpulseResponseSource(
+            sampleRate: 48_000,
+            samples: [1, 0.25, -0.125]
+        )
+        let profile = EQProfile(
+            name: "Linked IR",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(source)
+        )
+        let store = ProfileStore(profiles: [profile], fallbackProfileID: profile.id)
+
+        let data = try ProfilePersistence.encode(store)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let profiles = try #require(json["profiles"] as? [[String: Any]])
+        let encodedProfile = try #require(profiles.first)
+
+        #expect(encodedProfile["convolution"] != nil)
+        #expect(encodedProfile["leftConvolution"] == nil)
+        #expect(encodedProfile["rightConvolution"] == nil)
+        #expect(try ProfilePersistence.decode(data) == store)
     }
 
     @Test

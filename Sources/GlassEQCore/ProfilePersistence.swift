@@ -18,6 +18,7 @@ public enum ProfileStoreLoadStatus: Equatable, Sendable {
     case recoveredDefaults(backupURL: URL)
     case backupFailed
     case unsupportedSchemaVersion(version: Int, maximumSupported: Int)
+    case oversizedStore(byteCount: Int, maximum: Int)
 }
 
 public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedError {
@@ -219,15 +220,38 @@ public enum ProfilePersistence {
         }
 
         if let byteCount = storeByteCount(at: url), byteCount > maxStoreBytes {
-            return recoverInvalidStore(at: url, timestamp: timestamp)
+            return oversizedStoreResult(byteCount: byteCount)
         }
 
         let data: Data
         do {
-            data = try Data(contentsOf: url)
-            try validateStoreSize(byteCount: data.count)
+            data = try readStoreData(from: url)
+        } catch let error as ProfileStoreValidationError {
+            if case let .inputTooLarge(byteCount, maximum) = error {
+                return ProfileStoreLoadResult(
+                    store: defaultStore(),
+                    status: .oversizedStore(byteCount: byteCount, maximum: maximum)
+                )
+            }
+            return recoverInvalidStore(at: url, timestamp: timestamp)
         } catch {
             return recoverInvalidStore(at: url, timestamp: timestamp)
+        }
+
+        let schemaVersion: Int
+        do {
+            schemaVersion = try decoder.decode(ProfileStoreSchemaEnvelope.self, from: data).schemaVersion
+        } catch {
+            return recoverInvalidStore(at: url, timestamp: timestamp)
+        }
+        if schemaVersion > ProfileStore.currentSchemaVersion {
+            return ProfileStoreLoadResult(
+                store: defaultStore(),
+                status: .unsupportedSchemaVersion(
+                    version: schemaVersion,
+                    maximumSupported: ProfileStore.currentSchemaVersion
+                )
+            )
         }
 
         let decodedStore: ProfileStore
@@ -355,6 +379,22 @@ public enum ProfilePersistence {
         }
     }
 
+    private static func readStoreData(from url: URL) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = Data()
+        while data.count <= maxStoreBytes {
+            let remaining = maxStoreBytes + 1 - data.count
+            guard let chunk = try handle.read(upToCount: remaining),
+                  !chunk.isEmpty else {
+                break
+            }
+            data.append(chunk)
+        }
+        try validateStoreSize(byteCount: data.count)
+        return data
+    }
+
     private static func encodeForCommit(_ store: ProfileStore) throws -> Data {
         try validate(store)
         var committedStore = store
@@ -362,6 +402,20 @@ public enum ProfilePersistence {
         let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
         return data
+    }
+
+    private struct ProfileStoreSchemaEnvelope: Decodable {
+        var schemaVersion: Int
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+                ?? ProfileStore.initialSchemaVersion
+        }
     }
 
     private struct ProfileStoreEnvelope: Decodable {
@@ -742,6 +796,11 @@ public enum ProfilePersistence {
 
         summary.merge(store.repairReferences())
 
+        if store.schemaVersion >= ProfileStore.initialSchemaVersion,
+           store.schemaVersion < ProfileStore.currentSchemaVersion {
+            store.schemaVersion = ProfileStore.currentSchemaVersion
+        }
+
         do {
             try validate(store)
             try save(store, to: url)
@@ -770,6 +829,13 @@ public enum ProfilePersistence {
 
         try? save(store, to: url)
         return ProfileStoreLoadResult(store: store, status: .recoveredDefaults(backupURL: backupURL))
+    }
+
+    private static func oversizedStoreResult(byteCount: Int) -> ProfileStoreLoadResult {
+        ProfileStoreLoadResult(
+            store: defaultStore(),
+            status: .oversizedStore(byteCount: byteCount, maximum: maxStoreBytes)
+        )
     }
 
     private static func uniqueInvalidStoreBackupURL(for storeURL: URL, timestamp: Date) -> URL {

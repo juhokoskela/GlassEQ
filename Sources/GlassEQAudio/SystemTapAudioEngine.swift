@@ -31,18 +31,33 @@ public typealias AudioEngineDiagnosticTrace = @Sendable (
 
 public struct AudioRenderTimingMetrics: Equatable, Sendable {
     public var callbackStartLatenessObservations: UInt64
+    public var callbackStartLatenessP50Nanoseconds: UInt64
+    public var callbackStartLatenessP99Nanoseconds: UInt64
+    public var callbackStartLatenessP999Nanoseconds: UInt64
     public var callbackStartLatenessP9999Nanoseconds: UInt64
     public var maximumCallbackStartLatenessNanoseconds: UInt64
     public var directHeadObservations: UInt64
+    public var directHeadP50Nanoseconds: UInt64
+    public var directHeadP99Nanoseconds: UInt64
+    public var directHeadP999Nanoseconds: UInt64
     public var directHeadP9999Nanoseconds: UInt64
     public var maximumDirectHeadNanoseconds: UInt64
     public var tailWorkObservations: UInt64
+    public var tailWorkP50Nanoseconds: UInt64
+    public var tailWorkP99Nanoseconds: UInt64
+    public var tailWorkP999Nanoseconds: UInt64
     public var tailWorkP9999Nanoseconds: UInt64
     public var maximumTailWorkNanoseconds: UInt64
     public var totalRenderObservations: UInt64
+    public var totalRenderP50Nanoseconds: UInt64
+    public var totalRenderP99Nanoseconds: UInt64
+    public var totalRenderP999Nanoseconds: UInt64
     public var totalRenderP9999Nanoseconds: UInt64
     public var maximumTotalRenderNanoseconds: UInt64
     public var completionLatenessObservations: UInt64
+    public var completionLatenessP50Nanoseconds: UInt64
+    public var completionLatenessP99Nanoseconds: UInt64
+    public var completionLatenessP999Nanoseconds: UInt64
     public var completionLatenessP9999Nanoseconds: UInt64
     public var maximumCompletionLatenessNanoseconds: UInt64
     public var tailCompletionObservations: UInt64
@@ -51,18 +66,33 @@ public struct AudioRenderTimingMetrics: Equatable, Sendable {
 
     public init(
         callbackStartLatenessObservations: UInt64 = 0,
+        callbackStartLatenessP50Nanoseconds: UInt64 = 0,
+        callbackStartLatenessP99Nanoseconds: UInt64 = 0,
+        callbackStartLatenessP999Nanoseconds: UInt64 = 0,
         callbackStartLatenessP9999Nanoseconds: UInt64 = 0,
         maximumCallbackStartLatenessNanoseconds: UInt64 = 0,
         directHeadObservations: UInt64 = 0,
+        directHeadP50Nanoseconds: UInt64 = 0,
+        directHeadP99Nanoseconds: UInt64 = 0,
+        directHeadP999Nanoseconds: UInt64 = 0,
         directHeadP9999Nanoseconds: UInt64 = 0,
         maximumDirectHeadNanoseconds: UInt64 = 0,
         tailWorkObservations: UInt64 = 0,
+        tailWorkP50Nanoseconds: UInt64 = 0,
+        tailWorkP99Nanoseconds: UInt64 = 0,
+        tailWorkP999Nanoseconds: UInt64 = 0,
         tailWorkP9999Nanoseconds: UInt64 = 0,
         maximumTailWorkNanoseconds: UInt64 = 0,
         totalRenderObservations: UInt64 = 0,
+        totalRenderP50Nanoseconds: UInt64 = 0,
+        totalRenderP99Nanoseconds: UInt64 = 0,
+        totalRenderP999Nanoseconds: UInt64 = 0,
         totalRenderP9999Nanoseconds: UInt64 = 0,
         maximumTotalRenderNanoseconds: UInt64 = 0,
         completionLatenessObservations: UInt64 = 0,
+        completionLatenessP50Nanoseconds: UInt64 = 0,
+        completionLatenessP99Nanoseconds: UInt64 = 0,
+        completionLatenessP999Nanoseconds: UInt64 = 0,
         completionLatenessP9999Nanoseconds: UInt64 = 0,
         maximumCompletionLatenessNanoseconds: UInt64 = 0,
         tailCompletionObservations: UInt64 = 0,
@@ -70,23 +100,48 @@ public struct AudioRenderTimingMetrics: Equatable, Sendable {
         tailDeadlineMisses: UInt64 = 0
     ) {
         self.callbackStartLatenessObservations = callbackStartLatenessObservations
+        self.callbackStartLatenessP50Nanoseconds = callbackStartLatenessP50Nanoseconds
+        self.callbackStartLatenessP99Nanoseconds = callbackStartLatenessP99Nanoseconds
+        self.callbackStartLatenessP999Nanoseconds = callbackStartLatenessP999Nanoseconds
         self.callbackStartLatenessP9999Nanoseconds = callbackStartLatenessP9999Nanoseconds
         self.maximumCallbackStartLatenessNanoseconds = maximumCallbackStartLatenessNanoseconds
         self.directHeadObservations = directHeadObservations
+        self.directHeadP50Nanoseconds = directHeadP50Nanoseconds
+        self.directHeadP99Nanoseconds = directHeadP99Nanoseconds
+        self.directHeadP999Nanoseconds = directHeadP999Nanoseconds
         self.directHeadP9999Nanoseconds = directHeadP9999Nanoseconds
         self.maximumDirectHeadNanoseconds = maximumDirectHeadNanoseconds
         self.tailWorkObservations = tailWorkObservations
+        self.tailWorkP50Nanoseconds = tailWorkP50Nanoseconds
+        self.tailWorkP99Nanoseconds = tailWorkP99Nanoseconds
+        self.tailWorkP999Nanoseconds = tailWorkP999Nanoseconds
         self.tailWorkP9999Nanoseconds = tailWorkP9999Nanoseconds
         self.maximumTailWorkNanoseconds = maximumTailWorkNanoseconds
         self.totalRenderObservations = totalRenderObservations
+        self.totalRenderP50Nanoseconds = totalRenderP50Nanoseconds
+        self.totalRenderP99Nanoseconds = totalRenderP99Nanoseconds
+        self.totalRenderP999Nanoseconds = totalRenderP999Nanoseconds
         self.totalRenderP9999Nanoseconds = totalRenderP9999Nanoseconds
         self.maximumTotalRenderNanoseconds = maximumTotalRenderNanoseconds
         self.completionLatenessObservations = completionLatenessObservations
+        self.completionLatenessP50Nanoseconds = completionLatenessP50Nanoseconds
+        self.completionLatenessP99Nanoseconds = completionLatenessP99Nanoseconds
+        self.completionLatenessP999Nanoseconds = completionLatenessP999Nanoseconds
         self.completionLatenessP9999Nanoseconds = completionLatenessP9999Nanoseconds
         self.maximumCompletionLatenessNanoseconds = maximumCompletionLatenessNanoseconds
         self.tailCompletionObservations = tailCompletionObservations
         self.minimumTailCompletionSlackFrames = minimumTailCompletionSlackFrames
         self.tailDeadlineMisses = tailDeadlineMisses
+    }
+}
+
+public struct AudioCallbackSizeObservation: Equatable, Sendable {
+    public var frameCount: Int?
+    public var observations: UInt64
+
+    public init(frameCount: Int?, observations: UInt64) {
+        self.frameCount = frameCount
+        self.observations = observations
     }
 }
 
@@ -102,19 +157,29 @@ public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Send
     ) {
         self.outputDeviceUID = outputDeviceUID
         self.nativeOutputStreamIndex = nativeOutputStreamIndex
-        self.nominalSampleRate = Int64(nominalSampleRate.rounded())
+        if nominalSampleRate.isFinite,
+           nominalSampleRate > 0,
+           nominalSampleRate <= CoreAudioDeviceQuery.maxSampleRate {
+            self.nominalSampleRate = Int64(nominalSampleRate.rounded())
+        } else {
+            self.nominalSampleRate = 0
+        }
     }
 
     public var isValid: Bool {
         !outputDeviceUID.isEmpty
+            && outputDeviceUID.utf8.count <= 512
             && nativeOutputStreamIndex >= 0
+            && nativeOutputStreamIndex < CoreAudioDeviceQuery.maxChannelCount
             && nominalSampleRate > 0
+            && nominalSampleRate <= Int64(CoreAudioDeviceQuery.maxSampleRate)
     }
 }
 
 public struct AudioEngineMetrics: Equatable, Sendable {
     public var capturedFrames: UInt64
     public var playedFrames: UInt64
+    public var playbackUnderrunEvents: UInt64
     public var playbackUnderrunFrames: UInt64
     public var droppedInputFrames: UInt64
     public var droppedBufferedFrames: UInt64
@@ -140,6 +205,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public var averageTimestampJumpIntervalNanoseconds: Double
     public var maximumCaptureCallbackFrames: Int
     public var maximumPlaybackCallbackFrames: Int
+    public var captureCallbackSizeObservations: [AudioCallbackSizeObservation]
+    public var playbackCallbackSizeObservations: [AudioCallbackSizeObservation]
     public var renderDeadlineMisses: UInt64
     public var callbackStartStarvations: UInt64
     public var renderOverruns: UInt64
@@ -168,6 +235,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     public init(
         capturedFrames: UInt64 = 0,
         playedFrames: UInt64 = 0,
+        playbackUnderrunEvents: UInt64 = 0,
         playbackUnderrunFrames: UInt64 = 0,
         droppedInputFrames: UInt64 = 0,
         droppedBufferedFrames: UInt64 = 0,
@@ -193,6 +261,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         averageTimestampJumpIntervalNanoseconds: Double = 0,
         maximumCaptureCallbackFrames: Int = 0,
         maximumPlaybackCallbackFrames: Int = 0,
+        captureCallbackSizeObservations: [AudioCallbackSizeObservation] = [],
+        playbackCallbackSizeObservations: [AudioCallbackSizeObservation] = [],
         renderDeadlineMisses: UInt64 = 0,
         callbackStartStarvations: UInt64 = 0,
         renderOverruns: UInt64 = 0,
@@ -220,6 +290,7 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     ) {
         self.capturedFrames = capturedFrames
         self.playedFrames = playedFrames
+        self.playbackUnderrunEvents = playbackUnderrunEvents
         self.playbackUnderrunFrames = playbackUnderrunFrames
         self.droppedInputFrames = droppedInputFrames
         self.droppedBufferedFrames = droppedBufferedFrames
@@ -245,6 +316,8 @@ public struct AudioEngineMetrics: Equatable, Sendable {
         self.averageTimestampJumpIntervalNanoseconds = averageTimestampJumpIntervalNanoseconds
         self.maximumCaptureCallbackFrames = maximumCaptureCallbackFrames
         self.maximumPlaybackCallbackFrames = maximumPlaybackCallbackFrames
+        self.captureCallbackSizeObservations = captureCallbackSizeObservations
+        self.playbackCallbackSizeObservations = playbackCallbackSizeObservations
         self.renderDeadlineMisses = renderDeadlineMisses
         self.callbackStartStarvations = callbackStartStarvations
         self.renderOverruns = renderOverruns
@@ -569,6 +642,9 @@ struct RealtimeOutputDeclicker: Sendable {
 
 struct ExtremeDurationSnapshot {
     var observations: UInt64
+    var p50Nanoseconds: UInt64
+    var p99Nanoseconds: UInt64
+    var p999Nanoseconds: UInt64
     var p9999Nanoseconds: UInt64
     var maximumNanoseconds: UInt64
 }
@@ -584,6 +660,9 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
 
     private let requestedGeneration = Atomic<UInt64>(0)
     private let publishedObservations = Atomic<UInt64>(0)
+    private let publishedP50Nanoseconds = Atomic<UInt64>(0)
+    private let publishedP99Nanoseconds = Atomic<UInt64>(0)
+    private let publishedP999Nanoseconds = Atomic<UInt64>(0)
     private let publishedP9999Nanoseconds = Atomic<UInt64>(0)
     private let publishedMaximumNanoseconds = Atomic<UInt64>(0)
     private var localGeneration: UInt64 = 0
@@ -619,13 +698,20 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     func reset() {
         requestedGeneration.wrappingAdd(1, ordering: .releasing)
         publishedObservations.store(0, ordering: .relaxed)
+        publishedP50Nanoseconds.store(0, ordering: .relaxed)
+        publishedP99Nanoseconds.store(0, ordering: .relaxed)
+        publishedP999Nanoseconds.store(0, ordering: .relaxed)
         publishedP9999Nanoseconds.store(0, ordering: .relaxed)
         publishedMaximumNanoseconds.store(0, ordering: .relaxed)
     }
 
     func snapshot() -> ExtremeDurationSnapshot {
-        ExtremeDurationSnapshot(
-            observations: publishedObservations.load(ordering: .relaxed),
+        let observations = publishedObservations.load(ordering: .acquiring)
+        return ExtremeDurationSnapshot(
+            observations: observations,
+            p50Nanoseconds: publishedP50Nanoseconds.load(ordering: .relaxed),
+            p99Nanoseconds: publishedP99Nanoseconds.load(ordering: .relaxed),
+            p999Nanoseconds: publishedP999Nanoseconds.load(ordering: .relaxed),
             p9999Nanoseconds: publishedP9999Nanoseconds.load(ordering: .relaxed),
             maximumNanoseconds: publishedMaximumNanoseconds.load(ordering: .relaxed)
         )
@@ -642,29 +728,49 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     }
 
     private func publish() {
-        let rank = max(
-            UInt64(ceil(Double(observations) * 0.9999)),
-            1
-        )
+        let p50Rank = Self.rank(for: 0.5, observations: observations)
+        let p99Rank = Self.rank(for: 0.99, observations: observations)
+        let p999Rank = Self.rank(for: 0.999, observations: observations)
+        let p9999Rank = Self.rank(for: 0.9999, observations: observations)
         var cumulative: UInt64 = 0
-        var percentile = maximumNanoseconds
+        var p50: UInt64?
+        var p99: UInt64?
+        var p999: UInt64?
+        var p9999: UInt64?
         for bucket in 0..<Self.bucketCount
         where bucketGenerations[bucket] == localGeneration {
             cumulative &+= bucketCounts[bucket]
-            if cumulative >= rank {
-                percentile = min(
-                    Self.bucketUpperBound(
-                        bucket,
-                        maximumNanoseconds: maximumNanoseconds
-                    ),
-                    maximumNanoseconds
-                )
+            let upperBound = min(
+                Self.bucketUpperBound(
+                    bucket,
+                    maximumNanoseconds: maximumNanoseconds
+                ),
+                maximumNanoseconds
+            )
+            if p50 == nil, cumulative >= p50Rank {
+                p50 = upperBound
+            }
+            if p99 == nil, cumulative >= p99Rank {
+                p99 = upperBound
+            }
+            if p999 == nil, cumulative >= p999Rank {
+                p999 = upperBound
+            }
+            if cumulative >= p9999Rank {
+                p9999 = upperBound
                 break
             }
         }
         publishedMaximumNanoseconds.store(maximumNanoseconds, ordering: .relaxed)
-        publishedP9999Nanoseconds.store(percentile, ordering: .relaxed)
+        publishedP50Nanoseconds.store(p50 ?? maximumNanoseconds, ordering: .relaxed)
+        publishedP99Nanoseconds.store(p99 ?? maximumNanoseconds, ordering: .relaxed)
+        publishedP999Nanoseconds.store(p999 ?? maximumNanoseconds, ordering: .relaxed)
+        publishedP9999Nanoseconds.store(p9999 ?? maximumNanoseconds, ordering: .relaxed)
         publishedObservations.store(observations, ordering: .releasing)
+    }
+
+    private static func rank(for percentile: Double, observations: UInt64) -> UInt64 {
+        max(UInt64(ceil(Double(observations) * percentile)), 1)
     }
 
     private static func bucketIndex(for nanoseconds: UInt64) -> Int {
@@ -695,6 +801,103 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     }
 }
 
+final class RealtimeCallbackSizeTracker: @unchecked Sendable {
+    private let frames16 = Atomic<UInt64>(0)
+    private let frames32 = Atomic<UInt64>(0)
+    private let frames64 = Atomic<UInt64>(0)
+    private let frames128 = Atomic<UInt64>(0)
+    private let frames256 = Atomic<UInt64>(0)
+    private let frames480 = Atomic<UInt64>(0)
+    private let frames512 = Atomic<UInt64>(0)
+    private let frames960 = Atomic<UInt64>(0)
+    private let frames1024 = Atomic<UInt64>(0)
+    private let frames2048 = Atomic<UInt64>(0)
+    private let frames4096 = Atomic<UInt64>(0)
+    private let frames8192 = Atomic<UInt64>(0)
+    private let other = Atomic<UInt64>(0)
+
+    func record(_ frameCount: Int) {
+        switch frameCount {
+        case 16:
+            frames16.wrappingAdd(1, ordering: .relaxed)
+        case 32:
+            frames32.wrappingAdd(1, ordering: .relaxed)
+        case 64:
+            frames64.wrappingAdd(1, ordering: .relaxed)
+        case 128:
+            frames128.wrappingAdd(1, ordering: .relaxed)
+        case 256:
+            frames256.wrappingAdd(1, ordering: .relaxed)
+        case 480:
+            frames480.wrappingAdd(1, ordering: .relaxed)
+        case 512:
+            frames512.wrappingAdd(1, ordering: .relaxed)
+        case 960:
+            frames960.wrappingAdd(1, ordering: .relaxed)
+        case 1_024:
+            frames1024.wrappingAdd(1, ordering: .relaxed)
+        case 2_048:
+            frames2048.wrappingAdd(1, ordering: .relaxed)
+        case 4_096:
+            frames4096.wrappingAdd(1, ordering: .relaxed)
+        case 8_192:
+            frames8192.wrappingAdd(1, ordering: .relaxed)
+        default:
+            other.wrappingAdd(1, ordering: .relaxed)
+        }
+    }
+
+    func reset() {
+        frames16.store(0, ordering: .relaxed)
+        frames32.store(0, ordering: .relaxed)
+        frames64.store(0, ordering: .relaxed)
+        frames128.store(0, ordering: .relaxed)
+        frames256.store(0, ordering: .relaxed)
+        frames480.store(0, ordering: .relaxed)
+        frames512.store(0, ordering: .relaxed)
+        frames960.store(0, ordering: .relaxed)
+        frames1024.store(0, ordering: .relaxed)
+        frames2048.store(0, ordering: .relaxed)
+        frames4096.store(0, ordering: .relaxed)
+        frames8192.store(0, ordering: .relaxed)
+        other.store(0, ordering: .relaxed)
+    }
+
+    func snapshot() -> [AudioCallbackSizeObservation] {
+        var result: [AudioCallbackSizeObservation] = []
+        result.reserveCapacity(13)
+        append(frames16, frameCount: 16, to: &result)
+        append(frames32, frameCount: 32, to: &result)
+        append(frames64, frameCount: 64, to: &result)
+        append(frames128, frameCount: 128, to: &result)
+        append(frames256, frameCount: 256, to: &result)
+        append(frames480, frameCount: 480, to: &result)
+        append(frames512, frameCount: 512, to: &result)
+        append(frames960, frameCount: 960, to: &result)
+        append(frames1024, frameCount: 1_024, to: &result)
+        append(frames2048, frameCount: 2_048, to: &result)
+        append(frames4096, frameCount: 4_096, to: &result)
+        append(frames8192, frameCount: 8_192, to: &result)
+        append(other, frameCount: nil, to: &result)
+        return result
+    }
+
+    private func append(
+        _ counter: borrowing Atomic<UInt64>,
+        frameCount: Int?,
+        to result: inout [AudioCallbackSizeObservation]
+    ) {
+        let observations = counter.load(ordering: .relaxed)
+        guard observations > 0 else {
+            return
+        }
+        result.append(AudioCallbackSizeObservation(
+            frameCount: frameCount,
+            observations: observations
+        ))
+    }
+}
+
 public final class SystemTapAudioEngine: @unchecked Sendable {
     private static let preferredAggregateBufferFrameSize: UInt32 = 16
     private static let maximumSupportedCallbackFrames = 8192
@@ -710,82 +913,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         case separateClock
     }
 
-    private struct StartupQualificationSnapshot {
+    struct StartupQualificationSnapshot {
         var validCallbackStreak: UInt64
         var observedCallbacks: UInt64
         var rejectedCallbacks: UInt64
     }
 
-    final class StartupCallbackQualification: @unchecked Sendable {
-        struct Callback {
-            fileprivate var generation: UInt64
-        }
-
-        private static let streakMask = UInt64(UInt32.max)
-        // Keep the generation and streak in one atomic so a reset cannot land
-        // between a callback's generation check and its streak update.
-        private let state = Atomic<UInt64>(0)
-        private let rejectedCallbacks = Atomic<UInt64>(0)
-
-        func reset() {
-            advanceGeneration()
-            rejectedCallbacks.store(0, ordering: .relaxed)
-        }
-
-        func beginProbation() {
-            advanceGeneration()
-        }
-
-        func beginCallback() -> Callback {
-            Callback(
-                generation: state.load(ordering: .acquiring) & ~Self.streakMask
-            )
-        }
-
-        func record(_ callback: Callback, isValid: Bool) {
-            let current = state.load(ordering: .acquiring)
-            guard current & ~Self.streakMask == callback.generation else {
-                return
-            }
-            let currentStreak = current & Self.streakMask
-            let nextStreak = isValid
-                ? min(currentStreak + 1, Self.streakMask)
-                : 0
-            let exchange = state.compareExchange(
-                expected: current,
-                desired: callback.generation | nextStreak,
-                ordering: .acquiringAndReleasing
-            )
-            if exchange.exchanged, !isValid {
-                rejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
-            }
-        }
-
-        var validStreak: UInt64 {
-            state.load(ordering: .acquiring) & Self.streakMask
-        }
-
-        var rejectedCount: UInt64 {
-            rejectedCallbacks.load(ordering: .acquiring)
-        }
-
-        private func advanceGeneration() {
-            while true {
-                let current = state.load(ordering: .acquiring)
-                let generation = UInt32(truncatingIfNeeded: current >> 32) &+ 1
-                let exchange = state.compareExchange(
-                    expected: current,
-                    desired: UInt64(generation) << 32,
-                    ordering: .acquiringAndReleasing
-                )
-                if exchange.exchanged {
-                    return
-                }
-            }
-        }
-    }
-
-    private struct AggregateStartupQualificationError: Error,
+    struct AggregateStartupQualificationError: Error,
         LocalizedError,
         CustomStringConvertible {
         var expectedFrameCount: Int
@@ -800,6 +934,138 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    struct CombinedStartupTestBoundary {
+        var attempt: (UInt32) throws -> Void
+        var restoreSeparateClockBackend: (
+            AudioOutputDevice,
+            EQProfile,
+            Bool
+        ) throws -> Void
+        var waitBeforeRetry: () -> Void
+        var stopSeparateClockBackend: () -> Void = {}
+        var stopCombinedResources: () -> Void = {}
+    }
+    #endif
+
+    final class AggregateCallbackFrameExpectation: @unchecked Sendable {
+        struct Validation {
+            fileprivate var expectation: UInt64
+            var isValid: Bool
+        }
+
+        private static let streakMask = UInt64(UInt16.max)
+        // One atomic transition changes the generation, applied size, and startup streak.
+        private let state: Atomic<UInt64>
+        private let rejectedCallbacks = Atomic<UInt64>(0)
+
+        init(frameCount: Int) {
+            self.state = Atomic(Self.encodedState(
+                generation: 0,
+                frameCount: frameCount,
+                validCallbackStreak: 0
+            ))
+        }
+
+        func update(appliedFrameCount: UInt32) {
+            let previous = state.load(ordering: .relaxed)
+            let generation = UInt32(truncatingIfNeeded: previous >> 32) &+ 1
+            state.store(
+                Self.encodedState(
+                    generation: generation,
+                    frameCount: Int(appliedFrameCount),
+                    validCallbackStreak: 0
+                ),
+                ordering: .releasing
+            )
+        }
+
+        func beginProbation() {
+            while true {
+                let current = state.load(ordering: .acquiring)
+                let generation = UInt32(truncatingIfNeeded: current >> 32) &+ 1
+                let frameCount = Int((current >> 16) & UInt64(UInt16.max))
+                let exchange = state.compareExchange(
+                    expected: current,
+                    desired: Self.encodedState(
+                        generation: generation,
+                        frameCount: frameCount,
+                        validCallbackStreak: 0
+                    ),
+                    ordering: .acquiringAndReleasing
+                )
+                if exchange.exchanged {
+                    return
+                }
+            }
+        }
+
+        func validateCallback(
+            mainInputFrameCount: Int,
+            systemSoundInputFrameCount: Int,
+            outputFrameCount: Int,
+            timestampsAreStable: Bool
+        ) -> Validation {
+            let snapshot = state.load(ordering: .acquiring)
+            let expectedFrameCount = Int((snapshot >> 16) & UInt64(UInt16.max))
+            return Validation(
+                expectation: snapshot & ~Self.streakMask,
+                isValid: SystemTapAudioEngine.startupCallbackIsValid(
+                    mainInputFrameCount: mainInputFrameCount,
+                    systemSoundInputFrameCount: systemSoundInputFrameCount,
+                    outputFrameCount: outputFrameCount,
+                    expectedFrameCount: expectedFrameCount,
+                    timestampsAreStable: timestampsAreStable
+                )
+            )
+        }
+
+        func recordCallback(
+            _ validation: Validation,
+            metDeadlines: Bool
+        ) {
+            let current = state.load(ordering: .acquiring)
+            guard current & ~Self.streakMask == validation.expectation else {
+                return
+            }
+
+            let isValid = validation.isValid && metDeadlines
+            let currentStreak = current & Self.streakMask
+            let nextStreak = isValid
+                ? min(currentStreak + 1, Self.streakMask)
+                : 0
+            let exchange = state.compareExchange(
+                expected: current,
+                desired: validation.expectation | nextStreak,
+                ordering: .acquiringAndReleasing
+            )
+            if exchange.exchanged, !isValid {
+                rejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
+            }
+        }
+
+        var validCallbackStreak: UInt64 {
+            state.load(ordering: .acquiring) & Self.streakMask
+        }
+
+        var rejectedCallbackCount: UInt64 {
+            rejectedCallbacks.load(ordering: .acquiring)
+        }
+
+        private static func encodedState(
+            generation: UInt32,
+            frameCount: Int,
+            validCallbackStreak: UInt16
+        ) -> UInt64 {
+            let boundedFrameCount = UInt16(
+                min(max(frameCount, 1), Int(UInt16.max))
+            )
+            return UInt64(generation) << 32
+                | UInt64(boundedFrameCount) << 16
+                | UInt64(validCallbackStreak)
+        }
+    }
+
     private struct PromotedHeadsetRoute: Equatable {
         var outputUID: String
         var nominalSampleRate: Int64
@@ -808,16 +1074,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private struct DeferredColdStartupRoute: Equatable {
         var outputUID: String
         var nominalSampleRate: Int64
-    }
-
-    struct BufferFrameSizeRestoration: Equatable, Sendable {
-        var uid: String
-        var originalFrameSize: UInt32
-    }
-
-    struct SampleRateRestoration: Equatable, Sendable {
-        var uid: String
-        var originalSampleRate: Double
     }
 
     private struct ControlState {
@@ -920,9 +1176,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         private let inputChannelOffset: Int
         private let systemSoundInputChannelOffset: Int
-        // The control thread writes this once before publishing qualification as enabled.
-        // The render callback reads it only after the matching acquire load succeeds.
-        private var expectedCallbackFrames: Int
+        private let callbackFrameExpectation: AggregateCallbackFrameExpectation
         private let maxCallbackFrames: Int
         private var dspTransition: RealtimeEQTransition
         private var activeSystemSoundPreampGains: (left: Float, right: Float)
@@ -944,6 +1198,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         #if DEBUG
         private let freezePlayedFramesForTesting = Atomic<Bool>(false)
         #endif
+        private let playbackUnderrunEvents = Atomic<UInt64>(0)
         private let playbackUnderrunFrames = Atomic<UInt64>(0)
         private let droppedInputFrames = Atomic<UInt64>(0)
         private let saturatedSamples = Atomic<UInt64>(0)
@@ -953,8 +1208,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let qualifyingPairedTimestampDiscontinuities = Atomic<UInt64>(0)
         private let renderCallbackObservations = Atomic<UInt64>(0)
         private let firstRenderCallbackHostTimeNanoseconds = Atomic<UInt64>(0)
-        private let startupQualification = StartupCallbackQualification()
-        private let startupQualificationEnabled = Atomic<Bool>(false)
         private let lastInputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastOutputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastInputHostIntervalErrorNanoseconds = Atomic<Int64>(0)
@@ -965,6 +1218,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let totalTimestampJumpIntervalNanoseconds = Atomic<UInt64>(0)
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
+        private let captureCallbackSizes = RealtimeCallbackSizeTracker()
+        private let playbackCallbackSizes = RealtimeCallbackSizeTracker()
         private let renderDeadlineMisses = Atomic<UInt64>(0)
         private let callbackStartStarvations = Atomic<UInt64>(0)
         private let renderOverruns = Atomic<UInt64>(0)
@@ -1018,7 +1273,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             self.sampleRate = renderConfiguration.configuration.sampleRate
             self.inputChannelOffset = max(inputChannelOffset, 0)
             self.systemSoundInputChannelOffset = max(systemSoundInputChannelOffset, 0)
-            self.expectedCallbackFrames = max(expectedCallbackFrames, 1)
+            self.callbackFrameExpectation = AggregateCallbackFrameExpectation(
+                frameCount: expectedCallbackFrames
+            )
             self.maxCallbackFrames = maxCallbackFrames
             self.outputFade = RealtimeOutputFade(sampleRate: self.sampleRate)
             self.outputDeclicker = RealtimeOutputDeclicker(
@@ -1059,15 +1316,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 return
             }
             let callbackHostTime = AudioGetCurrentHostTime()
-            let startupQualificationWasEnabled = startupQualificationEnabled.load(
-                ordering: .acquiring
-            )
-            let startupQualificationCallback = startupQualificationWasEnabled
-                ? startupQualification.beginCallback()
-                : nil
-            let expectedCallbackFrames = startupQualificationWasEnabled
-                ? self.expectedCallbackFrames
-                : 0
             defer {
                 inCallback.store(false, ordering: .releasing)
             }
@@ -1126,7 +1374,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             previousRenderStartNanoseconds = renderStartNanoseconds
             previousRenderFrameCount = outputFrameCount
             var renderWorkTiming = EQRenderWorkTiming()
-            var startupCallbackCandidate = false
+            var startupCallbackValidation: AggregateCallbackFrameExpectation.Validation?
             defer {
                 let renderEndNanoseconds = AudioConvertHostTimeToNanos(
                     AudioGetCurrentHostTime()
@@ -1182,11 +1430,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     frameCount: outputFrameCount,
                     sampleRate: sampleRate
                 )
-                if let startupQualificationCallback {
-                    recordStartupCallback(
-                        startupQualificationCallback,
-                        isValid: startupCallbackCandidate
-                            && entryDeadlineMisses == 0
+                if let startupCallbackValidation {
+                    callbackFrameExpectation.recordCallback(
+                        startupCallbackValidation,
+                        metDeadlines: entryDeadlineMisses == 0
                             && executionDeadlineMisses == 0
                     )
                 }
@@ -1215,22 +1462,22 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 outputTime: outputTime,
                 outputFrameCount: outputFrameCount
             )
-            startupCallbackCandidate = SystemTapAudioEngine.startupCallbackIsValid(
+            startupCallbackValidation = callbackFrameExpectation.validateCallback(
                 mainInputFrameCount: mainInputFrameCount,
                 systemSoundInputFrameCount: rawSystemSoundFrameCount,
                 outputFrameCount: outputFrameCount,
-                expectedFrameCount: expectedCallbackFrames,
                 timestampsAreStable: timestampsAreStable
             )
-            if startupQualificationWasEnabled {
-                renderCallbackObservations.wrappingAdd(1, ordering: .relaxed)
-            }
+            renderCallbackObservations.wrappingAdd(1, ordering: .relaxed)
 
             updateMax(maxCaptureCallbackFrames, inputFrameCount)
             updateMax(maxPlaybackCallbackFrames, outputFrameCount)
+            captureCallbackSizes.record(inputFrameCount)
+            playbackCallbackSizes.record(outputFrameCount)
             capturedFrames.wrappingAdd(UInt64(inputFrameCount), ordering: .relaxed)
 
             if inputFrameCount < outputFrameCount {
+                playbackUnderrunEvents.wrappingAdd(1, ordering: .relaxed)
                 playbackUnderrunFrames.wrappingAdd(
                     UInt64(outputFrameCount - inputFrameCount),
                     ordering: .relaxed
@@ -1355,15 +1602,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             outputMutedForTransition.store(false, ordering: .releasing)
         }
 
-        func beginStartupQualification(expectedCallbackFrames: Int) {
-            self.expectedCallbackFrames = max(expectedCallbackFrames, 1)
-            startupQualification.reset()
-            renderCallbackObservations.store(0, ordering: .relaxed)
-            startupQualificationEnabled.store(true, ordering: .releasing)
+        func updateExpectedCallbackFrames(appliedFrameCount: UInt32) {
+            callbackFrameExpectation.update(appliedFrameCount: appliedFrameCount)
         }
 
         func beginStartupProbation() {
-            startupQualification.beginProbation()
+            callbackFrameExpectation.beginProbation()
         }
 
         func waitForQualifiedStartup(
@@ -1372,27 +1616,21 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ) -> StartupQualificationSnapshot {
             let deadline = DispatchTime.now().uptimeNanoseconds
                 + UInt64(max(timeout, 0) * 1_000_000_000)
-            while startupQualification.validStreak < minimumConsecutiveCallbacks,
+            while callbackFrameExpectation.validCallbackStreak
+                    < minimumConsecutiveCallbacks,
                   DispatchTime.now().uptimeNanoseconds < deadline {
                 Thread.sleep(forTimeInterval: 0.001)
             }
             return StartupQualificationSnapshot(
-                validCallbackStreak: startupQualification.validStreak,
+                validCallbackStreak: callbackFrameExpectation.validCallbackStreak,
                 observedCallbacks: renderCallbackObservations.load(ordering: .acquiring),
-                rejectedCallbacks: startupQualification.rejectedCount
+                rejectedCallbacks: callbackFrameExpectation.rejectedCallbackCount
             )
         }
 
         func firstRenderCallbackHostTime() -> UInt64? {
             let value = firstRenderCallbackHostTimeNanoseconds.load(ordering: .acquiring)
             return value == 0 ? nil : value
-        }
-
-        private func recordStartupCallback(
-            _ callback: StartupCallbackQualification.Callback,
-            isValid: Bool
-        ) {
-            startupQualification.record(callback, isValid: isValid)
         }
 
         func markStopping() {
@@ -1429,6 +1667,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         func resetMetrics() {
             capturedFrames.store(0, ordering: .relaxed)
             playedFrames.store(0, ordering: .relaxed)
+            playbackUnderrunEvents.store(0, ordering: .relaxed)
             playbackUnderrunFrames.store(0, ordering: .relaxed)
             droppedInputFrames.store(0, ordering: .relaxed)
             saturatedSamples.store(0, ordering: .relaxed)
@@ -1446,6 +1685,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             totalTimestampJumpIntervalNanoseconds.store(0, ordering: .relaxed)
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
+            captureCallbackSizes.reset()
+            playbackCallbackSizes.reset()
             renderDeadlineMisses.store(0, ordering: .relaxed)
             callbackStartStarvations.store(0, ordering: .relaxed)
             renderOverruns.store(0, ordering: .relaxed)
@@ -1498,6 +1739,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return AudioEngineMetrics(
                 capturedFrames: capturedFrames.load(ordering: .relaxed),
                 playedFrames: playedFrames.load(ordering: .relaxed),
+                playbackUnderrunEvents: playbackUnderrunEvents.load(ordering: .relaxed),
                 playbackUnderrunFrames: playbackUnderrunFrames.load(ordering: .relaxed),
                 droppedInputFrames: droppedInputFrames.load(ordering: .relaxed),
                 saturatedSamples: saturatedSamples.load(ordering: .relaxed),
@@ -1534,6 +1776,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     : Double(totalJumpInterval) / Double(jumpIntervalObservations),
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
+                captureCallbackSizeObservations: captureCallbackSizes.snapshot(),
+                playbackCallbackSizeObservations: playbackCallbackSizes.snapshot(),
                 renderDeadlineMisses: renderDeadlineMisses.load(ordering: .relaxed),
                 callbackStartStarvations: callbackStartStarvations.load(ordering: .relaxed),
                 renderOverruns: renderOverruns.load(ordering: .relaxed),
@@ -1564,18 +1808,33 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     : Double(totalOutputLead) / Double(timingObservations),
                 renderTiming: AudioRenderTimingMetrics(
                     callbackStartLatenessObservations: callbackStart.observations,
+                    callbackStartLatenessP50Nanoseconds: callbackStart.p50Nanoseconds,
+                    callbackStartLatenessP99Nanoseconds: callbackStart.p99Nanoseconds,
+                    callbackStartLatenessP999Nanoseconds: callbackStart.p999Nanoseconds,
                     callbackStartLatenessP9999Nanoseconds: callbackStart.p9999Nanoseconds,
                     maximumCallbackStartLatenessNanoseconds: callbackStart.maximumNanoseconds,
                     directHeadObservations: directHead.observations,
+                    directHeadP50Nanoseconds: directHead.p50Nanoseconds,
+                    directHeadP99Nanoseconds: directHead.p99Nanoseconds,
+                    directHeadP999Nanoseconds: directHead.p999Nanoseconds,
                     directHeadP9999Nanoseconds: directHead.p9999Nanoseconds,
                     maximumDirectHeadNanoseconds: directHead.maximumNanoseconds,
                     tailWorkObservations: tailWork.observations,
+                    tailWorkP50Nanoseconds: tailWork.p50Nanoseconds,
+                    tailWorkP99Nanoseconds: tailWork.p99Nanoseconds,
+                    tailWorkP999Nanoseconds: tailWork.p999Nanoseconds,
                     tailWorkP9999Nanoseconds: tailWork.p9999Nanoseconds,
                     maximumTailWorkNanoseconds: tailWork.maximumNanoseconds,
                     totalRenderObservations: totalRender.observations,
+                    totalRenderP50Nanoseconds: totalRender.p50Nanoseconds,
+                    totalRenderP99Nanoseconds: totalRender.p99Nanoseconds,
+                    totalRenderP999Nanoseconds: totalRender.p999Nanoseconds,
                     totalRenderP9999Nanoseconds: totalRender.p9999Nanoseconds,
                     maximumTotalRenderNanoseconds: totalRender.maximumNanoseconds,
                     completionLatenessObservations: completion.observations,
+                    completionLatenessP50Nanoseconds: completion.p50Nanoseconds,
+                    completionLatenessP99Nanoseconds: completion.p99Nanoseconds,
+                    completionLatenessP999Nanoseconds: completion.p999Nanoseconds,
                     completionLatenessP9999Nanoseconds: completion.p9999Nanoseconds,
                     maximumCompletionLatenessNanoseconds: completion.maximumNanoseconds,
                     tailCompletionObservations: tailCompletions,
@@ -2259,6 +2518,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private let promotedHeadsetRoute = Mutex<PromotedHeadsetRoute?>(nil)
     private let deferredColdStartupRoute = Mutex<DeferredColdStartupRoute?>(nil)
     private let diagnosticTrace = Mutex<AudioEngineDiagnosticTrace?>(nil)
+    private let cleanupLedger = CoreAudioResourceCleanupLedger()
     private let separateClockBackend: SeparateClockAudioBackend
 
     public var state: AudioEngineState {
@@ -2296,6 +2556,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return Self.shouldUseSeparateClockBackend(for: output)
     }
 
+    public var isUsingSeparateClockBackend: Bool {
+        activeBackend.withLock { $0 == .separateClock }
+    }
+
     public var isDeferringColdStartupAggregate: Bool {
         guard activeBackend.withLock({ $0 }) == .separateClock,
               case .running(let output) = separateClockBackend.state else {
@@ -2322,9 +2586,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         self.separateClockBackend = SeparateClockAudioBackend(
             restorationStoreURL: restorationStoreURL
         )
-        // Current buffer-size restorations belong to the separate-clock backend. This
-        // one-time pass only repairs settings persisted by older combined-backend builds.
-        Self.restorePersistedDeviceSettings(at: restorationStoreURL)
     }
 
     @_spi(GlassEQDiagnostics)
@@ -2357,7 +2618,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     message: "The diagnostic compatibility output is not running."
                 )
             }
-            separateClockBackend.quiesceOutputForCombinedHandoff()
+            try separateClockBackend.quiesceOutputForCombinedHandoff()
         }
     }
 
@@ -2368,7 +2629,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     ) throws {
         try topologyOperation.withLock { _ in
             traceDiagnostic { "diagnostic compatibility restore begin output=\(output.id)" }
-            try restoreSeparateClockBackend(
+            try restoreSeparateClockBackendOrStop(
                 afterRejectedPromotion: (output, profile),
                 preserveOutputBuffer: true
             )
@@ -2462,6 +2723,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func startSerialized(output: AudioOutputDevice, profile: EQProfile) throws {
+        try requireCompletedCoreAudioCleanup(operation: "start a new audio route")
         let shouldUseSeparateClock = Self.shouldUseSeparateClockBackend(for: output)
             && !promotedHeadsetRoute.withLock { route in
                 route == Self.promotedHeadsetRoute(for: output)
@@ -2548,6 +2810,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
         guard combinedIsRunning else {
             stopCombinedResourcesSerialized()
+            try requireCompletedCoreAudioCleanup(operation: "start compatibility audio")
             activeBackend.withLock { $0 = .separateClock }
             try separateClockBackend.start(output: output, profile: profile)
             return
@@ -2558,6 +2821,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             profile: profile
         )
         stopCombinedResourcesSerialized()
+        do {
+            try requireCompletedCoreAudioCleanup(operation: "handoff to compatibility audio")
+        } catch {
+            separateClockBackend.stop()
+            throw error
+        }
         activeBackend.withLock { $0 = .separateClock }
         _ = try separateClockBackend.activatePreparedOutputHandoff()
     }
@@ -2567,6 +2836,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         profile: EQProfile
     ) throws {
         stopCombinedResourcesSerialized()
+        try requireCompletedCoreAudioCleanup(operation: "stage compatibility audio")
         activeBackend.withLock { $0 = .separateClock }
         try separateClockBackend.startForCombinedStartupStaging(
             output: output,
@@ -2585,10 +2855,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let attemptFrameSizes = Self.startupAttemptFrameSizes(
             requestedFrameSize: requestedFrameSize
         )
-        var lastStartupError: AggregateStartupQualificationError?
-
-        for (index, frameSize) in attemptFrameSizes.enumerated() {
-            do {
+        try Self.runCombinedStartupAttempts(
+            frameSizes: attemptFrameSizes,
+            isSeparateClockHandoff: isSeparateClockHandoff,
+            attempt: { frameSize in
                 try startCombinedAggregateAttempt(
                     output: output,
                     profile: profile,
@@ -2596,32 +2866,52 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     isSeparateClockHandoff: isSeparateClockHandoff,
                     usePhysicalFirstOrdering: usePhysicalFirstOrdering
                 )
-                return
-            } catch let error as AggregateStartupQualificationError {
-                lastStartupError = error
-                guard index + 1 < attemptFrameSizes.count else {
-                    throw error
-                }
-                if isSeparateClockHandoff {
-                    do {
-                        try restoreSeparateClockBackend(
-                            afterRejectedPromotion: (output, profile),
-                            preserveOutputBuffer: preserveStagingOutputBuffer
-                        )
-                    } catch let rollbackError {
-                        throw AudioEngineInternalError(
-                            message: "Aggregate startup failed and the staging path could not be restored: \(error.localizedDescription); rollback: \(rollbackError.localizedDescription)"
-                        )
-                    }
-                }
+            },
+            restoreSeparateClockOutput: {
+                try restoreSeparateClockBackendOrStop(
+                    afterRejectedPromotion: (output, profile),
+                    preserveOutputBuffer: preserveStagingOutputBuffer
+                )
+            },
+            waitBeforeRetry: {
                 Thread.sleep(forTimeInterval: 0.05)
             }
-        }
-
-        if let lastStartupError {
-            throw lastStartupError
-        }
+        )
     }
+
+    #if DEBUG
+    func startCombinedAggregateHandoffForTesting(
+        output: AudioOutputDevice,
+        profile: EQProfile,
+        preserveStagingOutputBuffer: Bool,
+        boundary: CombinedStartupTestBoundary
+    ) throws {
+        let previousBackend = activeBackend.withLock { backend in
+            let previousBackend = backend
+            backend = .separateClock
+            return previousBackend
+        }
+        defer {
+            activeBackend.withLock { $0 = previousBackend }
+        }
+        let requestedFrameSize = control.withLock { $0.preferredAggregateBufferFrameSize }
+        try Self.runCombinedStartupAttempts(
+            frameSizes: Self.startupAttemptFrameSizes(
+                requestedFrameSize: requestedFrameSize
+            ),
+            isSeparateClockHandoff: true,
+            attempt: boundary.attempt,
+            restoreSeparateClockOutput: {
+                try restoreSeparateClockBackendOrStopForTesting(
+                    afterRejectedPromotion: (output, profile),
+                    preserveOutputBuffer: preserveStagingOutputBuffer,
+                    boundary: boundary
+                )
+            },
+            waitBeforeRetry: boundary.waitBeforeRetry
+        )
+    }
+    #endif
 
     private func startCombinedAggregateAttempt(
         output: AudioOutputDevice,
@@ -2677,6 +2967,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if let staleTaps {
                 destroyTapSet(staleTaps)
             }
+            try requireCompletedCoreAudioCleanup(operation: "replace the combined audio route")
 
             if taps == nil {
                 let createdTaps = try createSystemTaps(
@@ -2714,7 +3005,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if !prepared.ioStarted {
                 if isSeparateClockHandoff {
                     traceDiagnostic { "combined handoff quiesce requested" }
-                    separateClockBackend.quiesceOutputForCombinedHandoff()
+                    try separateClockBackend.quiesceOutputForCombinedHandoff()
                 }
                 traceDiagnostic {
                     "AudioDeviceStart(combined aggregate) begin device=\(prepared.deviceID) buffer=\(prepared.output.bufferFrameSize)"
@@ -2811,14 +3102,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 }
             }
 
-            if let installedTaps {
-                prepareTapSetForDirectPlayback(installedTaps)
-            }
             let installedTapsMatch = installedTaps?.main == taps?.main
                 && installedTaps?.systemSounds == taps?.systemSounds
-            if let taps, !installedTapsMatch {
-                prepareTapSetForDirectPlayback(taps)
-            }
             if let preparedAggregate {
                 _ = disposeDetachedCombinedAggregate(
                     DetachedCombinedAggregate(
@@ -3000,12 +3285,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             traceDiagnostic {
                 "set aggregate IOProc stream usage end device=\(aggregateDeviceID)"
             }
-            preparedRuntime.beginStartupQualification(
-                expectedCallbackFrames: Self.startupCallbackFrameExpectation(
-                    appliedAggregateFrameSize: aggregate.bufferFrameSize
-                )
-            )
-
             var activeOutput = route.output
             activeOutput.bufferFrameSize = aggregate.bufferFrameSize
             return PreparedCombinedAggregate(
@@ -3018,13 +3297,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: false
             )
         } catch {
-            if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
-                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
-            }
-            if aggregateDeviceID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            }
-            runtime?.drainDSPConfigBoxes()
+            _ = disposeDetachedCombinedAggregate(
+                DetachedCombinedAggregate(
+                    deviceID: aggregateDeviceID,
+                    ioProcID: ioProcID,
+                    runtime: runtime
+                ),
+                fadeOut: false
+            )
             throw error
         }
     }
@@ -3038,7 +3318,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
-        var ioStarted = false
 
         do {
             traceDiagnostic {
@@ -3131,7 +3410,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 startStatus,
                 operation: "AudioDeviceStart(physical-first aggregate)"
             )
-            ioStarted = true
 
             // The running physical-only IOProc keeps the hardware timebase stable. Its physical
             // input streams are disabled above; setSubtaps publishes only the tap inputs below.
@@ -3204,10 +3482,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 "physical-first aggregate buffer ready device=\(aggregateDeviceID) requested=\(targetFrameSize) actual=\(aggregate.bufferFrameSize)"
             }
             try Self.validatePlaybackCallbackCapacity(for: aggregate)
-            preparedRuntime.beginStartupQualification(
-                expectedCallbackFrames: Self.startupCallbackFrameExpectation(
-                    appliedAggregateFrameSize: aggregate.bufferFrameSize
-                )
+            preparedRuntime.updateExpectedCallbackFrames(
+                appliedFrameCount: aggregate.bufferFrameSize
             )
 
             var activeOutput = route.output
@@ -3222,17 +3498,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: true
             )
         } catch {
-            runtime?.markStopping()
-            if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
-                if ioStarted {
-                    _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
-                }
-                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
-            }
-            if aggregateDeviceID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            }
-            runtime?.drainDSPConfigBoxes()
+            _ = disposeDetachedCombinedAggregate(
+                DetachedCombinedAggregate(
+                    deviceID: aggregateDeviceID,
+                    ioProcID: ioProcID,
+                    runtime: runtime
+                ),
+                fadeOut: false
+            )
             throw error
         }
     }
@@ -3276,16 +3549,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 preserveStagingOutputBuffer: true
             )
         } catch {
-            let promotionError = error
-            do {
-                try restoreSeparateClockBackend(
-                    afterRejectedPromotion: context,
-                    preserveOutputBuffer: true
-                )
-            } catch let rollbackError {
-                throw AudioEngineInternalError(
-                    message: "Aggregate startup failed and the compatibility path could not be restored: \(promotionError.localizedDescription); rollback: \(rollbackError.localizedDescription)"
-                )
+            guard activeBackend.withLock({ $0 }) == .separateClock,
+                  separateClockBackend.activeOutputAndProfile() != nil else {
+                throw error
             }
             return .aggregateUnstable
         }
@@ -3320,13 +3586,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         do {
             try startCombinedAggregate(output: currentDefault, profile: context.profile)
         } catch {
-            let promotionError = error
-            do {
-                try restoreSeparateClockBackend(afterRejectedPromotion: context)
-            } catch let rollbackError {
-                throw AudioEngineInternalError(
-                    message: "Headset aggregate promotion failed and the compatibility path could not be restored: \(promotionError.localizedDescription); rollback: \(rollbackError.localizedDescription)"
-                )
+            guard activeBackend.withLock({ $0 }) == .separateClock,
+                  separateClockBackend.activeOutputAndProfile() != nil else {
+                throw error
             }
             return .aggregateUnstable
         }
@@ -3335,8 +3597,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let metrics = snapshotMetrics()
         guard metrics.pairedTimestampDiscontinuities == 0,
               case .running(let output) = state else {
-            try restoreSeparateClockBackend(afterRejectedPromotion: context)
-            return .aggregateUnstable
+            return try rejectHeadsetAggregatePromotion(context)
         }
         promotedHeadsetRoute.withLock {
             $0 = Self.promotedHeadsetRoute(for: output)
@@ -3344,13 +3605,57 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return .promoted(output)
     }
 
+    private func rejectHeadsetAggregatePromotion(
+        _ context: (output: AudioOutputDevice, profile: EQProfile)
+    ) throws -> HeadsetAggregatePromotionResult {
+        try restoreSeparateClockBackendOrStop(afterRejectedPromotion: context)
+        return .aggregateUnstable
+    }
+
+    #if DEBUG
+    func rejectHeadsetAggregatePromotionForTesting(
+        output: AudioOutputDevice,
+        profile: EQProfile,
+        boundary: CombinedStartupTestBoundary
+    ) throws -> HeadsetAggregatePromotionResult {
+        try restoreSeparateClockBackendOrStopForTesting(
+            afterRejectedPromotion: (output, profile),
+            boundary: boundary
+        )
+        return .aggregateUnstable
+    }
+    #endif
+
+    private func restoreSeparateClockBackendOrStop(
+        afterRejectedPromotion context: (output: AudioOutputDevice, profile: EQProfile),
+        preserveOutputBuffer: Bool = false
+    ) throws {
+        do {
+            try restoreSeparateClockBackend(
+                afterRejectedPromotion: context,
+                preserveOutputBuffer: preserveOutputBuffer
+            )
+        } catch {
+            let restorationError = error
+            separateClockBackend.stop()
+            stopCombinedResourcesSerialized(restoringDirectPlayback: true)
+            finishFailedSeparateClockRestoration(restorationError)
+            throw restorationError
+        }
+    }
+
     private func restoreSeparateClockBackend(
         afterRejectedPromotion context: (output: AudioOutputDevice, profile: EQProfile),
         preserveOutputBuffer: Bool = false
     ) throws {
         promotedHeadsetRoute.withLock { $0 = nil }
-        if activeBackend.withLock({ $0 }) == .separateClock,
-           separateClockBackend.activeOutputAndProfile() != nil {
+        let activeBackendIsSeparate = activeBackend.withLock { $0 } == .separateClock
+        let hasActiveOutputAndProfile = activeBackendIsSeparate
+            && separateClockBackend.activeOutputAndProfile() != nil
+        guard Self.requiresSeparateClockRestoration(
+            activeBackendIsSeparate: activeBackendIsSeparate,
+            hasActiveOutputAndProfile: hasActiveOutputAndProfile
+        ) else {
             return
         }
         let output = try CoreAudioDeviceQuery.outputDevice(id: context.output.id)
@@ -3366,6 +3671,45 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
         }
     }
+
+    static func requiresSeparateClockRestoration(
+        activeBackendIsSeparate: Bool,
+        hasActiveOutputAndProfile: Bool
+    ) -> Bool {
+        !activeBackendIsSeparate || !hasActiveOutputAndProfile
+    }
+
+    private func finishFailedSeparateClockRestoration(_ error: Error) {
+        promotedHeadsetRoute.withLock { $0 = nil }
+        deferredColdStartupRoute.withLock { $0 = nil }
+        activeBackend.withLock { $0 = .combinedAggregate }
+        traceDiagnostic {
+            "compatibility restoration failed error=\(error)"
+        }
+    }
+
+    #if DEBUG
+    private func restoreSeparateClockBackendOrStopForTesting(
+        afterRejectedPromotion context: (output: AudioOutputDevice, profile: EQProfile),
+        preserveOutputBuffer: Bool = false,
+        boundary: CombinedStartupTestBoundary
+    ) throws {
+        promotedHeadsetRoute.withLock { $0 = nil }
+        do {
+            try boundary.restoreSeparateClockBackend(
+                context.output,
+                context.profile,
+                preserveOutputBuffer
+            )
+        } catch {
+            let restorationError = error
+            boundary.stopSeparateClockBackend()
+            boundary.stopCombinedResources()
+            finishFailedSeparateClockRestoration(restorationError)
+            throw restorationError
+        }
+    }
+    #endif
 
     public func rejectHeadsetAggregatePromotion() {
         promotedHeadsetRoute.withLock { $0 = nil }
@@ -3413,7 +3757,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ), preparedConfig.isNumericallySafe else {
+        ) else {
             return false
         }
         return control.withLock { state in
@@ -3471,9 +3815,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ),
-        equalizedConfig.isNumericallySafe,
-        referenceConfig.isNumericallySafe else {
+        ) else {
             return false
         }
         return control.withLock { state in
@@ -3546,6 +3888,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             deferredColdStartupRoute.withLock { $0 = nil }
             separateClockBackend.stop()
             stopCombinedResourcesSerialized(restoringDirectPlayback: true)
+            retryCoreAudioCleanup()
             activeBackend.withLock { $0 = .combinedAggregate }
         }
     }
@@ -3562,15 +3905,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     public func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? {
-        guard activeBackend.withLock({ $0 }) == .combinedAggregate else {
-            return nil
-        }
-        let route = control.withLock { state -> (AudioObjectID, AudioObjectID)? in
-            guard let output = state.activeOutput,
-                  state.aggregateDeviceID != kAudioObjectUnknown else {
-                return nil
+        let route: (AudioObjectID, AudioObjectID)?
+        if isUsingSeparateClockBackend {
+            route = separateClockBackend.diagnosticDeviceIDs()
+        } else {
+            route = control.withLock { state -> (AudioObjectID, AudioObjectID)? in
+                guard let output = state.activeOutput,
+                      state.aggregateDeviceID != kAudioObjectUnknown else {
+                    return nil
+                }
+                return (output.id, state.aggregateDeviceID)
             }
-            return (output.id, state.aggregateDeviceID)
         }
         guard let route else {
             return nil
@@ -3587,6 +3932,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return
         }
         control.withLock { $0.runtime }?.resetMetrics()
+    }
+
+    public func setPlaybackBufferRenegotiationHandler(
+        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
+    ) {
+        separateClockBackend.setPlaybackBufferRenegotiationHandler(handler)
     }
 
     public func setRuntimeFailureHandler(
@@ -3617,12 +3968,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             state.state = .stopped
             state.status = .stopped
         }
-        // Once the IOProc stops reading a mutedWhenTapped tap, HAL resumes the source's
-        // direct route. Do this before dismantling the aggregate so active clients do not
-        // have to recover from an unread, always-muted tap.
-        if restoringDirectPlayback, let detachedTaps {
-            prepareTapSetForDirectPlayback(detachedTaps)
-        }
+        // mutedWhenTapped restores direct output when the IOProc stops reading the taps.
+        // Explicit handback skips the fade; rebuild teardown retains it.
         if let detachedAggregate {
             let records = disposeDetachedCombinedAggregate(
                 detachedAggregate,
@@ -3665,31 +4012,35 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             detached.runtime?.fadeOutForStop()
         }
         detached.runtime?.markStopping()
-        if detached.deviceID != kAudioObjectUnknown, let ioProcID = detached.ioProcID {
-            _ = AudioDeviceStop(detached.deviceID, ioProcID)
-            _ = AudioDeviceDestroyIOProcID(detached.deviceID, ioProcID)
-        }
         let records = detached.runtime?.snapshotTimestampProbeRecords() ?? []
+        let runtime = detached.runtime
+        var resources = CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "dispose combined aggregate",
+            completion: {
+                runtime?.drainDSPConfigBoxes()
+            }
+        )
+        if detached.deviceID != kAudioObjectUnknown,
+           let ioProcID = detached.ioProcID {
+            resources.ioProcs.append(.init(
+                deviceID: detached.deviceID,
+                ioProcID: ioProcID
+            ))
+        }
         if detached.deviceID != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyAggregateDevice(detached.deviceID)
+            resources.aggregateDeviceIDs.append(detached.deviceID)
         }
-        detached.runtime?.drainDSPConfigBoxes()
+        guard resources.ioProcs.isEmpty == false
+                || resources.aggregateDeviceIDs.isEmpty == false else {
+            runtime?.drainDSPConfigBoxes()
+            return records
+        }
+        if !cleanupLedger.dispose(resources) {
+            traceDiagnostic {
+                "Core Audio cleanup deferred operation=dispose combined aggregate pending=\(cleanupLedger.pendingCount)"
+            }
+        }
         return records
-    }
-
-    private func prepareTapSetForDirectPlayback(_ taps: CombinedTapSet) {
-        if taps.main != kAudioObjectUnknown {
-            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
-                .mutedWhenTapped,
-                tapID: taps.main
-            )
-        }
-        if taps.systemSounds != kAudioObjectUnknown {
-            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
-                .mutedWhenTapped,
-                tapID: taps.systemSounds
-            )
-        }
     }
 
     private func detachTapSetLocked(_ state: inout ControlState) -> CombinedTapSet? {
@@ -3712,11 +4063,48 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func destroyTapSet(_ taps: CombinedTapSet) {
+        var resources = CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "destroy combined process taps"
+        )
         if taps.main != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyProcessTap(taps.main)
+            resources.tapIDs.append(taps.main)
         }
         if taps.systemSounds != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyProcessTap(taps.systemSounds)
+            resources.tapIDs.append(taps.systemSounds)
+        }
+        guard !resources.tapIDs.isEmpty else {
+            return
+        }
+        if !cleanupLedger.dispose(resources) {
+            traceDiagnostic {
+                "Core Audio cleanup deferred operation=destroy combined process taps pending=\(cleanupLedger.pendingCount)"
+            }
+        }
+    }
+
+    private func requireCompletedCoreAudioCleanup(operation: String) throws {
+        for attempt in 0..<3 {
+            if cleanupLedger.retryPending() {
+                return
+            }
+            if attempt < 2 {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        traceDiagnostic {
+            "Core Audio cleanup still pending before \(operation) count=\(cleanupLedger.pendingCount)"
+        }
+        throw CoreAudioError(
+            operation: "Complete prior Core Audio cleanup before \(operation)",
+            status: kAudioHardwareUnspecifiedError
+        )
+    }
+
+    private func retryCoreAudioCleanup() {
+        do {
+            try requireCompletedCoreAudioCleanup(operation: "finish stopping audio")
+        } catch {
+            traceDiagnostic { "Core Audio cleanup remains owned for retry error=\(error)" }
         }
     }
 
@@ -3760,7 +4148,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
             return (mainTapID, systemSoundTapID)
         } catch {
-            _ = AudioHardwareDestroyProcessTap(mainTapID)
+            destroyTapSet(CombinedTapSet(
+                main: mainTapID,
+                systemSounds: AudioObjectID(kAudioObjectUnknown),
+                outputUID: output.uid,
+                outputStreamIndex: streamIndex
+            ))
             throw error
         }
     }
@@ -4496,7 +4889,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ))?.isNumericallySafe == true
+        )) != nil
     }
 
     static func supportedRuntimeChannelCount(
@@ -4541,12 +4934,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             && timestampsAreStable
     }
 
-    static func startupCallbackFrameExpectation(
-        appliedAggregateFrameSize: UInt32
-    ) -> Int {
-        max(Int(appliedAggregateFrameSize), 1)
-    }
-
     static func shouldUsePhysicalFirstColdStartup(
         activeBackendIsSeparate: Bool,
         combinedState: AudioEngineState
@@ -4588,6 +4975,45 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             attempts.append(saferFrameSize)
         }
         return attempts
+    }
+
+    static func runCombinedStartupAttempts(
+        frameSizes: [UInt32],
+        isSeparateClockHandoff: Bool,
+        attempt: (UInt32) throws -> Void,
+        restoreSeparateClockOutput: () throws -> Void,
+        waitBeforeRetry: () -> Void
+    ) throws {
+        var lastStartupError: (any Error)?
+
+        for (index, frameSize) in frameSizes.enumerated() {
+            do {
+                try attempt(frameSize)
+                return
+            } catch {
+                let startupError = error
+                lastStartupError = startupError
+                let hasAnotherAttempt = index + 1 < frameSizes.count
+
+                if isSeparateClockHandoff {
+                    do {
+                        try restoreSeparateClockOutput()
+                    } catch {
+                        throw startupError
+                    }
+                }
+
+                guard startupError is AggregateStartupQualificationError,
+                      hasAnotherAttempt else {
+                    throw startupError
+                }
+                waitBeforeRetry()
+            }
+        }
+
+        if let lastStartupError {
+            throw lastStartupError
+        }
     }
 
     static func startupQualificationTimeout(
@@ -4693,19 +5119,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             inputAge: AudioConvertHostTimeToNanos(callbackHostTime - inputTime.mHostTime),
             outputLead: AudioConvertHostTimeToNanos(outputTime.mHostTime - callbackHostTime)
         )
-    }
-
-    static func tapInputChannelOffset(
-        physicalInputChannelCount: Int,
-        aggregateInputChannelCount: Int,
-        tapChannelCount: Int
-    ) -> Int? {
-        guard physicalInputChannelCount >= 0,
-              tapChannelCount > 0,
-              aggregateInputChannelCount == physicalInputChannelCount + tapChannelCount else {
-            return nil
-        }
-        return physicalInputChannelCount
     }
 
     static func tapInputChannelOffsets(
@@ -5118,10 +5531,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
     }
 
-    static func preferredBufferFrameSize(for _: AudioOutputDevice) -> UInt32 {
-        preferredAggregateBufferFrameSize
-    }
-
     static func timestampSlopeAgrees(
         frameCount: Int,
         sampleRate: Double,
@@ -5310,99 +5719,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             throw AudioEngineProfileUpdateUnavailable()
         }
         return output
-    }
-
-    static func restoreSampleRateRestoration(
-        _ restoration: SampleRateRestoration,
-        outputForUID: (String) throws -> AudioOutputDevice? =
-            CoreAudioDeviceQuery.outputDevice(uid:),
-        setSampleRate: (Double, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
-    ) -> Bool {
-        do {
-            guard let output = try outputForUID(restoration.uid) else {
-                return false
-            }
-            guard abs(output.nominalSampleRate - restoration.originalSampleRate) >= 1 else {
-                return true
-            }
-            try setSampleRate(restoration.originalSampleRate, output.id)
-            guard let verifiedOutput = try outputForUID(restoration.uid) else {
-                return false
-            }
-            return abs(
-                verifiedOutput.nominalSampleRate - restoration.originalSampleRate
-            ) < 1
-        } catch {
-            return false
-        }
-    }
-
-    static func restoreBufferFrameSizeRestoration(
-        _ restoration: BufferFrameSizeRestoration,
-        outputForUID: (String) throws -> AudioOutputDevice? =
-            CoreAudioDeviceQuery.outputDevice(uid:),
-        setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setBufferFrameSize(_:objectID:)
-    ) -> Bool {
-        do {
-            guard let output = try outputForUID(restoration.uid) else {
-                return false
-            }
-            guard output.bufferFrameSize != restoration.originalFrameSize else {
-                return true
-            }
-            try setBufferFrameSize(restoration.originalFrameSize, output.id)
-            guard let verifiedOutput = try outputForUID(restoration.uid) else {
-                return false
-            }
-            return verifiedOutput.bufferFrameSize == restoration.originalFrameSize
-        } catch {
-            return false
-        }
-    }
-
-    static func restorePersistedDeviceSettings(
-        at url: URL,
-        outputForUID: (String) throws -> AudioOutputDevice? =
-            CoreAudioDeviceQuery.outputDevice(uid:),
-        setSampleRate: (Double, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:),
-        setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void =
-            CoreAudioDeviceQuery.setBufferFrameSize(_:objectID:)
-    ) {
-        var records = PersistedAudioDeviceRestorationStore.load(from: url)
-        guard !records.isEmpty else {
-            return
-        }
-
-        for (uid, record) in records {
-            var updated = record
-            if let originalSampleRate = record.originalSampleRate,
-               restoreSampleRateRestoration(
-                   SampleRateRestoration(
-                       uid: uid,
-                       originalSampleRate: originalSampleRate
-                   ),
-                   outputForUID: outputForUID,
-                   setSampleRate: setSampleRate
-               ) {
-                updated.originalSampleRate = nil
-            }
-            if let originalBufferFrameSize = record.originalBufferFrameSize,
-               restoreBufferFrameSizeRestoration(
-                   BufferFrameSizeRestoration(
-                       uid: uid,
-                       originalFrameSize: originalBufferFrameSize
-                   ),
-                   outputForUID: outputForUID,
-                   setBufferFrameSize: setBufferFrameSize
-               ) {
-                updated.originalBufferFrameSize = nil
-            }
-            records[uid] = updated.isEmpty ? nil : updated
-        }
-        try? PersistedAudioDeviceRestorationStore.save(records, to: url)
     }
 
 }

@@ -4,7 +4,8 @@ import Foundation
 import GlassEQCore
 import Synchronization
 protocol TopologyRebuildMuteGuarding: AnyObject {
-    func release()
+    @discardableResult
+    func release() -> Bool
 }
 
 struct TopologyRebuildMuteGuardUnavailable: Error, LocalizedError {
@@ -176,6 +177,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private final class CoreAudioTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding, @unchecked Sendable {
         private let lock = NSLock()
+        private let cleanupLedger: CoreAudioResourceCleanupLedger
         private var tapID: AudioObjectID
         private var aggregateDeviceID: AudioObjectID
         private var ioProcID: AudioDeviceIOProcID?
@@ -183,35 +185,62 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         init(
             tapID: AudioObjectID,
             aggregateDeviceID: AudioObjectID,
-            ioProcID: AudioDeviceIOProcID?
+            ioProcID: AudioDeviceIOProcID?,
+            cleanupLedger: CoreAudioResourceCleanupLedger
         ) {
             self.tapID = tapID
             self.aggregateDeviceID = aggregateDeviceID
             self.ioProcID = ioProcID
+            self.cleanupLedger = cleanupLedger
         }
 
         deinit {
-            release()
+            _ = release()
         }
 
-        func release() {
+        @discardableResult
+        func release() -> Bool {
             lock.lock()
-            defer { lock.unlock() }
+            let tapID = self.tapID
+            let aggregateDeviceID = self.aggregateDeviceID
+            let ioProcID = self.ioProcID
+            self.ioProcID = nil
+            self.aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
+            self.tapID = AudioObjectID(kAudioObjectUnknown)
+            lock.unlock()
 
+            var resources = CoreAudioResourceCleanupLedger.PendingResources(
+                operation: "dispose topology rebuild mute guard"
+            )
             if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
-                _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
-                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
+                resources.ioProcs.append(.init(
+                    deviceID: aggregateDeviceID,
+                    ioProcID: ioProcID
+                ))
             }
             if aggregateDeviceID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+                resources.aggregateDeviceIDs.append(aggregateDeviceID)
             }
             if tapID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyProcessTap(tapID)
+                resources.tapIDs.append(tapID)
             }
-
-            ioProcID = nil
-            aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
-            tapID = AudioObjectID(kAudioObjectUnknown)
+            guard !resources.ioProcs.isEmpty
+                    || !resources.aggregateDeviceIDs.isEmpty
+                    || !resources.tapIDs.isEmpty else {
+                return true
+            }
+            guard !cleanupLedger.dispose(resources) else {
+                return true
+            }
+            for attempt in 0..<3 {
+                if cleanupLedger.retryPending() {
+                    return true
+                }
+                if attempt < 2 {
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+            }
+            return false
         }
     }
 
@@ -268,6 +297,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         #if DEBUG
         private let freezePlayedFramesForTesting = Atomic<Bool>(false)
         #endif
+        private let playbackUnderrunEvents = Atomic<UInt64>(0)
         private let playbackUnderrunFrames = Atomic<UInt64>(0)
         private let droppedInputFrames = Atomic<UInt64>(0)
         private let droppedBufferedFrames = Atomic<UInt64>(0)
@@ -279,6 +309,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let playbackBufferObservations = Atomic<UInt64>(0)
         private let maxCaptureCallbackFrames = Atomic<Int>(0)
         private let maxPlaybackCallbackFrames = Atomic<Int>(0)
+        private let captureCallbackSizes = RealtimeCallbackSizeTracker()
+        private let playbackCallbackSizes = RealtimeCallbackSizeTracker()
         private let playbackTimestampDiscontinuities = Atomic<UInt64>(0)
         private let playbackBufferRenegotiations = Atomic<UInt64>(0)
         private let adaptivePlaybackRenderFailures = Atomic<UInt64>(0)
@@ -493,6 +525,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         func resetMetrics() {
             capturedFrames.store(0, ordering: .relaxed)
             playedFrames.store(0, ordering: .relaxed)
+            playbackUnderrunEvents.store(0, ordering: .relaxed)
             playbackUnderrunFrames.store(0, ordering: .relaxed)
             droppedInputFrames.store(0, ordering: .relaxed)
             droppedBufferedFrames.store(0, ordering: .relaxed)
@@ -504,6 +537,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             playbackBufferObservations.store(0, ordering: .relaxed)
             maxCaptureCallbackFrames.store(0, ordering: .relaxed)
             maxPlaybackCallbackFrames.store(0, ordering: .relaxed)
+            captureCallbackSizes.reset()
+            playbackCallbackSizes.reset()
             playbackTimestampDiscontinuities.store(0, ordering: .relaxed)
             playbackBufferRenegotiations.store(0, ordering: .relaxed)
             adaptivePlaybackRenderFailures.store(0, ordering: .relaxed)
@@ -518,6 +553,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             return AudioEngineMetrics(
                 capturedFrames: capturedFrames.load(ordering: .relaxed),
                 playedFrames: playedFrames.load(ordering: .relaxed),
+                playbackUnderrunEvents: playbackUnderrunEvents.load(ordering: .relaxed),
                 playbackUnderrunFrames: playbackUnderrunFrames.load(ordering: .relaxed),
                 droppedInputFrames: droppedInputFrames.load(ordering: .relaxed),
                 droppedBufferedFrames: droppedBufferedFrames.load(ordering: .relaxed),
@@ -533,6 +569,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 playbackBufferObservations: observations,
                 maximumCaptureCallbackFrames: maxCaptureCallbackFrames.load(ordering: .relaxed),
                 maximumPlaybackCallbackFrames: maxPlaybackCallbackFrames.load(ordering: .relaxed),
+                captureCallbackSizeObservations: captureCallbackSizes.snapshot(),
+                playbackCallbackSizeObservations: playbackCallbackSizes.snapshot(),
                 playbackTimestampDiscontinuities: playbackTimestampDiscontinuities.load(ordering: .relaxed),
                 playbackBufferRenegotiations: playbackBufferRenegotiations.load(ordering: .relaxed),
                 adaptivePlaybackRenderFailures: adaptivePlaybackRenderFailures.load(ordering: .relaxed),
@@ -624,6 +662,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 return
             }
             updateMax(maxCaptureCallbackFrames, frameCount)
+            captureCallbackSizes.record(frameCount)
 
             if outputMutedForTransition.load(ordering: .acquiring) {
                 return
@@ -709,6 +748,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 return
             }
             updateMax(maxPlaybackCallbackFrames, frameCount)
+            playbackCallbackSizes.record(frameCount)
 
             if pendingOutputTimestampReset.exchange(false, ordering: .acquiringAndReleasing) {
                 outputTimestampTracker.reset()
@@ -819,6 +859,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
 
             if underrunFrames > 0 {
+                playbackUnderrunEvents.wrappingAdd(1, ordering: .relaxed)
                 playbackUnderrunFrames.wrappingAdd(UInt64(underrunFrames), ordering: .relaxed)
                 signalPlaybackInstability(.underrun)
             } else if adaptiveRenderFailed {
@@ -1353,24 +1394,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
         }
 
-        private func contiguousInterleavedInputBuffer(
-            _ buffers: UnsafeMutableAudioBufferListPointer,
-            frameCount: Int,
-            channelCount: Int
-        ) -> UnsafeBufferPointer<Float>? {
-            guard buffers.count == 1,
-                  frameCount > 0,
-                  Int(buffers[0].mNumberChannels) == channelCount,
-                  let data = buffers[0].mData?.assumingMemoryBound(to: Float.self) else {
-                return nil
-            }
-            let sampleCount = frameCount * channelCount
-            guard sampleCount <= Int(buffers[0].mDataByteSize) / MemoryLayout<Float>.stride else {
-                return nil
-            }
-            return UnsafeBufferPointer(start: data, count: sampleCount)
-        }
-
         private func sample(
             from buffers: UnsafeMutableAudioBufferListPointer,
             frame: Int,
@@ -1432,6 +1455,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private let playbackBufferRenegotiationHandler = Mutex<(@Sendable (PlaybackBufferRenegotiation) -> Void)?>(nil)
     private let runtimeFailureHandler = Mutex<(@Sendable (AudioEngineFailure) -> Void)?>(nil)
     private let diagnosticTrace = Mutex<AudioEngineDiagnosticTrace?>(nil)
+    private let cleanupLedger = CoreAudioResourceCleanupLedger()
     private let restorationStoreURL: URL
     private let playbackBufferCalibrationStoreURL: URL
     private let playbackBufferAdaptationQueue = DispatchQueue(
@@ -1528,6 +1552,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         output: AudioOutputDevice,
         profile: EQProfile
     ) throws {
+        try requireCompletedCoreAudioCleanup(operation: "prepare an output handoff")
         pausePlaybackBufferAdaptation()
         defer {
             updatePlaybackBufferAdaptationTimer()
@@ -1555,23 +1580,19 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             let refreshedOutput = try CoreAudioDeviceQuery.outputDevice(id: preparation.output.id)
             preparation.output = refreshedOutput
             preparation.originalBufferFrameSize = refreshedOutput.bufferFrameSize
-            try control.withLock { state in
-                guard state.outputRebuildGeneration == preparation.generation,
-                      state.runtime === preparation.runtime,
-                      state.captureRunning else {
-                    throw StaleOutputRebuild()
-                }
-                if Self.shouldRecordSampleRateRestoration(
-                    tapSampleRate: preparation.tapSampleRate,
-                    output: refreshedOutput
-                ) {
-                    try recordSampleRateRestorationIfNeeded(for: refreshedOutput, state: &state)
-                }
-            }
             let matchedOutput = try preparePlaybackOutput(
                 tapSampleRate: preparation.tapSampleRate,
                 output: preparation.output
-            )
+            ) { restoration in
+                try control.withLock { state in
+                    guard state.outputRebuildGeneration == preparation.generation,
+                          state.runtime === preparation.runtime,
+                          state.captureRunning else {
+                        throw StaleOutputRebuild()
+                    }
+                    try recordSampleRateRestorationIfNeeded(restoration, state: &state)
+                }
+            }
             try control.withLock { state in
                 state.preparedOutputHandoff = try prepareOutputHandoffLocked(
                     &state,
@@ -1633,7 +1654,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
     }
 
-    func quiesceOutputForCombinedHandoff() {
+    func quiesceOutputForCombinedHandoff() throws {
         traceDiagnostic { "compatibility quiesce begin" }
         pausePlaybackBufferAdaptation()
         control.withLock { state in
@@ -1642,13 +1663,15 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             state.state = .stopped
             state.status = .starting
         }
+        try requireCompletedCoreAudioCleanup(operation: "quiesce compatibility output")
         traceDiagnostic { "compatibility quiesce end" }
     }
 
     func completeCombinedHandoff() {
         control.withLock { state in
-            stopLocked(&state, restoringDirectPlayback: false)
+            stopLocked(&state)
         }
+        retryCoreAudioCleanup()
         updatePlaybackBufferAdaptationTimer()
     }
 
@@ -1658,6 +1681,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         expectation: OutputRebuildExpectation?,
         outputBufferPolicy: OutputBufferPolicy = .adaptiveLowLatency
     ) throws {
+        try requireCompletedCoreAudioCleanup(operation: "start compatibility audio")
         pausePlaybackBufferAdaptation()
         defer {
             updatePlaybackBufferAdaptationTimer()
@@ -1703,23 +1727,19 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             preparation.output = refreshedOutput
             preparation.originalBufferFrameSize = refreshedOutput.bufferFrameSize
             activePreparation = preparation
-            try control.withLock { state in
-                guard state.outputRebuildGeneration == preparation.generation,
-                      state.runtime === preparation.runtime,
-                      state.captureRunning else {
-                    throw StaleOutputRebuild()
-                }
-                if Self.shouldRecordSampleRateRestoration(
-                    tapSampleRate: preparation.tapSampleRate,
-                    output: refreshedOutput
-                ) {
-                    try recordSampleRateRestorationIfNeeded(for: refreshedOutput, state: &state)
-                }
-            }
             let matchedOutput = try preparePlaybackOutput(
                 tapSampleRate: preparation.tapSampleRate,
                 output: preparation.output
-            )
+            ) { restoration in
+                try control.withLock { state in
+                    guard state.outputRebuildGeneration == preparation.generation,
+                          state.runtime === preparation.runtime,
+                          state.captureRunning else {
+                        throw StaleOutputRebuild()
+                    }
+                    try recordSampleRateRestorationIfNeeded(restoration, state: &state)
+                }
+            }
             let calibrationProbe = try control.withLock { state -> PlaybackBufferCalibrationProbe? in
                 try finishOutputRebuildLocked(&state, preparation: preparation, matchedOutput: matchedOutput)
                 let active = state.activeOutput ?? output
@@ -1856,9 +1876,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ),
-        equalizedConfig.isNumericallySafe,
-        referenceConfig.isNumericallySafe else {
+        ) else {
             return false
         }
         return control.withLock { state in
@@ -1945,7 +1963,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRate: sampleRate,
             channelCount: channelCount,
             maximumUsableFrequency: maximumUsableFrequency
-        ))?.isNumericallySafe == true
+        )) != nil
     }
 
     public func muteOutputForTransition() {
@@ -1965,12 +1983,23 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         control.withLock { state in
             stopLocked(&state)
         }
+        retryCoreAudioCleanup()
         updatePlaybackBufferAdaptationTimer()
     }
 
     public func snapshotMetrics() -> AudioEngineMetrics {
         let runtime = control.withLock { $0.runtime }
         return runtime?.snapshotMetrics() ?? AudioEngineMetrics()
+    }
+
+    func diagnosticDeviceIDs() -> (physical: AudioObjectID, aggregate: AudioObjectID)? {
+        control.withLock { state in
+            guard let output = state.activeOutput,
+                  state.aggregateDeviceID != kAudioObjectUnknown else {
+                return nil
+            }
+            return (output.id, state.aggregateDeviceID)
+        }
     }
 
     var processingSampleRate: Double? {
@@ -1980,57 +2009,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     public func resetDiagnostics() {
         let runtime = control.withLock { $0.runtime }
         runtime?.resetMetrics()
-    }
-
-    public func resetPlaybackBufferCalibration(forOutputUID outputUID: String) throws {
-        guard !outputUID.isEmpty else {
-            return
-        }
-        pausePlaybackBufferAdaptation()
-        defer {
-            updatePlaybackBufferAdaptationTimer()
-        }
-        try PersistedPlaybackBufferCalibrationStore.removeCalibrations(
-            outputUID: outputUID,
-            at: playbackBufferCalibrationStoreURL
-        )
-        let activeOutputAndProfile = control.withLock {
-            state -> (AudioOutputDevice, EQProfile, OutputRebuildExpectation)? in
-            if state.playbackBufferCalibrationProbe?.outputUID == outputUID {
-                state.playbackBufferCalibrationProbe = nil
-            }
-            state.playbackBufferStableSince = nil
-            state.playbackBufferAdaptationEvidence.resetUnderrunEpisodes()
-            state.playbackBufferInstabilityPersistenceGate.reset(outputUID: outputUID)
-            state.failedPlaybackFrameSizeDecayCandidates = Set(
-                state.failedPlaybackFrameSizeDecayCandidates.filter { $0.outputUID != outputUID }
-            )
-            guard let output = state.activeOutput,
-                  output.uid == outputUID,
-                  let profile = state.activeProfile else {
-                return nil
-            }
-            guard let runtime = state.runtime else {
-                return nil
-            }
-            return (
-                output,
-                profile,
-                OutputRebuildExpectation(
-                    generation: state.outputRebuildGeneration,
-                    runtime: runtime,
-                    profileRevision: state.profileRevision
-                )
-            )
-        }
-        if let (activeOutput, activeProfile, expectation) = activeOutputAndProfile {
-            let freshOutput = try CoreAudioDeviceQuery.outputDevice(id: activeOutput.id)
-            try start(
-                output: freshOutput,
-                profile: activeProfile,
-                expectation: expectation
-            )
-        }
     }
 
     public func setPlaybackBufferRenegotiationHandler(
@@ -2055,16 +2033,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
     #endif
 
-    private func stopLocked(
-        _ state: inout ControlState,
-        restoringDirectPlayback: Bool = true
-    ) {
+    private func stopLocked(_ state: inout ControlState) {
         state.runtime?.markStopping()
         stopOutputHalfLocked(&state)
-        stopCaptureHalfLocked(
-            &state,
-            restoringDirectPlayback: restoringDirectPlayback
-        )
+        stopCaptureHalfLocked(&state)
         state.activeProfile = nil
         state.profileRevision &+= 1
         state.playbackBufferAdaptationEvidence = PlaybackBufferAdaptationEvidence()
@@ -2100,6 +2072,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             ) {
                 stopOutputHalfLocked(&state)
                 stopCaptureHalfLocked(&state)
+                try requireCompletedCoreAudioCleanup(
+                    operation: "rebuild compatibility capture"
+                )
                 try createCaptureHalfLocked(&state, profile: profile)
             }
             return
@@ -2182,33 +2157,32 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         traceDiagnostic { "compatibility capture create end device=\(state.aggregateDeviceID)" }
     }
 
-    private func stopCaptureHalfLocked(
-        _ state: inout ControlState,
-        restoringDirectPlayback: Bool = false
-    ) {
+    private func stopCaptureHalfLocked(_ state: inout ControlState) {
         state.runtime?.markStopping()
-
-        // Hand direct playback back to HAL as soon as capture stops. Destroying an
-        // always-muted tap first can leave an active client silent until it rebuilds.
-        if restoringDirectPlayback, state.tapID != kAudioObjectUnknown {
-            try? CoreAudioDeviceQuery.setProcessTapMuteBehavior(
-                .mutedWhenTapped,
-                tapID: state.tapID
-            )
-        }
-
+        var resources = CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "dispose compatibility capture"
+        )
         if state.aggregateDeviceID != kAudioObjectUnknown, let captureIOProcID = state.captureIOProcID {
-            _ = AudioDeviceStop(state.aggregateDeviceID, captureIOProcID)
-            _ = AudioDeviceDestroyIOProcID(state.aggregateDeviceID, captureIOProcID)
+            resources.ioProcs.append(.init(
+                deviceID: state.aggregateDeviceID,
+                ioProcID: captureIOProcID
+            ))
         }
         if state.aggregateDeviceID != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyAggregateDevice(state.aggregateDeviceID)
+            resources.aggregateDeviceIDs.append(state.aggregateDeviceID)
         }
         if state.tapID != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyProcessTap(state.tapID)
+            resources.tapIDs.append(state.tapID)
+        }
+        if (!resources.ioProcs.isEmpty
+            || !resources.aggregateDeviceIDs.isEmpty
+            || !resources.tapIDs.isEmpty),
+           !cleanupLedger.dispose(resources) {
+            traceDiagnostic {
+                "Core Audio cleanup deferred operation=dispose compatibility capture pending=\(cleanupLedger.pendingCount)"
+            }
         }
 
-        state.runtime?.drainDSPConfigBoxes()
         state.captureIOProcID = nil
         state.aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         state.tapID = AudioObjectID(kAudioObjectUnknown)
@@ -2235,6 +2209,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         let originalBufferFrameSize = output.bufferFrameSize
         _ = try Self.supportedRuntimeChannelCount(for: output)
         stopOutputHalfLocked(&state)
+        try requireCompletedCoreAudioCleanup(operation: "replace compatibility output")
         return OutputRebuildPreparation(
             generation: state.outputRebuildGeneration,
             output: output,
@@ -2334,7 +2309,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 outputSampleRate: matchedOutput.nominalSampleRate
             )
         } catch {
-            _ = AudioDeviceDestroyIOProcID(matchedOutput.id, outputIOProcID)
+            disposeOutputIOProc(
+                deviceID: matchedOutput.id,
+                ioProcID: outputIOProcID,
+                operation: "discard unconfigured physical output"
+            )
             throw error
         }
 
@@ -2354,7 +2333,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         guard state.outputRebuildGeneration == preparation.generation,
               state.runtime === preparation.runtime,
               state.captureRunning else {
-            _ = AudioDeviceDestroyIOProcID(handoff.output.id, handoff.ioProcID)
+            disposeOutputIOProc(
+                deviceID: handoff.output.id,
+                ioProcID: handoff.ioProcID,
+                operation: "discard stale physical output"
+            )
             throw StaleOutputRebuild()
         }
         let runtime = preparation.runtime
@@ -2368,7 +2351,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
             try checkOSStatus(status, operation: "AudioDeviceStart(default output)")
         } catch {
-            _ = AudioDeviceDestroyIOProcID(handoff.output.id, handoff.ioProcID)
+            disposeOutputIOProc(
+                deviceID: handoff.output.id,
+                ioProcID: handoff.ioProcID,
+                operation: "discard failed physical output"
+            )
             throw error
         }
         state.outputIOProcID = handoff.ioProcID
@@ -2430,9 +2417,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             traceDiagnostic {
                 "AudioDeviceDestroyIOProcID(prepared physical output) begin device=\(prepared.output.id)"
             }
-            let status = AudioDeviceDestroyIOProcID(prepared.output.id, prepared.ioProcID)
+            disposeOutputIOProc(
+                deviceID: prepared.output.id,
+                ioProcID: prepared.ioProcID,
+                operation: "dispose prepared physical output"
+            )
             traceDiagnostic {
-                "AudioDeviceDestroyIOProcID(prepared physical output) return status=\(status) device=\(prepared.output.id)"
+                "AudioDeviceDestroyIOProcID(prepared physical output) submitted device=\(prepared.output.id)"
             }
             state.preparedOutputHandoff = nil
         }
@@ -2440,16 +2431,16 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             traceDiagnostic {
                 "AudioDeviceStop(physical output) begin device=\(output.id) buffer=\(output.bufferFrameSize)"
             }
-            let stopStatus = AudioDeviceStop(output.id, outputIOProcID)
-            traceDiagnostic {
-                "AudioDeviceStop(physical output) return status=\(stopStatus) device=\(output.id)"
-            }
             traceDiagnostic {
                 "AudioDeviceDestroyIOProcID(physical output) begin device=\(output.id)"
             }
-            let destroyStatus = AudioDeviceDestroyIOProcID(output.id, outputIOProcID)
+            disposeOutputIOProc(
+                deviceID: output.id,
+                ioProcID: outputIOProcID,
+                operation: "dispose physical output"
+            )
             traceDiagnostic {
-                "AudioDeviceDestroyIOProcID(physical output) return status=\(destroyStatus) device=\(output.id)"
+                "AudioDeviceDestroyIOProcID(physical output) submitted device=\(output.id)"
             }
         }
         state.outputIOProcID = nil
@@ -2467,12 +2458,18 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func forceSampleRate(
         _ sampleRate: Double,
-        on output: AudioOutputDevice
+        on output: AudioOutputDevice,
+        recordRestoration: (SampleRateRestoration) throws -> Void
     ) throws -> AudioOutputDevice {
         guard sampleRate > 0, abs(output.nominalSampleRate - sampleRate) >= 1 else {
             return output
         }
-        try CoreAudioDeviceQuery.setNominalSampleRate(sampleRate, objectID: output.id)
+        try Self.setSampleRateAfterRecordingRestoration(
+            sampleRate,
+            on: output,
+            recordRestoration: recordRestoration,
+            setSampleRate: CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
+        )
         for _ in 0..<3 {
             let freshOutput = try CoreAudioDeviceQuery.outputDevice(id: output.id)
             if abs(freshOutput.nominalSampleRate - sampleRate) < 1 {
@@ -2489,49 +2486,45 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func preparePlaybackOutput(
         tapSampleRate: Double,
-        output: AudioOutputDevice
+        output: AudioOutputDevice,
+        recordRestoration: (SampleRateRestoration) throws -> Void
     ) throws -> AudioOutputDevice {
         if Self.shouldUseSampleRateConversion(tapSampleRate: tapSampleRate, output: output) {
             return output
         }
-        return try forceSampleRate(tapSampleRate, on: output)
+        return try forceSampleRate(
+            tapSampleRate,
+            on: output,
+            recordRestoration: recordRestoration
+        )
     }
 
     private func recordSampleRateRestorationIfNeeded(
-        for output: AudioOutputDevice,
+        _ restoration: SampleRateRestoration,
         state: inout ControlState
     ) throws {
-        guard state.sampleRateRestorations[output.uid] == nil else {
+        guard state.sampleRateRestorations[restoration.uid] == nil else {
             return
         }
-        let restoration = SampleRateRestoration(
-            uid: output.uid,
-            originalSampleRate: output.nominalSampleRate
-        )
         try PersistedAudioDeviceRestorationStore.recordSampleRate(
             uid: restoration.uid,
             originalSampleRate: restoration.originalSampleRate,
             at: restorationStoreURL
         )
-        state.sampleRateRestorations[output.uid] = restoration
+        state.sampleRateRestorations[restoration.uid] = restoration
     }
 
     static func setSampleRateAfterRecordingRestoration(
         _ sampleRate: Double,
         on output: AudioOutputDevice,
-        needsRestoration: Bool,
         recordRestoration: (SampleRateRestoration) throws -> Void,
-        installRestoration: (SampleRateRestoration) -> Void,
         setSampleRate: (Double, AudioObjectID) throws -> Void
     ) throws {
-        if needsRestoration {
-            let restoration = SampleRateRestoration(
-                uid: output.uid,
-                originalSampleRate: output.nominalSampleRate
-            )
-            try recordRestoration(restoration)
-            installRestoration(restoration)
-        }
+        let restoration = SampleRateRestoration(
+            uid: output.uid,
+            originalSampleRate: output.nominalSampleRate
+        )
+        try recordRestoration(restoration)
         try setSampleRate(sampleRate, output.id)
     }
 
@@ -2745,14 +2738,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         (Int(encoded >> 32), Int(encoded & 0xFFFF_FFFF))
     }
 
-    static func performAfterRuntimeChannelValidation<T>(
-        for output: AudioOutputDevice,
-        _ operation: () throws -> T
-    ) throws -> T {
-        _ = try supportedRuntimeChannelCount(for: output)
-        return try operation()
-    }
-
     static func monoDownmix(
         _ samples: UnsafeBufferPointer<Float>,
         frame: Int,
@@ -2917,10 +2902,20 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         } catch {
             throw TopologyRebuildMuteGuardUnavailable(underlyingError: error)
         }
-        defer {
+        let result: T
+        do {
+            result = try rebuild()
+        } catch {
             muteGuard.release()
+            throw error
         }
-        return try rebuild()
+        guard muteGuard.release() else {
+            throw CoreAudioError(
+                operation: "Release profile rebuild mute guard",
+                status: kAudioHardwareUnspecifiedError
+            )
+        }
+        return result
     }
 
     private func tuneBufferFrameSize(
@@ -3852,15 +3847,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             && hasLowSampleRateEndpoint(tapSampleRate: tapSampleRate, output: output)
     }
 
-    static func shouldRecordSampleRateRestoration(
-        tapSampleRate: Double,
-        output: AudioOutputDevice
-    ) -> Bool {
-        tapSampleRate > 0
-            && abs(output.nominalSampleRate - tapSampleRate) >= 1
-            && !shouldUseSampleRateConversion(tapSampleRate: tapSampleRate, output: output)
-    }
-
     static func effectiveOutputRebuildProfile(
         preparedProfile: EQProfile,
         preparedProfileRevision: UInt64,
@@ -3946,18 +3932,73 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             return CoreAudioTopologyRebuildMuteGuard(
                 tapID: tapID,
                 aggregateDeviceID: aggregateDeviceID,
-                ioProcID: ioProcID
+                ioProcID: ioProcID,
+                cleanupLedger: cleanupLedger
             )
         } catch {
+            var resources = CoreAudioResourceCleanupLedger.PendingResources(
+                operation: "discard failed topology rebuild mute guard"
+            )
             if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
-                _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
-                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
+                resources.ioProcs.append(.init(
+                    deviceID: aggregateDeviceID,
+                    ioProcID: ioProcID
+                ))
             }
             if aggregateDeviceID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+                resources.aggregateDeviceIDs.append(aggregateDeviceID)
             }
-            _ = AudioHardwareDestroyProcessTap(tapID)
+            if tapID != kAudioObjectUnknown {
+                resources.tapIDs.append(tapID)
+            }
+            if !resources.ioProcs.isEmpty
+                || !resources.aggregateDeviceIDs.isEmpty
+                || !resources.tapIDs.isEmpty {
+                cleanupLedger.dispose(resources)
+            }
             throw error
+        }
+    }
+
+    private func disposeOutputIOProc(
+        deviceID: AudioObjectID,
+        ioProcID: AudioDeviceIOProcID,
+        operation: String
+    ) {
+        let resources = CoreAudioResourceCleanupLedger.PendingResources(
+            operation: operation,
+            ioProcs: [.init(deviceID: deviceID, ioProcID: ioProcID)]
+        )
+        if !cleanupLedger.dispose(resources) {
+            traceDiagnostic {
+                "Core Audio cleanup deferred operation=\(operation) pending=\(cleanupLedger.pendingCount)"
+            }
+        }
+    }
+
+    private func requireCompletedCoreAudioCleanup(operation: String) throws {
+        for attempt in 0..<3 {
+            if cleanupLedger.retryPending() {
+                return
+            }
+            if attempt < 2 {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        traceDiagnostic {
+            "Core Audio cleanup still pending before \(operation) count=\(cleanupLedger.pendingCount)"
+        }
+        throw CoreAudioError(
+            operation: "Complete prior Core Audio cleanup before \(operation)",
+            status: kAudioHardwareUnspecifiedError
+        )
+    }
+
+    private func retryCoreAudioCleanup() {
+        do {
+            try requireCompletedCoreAudioCleanup(operation: "finish stopping compatibility audio")
+        } catch {
+            traceDiagnostic { "Core Audio cleanup remains owned for retry error=\(error)" }
         }
     }
 

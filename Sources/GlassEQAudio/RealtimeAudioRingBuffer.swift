@@ -8,6 +8,9 @@ struct RingBufferWriteResult: Equatable, Sendable {
 }
 
 public final class RealtimeAudioRingBuffer: @unchecked Sendable {
+    private static let maximumChannelCount = 256
+    private static let maximumStorageSampleCount = 1_048_576
+
     public let channelCount: Int
     public let capacityFrames: Int
 
@@ -19,8 +22,9 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
     private let overwriteGateContentionFailures = Atomic<UInt64>(0)
 
     public init(channelCount: Int, capacityFrames: Int) {
-        self.channelCount = max(channelCount, 1)
-        self.capacityFrames = max(capacityFrames, 2)
+        self.channelCount = min(max(channelCount, 1), Self.maximumChannelCount)
+        let maximumStorageFrameCapacity = Self.maximumStorageSampleCount / self.channelCount
+        self.capacityFrames = min(max(capacityFrames, 2), maximumStorageFrameCapacity - 1)
         self.storageFrameCapacity = self.capacityFrames + 1
         self.storage = UnsafeMutableBufferPointer<Float>.allocate(capacity: self.channelCount * self.storageFrameCapacity)
         self.storage.initialize(repeating: 0)

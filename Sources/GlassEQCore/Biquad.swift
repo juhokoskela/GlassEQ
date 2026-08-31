@@ -150,6 +150,23 @@ struct RenderBiquadCoefficients: Equatable, Sendable {
         self.a1 = Float(coefficients.a1)
         self.a2 = Float(coefficients.a2)
     }
+
+    var hasStablePoles: Bool {
+        let a1 = Double(a1)
+        let a2 = Double(a2)
+        return abs(a2) < 1
+            && 1 + a1 + a2 > 0
+            && 1 - a1 + a2 > 0
+    }
+
+    var isNumericallySafe: Bool {
+        b0.isFinite
+            && b1.isFinite
+            && b2.isFinite
+            && a1.isFinite
+            && a2.isFinite
+            && hasStablePoles
+    }
 }
 
 public struct BiquadState: Sendable {
@@ -261,10 +278,31 @@ public enum FrequencyResponse {
         preampDB: Double,
         sampleRate: Double = 48_000
     ) -> Double {
+        peakMagnitudeDB(
+            for: filters,
+            preampDB: preampDB,
+            sampleRate: sampleRate,
+            cancellationCheck: {}
+        )
+    }
+
+    @_spi(GlassEQSettingsUI)
+    public static func peakMagnitudeDB(
+        for filters: [EQFilter],
+        preampDB: Double,
+        sampleRate: Double = 48_000,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> Double {
+        try cancellationCheck()
         let coefficients = enabledCoefficients(filters: filters, sampleRate: sampleRate)
-        return points(for: coefficients, preampDB: preampDB, sampleRate: sampleRate, count: 192)
-            .map(\.magnitudeDB)
-            .max() ?? preampDB
+            .map(RenderBiquadCoefficients.init)
+        guard coefficients.allSatisfy(\.isNumericallySafe) else {
+            return .infinity
+        }
+        return preampDB + (try boundedPeakMagnitudeDB(
+            for: coefficients,
+            cancellationCheck: cancellationCheck
+        ))
     }
 
     public static func points(
@@ -273,39 +311,105 @@ public enum FrequencyResponse {
         sampleRate: Double = 48_000,
         count: Int = 96
     ) -> [FrequencyResponsePoint] {
+        points(
+            for: source,
+            preampDB: preampDB,
+            sampleRate: sampleRate,
+            count: count,
+            cancellationCheck: {}
+        )
+    }
+
+    @_spi(GlassEQSettingsUI)
+    public static func points(
+        for source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double = 48_000,
+        count: Int = 96,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> [FrequencyResponsePoint] {
+        try cancellationCheck()
         let lower = log10(20.0)
         let upperFrequency = max(
             20,
             EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         )
         let upper = log10(upperFrequency)
-        let frequencies = (0..<max(count, 2)).map { index in
+        let frequencies = try (0..<max(count, 2)).map { index in
+            try cancellationCheck()
             let fraction = Double(index) / Double(max(count - 1, 1))
             return pow(10, lower + (upper - lower) * fraction)
         }
 
-        if case .impulseResponse(let impulse) = source,
-           let spectrum = try? ImpulseResponseSpectrum(
-               impulseResponse: impulse.samples,
-               sampleRate: impulse.sampleRate
-           ) {
+        switch source {
+        case .magnitudeCurve(let curve):
+            let sortedPoints = curve.points.sorted { $0.frequency < $1.frequency }
+            let adjustedPoints = MinimumPhaseFIRCompiler.routeAdjustedPoints(
+                sortedPoints,
+                maximumUsableFrequency: upperFrequency,
+                nyquistFrequency: sampleRate / 2
+            )
             return frequencies.map { frequency in
                 FrequencyResponsePoint(
                     frequency: frequency,
-                    magnitudeDB: preampDB + spectrum.magnitudeDB(at: frequency)
+                    magnitudeDB: preampDB + MinimumPhaseFIRCompiler.interpolatedGainDB(
+                        frequency: frequency,
+                        points: adjustedPoints
+                    )
                 )
             }
-        }
-
-        return frequencies.map { frequency in
-            FrequencyResponsePoint(
-                frequency: frequency,
-                magnitudeDB: preampDB + convolutionMagnitudeDB(
-                    source: source,
-                    frequency: frequency
+        case .impulseResponse(let impulse):
+            do {
+                let spectrum = try ImpulseResponseSpectrum(
+                    impulseResponse: impulse.samples,
+                    sampleRate: impulse.sampleRate,
+                    cancellationCheck: cancellationCheck
                 )
-            )
+                return try frequencies.map { frequency in
+                    try cancellationCheck()
+                    return FrequencyResponsePoint(
+                        frequency: frequency,
+                        magnitudeDB: preampDB + spectrum.magnitudeDB(at: frequency)
+                    )
+                }
+            } catch {
+                try cancellationCheck()
+                return try frequencies.map { frequency in
+                    FrequencyResponsePoint(
+                        frequency: frequency,
+                        magnitudeDB: preampDB + (try impulseResponseMagnitudeDB(
+                            impulse,
+                            frequency: frequency,
+                            cancellationCheck: cancellationCheck
+                        ))
+                    )
+                }
+            }
+        case nil:
+            return frequencies.map {
+                FrequencyResponsePoint(frequency: $0, magnitudeDB: preampDB)
+            }
         }
+    }
+
+    private static func impulseResponseMagnitudeDB(
+        _ impulse: ImpulseResponseSource,
+        frequency: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> Double {
+        let boundedFrequency = min(frequency, impulse.sampleRate / 2)
+        let omega = 2 * Double.pi * boundedFrequency / impulse.sampleRate
+        var real = 0.0
+        var imaginary = 0.0
+        for (index, sample) in impulse.samples.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cancellationCheck()
+            }
+            let phase = -omega * Double(index)
+            real += Double(sample) * cos(phase)
+            imaginary += Double(sample) * sin(phase)
+        }
+        return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
     }
 
     public static func peakMagnitudeDB(
@@ -313,55 +417,68 @@ public enum FrequencyResponse {
         preampDB: Double,
         sampleRate: Double = 48_000
     ) -> Double {
+        (try? peakMagnitudeDB(
+            for: source,
+            preampDB: preampDB,
+            sampleRate: sampleRate,
+            cancellationCheck: {}
+        )) ?? .infinity
+    }
+
+    @_spi(GlassEQSettingsUI)
+    public static func peakMagnitudeDB(
+        for source: EQConvolutionSource?,
+        preampDB: Double,
+        sampleRate: Double = 48_000,
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
+        try cancellationCheck()
         let maximumFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
             sampleRate: sampleRate
         )
         switch source {
         case .magnitudeCurve(let curve):
-            let sortedPoints = curve.points.sorted { $0.frequency < $1.frequency }
-            let relevantGains = sortedPoints.lazy
-                .filter { $0.frequency <= maximumFrequency }
-                .map(\.gainDB)
-            let boundaryGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
-                frequency: maximumFrequency,
-                points: sortedPoints
-            )
-            return preampDB + max(relevantGains.max() ?? 0, boundaryGain)
-        case .impulseResponse(let impulse):
-            let coefficientL1Norm = impulse.samples.reduce(into: 0.0) { sum, sample in
-                sum += abs(Double(sample))
+            let impulse: [Float]
+            do {
+                impulse = try MinimumPhaseFIRCompiler.compile(
+                    points: curve.points,
+                    sampleRate: sampleRate,
+                    maximumUsableFrequency: maximumFrequency,
+                    cancellationCheck: cancellationCheck
+                )
+            } catch is MinimumPhaseFIRCompilerError {
+                return .infinity
             }
-            // The triangle inequality bounds the response at every frequency, including DC.
-            let upperBoundDB = 20 * log10(max(coefficientL1Norm, .leastNonzeroMagnitude))
+            let upperBoundDB = try convolutionPeakUpperBoundDB(
+                impulse,
+                cancellationCheck: cancellationCheck
+            )
+            return preampDB + upperBoundDB
+        case .impulseResponse(let impulse):
+            let upperBoundDB = try convolutionPeakUpperBoundDB(
+                impulse.samples,
+                cancellationCheck: cancellationCheck
+            )
             return preampDB + upperBoundDB
         case nil:
             return preampDB
         }
     }
 
-    private static func convolutionMagnitudeDB(
-        source: EQConvolutionSource?,
-        frequency: Double
-    ) -> Double {
-        switch source {
-        case .magnitudeCurve(let curve):
-            return MinimumPhaseFIRCompiler.interpolatedGainDB(
-                frequency: frequency,
-                points: curve.points.sorted { $0.frequency < $1.frequency }
+    private static func convolutionPeakUpperBoundDB(
+        _ impulseResponse: [Float],
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
+        do {
+            return try MinimumPhaseFIRCompiler.certifiedPeakMagnitudeDB(
+                impulseResponse: impulseResponse,
+                cancellationCheck: cancellationCheck
             )
-        case .impulseResponse(let impulse):
-            let boundedFrequency = min(frequency, impulse.sampleRate / 2)
-            let omega = 2 * Double.pi * boundedFrequency / impulse.sampleRate
-            var real = 0.0
-            var imaginary = 0.0
-            for (index, sample) in impulse.samples.enumerated() {
-                let phase = -omega * Double(index)
-                real += Double(sample) * cos(phase)
-                imaginary += Double(sample) * sin(phase)
-            }
-            return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
-        case nil:
-            return 0
+        } catch is MinimumPhaseFIRCompilerError {
+            return try MinimumPhaseFIRCompiler.coefficientL1UpperBoundDB(
+                impulseResponse,
+                cancellationCheck: cancellationCheck
+            )
         }
     }
 
@@ -371,6 +488,102 @@ public enum FrequencyResponse {
                 .filter(\.isEnabled)
                 .map { BiquadCoefficients.make(filter: $0, sampleRate: sampleRate) }
         )
+    }
+
+    private static func boundedPeakMagnitudeDB(
+        for coefficients: [RenderBiquadCoefficients],
+        cancellationCheck: @Sendable () throws -> Void
+    ) rethrows -> Double {
+        try cancellationCheck()
+        guard !coefficients.isEmpty else {
+            return 0
+        }
+
+        let responses = coefficients.map(BiquadMagnitudeSquared.init)
+        var intervals = PeakSearchQueue(PeakSearchInterval(
+            lower: 0,
+            upper: 1,
+            upperBoundDB: cascadeUpperBoundDB(responses, lower: 0, upper: 1)
+        ))
+        var bestMagnitudeDB = [0.0, 0.5, 1.0]
+            .map { cascadeMagnitudeDB(responses, at: $0) }
+            .max() ?? 0
+
+        let toleranceDB = 0.01
+        let maximumIterations = 8_192
+        for iteration in 0..<maximumIterations {
+            if iteration.isMultiple(of: 16) {
+                try cancellationCheck()
+            }
+            guard let interval = intervals.removeMaximum() else {
+                return bestMagnitudeDB
+            }
+            guard interval.upperBoundDB.isFinite else {
+                return .infinity
+            }
+            if interval.upperBoundDB - bestMagnitudeDB <= toleranceDB {
+                return max(bestMagnitudeDB, interval.upperBoundDB)
+            }
+
+            let middle = (interval.lower + interval.upper) / 2
+            guard middle > interval.lower, middle < interval.upper else {
+                return max(bestMagnitudeDB, interval.upperBoundDB)
+            }
+            bestMagnitudeDB = max(
+                bestMagnitudeDB,
+                cascadeMagnitudeDB(responses, at: middle)
+            )
+            intervals.insert(PeakSearchInterval(
+                lower: interval.lower,
+                upper: middle,
+                upperBoundDB: cascadeUpperBoundDB(
+                    responses,
+                    lower: interval.lower,
+                    upper: middle
+                )
+            ))
+            intervals.insert(PeakSearchInterval(
+                lower: middle,
+                upper: interval.upper,
+                upperBoundDB: cascadeUpperBoundDB(
+                    responses,
+                    lower: middle,
+                    upper: interval.upper
+                )
+            ))
+        }
+
+        try cancellationCheck()
+        return max(
+            bestMagnitudeDB,
+            intervals.maximumUpperBoundDB ?? bestMagnitudeDB
+        )
+    }
+
+    private static func cascadeMagnitudeDB(
+        _ responses: [BiquadMagnitudeSquared],
+        at position: Double
+    ) -> Double {
+        responses.reduce(0.0) { magnitudeDB, response in
+            magnitudeDB + 10 * log10(max(
+                response.ratio(at: position),
+                .leastNonzeroMagnitude
+            ))
+        }
+    }
+
+    private static func cascadeUpperBoundDB(
+        _ responses: [BiquadMagnitudeSquared],
+        lower: Double,
+        upper: Double
+    ) -> Double {
+        responses.reduce(0.0) { magnitudeDB, response in
+            let maximumRatio = response.maximumRatio(lower: lower, upper: upper)
+            guard maximumRatio.isFinite else {
+                return .infinity
+            }
+            return magnitudeDB + 10 * log10(max(maximumRatio, .leastNonzeroMagnitude))
+        }
     }
 
     private static func magnitudeDB(
@@ -412,46 +625,209 @@ public enum FrequencyResponse {
     }
 }
 
+private struct PeakSearchInterval {
+    var lower: Double
+    var upper: Double
+    var upperBoundDB: Double
+}
+
+private struct PeakSearchQueue {
+    private var storage: [PeakSearchInterval]
+
+    init(_ interval: PeakSearchInterval) {
+        self.storage = [interval]
+    }
+
+    var maximumUpperBoundDB: Double? {
+        storage.first?.upperBoundDB
+    }
+
+    mutating func insert(_ interval: PeakSearchInterval) {
+        storage.append(interval)
+        var child = storage.count - 1
+        while child > 0 {
+            let parent = (child - 1) / 2
+            guard storage[child].upperBoundDB > storage[parent].upperBoundDB else {
+                return
+            }
+            storage.swapAt(child, parent)
+            child = parent
+        }
+    }
+
+    mutating func removeMaximum() -> PeakSearchInterval? {
+        guard !storage.isEmpty else {
+            return nil
+        }
+        guard storage.count > 1 else {
+            return storage.removeLast()
+        }
+        let maximum = storage[0]
+        storage[0] = storage.removeLast()
+        var parent = 0
+        while true {
+            let left = parent * 2 + 1
+            guard left < storage.count else {
+                break
+            }
+            let right = left + 1
+            let child = right < storage.count
+                && storage[right].upperBoundDB > storage[left].upperBoundDB
+                ? right
+                : left
+            guard storage[child].upperBoundDB > storage[parent].upperBoundDB else {
+                break
+            }
+            storage.swapAt(parent, child)
+            parent = child
+        }
+        return maximum
+    }
+}
+
+private struct BiquadMagnitudeSquared {
+    private struct Terms {
+        var sum: Double
+        var pair: Double
+        var difference: Double
+
+        var polynomial: (constant: Double, linear: Double, quadratic: Double) {
+            (
+                constant: sum * sum,
+                linear: 4 * (difference * difference - sum * pair),
+                quadratic: 4 * (pair * pair - difference * difference)
+            )
+        }
+
+        func value(at position: Double) -> Double {
+            let real = sum - 2 * pair * position
+            return real * real
+                + 4 * position * (1 - position) * difference * difference
+        }
+    }
+
+    private var numerator: Terms
+    private var denominator: Terms
+
+    init(_ coefficients: RenderBiquadCoefficients) {
+        let b0 = Double(coefficients.b0)
+        let b1 = Double(coefficients.b1)
+        let b2 = Double(coefficients.b2)
+        let a1 = Double(coefficients.a1)
+        let a2 = Double(coefficients.a2)
+        self.numerator = Terms(
+            sum: b0 + b1 + b2,
+            pair: b0 + b2,
+            difference: b0 - b2
+        )
+        self.denominator = Terms(
+            sum: 1 + a1 + a2,
+            pair: 1 + a2,
+            difference: 1 - a2
+        )
+    }
+
+    func ratio(at position: Double) -> Double {
+        let denominatorValue = denominator.value(at: position)
+        guard denominatorValue.isFinite, denominatorValue > 0 else {
+            return .infinity
+        }
+        return numerator.value(at: position) / denominatorValue
+    }
+
+    func maximumRatio(lower: Double, upper: Double) -> Double {
+        let candidates = [lower, upper] + stationaryPoints().filter {
+            $0 > lower && $0 < upper
+        }
+        return candidates.reduce(0.0) { maximum, position in
+            max(maximum, ratio(at: position))
+        }.nextUp
+    }
+
+    private func stationaryPoints() -> [Double] {
+        let n = numerator.polynomial
+        let d = denominator.polynomial
+        let quadratic = n.quadratic * d.linear - n.linear * d.quadratic
+        let linear = 2 * (n.quadratic * d.constant - n.constant * d.quadratic)
+        let constant = n.linear * d.constant - n.constant * d.linear
+
+        if quadratic == 0 {
+            guard linear != 0 else {
+                return []
+            }
+            return [-constant / linear]
+        }
+
+        var discriminant = linear * linear - 4 * quadratic * constant
+        let discriminantScale = linear * linear + abs(4 * quadratic * constant)
+        if discriminant < 0,
+           abs(discriminant) <= 64 * Double.ulpOfOne * discriminantScale {
+            discriminant = 0
+        }
+        guard discriminant >= 0, discriminant.isFinite else {
+            return []
+        }
+
+        let root = sqrt(discriminant)
+        let signedRoot = linear >= 0 ? root : -root
+        let firstTerm = -0.5 * (linear + signedRoot)
+        guard firstTerm != 0 else {
+            return [-linear / (2 * quadratic)]
+        }
+        return [
+            firstTerm / quadratic,
+            constant / firstTerm
+        ]
+    }
+}
+
 public enum EQProfileAnalysis {
-    public static func recommendedPreampDB(profile: EQProfile, sampleRate: Double = 48_000) -> Double {
-        let peaks: [Double]
+    @_spi(GlassEQSettingsUI)
+    public static func recommendedPreampDB(
+        profile: EQProfile,
+        sampleRate: Double = 48_000,
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
+        try cancellationCheck()
+        let renderedPeaks: [Double]
+        let activePreampDB: Double
         switch profile.channelMode {
         case .linked:
-            peaks = [peakMagnitudeDB(
-                mode: profile.mode,
-                filters: profile.filters,
-                source: profile.convolution,
-                preampDB: profile.preampDB,
-                sampleRate: sampleRate
-            )]
+            activePreampDB = profile.preampDB
+            renderedPeaks = [
+                try peakMagnitudeDB(
+                    mode: profile.mode,
+                    filters: profile.filters,
+                    source: profile.convolution,
+                    preampDB: profile.preampDB,
+                    sampleRate: sampleRate,
+                    cancellationCheck: cancellationCheck
+                )
+            ]
         case .stereo:
-            peaks = [
-                peakMagnitudeDB(
+            activePreampDB = max(profile.leftPreampDB, profile.rightPreampDB)
+            renderedPeaks = [
+                try peakMagnitudeDB(
                     mode: profile.mode,
                     filters: profile.leftFilters,
                     source: profile.leftConvolution,
                     preampDB: profile.leftPreampDB,
-                    sampleRate: sampleRate
+                    sampleRate: sampleRate,
+                    cancellationCheck: cancellationCheck
                 ),
-                peakMagnitudeDB(
+                try peakMagnitudeDB(
                     mode: profile.mode,
                     filters: profile.rightFilters,
                     source: profile.rightConvolution,
                     preampDB: profile.rightPreampDB,
-                    sampleRate: sampleRate
-                )
+                    sampleRate: sampleRate,
+                    cancellationCheck: cancellationCheck
+                ),
             ]
         }
-        let peak = peaks.max() ?? 0
-        if peak > -0.5 {
-            return -peak - 0.5
-        }
-        switch profile.channelMode {
-        case .linked:
-            return profile.preampDB
-        case .stereo:
-            return min(profile.leftPreampDB, profile.rightPreampDB)
-        }
+        try cancellationCheck()
+        let requiredAttenuationDB = max((renderedPeaks.max() ?? 0) + 0.5, 0)
+        return activePreampDB - requiredAttenuationDB
     }
 
     private static func peakMagnitudeDB(
@@ -459,19 +835,22 @@ public enum EQProfileAnalysis {
         filters: [EQFilter],
         source: EQConvolutionSource?,
         preampDB: Double,
-        sampleRate: Double
-    ) -> Double {
+        sampleRate: Double,
+        cancellationCheck: @Sendable () throws -> Void
+    ) throws -> Double {
         if mode == .convolution {
-            return FrequencyResponse.peakMagnitudeDB(
+            return try FrequencyResponse.peakMagnitudeDB(
                 for: source,
                 preampDB: preampDB,
-                sampleRate: sampleRate
+                sampleRate: sampleRate,
+                cancellationCheck: cancellationCheck
             )
         }
-        return FrequencyResponse.peakMagnitudeDB(
+        return try FrequencyResponse.peakMagnitudeDB(
             for: filters,
             preampDB: preampDB,
-            sampleRate: sampleRate
+            sampleRate: sampleRate,
+            cancellationCheck: cancellationCheck
         )
     }
 }

@@ -237,25 +237,6 @@ struct MultiChannelOutputMappingTests {
     }
 
     @Test
-    func tapInputOffsetAccountsForDuplexPhysicalOutput() {
-        #expect(SystemTapAudioEngine.tapInputChannelOffset(
-            physicalInputChannelCount: 0,
-            aggregateInputChannelCount: 2,
-            tapChannelCount: 2
-        ) == 0)
-        #expect(SystemTapAudioEngine.tapInputChannelOffset(
-            physicalInputChannelCount: 2,
-            aggregateInputChannelCount: 4,
-            tapChannelCount: 2
-        ) == 2)
-        #expect(SystemTapAudioEngine.tapInputChannelOffset(
-            physicalInputChannelCount: 2,
-            aggregateInputChannelCount: 2,
-            tapChannelCount: 2
-        ) == nil)
-    }
-
-    @Test
     func tapInputOffsetsAccountForBothProcessTaps() throws {
         let duplexOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
             physicalInputChannelCount: 2,

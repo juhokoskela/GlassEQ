@@ -1,5 +1,6 @@
 @testable import GlassEQCore
 import Foundation
+import Synchronization
 import Testing
 
 @Suite
@@ -46,6 +47,102 @@ struct ConvolutionTests {
     }
 
     @Test
+    func curveCompilerUsesIdentityAboveRouteCeilingRegardlessOfPointOrder() throws {
+        let sortedPoints = [
+            EQMagnitudePoint(frequency: 20, gainDB: 0),
+            EQMagnitudePoint(frequency: 7_200, gainDB: 0),
+            EQMagnitudePoint(frequency: 7_300, gainDB: 12)
+        ]
+        let sortedImpulse = try MinimumPhaseFIRCompiler.compile(
+            points: sortedPoints,
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_200
+        )
+        let unsortedImpulse = try MinimumPhaseFIRCompiler.compile(
+            points: [sortedPoints[2], sortedPoints[0], sortedPoints[1]],
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_200
+        )
+
+        #expect(sortedImpulse == unsortedImpulse)
+        #expect(abs(sortedImpulse[0] - 1) < 0.000_01)
+        #expect(sortedImpulse.dropFirst().allSatisfy { abs($0) < 0.000_01 })
+    }
+
+    @Test
+    func curveCompilerKeepsGainAtExactRouteCeiling() throws {
+        let impulse = try MinimumPhaseFIRCompiler.compile(
+            points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_000, gainDB: 6),
+                EQMagnitudePoint(frequency: 7_125, gainDB: 12)
+            ],
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_000
+        )
+
+        #expect(abs(magnitudeDB(
+            impulse: impulse,
+            frequency: 7_000,
+            sampleRate: 16_000
+        ) - 6) < 0.05)
+        #expect(abs(magnitudeDB(
+            impulse: impulse,
+            frequency: 7_125,
+            sampleRate: 16_000
+        )) < 0.05)
+    }
+
+    @Test
+    func routeAdjustmentPreservesInterpolatedCeilingAndZerosLaterPoints() {
+        let points = [
+            EQMagnitudePoint(frequency: 20, gainDB: 0),
+            EQMagnitudePoint(frequency: 7_000, gainDB: 6),
+            EQMagnitudePoint(frequency: 7_300, gainDB: 12),
+            EQMagnitudePoint(frequency: 8_000, gainDB: 9),
+            EQMagnitudePoint(frequency: 9_000, gainDB: -3)
+        ]
+        let expectedCeilingGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
+            frequency: 7_200,
+            points: points
+        )
+
+        let adjusted = MinimumPhaseFIRCompiler.routeAdjustedPoints(
+            points,
+            maximumUsableFrequency: 7_200,
+            nyquistFrequency: 8_000
+        )
+
+        #expect(adjusted.map(\.frequency) == [20, 7_000, 7_200, 7_300, 8_000])
+        #expect(abs(adjusted[2].gainDB - expectedCeilingGain) < 0.000_000_001)
+        #expect(adjusted[3].gainDB == 0)
+        #expect(adjusted[4].gainDB == 0)
+    }
+
+    @Test
+    func curveEndingBelowRouteCeilingTapersFromCeilingToNyquist() throws {
+        let impulse = try MinimumPhaseFIRCompiler.compile(
+            points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 7_000, gainDB: 6)
+            ],
+            sampleRate: 16_000,
+            maximumUsableFrequency: 7_200
+        )
+
+        #expect(abs(magnitudeDB(
+            impulse: impulse,
+            frequency: 7_200,
+            sampleRate: 16_000
+        ) - 6) < 0.05)
+        #expect(abs(magnitudeDB(
+            impulse: impulse,
+            frequency: 8_000,
+            sampleRate: 16_000
+        )) < 0.05)
+    }
+
+    @Test
     func curveEndpointsClampToFirstAndLastGain() {
         let points = [
             EQMagnitudePoint(frequency: 20, gainDB: 6),
@@ -68,6 +165,56 @@ struct ConvolutionTests {
                 sampleRate: 48_000
             )
         }
+    }
+
+    @Test
+    func curveCompilationChecksCancellationWithinSynthesisLoop() {
+        let checkCount = Mutex(0)
+
+        #expect(throws: FIRAnalysisCancellation.requested) {
+            _ = try MinimumPhaseFIRCompiler.compile(
+                points: [
+                    EQMagnitudePoint(frequency: 20, gainDB: 0),
+                    EQMagnitudePoint(frequency: 20_000, gainDB: 6)
+                ],
+                sampleRate: 48_000,
+                maximumUsableFrequency: 20_000,
+                cancellationCheck: {
+                    let count = checkCount.withLock { count in
+                        count += 1
+                        return count
+                    }
+                    if count == 10 {
+                        throw FIRAnalysisCancellation.requested
+                    }
+                }
+            )
+        }
+        #expect(checkCount.withLock { $0 } == 10)
+    }
+
+    @Test
+    func certifiedPeakAnalysisChecksCancellationWithinInputLoop() {
+        let checkCount = Mutex(0)
+
+        #expect(throws: FIRAnalysisCancellation.requested) {
+            _ = try MinimumPhaseFIRCompiler.certifiedPeakMagnitudeDB(
+                impulseResponse: [Float](
+                    repeating: 1 / Float(MinimumPhaseFIRCompiler.tapCount),
+                    count: MinimumPhaseFIRCompiler.tapCount
+                ),
+                cancellationCheck: {
+                    let count = checkCount.withLock { count in
+                        count += 1
+                        return count
+                    }
+                    if count == 10 {
+                        throw FIRAnalysisCancellation.requested
+                    }
+                }
+            )
+        }
+        #expect(checkCount.withLock { $0 } == 10)
     }
 
     @Test
@@ -225,6 +372,10 @@ struct ConvolutionTests {
         }
         return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
     }
+}
+
+private enum FIRAnalysisCancellation: Error {
+    case requested
 }
 
 private struct DeterministicGenerator {

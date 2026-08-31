@@ -74,7 +74,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 ### Security & privacy
 
 - Sandboxed: audio capture is the only privacy permission GlassEQ requests. A file chosen through the import panel is readable only through that user action.
-- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. The helper can download profiles from the official AutoEq repository but has no shared profile storage.
+- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. AutoEq downloads normally run in the helper; if GlassEQ falls back to an in-process settings window, the main app performs them instead. The helper has no shared profile storage.
 - No telemetry, no analytics, no cloud sync. Diagnostics run locally and print device details only to your terminal.
 
 ## Known limitations
@@ -82,7 +82,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 - **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
 - **Bluetooth** headset modes initially use a higher-latency separate-clock compatibility path to avoid periodic combined-aggregate timestamp faults while the route settles. Promotion to the low-latency path is experimental; please report the device model, macOS version, and steps if a route still produces jitter.
-- **Imported impulse responses** must match the active DSP processing sample rate and contain at most 16,384 taps per channel. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. GlassEQ rejects mismatched or longer WAV files rather than silently resampling or truncating them.
+- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Preview, Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. If a mapped route later changes processing rate, GlassEQ keeps the mapping and leaves normal unprocessed playback active until the rate matches again. It never silently resamples or truncates the impulse response.
 - No automatic updates, no crash reporting, no x86_64 build.
 
 <a id="supported-target"></a>

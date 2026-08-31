@@ -6,6 +6,17 @@ import Testing
 @Suite
 struct RealtimeAudioRingBufferTests {
     @Test
+    func boundsHostileAllocationDimensions() {
+        let ring = RealtimeAudioRingBuffer(
+            channelCount: Int.max,
+            capacityFrames: Int.max
+        )
+
+        #expect(ring.channelCount == 256)
+        #expect(ring.capacityFrames == 4_095)
+    }
+
+    @Test
     func readsZerosWhenEmpty() {
         let ring = RealtimeAudioRingBuffer(channelCount: 2, capacityFrames: 4)
         var frame = [Float](repeating: -1, count: 2)

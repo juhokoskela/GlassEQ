@@ -18,8 +18,7 @@ struct ImpulseResponseWAVImporterTests {
 
         let textSelection = try SettingsFileImportPicker.loadSelection(
             mode: .single,
-            urls: [textURL],
-            expectedSampleRate: 48_000
+            urls: [textURL]
         )
         guard case let .text(suggestedName, filename, text) = textSelection else {
             Issue.record("Expected a text-file selection")
@@ -31,8 +30,7 @@ struct ImpulseResponseWAVImporterTests {
 
         let wavSelection = try SettingsFileImportPicker.loadSelection(
             mode: .single,
-            urls: [wavURL],
-            expectedSampleRate: 48_000
+            urls: [wavURL]
         )
         guard case let .impulseResponse(profile, channels, sourceFileCount) = wavSelection else {
             Issue.record("Expected an impulse-response selection")
@@ -48,12 +46,8 @@ struct ImpulseResponseWAVImporterTests {
         let url = try writeWAV(channels: [[1, 0.25, -0.125]])
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let imported = try ImpulseResponseWAVImporter.load(
-            from: url,
-            expectedSampleRate: 48_000
-        )
+        let imported = try ImpulseResponseWAVImporter.load(from: url)
 
-        #expect(imported.frameCount == 3)
         #expect(imported.channelCount == 1)
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .linked)
@@ -98,8 +92,7 @@ struct ImpulseResponseWAVImporterTests {
 
         var imported = try ImpulseResponseWAVImporter.loadStereoPair(
             leftURL: leftURL,
-            rightURL: rightURL,
-            expectedSampleRate: 48_000
+            rightURL: rightURL
         )
 
         #expect(imported.channelCount == 2)
@@ -266,32 +259,13 @@ struct ImpulseResponseWAVImporterTests {
     }
 
     @Test
-    func rejectsWAVForDifferentOutputSampleRate() throws {
-        let url = try writeWAV(channels: [[1]])
+    func importsWAVAtAnySupportedSampleRate() throws {
+        let url = try writeWAV(channels: [[1]], sampleRate: 96_000)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        #expect(throws: ImpulseResponseWAVImportError.sampleRateMismatch(
-            file: 48_000,
-            output: 96_000
-        )) {
-            _ = try ImpulseResponseWAVImporter.load(
-                from: url,
-                expectedSampleRate: 96_000
-            )
-        }
-    }
+        let imported = try ImpulseResponseWAVImporter.load(from: url)
 
-    @Test
-    func rejectsWAVWhenProcessingSampleRateIsUnknown() throws {
-        let url = try writeWAV(channels: [[1]])
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        #expect(throws: ImpulseResponseWAVImportError.processingSampleRateUnavailable) {
-            _ = try ImpulseResponseWAVImporter.load(
-                from: url,
-                expectedSampleRate: 0
-            )
-        }
+        #expect(imported.sampleRate == 96_000)
     }
 
     private func writeWAV(
