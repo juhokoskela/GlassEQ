@@ -2370,12 +2370,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             promotedHeadsetRoute.withLock { $0 = nil }
         }
 
-        let shouldConsiderColdStartupDeferral = Self.shouldConsiderColdStartupDeferral(
+        let shouldUsePhysicalFirstColdStartup = Self.shouldUsePhysicalFirstColdStartup(
             activeBackendIsSeparate: activeBackend.withLock { $0 == .separateClock },
             combinedState: control.withLock { $0.state }
         )
-        if shouldConsiderColdStartupDeferral,
-           (try? hasActiveExternalOutputProcess(on: output)) != false {
+        if shouldUsePhysicalFirstColdStartup {
             do {
                 deferredColdStartupRoute.withLock { $0 = nil }
                 try startCombinedAggregate(
@@ -4395,7 +4394,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             && timestampsAreStable
     }
 
-    static func shouldConsiderColdStartupDeferral(
+    static func shouldUsePhysicalFirstColdStartup(
         activeBackendIsSeparate: Bool,
         combinedState: AudioEngineState
     ) -> Bool {
