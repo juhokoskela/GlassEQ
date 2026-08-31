@@ -730,6 +730,35 @@ struct EQCoreTests {
     }
 
     @Test
+    func bypassedConvolutionLeavesNearFullScaleSamplesUntouched() {
+        var profile = EQProfile.flatConvolution
+        profile.isBypassed = true
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: profile,
+                sampleRate: 48_000,
+                channelCount: 1
+            )),
+            maximumFrameCount: 4,
+            channelCount: 1,
+            sampleRate: 48_000
+        )
+        var samples: [Float] = [1, -1, 0.99, -0.99]
+        let frameCount = samples.count
+
+        let result = samples.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics(
+                $0,
+                frameCount: frameCount,
+                channelCount: 1
+            )
+        }
+
+        #expect(samples == [1, -1, 0.99, -0.99])
+        #expect(result.saturatedSamples == 0)
+    }
+
+    @Test
     func programmeComparisonReferenceKeepsPreampAndDisablesOnlyFilters() {
         let profile = EQProfile(
             name: "Stereo",
