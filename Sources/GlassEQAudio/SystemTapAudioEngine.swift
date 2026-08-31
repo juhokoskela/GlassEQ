@@ -716,6 +716,37 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var rejectedCallbacks: UInt64
     }
 
+    final class StartupCallbackQualification: @unchecked Sendable {
+        private let validCallbackStreak = Atomic<UInt64>(0)
+        private let rejectedCallbacks = Atomic<UInt64>(0)
+
+        func reset() {
+            validCallbackStreak.store(0, ordering: .releasing)
+            rejectedCallbacks.store(0, ordering: .relaxed)
+        }
+
+        func beginProbation() {
+            validCallbackStreak.store(0, ordering: .releasing)
+        }
+
+        func record(isValid: Bool) {
+            if isValid {
+                validCallbackStreak.wrappingAdd(1, ordering: .releasing)
+            } else {
+                validCallbackStreak.store(0, ordering: .releasing)
+                rejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
+            }
+        }
+
+        var validStreak: UInt64 {
+            validCallbackStreak.load(ordering: .acquiring)
+        }
+
+        var rejectedCount: UInt64 {
+            rejectedCallbacks.load(ordering: .acquiring)
+        }
+    }
+
     private struct AggregateStartupQualificationError: Error,
         LocalizedError,
         CustomStringConvertible {
@@ -884,8 +915,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let qualifyingPairedTimestampDiscontinuities = Atomic<UInt64>(0)
         private let renderCallbackObservations = Atomic<UInt64>(0)
         private let firstRenderCallbackHostTimeNanoseconds = Atomic<UInt64>(0)
-        private let startupValidCallbackStreak = Atomic<UInt64>(0)
-        private let startupRejectedCallbacks = Atomic<UInt64>(0)
+        private let startupQualification = StartupCallbackQualification()
         private let startupQualificationEnabled = Atomic<Bool>(false)
         private let lastInputTimestampJumpMilliFrames = Atomic<Int64>(0)
         private let lastOutputTimestampJumpMilliFrames = Atomic<Int64>(0)
@@ -1285,10 +1315,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         func beginStartupQualification(expectedCallbackFrames: Int) {
             self.expectedCallbackFrames = max(expectedCallbackFrames, 1)
-            startupValidCallbackStreak.store(0, ordering: .relaxed)
-            startupRejectedCallbacks.store(0, ordering: .relaxed)
+            startupQualification.reset()
             renderCallbackObservations.store(0, ordering: .relaxed)
             startupQualificationEnabled.store(true, ordering: .releasing)
+        }
+
+        func beginStartupProbation() {
+            startupQualification.beginProbation()
         }
 
         func waitForQualifiedStartup(
@@ -1297,15 +1330,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ) -> StartupQualificationSnapshot {
             let deadline = DispatchTime.now().uptimeNanoseconds
                 + UInt64(max(timeout, 0) * 1_000_000_000)
-            while startupValidCallbackStreak.load(ordering: .acquiring)
-                    < minimumConsecutiveCallbacks,
+            while startupQualification.validStreak < minimumConsecutiveCallbacks,
                   DispatchTime.now().uptimeNanoseconds < deadline {
                 Thread.sleep(forTimeInterval: 0.001)
             }
             return StartupQualificationSnapshot(
-                validCallbackStreak: startupValidCallbackStreak.load(ordering: .acquiring),
+                validCallbackStreak: startupQualification.validStreak,
                 observedCallbacks: renderCallbackObservations.load(ordering: .acquiring),
-                rejectedCallbacks: startupRejectedCallbacks.load(ordering: .acquiring)
+                rejectedCallbacks: startupQualification.rejectedCount
             )
         }
 
@@ -1315,12 +1347,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
 
         private func recordStartupCallback(isValid: Bool) {
-            if isValid {
-                startupValidCallbackStreak.wrappingAdd(1, ordering: .releasing)
-            } else {
-                startupValidCallbackStreak.store(0, ordering: .releasing)
-                startupRejectedCallbacks.wrappingAdd(1, ordering: .relaxed)
-            }
+            startupQualification.record(isValid: isValid)
         }
 
         func markStopping() {
@@ -2663,8 +2690,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 )
             }
             prepared.runtime.activate()
-            let probationCallbacks = qualificationCallbacks
-                + Self.startupProbationCallbacks
+            prepared.runtime.beginStartupProbation()
+            let probationCallbacks = Self.startupProbationCallbacks
             let probation = prepared.runtime.waitForQualifiedStartup(
                 minimumConsecutiveCallbacks: probationCallbacks,
                 timeout: Self.startupQualificationTimeout(

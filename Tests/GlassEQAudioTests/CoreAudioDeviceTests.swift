@@ -277,6 +277,24 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func aggregateStartupProbationCountsOnlyPostActivationCallbacks() {
+        let qualification = SystemTapAudioEngine.StartupCallbackQualification()
+        for _ in 0..<40 {
+            qualification.record(isValid: true)
+        }
+
+        qualification.beginProbation()
+
+        #expect(qualification.validStreak == 0)
+        for _ in 0..<7 {
+            qualification.record(isValid: true)
+        }
+        #expect(qualification.validStreak == 7)
+        qualification.record(isValid: true)
+        #expect(qualification.validStreak == 8)
+    }
+
+    @Test
     func aggregateStartupRetriesBeforeUsingOneSaferBufferRung() {
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 16
