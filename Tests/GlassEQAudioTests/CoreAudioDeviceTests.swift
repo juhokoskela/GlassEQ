@@ -2,10 +2,62 @@ import CoreAudio
 import Foundation
 @testable import GlassEQAudio
 import GlassEQCore
+import Synchronization
 import Testing
 
 @Suite
 struct CoreAudioDeviceTests {
+    @Test
+    func coreAudioCleanupRetainsFailedResourcesForRetry() {
+        let counts = Mutex((aggregateDestroyAttempts: 0, tapDestroyAttempts: 0, completionCount: 0))
+        let operations = CoreAudioResourceCleanupLedger.Operations(
+            stopIOProc: { _, _ in noErr },
+            destroyIOProc: { _, _ in noErr },
+            destroyAggregate: { _ in
+                counts.withLock { counts in
+                    counts.aggregateDestroyAttempts += 1
+                    return counts.aggregateDestroyAttempts == 1
+                        ? kAudioHardwareUnspecifiedError
+                        : noErr
+                }
+            },
+            destroyTap: { _ in
+                counts.withLock { $0.tapDestroyAttempts += 1 }
+                return noErr
+            }
+        )
+        let ledger = CoreAudioResourceCleanupLedger(
+            operations: operations,
+            preservesFailuresOnDeinit: false
+        )
+
+        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "test",
+            aggregateDeviceIDs: [42],
+            tapIDs: [43],
+            completion: { counts.withLock { $0.completionCount += 1 } }
+        )))
+        #expect(ledger.pendingCount == 1)
+        #expect(counts.withLock { $0.tapDestroyAttempts } == 1)
+        #expect(counts.withLock { $0.completionCount } == 0)
+
+        #expect(ledger.retryPending())
+        #expect(counts.withLock { $0.aggregateDestroyAttempts } == 2)
+        #expect(counts.withLock { $0.tapDestroyAttempts } == 1)
+        #expect(counts.withLock { $0.completionCount } == 1)
+    }
+
+    @Test
+    func coreAudioCleanupTreatsAlreadyDestroyedObjectsAsTerminal() {
+        #expect(CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(noErr))
+        #expect(CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
+            kAudioHardwareBadObjectError
+        ))
+        #expect(!CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
+            kAudioHardwareUnspecifiedError
+        ))
+    }
+
     @Test
     func realtimeOutputFadeStartsMutedAndReachesUnity() {
         var fade = RealtimeOutputFade(
@@ -1492,6 +1544,26 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func topologyRebuildSurfacesMuteGuardReleaseFailure() {
+        var events: [String] = []
+
+        #expect(throws: CoreAudioError.self) {
+            _ = try SeparateClockAudioBackend.performTopologyRebuild(
+                acquireMuteGuard: {
+                    FakeTopologyRebuildMuteGuard(
+                        releaseSucceeds: false,
+                        events: { events.append($0) }
+                    )
+                },
+                rebuild: {
+                    events.append("rebuild")
+                }
+            )
+        }
+        #expect(events == ["rebuild", "release"])
+    }
+
+    @Test
     func selfChangeGuardSuppressesOnlyMatchingDevice() {
         let changeGuard = CoreAudioSelfChangeGuard(windowMilliseconds: 1_000)
 
@@ -1766,14 +1838,20 @@ private final class HandoffStartupTestError: Error {}
 private struct HandoffRestorationTestError: Error {}
 
 private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
+    private let releaseSucceeds: Bool
     private let record: (String) -> Void
 
-    init(events record: @escaping (String) -> Void) {
+    init(
+        releaseSucceeds: Bool = true,
+        events record: @escaping (String) -> Void
+    ) {
+        self.releaseSucceeds = releaseSucceeds
         self.record = record
     }
 
-    func release() {
+    func release() -> Bool {
         record("release")
+        return releaseSucceeds
     }
 }
 

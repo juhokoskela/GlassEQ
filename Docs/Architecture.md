@@ -21,6 +21,8 @@ After starting the combined IOProc, GlassEQ keeps its output silent until it obs
 
 On an explicit stop or profile bypass, GlassEQ stops reading the tap before destroying the graph. Direct system playback can then resume without waiting for each active client to recover after an always-muted tap disappears.
 
+Teardown retains ownership of every IOProc, private aggregate, and process tap until Core Audio confirms that it was destroyed or reports that the object is already gone. A failed destruction is kept in a cleanup ledger and retried before another route starts. Tap destruction is attempted independently so direct playback can recover even when a related aggregate or IOProc still needs cleanup. Unresolved handles remain retained for later retry instead of being forgotten while a live callback still owns its runtime.
+
 Bluetooth routes at 24 kHz or below initially use a separate-clock compatibility backend. The tap runs in a tap-only aggregate, the physical output has its own HAL callback, and a bounded ring buffer, occupancy servo, and realtime sample-rate converter bridge the two clocks. After the route settles and its physical clock advances at the advertised rate, GlassEQ attempts to replace the bridge with the normal combined aggregate. A failed promotion or later paired timestamp discontinuity returns the route to compatibility mode for the remainder of that output transition.
 
 ## Real-Time Rules

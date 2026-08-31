@@ -2260,6 +2260,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private let promotedHeadsetRoute = Mutex<PromotedHeadsetRoute?>(nil)
     private let deferredColdStartupRoute = Mutex<DeferredColdStartupRoute?>(nil)
     private let diagnosticTrace = Mutex<AudioEngineDiagnosticTrace?>(nil)
+    private let cleanupLedger = CoreAudioResourceCleanupLedger()
     private let separateClockBackend: SeparateClockAudioBackend
 
     public var state: AudioEngineState {
@@ -2346,7 +2347,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     message: "The diagnostic compatibility output is not running."
                 )
             }
-            separateClockBackend.quiesceOutputForCombinedHandoff()
+            try separateClockBackend.quiesceOutputForCombinedHandoff()
         }
     }
 
@@ -2451,6 +2452,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func startSerialized(output: AudioOutputDevice, profile: EQProfile) throws {
+        try requireCompletedCoreAudioCleanup(operation: "start a new audio route")
         let shouldUseSeparateClock = Self.shouldUseSeparateClockBackend(for: output)
             && !promotedHeadsetRoute.withLock { route in
                 route == Self.promotedHeadsetRoute(for: output)
@@ -2520,6 +2522,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
         guard combinedIsRunning else {
             stopCombinedResourcesSerialized()
+            try requireCompletedCoreAudioCleanup(operation: "start compatibility audio")
             activeBackend.withLock { $0 = .separateClock }
             try separateClockBackend.start(output: output, profile: profile)
             return
@@ -2530,6 +2533,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             profile: profile
         )
         stopCombinedResourcesSerialized()
+        do {
+            try requireCompletedCoreAudioCleanup(operation: "handoff to compatibility audio")
+        } catch {
+            separateClockBackend.stop()
+            throw error
+        }
         activeBackend.withLock { $0 = .separateClock }
         _ = try separateClockBackend.activatePreparedOutputHandoff()
     }
@@ -2539,6 +2548,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         profile: EQProfile
     ) throws {
         stopCombinedResourcesSerialized()
+        try requireCompletedCoreAudioCleanup(operation: "stage compatibility audio")
         activeBackend.withLock { $0 = .separateClock }
         try separateClockBackend.startForCombinedStartupStaging(
             output: output,
@@ -2669,6 +2679,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if let staleTaps {
                 destroyTapSet(staleTaps)
             }
+            try requireCompletedCoreAudioCleanup(operation: "replace the combined audio route")
 
             if taps == nil {
                 let createdTaps = try createSystemTaps(
@@ -2706,7 +2717,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if !prepared.ioStarted {
                 if isSeparateClockHandoff {
                     traceDiagnostic { "combined handoff quiesce requested" }
-                    separateClockBackend.quiesceOutputForCombinedHandoff()
+                    try separateClockBackend.quiesceOutputForCombinedHandoff()
                 }
                 traceDiagnostic {
                     "AudioDeviceStart(combined aggregate) begin device=\(prepared.deviceID) buffer=\(prepared.output.bufferFrameSize)"
@@ -2999,13 +3010,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: false
             )
         } catch {
-            if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
-                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
-            }
-            if aggregateDeviceID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            }
-            runtime?.drainDSPConfigBoxes()
+            _ = disposeDetachedCombinedAggregate(
+                DetachedCombinedAggregate(
+                    deviceID: aggregateDeviceID,
+                    ioProcID: ioProcID,
+                    runtime: runtime
+                ),
+                fadeOut: false
+            )
             throw error
         }
     }
@@ -3019,7 +3031,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
-        var ioStarted = false
 
         do {
             traceDiagnostic {
@@ -3112,7 +3123,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 startStatus,
                 operation: "AudioDeviceStart(physical-first aggregate)"
             )
-            ioStarted = true
 
             // The running physical-only IOProc keeps the hardware timebase stable. Its physical
             // input streams are disabled above; setSubtaps publishes only the tap inputs below.
@@ -3201,17 +3211,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: true
             )
         } catch {
-            runtime?.markStopping()
-            if aggregateDeviceID != kAudioObjectUnknown, let ioProcID {
-                if ioStarted {
-                    _ = AudioDeviceStop(aggregateDeviceID, ioProcID)
-                }
-                _ = AudioDeviceDestroyIOProcID(aggregateDeviceID, ioProcID)
-            }
-            if aggregateDeviceID != kAudioObjectUnknown {
-                _ = AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
-            }
-            runtime?.drainDSPConfigBoxes()
+            _ = disposeDetachedCombinedAggregate(
+                DetachedCombinedAggregate(
+                    deviceID: aggregateDeviceID,
+                    ioProcID: ioProcID,
+                    runtime: runtime
+                ),
+                fadeOut: false
+            )
             throw error
         }
     }
@@ -3584,6 +3591,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             deferredColdStartupRoute.withLock { $0 = nil }
             separateClockBackend.stop()
             stopCombinedResourcesSerialized(restoringDirectPlayback: true)
+            retryCoreAudioCleanup()
             activeBackend.withLock { $0 = .combinedAggregate }
         }
     }
@@ -3705,15 +3713,34 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             detached.runtime?.fadeOutForStop()
         }
         detached.runtime?.markStopping()
-        if detached.deviceID != kAudioObjectUnknown, let ioProcID = detached.ioProcID {
-            _ = AudioDeviceStop(detached.deviceID, ioProcID)
-            _ = AudioDeviceDestroyIOProcID(detached.deviceID, ioProcID)
-        }
         let records = detached.runtime?.snapshotTimestampProbeRecords() ?? []
-        if detached.deviceID != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyAggregateDevice(detached.deviceID)
+        let runtime = detached.runtime
+        var resources = CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "dispose combined aggregate",
+            completion: {
+                runtime?.drainDSPConfigBoxes()
+            }
+        )
+        if detached.deviceID != kAudioObjectUnknown,
+           let ioProcID = detached.ioProcID {
+            resources.ioProcs.append(.init(
+                deviceID: detached.deviceID,
+                ioProcID: ioProcID
+            ))
         }
-        detached.runtime?.drainDSPConfigBoxes()
+        if detached.deviceID != kAudioObjectUnknown {
+            resources.aggregateDeviceIDs.append(detached.deviceID)
+        }
+        guard resources.ioProcs.isEmpty == false
+                || resources.aggregateDeviceIDs.isEmpty == false else {
+            runtime?.drainDSPConfigBoxes()
+            return records
+        }
+        if !cleanupLedger.dispose(resources) {
+            traceDiagnostic {
+                "Core Audio cleanup deferred operation=dispose combined aggregate pending=\(cleanupLedger.pendingCount)"
+            }
+        }
         return records
     }
 
@@ -3737,11 +3764,48 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func destroyTapSet(_ taps: CombinedTapSet) {
+        var resources = CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "destroy combined process taps"
+        )
         if taps.main != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyProcessTap(taps.main)
+            resources.tapIDs.append(taps.main)
         }
         if taps.systemSounds != kAudioObjectUnknown {
-            _ = AudioHardwareDestroyProcessTap(taps.systemSounds)
+            resources.tapIDs.append(taps.systemSounds)
+        }
+        guard !resources.tapIDs.isEmpty else {
+            return
+        }
+        if !cleanupLedger.dispose(resources) {
+            traceDiagnostic {
+                "Core Audio cleanup deferred operation=destroy combined process taps pending=\(cleanupLedger.pendingCount)"
+            }
+        }
+    }
+
+    private func requireCompletedCoreAudioCleanup(operation: String) throws {
+        for attempt in 0..<3 {
+            if cleanupLedger.retryPending() {
+                return
+            }
+            if attempt < 2 {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        traceDiagnostic {
+            "Core Audio cleanup still pending before \(operation) count=\(cleanupLedger.pendingCount)"
+        }
+        throw CoreAudioError(
+            operation: "Complete prior Core Audio cleanup before \(operation)",
+            status: kAudioHardwareUnspecifiedError
+        )
+    }
+
+    private func retryCoreAudioCleanup() {
+        do {
+            try requireCompletedCoreAudioCleanup(operation: "finish stopping audio")
+        } catch {
+            traceDiagnostic { "Core Audio cleanup remains owned for retry error=\(error)" }
         }
     }
 
@@ -3785,7 +3849,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
             return (mainTapID, systemSoundTapID)
         } catch {
-            _ = AudioHardwareDestroyProcessTap(mainTapID)
+            destroyTapSet(CombinedTapSet(
+                main: mainTapID,
+                systemSounds: AudioObjectID(kAudioObjectUnknown),
+                outputUID: output.uid,
+                outputStreamIndex: streamIndex
+            ))
             throw error
         }
     }
