@@ -296,6 +296,34 @@ struct AudioRenderWatchdogTests {
     }
 
     @Test
+    func deadlineBurstUsesARollingWindow() {
+        var detector = AudioRenderDeadlineBurstDetector(
+            requiredMisses: 3,
+            window: .seconds(1)
+        )
+        let start = ContinuousClock.now
+
+        let first = detector.observe(newMisses: 1, at: start)
+        let second = detector.observe(
+            newMisses: 1,
+            at: start.advanced(by: .milliseconds(900))
+        )
+        let third = detector.observe(
+            newMisses: 1,
+            at: start.advanced(by: .milliseconds(1_100))
+        )
+        let fourth = detector.observe(
+            newMisses: 1,
+            at: start.advanced(by: .milliseconds(1_200))
+        )
+
+        #expect(!first)
+        #expect(!second)
+        #expect(!third)
+        #expect(fourth)
+    }
+
+    @Test
     func fixedBufferRecoveryRebuildsThenClimbsWithoutChangingPreference() {
         var recovery = FixedBufferRecoverySession(
             runtimeFrameSize: 16,
