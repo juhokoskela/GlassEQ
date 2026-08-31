@@ -2732,8 +2732,26 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             promotedHeadsetRoute.withLock { $0 = nil }
         }
 
+        let activeBackendIsSeparate = activeBackend.withLock { $0 == .separateClock }
+        let deferredRouteMatches = deferredColdStartupRoute.withLock { route in
+            route == Self.deferredColdStartupRoute(for: output)
+        }
+        if Self.shouldContinueDeferredColdStartup(
+            activeBackendIsSeparate: activeBackendIsSeparate,
+            deferredRouteMatches: deferredRouteMatches
+        ) {
+            traceDiagnostic {
+                "cold-start aggregate remains deferred during compatibility rebuild"
+            }
+            try startSeparateClockBackendForColdStartup(
+                output: output,
+                profile: profile
+            )
+            return
+        }
+
         let shouldUsePhysicalFirstColdStartup = Self.shouldUsePhysicalFirstColdStartup(
-            activeBackendIsSeparate: activeBackend.withLock { $0 == .separateClock },
+            activeBackendIsSeparate: activeBackendIsSeparate,
             combinedState: control.withLock { $0.state }
         )
         if shouldUsePhysicalFirstColdStartup {
@@ -4923,6 +4941,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         case .running:
             return false
         }
+    }
+
+    static func shouldContinueDeferredColdStartup(
+        activeBackendIsSeparate: Bool,
+        deferredRouteMatches: Bool
+    ) -> Bool {
+        activeBackendIsSeparate && deferredRouteMatches
     }
 
     static func coldStartupPromotionResult(
