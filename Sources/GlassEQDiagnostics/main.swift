@@ -5,8 +5,15 @@ import GlassEQCore
 
 let arguments = Array(CommandLine.arguments.dropFirst().drop { $0 == "--" })
 if arguments.first == "dsp-benchmark" || arguments.first == "--dsp-benchmark" {
-    runDSPBenchmark(curvePath: arguments.dropFirst().first)
-    exit(0)
+    let benchmarkArguments = arguments.dropFirst()
+    let maximumCallbackBudgetPercent = benchmarkArguments.contains("--check")
+        ? 50.0
+        : nil
+    let curvePath = benchmarkArguments.first { $0 != "--check" }
+    exit(runDSPBenchmark(
+        curvePath: curvePath,
+        maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+    ) ? 0 : 1)
 }
 
 do {
@@ -545,7 +552,10 @@ private struct DSPBenchmarkCase {
     }
 }
 
-private func runDSPBenchmark(curvePath: String?) {
+private func runDSPBenchmark(
+    curvePath: String?,
+    maximumCallbackBudgetPercent: Double?
+) -> Bool {
     let convolutionProfile: EQProfile
     if let curvePath {
         do {
@@ -556,11 +566,11 @@ private func runDSPBenchmark(curvePath: String?) {
             )
             guard convolutionProfile.mode == .convolution else {
                 print("DSP benchmark curve is not an EqualizerAPO GraphicEQ response: \(curvePath)")
-                return
+                return false
             }
         } catch {
             print("DSP benchmark could not load curve \(curvePath): \(error)")
-            return
+            return false
         }
     } else {
         convolutionProfile = benchmarkConvolutionProfile()
@@ -631,18 +641,33 @@ private func runDSPBenchmark(curvePath: String?) {
     print("The hybrid minimum-phase FIR also adds no fixed buffering delay: its 512-tap head renders directly while partitioned tail work completes ahead of its deadline.")
     print("")
 
+    var passed = true
     for benchmarkCase in cases {
-        run(benchmarkCase)
+        if !run(
+            benchmarkCase,
+            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+        ) {
+            passed = false
+        }
     }
     for transitionCase in cases where (
         transitionCase.name.hasPrefix("31-band graphic")
             || transitionCase.usesConvolution
     ) && transitionCase.sampleRate != 96_000 {
-        runTransition(transitionCase)
+        if !runTransition(
+            transitionCase,
+            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+        ) {
+            passed = false
+        }
     }
+    return passed
 }
 
-private func run(_ benchmarkCase: DSPBenchmarkCase) {
+private func run(
+    _ benchmarkCase: DSPBenchmarkCase,
+    maximumCallbackBudgetPercent: Double?
+) -> Bool {
     let iterations = 20_000
     let warmupIterations = 1_000
     let originalSamples = makeStereoTestBlock(
@@ -656,7 +681,7 @@ private func run(_ benchmarkCase: DSPBenchmarkCase) {
         channelCount: benchmarkCase.channelCount
     ) else {
         print("\(benchmarkCase.name): failed to prepare DSP")
-        return
+        return false
     }
     var processor = EQProcessor(renderConfiguration: renderConfiguration)
 
@@ -726,10 +751,18 @@ private func run(_ benchmarkCase: DSPBenchmarkCase) {
         ))
     }
     print("  Saturated samples during benchmark: \(saturatedSamples)")
+    let passed = reportBenchmarkBudgetResult(
+        budgetPercent: budgetPercent,
+        maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+    )
     print("")
+    return passed
 }
 
-private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
+private func runTransition(
+    _ benchmarkCase: DSPBenchmarkCase,
+    maximumCallbackBudgetPercent: Double?
+) -> Bool {
     let iterations = 20_000
     let warmupIterations = 1_000
     let originalSamples = makeStereoTestBlock(
@@ -748,7 +781,7 @@ private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
         channelCount: benchmarkCase.channelCount
     ) else {
         print("Whole-bank transition: \(benchmarkCase.name): failed to prepare DSP")
-        return
+        return false
     }
     var transition = RealtimeEQTransition(
         activeProcessor: EQProcessor(renderConfiguration: activeConfiguration),
@@ -841,7 +874,28 @@ private func runTransition(_ benchmarkCase: DSPBenchmarkCase) {
         ))
     }
     print("  Saturated samples during benchmark: \(saturatedSamples)")
+    let passed = reportBenchmarkBudgetResult(
+        budgetPercent: budgetPercent,
+        maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+    )
     print("")
+    return passed
+}
+
+private func reportBenchmarkBudgetResult(
+    budgetPercent: Double,
+    maximumCallbackBudgetPercent: Double?
+) -> Bool {
+    guard let maximumCallbackBudgetPercent else {
+        return true
+    }
+    let passed = budgetPercent < maximumCallbackBudgetPercent
+    print(String(
+        format: "  Release benchmark limit: %.1f%% (%@)",
+        maximumCallbackBudgetPercent,
+        passed ? "passed" : "FAILED"
+    ))
+    return passed
 }
 
 private func complexStereoProfile() -> EQProfile {
