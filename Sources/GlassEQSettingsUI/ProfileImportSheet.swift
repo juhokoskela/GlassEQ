@@ -913,6 +913,20 @@ private extension EQMode {
     }
 }
 
+private final class SettingsFileImportPanelCancellation: @unchecked Sendable {
+    private let action: @MainActor () -> Void
+
+    init(_ action: @escaping @MainActor () -> Void) {
+        self.action = action
+    }
+
+    func cancel() {
+        Task { @MainActor in
+            action()
+        }
+    }
+}
+
 public enum SettingsFileImportPicker {
     @MainActor
     public static func choose(
@@ -944,11 +958,14 @@ public enum SettingsFileImportPicker {
             panel.allowsMultipleSelection = true
         }
 
-        let response = await withCheckedContinuation { continuation in
-            panel.begin { response in
-                continuation.resume(returning: response)
+        let response = try await waitForPanelResponse(
+            begin: { completion in
+                panel.begin(completionHandler: completion)
+            },
+            cancel: {
+                panel.cancel(nil)
             }
-        }
+        )
         guard response == .OK else {
             return nil
         }
@@ -965,13 +982,43 @@ public enum SettingsFileImportPicker {
             }
         }
 
-        return try await Task.detached(priority: .userInitiated) {
-            try loadSelection(
+        let loadTask = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let selection = try loadSelection(
                 mode: mode,
                 urls: urls,
                 expectedSampleRate: expectedSampleRate
             )
-        }.value
+            try Task.checkCancellation()
+            return selection
+        }
+        return try await withTaskCancellationHandler {
+            let selection = try await loadTask.value
+            try Task.checkCancellation()
+            return selection
+        } onCancel: {
+            loadTask.cancel()
+        }
+    }
+
+    @MainActor
+    static func waitForPanelResponse(
+        begin: (@escaping (NSApplication.ModalResponse) -> Void) -> Void,
+        cancel: @escaping @MainActor () -> Void
+    ) async throws -> NSApplication.ModalResponse {
+        try Task.checkCancellation()
+        let cancellation = SettingsFileImportPanelCancellation(cancel)
+        return try await withTaskCancellationHandler {
+            let response = await withCheckedContinuation { continuation in
+                begin { response in
+                    continuation.resume(returning: response)
+                }
+            }
+            try Task.checkCancellation()
+            return response
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     static func loadSelection(

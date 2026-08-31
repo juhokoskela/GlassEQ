@@ -690,6 +690,7 @@ public enum SettingsPipeRequestKind: String, Codable, Equatable, Sendable {
     case connect
     case ready
     case command
+    case cancel
     case disconnect
 }
 

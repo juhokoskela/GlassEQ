@@ -3270,6 +3270,95 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsHelperCanCancelAnInFlightFilePicker() async throws {
+        let model = makeModel()
+        let launcher = ControllableSettingsHelperLauncher()
+        let picker = CancellableSettingsFileImportPicker()
+        let coordinator = SettingsCoordinator(
+            model: model,
+            helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") },
+            fileImportPicker: picker.choose(mode:expectedSampleRate:)
+        )
+
+        let token = try await connectSettingsHelper(
+            coordinator: coordinator,
+            launcher: launcher
+        )
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "file-picker",
+            kind: .command,
+            command: .chooseImportFiles(mode: .single, expectedSampleRate: 48_000)
+        ))
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "file-picker",
+            kind: .cancel,
+            command: nil
+        ))
+
+        await waitUntil {
+            picker.wasCancelled
+        }
+        await settleAsyncWork()
+        #expect(picker.wasCancelled)
+        #expect(!launcher.receivedAppMessages.contains { message in
+            if case .response(_, "file-picker", _, _) = message {
+                return true
+            }
+            return false
+        })
+        coordinator.shutdown()
+    }
+
+    @Test
+    func settingsHelperDisconnectCancelsItsInFlightFilePicker() async throws {
+        let model = makeModel()
+        let launcher = ControllableSettingsHelperLauncher()
+        let picker = CancellableSettingsFileImportPicker()
+        let coordinator = SettingsCoordinator(
+            model: model,
+            helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") },
+            fileImportPicker: picker.choose(mode:expectedSampleRate:)
+        )
+
+        let token = try await connectSettingsHelper(
+            coordinator: coordinator,
+            launcher: launcher
+        )
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "file-picker",
+            kind: .command,
+            command: .chooseImportFiles(mode: .stereoPair, expectedSampleRate: 48_000)
+        ))
+        await waitUntil {
+            picker.hasEntered
+        }
+
+        try launcher.writeHelperMessage(.request(
+            sessionToken: token,
+            id: "disconnect",
+            kind: .disconnect,
+            command: nil
+        ))
+
+        await waitUntil {
+            picker.wasCancelled
+        }
+        #expect(picker.wasCancelled)
+        #expect(!coordinator.hasActiveSessionResourcesForTesting)
+    }
+
+    @Test
     func settingsLaunchValidationFailureTerminatesPartiallyStartedHelper() async throws {
         let model = makeModel()
         let launcher = SleepingSettingsHelperLauncher()
@@ -3881,6 +3970,26 @@ private final class BlockingProfileImportOperation: @unchecked Sendable {
     }
 }
 
+@MainActor
+private final class CancellableSettingsFileImportPicker {
+    private(set) var hasEntered = false
+    private(set) var wasCancelled = false
+
+    func choose(
+        mode: SettingsFileImportMode,
+        expectedSampleRate: Double
+    ) async throws -> SettingsFileImportSelectionDTO? {
+        hasEntered = true
+        do {
+            try await Task.sleep(for: .seconds(30))
+            return nil
+        } catch is CancellationError {
+            wasCancelled = true
+            throw CancellationError()
+        }
+    }
+}
+
 private func normalizedStore(_ store: ProfileStore) -> ProfileStore {
     guard store.profiles.contains(where: { $0.id == store.fallbackProfileID }) else {
         return ProfileStore(profiles: store.profiles)
@@ -3971,6 +4080,48 @@ private func helperExecutableURL(for helperURL: URL) -> URL {
         .appendingPathComponent("MacOS", isDirectory: true)
         .appendingPathComponent("GlassEQSettings", isDirectory: false)
         .standardizedFileURL
+}
+
+@MainActor
+private func connectSettingsHelper(
+    coordinator: SettingsCoordinator,
+    launcher: ControllableSettingsHelperLauncher
+) async throws -> String {
+    #expect(coordinator.openSettings() == .helper)
+    await waitUntil {
+        launcher.receivedAppMessages.contains { message in
+            if case .bootstrap = message {
+                return true
+            }
+            return false
+        }
+    }
+    let bootstrap = try #require(launcher.receivedAppMessages.first { message in
+        if case .bootstrap = message {
+            return true
+        }
+        return false
+    })
+    guard case .bootstrap(let token) = bootstrap else {
+        throw SettingsCommandFailure(message: "Expected Settings bootstrap message.")
+    }
+    try launcher.writeHelperMessage(.request(
+        sessionToken: token,
+        id: "connect",
+        kind: .connect,
+        command: nil
+    ))
+    try launcher.writeHelperMessage(.request(
+        sessionToken: token,
+        id: "ready",
+        kind: .ready,
+        command: nil
+    ))
+    await waitUntil {
+        coordinator.isHelperReadyForTesting
+    }
+    #expect(coordinator.isHelperReadyForTesting)
+    return token
 }
 
 private func settleAsyncWork() async {

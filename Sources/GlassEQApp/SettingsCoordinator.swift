@@ -80,10 +80,19 @@ struct DefaultSettingsHelperLaunchValidator: SettingsHelperLaunchValidating {
 
 @MainActor
 final class SettingsCoordinator: NSObject {
+    private struct ActiveCommand {
+        var token: UUID
+        var task: Task<Void, Never>
+    }
+
     private weak var model: GlassEQAppModel?
     private let helperLauncher: any SettingsHelperLaunching
     private let helperValidator: any SettingsHelperLaunchValidating
     private let settingsHelperURLProvider: () throws -> URL
+    private let fileImportPicker: @MainActor (
+        SettingsFileImportMode,
+        Double
+    ) async throws -> SettingsFileImportSelectionDTO?
     private var launchToken: String?
     private var runningApplication: NSRunningApplication?
     private var helperProcess: Process?
@@ -99,17 +108,28 @@ final class SettingsCoordinator: NSObject {
     private var pendingSectionRequest: SettingsSection?
     private var suppressedModelChangeDepth = 0
     private var lastSentSnapshot: SettingsSnapshot?
+    private var commandTasks: [String: ActiveCommand] = [:]
 
     init(
         model: GlassEQAppModel,
         helperLauncher: any SettingsHelperLaunching = ProcessSettingsHelperLauncher(),
         helperValidator: any SettingsHelperLaunchValidating = DefaultSettingsHelperLaunchValidator(),
-        settingsHelperURLProvider: (() throws -> URL)? = nil
+        settingsHelperURLProvider: (() throws -> URL)? = nil,
+        fileImportPicker: @escaping @MainActor (
+            SettingsFileImportMode,
+            Double
+        ) async throws -> SettingsFileImportSelectionDTO? = { mode, expectedSampleRate in
+            try await SettingsFileImportPicker.choose(
+                mode: mode,
+                expectedSampleRate: expectedSampleRate
+            )
+        }
     ) {
         self.model = model
         self.helperLauncher = helperLauncher
         self.helperValidator = helperValidator
         self.settingsHelperURLProvider = settingsHelperURLProvider ?? { try Self.defaultSettingsHelperURL() }
+        self.fileImportPicker = fileImportPicker
         super.init()
     }
 
@@ -288,7 +308,10 @@ final class SettingsCoordinator: NSObject {
     #endif
 
     private func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        if let response = try await fileImportPickerResponse(for: command) {
+        if let response = try await fileImportPickerResponse(
+            for: command,
+            picker: fileImportPicker
+        ) {
             return response
         }
         guard let model else {
@@ -392,6 +415,8 @@ final class SettingsCoordinator: NSObject {
                 return
             }
             handleCommand(command, requestID: id)
+        case let .request(_, id, .cancel, _):
+            cancelCommand(requestID: id)
         case .request(_, _, .disconnect, _):
             cleanupSession(terminateHelper: false)
         case .response, .event:
@@ -440,9 +465,26 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func handleCommand(_ command: SettingsCommand, requestID: String) {
-        Task { @MainActor [weak self] in
+        guard commandTasks[requestID] == nil else {
+            sendError("Settings IPC request identifier was reused.", requestID: requestID)
+            return
+        }
+        guard let commandSessionToken = launchToken else {
+            return
+        }
+        let commandToken = UUID()
+        let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
+            }
+            guard !Task.isCancelled,
+                  launchToken == commandSessionToken else {
+                return
+            }
+            defer {
+                if commandTasks[requestID]?.token == commandToken {
+                    commandTasks[requestID] = nil
+                }
             }
             let shouldSuppressModelChanges: Bool
             if case .chooseImportFiles = command {
@@ -455,23 +497,38 @@ final class SettingsCoordinator: NSObject {
                     suppressedModelChangeDepth += 1
                 }
                 let response = try await perform(command)
-                if shouldSuppressModelChanges {
+                try Task.checkCancellation()
+                if shouldSuppressModelChanges,
+                   launchToken == commandSessionToken {
                     suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
+                }
+                guard launchToken == commandSessionToken else {
+                    return
                 }
                 if let snapshot = response.snapshot {
                     lastSentSnapshot = snapshot
                 }
                 sendResponse(response, requestID: requestID)
             } catch {
-                if shouldSuppressModelChanges {
+                if shouldSuppressModelChanges,
+                   launchToken == commandSessionToken {
                     suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
                     if suppressedModelChangeDepth == 0, let model {
                         sendSnapshotUpdate(model.settingsSnapshot())
                     }
                 }
+                guard !Task.isCancelled,
+                      !(error is CancellationError) else {
+                    return
+                }
                 sendError(error.localizedDescription, requestID: requestID)
             }
         }
+        commandTasks[requestID] = ActiveCommand(token: commandToken, task: task)
+    }
+
+    private func cancelCommand(requestID: String) {
+        commandTasks[requestID]?.task.cancel()
     }
 
     private func sendSnapshotUpdate(_ snapshot: SettingsSnapshot) {
@@ -657,6 +714,9 @@ final class SettingsCoordinator: NSObject {
         let processToTerminate = terminateHelper ? helperProcess : nil
         let writePumpToDrain = pipeWritePump
         let writerToCloseDirectly = writePumpToDrain == nil ? pipeWriter : nil
+        let commandTasksToCancel = commandTasks.values.map(\.task)
+        commandTasks.removeAll()
+        commandTasksToCancel.forEach { $0.cancel() }
         pipeReadDelivery?.invalidate()
         pipeReadDelivery = nil
         pipeReadPump?.invalidate(handle: pipeReader)
@@ -680,8 +740,11 @@ final class SettingsCoordinator: NSObject {
         helperProcess = nil
         settingsConnected = false
         readyAcknowledgmentPending = false
-        if writePumpToDrain != nil || processToTerminate != nil {
+        if writePumpToDrain != nil || processToTerminate != nil || !commandTasksToCancel.isEmpty {
             return Task {
+                for task in commandTasksToCancel {
+                    await task.value
+                }
                 if let writePumpToDrain {
                     _ = await writePumpToDrain.drainAndClose()
                 }
@@ -1169,13 +1232,22 @@ private final class InProcessSettingsClient: SettingsCommanding {
 
 @MainActor
 private func fileImportPickerResponse(
-    for command: SettingsCommand
+    for command: SettingsCommand,
+    picker: @MainActor (
+        SettingsFileImportMode,
+        Double
+    ) async throws -> SettingsFileImportSelectionDTO? = { mode, expectedSampleRate in
+        try await SettingsFileImportPicker.choose(
+            mode: mode,
+            expectedSampleRate: expectedSampleRate
+        )
+    }
 ) async throws -> SettingsCommandResponse? {
     guard case let .chooseImportFiles(mode, expectedSampleRate) = command else {
         return nil
     }
-    return SettingsCommandResponse(fileImportSelection: try await SettingsFileImportPicker.choose(
-        mode: mode,
-        expectedSampleRate: expectedSampleRate
+    return SettingsCommandResponse(fileImportSelection: try await picker(
+        mode,
+        expectedSampleRate
     ))
 }
