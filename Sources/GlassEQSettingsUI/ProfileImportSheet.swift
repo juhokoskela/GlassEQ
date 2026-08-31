@@ -29,6 +29,12 @@ private enum ProfileImportRoute: String, CaseIterable, Identifiable {
     }
 }
 
+private enum ProfileImportTaskPhase {
+    case idle
+    case preparing
+    case committing
+}
+
 struct ProfileImportSheet: View {
     var currentProfile: EQProfile
     var currentOutputSampleRate: Double
@@ -99,8 +105,9 @@ private struct AutoEQImportPane: View {
     @State private var selection: AutoEQCatalogueEntry?
     @State private var profileKind = AutoEQProfileKind.responseCurve
     @State private var isLoading = true
-    @State private var isImporting = false
+    @State private var importPhase = ProfileImportTaskPhase.idle
     @State private var errorMessage: String?
+    @State private var importTask: Task<Void, Never>?
 
     private let client = AutoEQRepositoryClient()
 
@@ -175,12 +182,19 @@ private struct AutoEQImportPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(localized("Cancel"), action: onCancel)
+                Button(localized("Cancel")) {
+                    guard importPhase != .committing else {
+                        return
+                    }
+                    importTask?.cancel()
+                    onCancel()
+                }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(importPhase == .committing)
                 Button {
                     importSelection()
                 } label: {
-                    if isImporting {
+                    if importPhase != .idle {
                         ProgressView()
                             .controlSize(.small)
                     } else {
@@ -188,16 +202,20 @@ private struct AutoEQImportPane: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(selection == nil || isReadOnly || isImporting)
+                .disabled(selection == nil || isReadOnly || importPhase != .idle)
             }
             .padding(16)
         }
         .task {
             await loadCatalogue()
         }
+        .onDisappear {
+            importTask?.cancel()
+        }
         .onChange(of: searchText) { _, _ in
             selection = nil
         }
+        .interactiveDismissDisabled(importPhase == .committing)
     }
 
     @ViewBuilder
@@ -281,24 +299,38 @@ private struct AutoEQImportPane: View {
     }
 
     private func importSelection() {
-        guard let selection else {
+        guard let selection, importPhase == .idle else {
             return
         }
-        isImporting = true
+        importPhase = .preparing
         errorMessage = nil
         let kind = profileKind
-        Task {
+        importTask = Task { @MainActor in
             do {
+                try Task.checkCancellation()
                 let text = try await client.profileText(for: selection, kind: kind)
+                try Task.checkCancellation()
+                importPhase = .committing
                 if let importError = await onImport(.autoEQ, selection.name, text) {
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     errorMessage = importError
-                    isImporting = false
+                    importPhase = .idle
                 } else {
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    importPhase = .idle
                     onImported()
                 }
+            } catch is CancellationError {
+                importPhase = .idle
+            } catch where Task.isCancelled {
+                importPhase = .idle
             } catch {
                 errorMessage = error.localizedDescription
-                isImporting = false
+                importPhase = .idle
             }
         }
     }
