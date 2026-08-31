@@ -983,9 +983,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         func beginProbation() {
             while true {
                 let current = state.load(ordering: .acquiring)
+                let generation = UInt32(truncatingIfNeeded: current >> 32) &+ 1
+                let frameCount = Int((current >> 16) & UInt64(UInt16.max))
                 let exchange = state.compareExchange(
                     expected: current,
-                    desired: current & ~Self.streakMask,
+                    desired: Self.encodedState(
+                        generation: generation,
+                        frameCount: frameCount,
+                        validCallbackStreak: 0
+                    ),
                     ordering: .acquiringAndReleasing
                 )
                 if exchange.exchanged {
