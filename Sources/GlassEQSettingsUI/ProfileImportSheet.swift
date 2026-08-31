@@ -320,6 +320,7 @@ private struct TextProfileImportPane: View {
     @State private var importedStereoTextPair: ImportedStereoTextPair?
     @State private var isLoadingFile = false
     @State private var isImporting = false
+    @State private var fileLoadTask: Task<Void, Never>?
     @State private var didCopyCurrentProfile = false
     @State private var errorMessage: String?
 
@@ -459,6 +460,9 @@ private struct TextProfileImportPane: View {
             }
             .padding(16)
         }
+        .onDisappear {
+            fileLoadTask?.cancel()
+        }
     }
 
     private var footerText: String {
@@ -596,13 +600,14 @@ private struct TextProfileImportPane: View {
     }
 
     private func loadFile(_ url: URL) {
+        fileLoadTask?.cancel()
         isLoadingFile = true
         errorMessage = nil
         importedFilename = nil
         importedImpulseResponse = nil
         importedStereoTextPair = nil
         text = ""
-        Task {
+        fileLoadTask = Task { @MainActor in
             do {
                 if url.pathExtension.lowercased() == "wav" {
                     let expectedSampleRate = currentOutputSampleRate
@@ -612,18 +617,27 @@ private struct TextProfileImportPane: View {
                             expectedSampleRate: expectedSampleRate
                         )
                     }.value
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     importedImpulseResponse = imported
                     text = ""
                 } else {
                     let importedText = try await Task.detached(priority: .userInitiated) {
                         try readImportedTextFile(url)
                     }.value
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     text = importedText
                     importedImpulseResponse = nil
                 }
                 profileName = url.deletingPathExtension().lastPathComponent
                 importedFilename = url.lastPathComponent
             } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
                 errorMessage = error.localizedDescription
             }
             isLoadingFile = false
@@ -631,13 +645,14 @@ private struct TextProfileImportPane: View {
     }
 
     private func loadSeparatePair(leftURL: URL, rightURL: URL) {
+        fileLoadTask?.cancel()
         isLoadingFile = true
         errorMessage = nil
         importedFilename = nil
         importedImpulseResponse = nil
         importedStereoTextPair = nil
         text = ""
-        Task {
+        fileLoadTask = Task { @MainActor in
             do {
                 let leftIsWAV = leftURL.pathExtension.lowercased() == "wav"
                 let rightIsWAV = rightURL.pathExtension.lowercased() == "wav"
@@ -653,6 +668,9 @@ private struct TextProfileImportPane: View {
                             expectedSampleRate: expectedSampleRate
                         )
                     }.value
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     importedImpulseResponse = imported
                     profileName = imported.profile.name
                 } else {
@@ -662,11 +680,17 @@ private struct TextProfileImportPane: View {
                             rightURL: rightURL
                         )
                     }.value
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     importedStereoTextPair = imported
                     profileName = imported.profile.name
                 }
                 importedFilename = localized("2 files selected")
             } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
                 errorMessage = error.localizedDescription
             }
             isLoadingFile = false
