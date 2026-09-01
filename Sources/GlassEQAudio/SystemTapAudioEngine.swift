@@ -2769,14 +2769,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let deferredRouteMatches = deferredColdStartupRoute.withLock { route in
             route == Self.deferredColdStartupRoute(for: output)
         }
-        var externalClientsAreActive = false
+        var externalClientsMayBeActive = false
         if activeBackendIsSeparate, !deferredRouteMatches {
-            externalClientsAreActive = try hasActiveExternalOutputProcess(on: output)
+            externalClientsMayBeActive = mayHaveActiveExternalOutputProcess(on: output)
         }
         if Self.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: activeBackendIsSeparate,
             deferredRouteMatches: deferredRouteMatches,
-            hasActiveExternalOutputProcess: externalClientsAreActive
+            externalClientsMayBeActive: externalClientsMayBeActive
         ) {
             traceDiagnostic {
                 deferredRouteMatches
@@ -2825,12 +2825,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         try startCombinedAggregate(output: output, profile: profile)
     }
 
-    private func hasActiveExternalOutputProcess(
+    private func mayHaveActiveExternalOutputProcess(
         on output: AudioOutputDevice
-    ) throws -> Bool {
-        try CoreAudioDeviceQuery.hasActiveOutputProcess(
+    ) -> Bool {
+        guard let currentProcessObjectID = try? currentAudioProcessObjectID() else {
+            return true
+        }
+        return CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
             using: output.id,
-            excluding: [try currentAudioProcessObjectID()]
+            excluding: [currentProcessObjectID]
         )
     }
 
@@ -3593,7 +3596,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             deferredColdStartupRoute.withLock { $0 = nil }
             return .notApplicable
         }
-        if try hasActiveExternalOutputProcess(on: currentDefault) {
+        if mayHaveActiveExternalOutputProcess(on: currentDefault) {
             return .clientsActive
         }
 
@@ -5088,10 +5091,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     static func shouldUseColdStartupCompatibilityBackend(
         activeBackendIsSeparate: Bool,
         deferredRouteMatches: Bool,
-        hasActiveExternalOutputProcess: Bool
+        externalClientsMayBeActive: Bool
     ) -> Bool {
         activeBackendIsSeparate
-            && (deferredRouteMatches || hasActiveExternalOutputProcess)
+            && (deferredRouteMatches || externalClientsMayBeActive)
     }
 
     static func coldStartupPromotionResult(

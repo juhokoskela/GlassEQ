@@ -855,22 +855,22 @@ struct CoreAudioDeviceTests {
         #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
             deferredRouteMatches: true,
-            hasActiveExternalOutputProcess: false
+            externalClientsMayBeActive: false
         ))
         #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
             deferredRouteMatches: false,
-            hasActiveExternalOutputProcess: true
+            externalClientsMayBeActive: true
         ))
         #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: false,
             deferredRouteMatches: true,
-            hasActiveExternalOutputProcess: true
+            externalClientsMayBeActive: true
         ))
         #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
             deferredRouteMatches: false,
-            hasActiveExternalOutputProcess: false
+            externalClientsMayBeActive: false
         ))
     }
 
@@ -899,17 +899,17 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func activeOutputProcessDetectionMatchesTheDeviceAndExclusions() throws {
+    func potentialActiveOutputProcessDetectionMatchesTheDeviceAndExclusions() {
         let processDevices: [AudioObjectID: [AudioObjectID]] = [
             10: [100],
             20: [200],
             30: [100, 200],
         ]
         let runningProcesses: Set<AudioObjectID> = [20, 30]
-        let query: (AudioObjectID, Set<AudioObjectID>) throws -> Bool = {
+        let query: (AudioObjectID, Set<AudioObjectID>) -> Bool = {
             deviceID,
             excluded in
-            try CoreAudioDeviceQuery.hasActiveOutputProcess(
+            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
                 using: deviceID,
                 excluding: excluded,
                 processObjectIDs: { [10, 20, 30] },
@@ -918,46 +918,61 @@ struct CoreAudioDeviceTests {
             )
         }
 
-        #expect(try query(100, []))
-        #expect(try query(200, []))
-        #expect(!(try query(100, [30])))
-        #expect(!(try query(300, [])))
+        #expect(query(100, []))
+        #expect(query(200, []))
+        #expect(!query(100, [30]))
+        #expect(!query(300, []))
     }
 
     @Test
-    func activeOutputProcessDetectionSkipsDisappearingProcessObjects() throws {
-        let hasActiveProcess = try CoreAudioDeviceQuery.hasActiveOutputProcess(
+    func activeOutputProcessDetectionSkipsConfirmedStaleProcessObjects() {
+        let mayHaveActiveProcess = CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
             using: 100,
             excluding: [],
-            processObjectIDs: { [10, 20, 30] },
+            processObjectIDs: { [10, 20] },
             isRunningOutput: { processObjectID in
                 if processObjectID == 10 {
-                    throw ActiveProcessQueryTestError.staleProcess
+                    throw CoreAudioError(
+                        operation: "read running state",
+                        status: kAudioHardwareBadObjectError
+                    )
                 }
                 return true
             },
             outputDeviceIDs: { processObjectID in
                 if processObjectID == 20 {
-                    throw ActiveProcessQueryTestError.staleProcess
+                    throw CoreAudioError(
+                        operation: "read output devices",
+                        status: kAudioHardwareBadObjectError
+                    )
                 }
                 return [100]
             }
         )
 
-        #expect(hasActiveProcess)
+        #expect(!mayHaveActiveProcess)
     }
 
     @Test
-    func activeOutputProcessDetectionPreservesProcessListFailures() {
-        #expect(throws: ActiveProcessQueryTestError.self) {
-            try CoreAudioDeviceQuery.hasActiveOutputProcess(
-                using: 100,
-                excluding: [],
-                processObjectIDs: { throw ActiveProcessQueryTestError.processList },
-                isRunningOutput: { _ in true },
-                outputDeviceIDs: { _ in [100] }
-            )
-        }
+    func activeOutputProcessDetectionTreatsProcessListFailuresAsPotentialActivity() {
+        #expect(CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
+            using: 100,
+            excluding: [],
+            processObjectIDs: { throw ActiveProcessQueryTestError.processList },
+            isRunningOutput: { _ in true },
+            outputDeviceIDs: { _ in [100] }
+        ))
+    }
+
+    @Test
+    func activeOutputProcessDetectionTreatsUnknownPropertyFailuresAsPotentialActivity() {
+        #expect(CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
+            using: 100,
+            excluding: [],
+            processObjectIDs: { [10] },
+            isRunningOutput: { _ in true },
+            outputDeviceIDs: { _ in throw ActiveProcessQueryTestError.propertyQuery }
+        ))
     }
 
     @Test
@@ -2217,7 +2232,7 @@ private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
 
 private enum ActiveProcessQueryTestError: Error {
     case processList
-    case staleProcess
+    case propertyQuery
 }
 
 private final class LockedCounter: @unchecked Sendable {

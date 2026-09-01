@@ -290,14 +290,21 @@ public enum CoreAudioDeviceQuery {
         )
     }
 
-    static func hasActiveOutputProcess(
+    static func mayHaveActiveOutputProcess(
         using deviceID: AudioObjectID,
         excluding excludedProcessObjectIDs: Set<AudioObjectID>,
         processObjectIDs: () throws -> [AudioObjectID] = audioProcessObjectIDs,
         isRunningOutput: (AudioObjectID) throws -> Bool = isProcessRunningOutput,
         outputDeviceIDs: (AudioObjectID) throws -> [AudioObjectID] = processOutputDeviceIDs
-    ) throws -> Bool {
-        for processObjectID in try processObjectIDs()
+    ) -> Bool {
+        let processIDs: [AudioObjectID]
+        do {
+            processIDs = try processObjectIDs()
+        } catch {
+            return true
+        }
+
+        for processObjectID in processIDs
         where !excludedProcessObjectIDs.contains(processObjectID) {
             do {
                 guard try isRunningOutput(processObjectID) else {
@@ -306,8 +313,10 @@ public enum CoreAudioDeviceQuery {
                 if try outputDeviceIDs(processObjectID).contains(deviceID) {
                     return true
                 }
-            } catch {
+            } catch let error as CoreAudioError where error.status == kAudioHardwareBadObjectError {
                 continue
+            } catch {
+                return true
             }
         }
         return false
