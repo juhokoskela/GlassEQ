@@ -36,6 +36,8 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build/release-app}"
 ICON_FILE="$ROOT_DIR/Sources/GlassEQApp/Resources/GlassEQ.icns"
 MIGRATION_PLIST="$ROOT_DIR/Sources/GlassEQApp/Resources/container-migration.plist"
+LICENSE_FILE="$ROOT_DIR/LICENSE"
+SOURCE_REPOSITORY_URL="https://github.com/juhokoskela/GlassEQ"
 
 fail() {
     echo "error: $*" >&2
@@ -147,8 +149,85 @@ derive_paths() {
     SETTINGS_MACOS_DIR="$SETTINGS_CONTENTS_DIR/MacOS"
     SETTINGS_RESOURCES_DIR="$SETTINGS_CONTENTS_DIR/Resources"
     SETTINGS_INFO_PLIST="$SETTINGS_CONTENTS_DIR/Info.plist"
+    PACKAGE_DIR="$BUILD_DIR/package"
+    PACKAGE_APP_DIR="$PACKAGE_DIR/$APP_NAME.app"
+    PACKAGE_SETTINGS_APP_DIR="$PACKAGE_APP_DIR/Contents/Helpers/$SETTINGS_APP_NAME.app"
+    SOURCE_ARCHIVE_NAME="$APP_NAME-$RELEASE_LABEL-source.tar.gz"
+    SOURCE_ARCHIVE_PATH="$PACKAGE_DIR/$SOURCE_ARCHIVE_NAME"
+    SOURCE_NOTICE_PATH="$PACKAGE_DIR/SOURCE.md"
     ZIP_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH.zip"
     CHECKSUM_PATH="$ZIP_PATH.sha256"
+}
+
+capture_source_revision() {
+    local source_status
+
+    [[ -f "$LICENSE_FILE" ]] || fail "release checkout is missing LICENSE"
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "release builds require a Git checkout"
+    [[ ! -f "$ROOT_DIR/.gitmodules" ]] || fail "release source packaging does not yet support Git submodules"
+
+    source_status="$(git status --porcelain=v1 --untracked-files=all)"
+    [[ -z "$source_status" ]] || fail "release builds require a clean checkout so the Corresponding Source matches the binary"
+
+    SOURCE_REVISION="$(git rev-parse --verify HEAD)"
+}
+
+verify_source_revision_unchanged() {
+    local current_revision
+    local source_status
+
+    current_revision="$(git rev-parse --verify HEAD)"
+    [[ "$current_revision" == "$SOURCE_REVISION" ]] || fail "Git HEAD changed during the release build"
+
+    source_status="$(git status --porcelain=v1 --untracked-files=all)"
+    [[ -z "$source_status" ]] || fail "the checkout changed during the release build"
+}
+
+create_source_archive() {
+    local source_root="$APP_NAME-$RELEASE_LABEL-source"
+
+    git archive \
+        --format=tar.gz \
+        --prefix="$source_root/" \
+        --output="$SOURCE_ARCHIVE_PATH" \
+        "$SOURCE_REVISION"
+
+    tar -tzf "$SOURCE_ARCHIVE_PATH" | grep -Fx "$source_root/Package.swift" >/dev/null ||
+        fail "Corresponding Source archive is missing Package.swift"
+    tar -tzf "$SOURCE_ARCHIVE_PATH" | grep -Fx "$source_root/Scripts/build-release-app.sh" >/dev/null ||
+        fail "Corresponding Source archive is missing the release script"
+    tar -xOzf "$SOURCE_ARCHIVE_PATH" "$source_root/LICENSE" | cmp -s - "$LICENSE_FILE" ||
+        fail "Corresponding Source archive does not contain the release license"
+
+    {
+        echo "# GlassEQ Corresponding Source"
+        echo
+        echo "This distribution was built from Git commit \`$SOURCE_REVISION\`."
+        echo
+        echo "The complete machine-readable Corresponding Source is included as \`$SOURCE_ARCHIVE_NAME\`."
+        echo
+        echo "Official repository: $SOURCE_REPOSITORY_URL"
+        echo
+        echo "Build inputs: version $VERSION, build $BUILD, channel $RELEASE_CHANNEL, architecture $ARCH, release label $RELEASE_LABEL."
+        echo
+        echo "GlassEQ is licensed under GPL-3.0-or-later. See \`LICENSE\` for the full license."
+    } > "$SOURCE_NOTICE_PATH"
+}
+
+verify_release_archive() {
+    local source_root="$APP_NAME-$RELEASE_LABEL-source"
+
+    unzip -tq "$ZIP_PATH" >/dev/null || fail "release archive failed its integrity check"
+    unzip -Z1 "$ZIP_PATH" | grep -Fx "$APP_NAME.app/" >/dev/null || fail "release archive is missing $APP_NAME.app"
+    unzip -Z1 "$ZIP_PATH" | grep -Fx "LICENSE" >/dev/null || fail "release archive is missing LICENSE"
+    unzip -Z1 "$ZIP_PATH" | grep -Fx "SOURCE.md" >/dev/null || fail "release archive is missing SOURCE.md"
+    unzip -Z1 "$ZIP_PATH" | grep -Fx "$SOURCE_ARCHIVE_NAME" >/dev/null || fail "release archive is missing Corresponding Source"
+    unzip -p "$ZIP_PATH" LICENSE | cmp -s - "$LICENSE_FILE" || fail "release archive contains the wrong license"
+    unzip -p "$ZIP_PATH" "$APP_NAME.app/Contents/Resources/LICENSE" | cmp -s - "$LICENSE_FILE" ||
+        fail "the packaged app contains the wrong license"
+    unzip -p "$ZIP_PATH" "$SOURCE_ARCHIVE_NAME" |
+        tar -xOzf - "$source_root/LICENSE" |
+        cmp -s - "$LICENSE_FILE" || fail "packaged Corresponding Source contains the wrong license"
 }
 
 copy_spm_resources() {
@@ -220,6 +299,8 @@ if is_dry_run; then
     exit 0
 fi
 
+capture_source_revision
+
 if [[ ! -f "$ICON_FILE" ]]; then
     swift "$ROOT_DIR/Scripts/generate-app-icon.swift" >/dev/null
 fi
@@ -238,6 +319,7 @@ cp "$SETTINGS_EXECUTABLE_SOURCE" "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
 cp "$ROOT_DIR/Sources/GlassEQApp/Info.plist" "$INFO_PLIST"
 cp "$ROOT_DIR/Sources/GlassEQSettings/Info.plist" "$SETTINGS_INFO_PLIST"
 cp "$ICON_FILE" "$RESOURCES_DIR/GlassEQ.icns"
+cp "$LICENSE_FILE" "$RESOURCES_DIR/LICENSE"
 cp "$ICON_FILE" "$SETTINGS_RESOURCES_DIR/GlassEQ.icns"
 cp "$MIGRATION_PLIST" "$RESOURCES_DIR/container-migration.plist"
 copy_spm_resources "$BUILD_BIN_DIR" "$APP_NAME" "$APP_TARGET" "$RESOURCES_DIR"
@@ -324,12 +406,27 @@ if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     spctl --assess --type execute --verbose=4 "$APP_DIR"
 fi
 
+verify_source_revision_unchanged
+rm -rf "$PACKAGE_DIR"
+mkdir -p "$PACKAGE_DIR"
+ditto "$APP_DIR" "$PACKAGE_APP_DIR"
+codesign --verify --strict --verbose=2 "$PACKAGE_SETTINGS_APP_DIR" >/dev/null
+codesign --verify --strict --verbose=2 "$PACKAGE_APP_DIR" >/dev/null
+if [[ "$RELEASE_CHANNEL" == "production" ]]; then
+    xcrun stapler validate "$PACKAGE_APP_DIR"
+fi
+cp "$LICENSE_FILE" "$PACKAGE_DIR/LICENSE"
+create_source_archive
+
 rm -f "$ZIP_PATH"
-ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "$APP_DIR" "$ZIP_PATH"
+ditto -c -k --norsrc --noextattr --noqtn --noacl "$PACKAGE_DIR" "$ZIP_PATH"
+verify_release_archive
 shasum -a 256 "$ZIP_PATH" > "$CHECKSUM_PATH"
 
 echo "App: $APP_DIR"
 echo "Zip: $ZIP_PATH"
+echo "Source revision: $SOURCE_REVISION"
+echo "Corresponding Source: $SOURCE_ARCHIVE_NAME (inside the release Zip)"
 echo "Checksum: $CHECKSUM_PATH"
 cat "$CHECKSUM_PATH"
 echo

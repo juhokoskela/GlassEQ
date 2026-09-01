@@ -130,7 +130,7 @@ swift run GlassEQDiagnostics 2
 ./Scripts/build-release-app.sh
 ```
 
-The script builds a release app bundle, embeds the app icon, ad hoc-signs the bundle, and writes a zip under `.build/dist/`.
+The script builds a release app bundle, embeds the app icon and GPL text, ad hoc-signs the bundle, and writes a ZIP under `.build/dist/`. The ZIP also contains the full license, the exact Git revision and build inputs, and a machine-readable Corresponding Source archive generated from the clean commit used for the build.
 
 Gatekeeper assessment is *expected to fail* because the alpha is not Developer ID signed or notarized:
 
