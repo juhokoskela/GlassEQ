@@ -25,9 +25,13 @@ private struct SeparateClockAudioEngineInternalError: Error, LocalizedError {
 }
 
 public final class SeparateClockAudioBackend: @unchecked Sendable {
-    private enum OutputBufferPolicy {
+    private enum OutputDeviceSettingsPolicy {
         case adaptiveLowLatency
         case preserveCurrent
+
+        var preservesCurrentSettings: Bool {
+            self == .preserveCurrent
+        }
     }
 
     private static let preferredBufferFrameSize: UInt32 = 64
@@ -87,7 +91,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         var preparedOutputHandoff: PreparedOutputHandoff?
         var activeOutput: AudioOutputDevice?
         var activeProfile: EQProfile?
-        var activeOutputBufferPolicy = OutputBufferPolicy.adaptiveLowLatency
+        var activeOutputSettingsPolicy = OutputDeviceSettingsPolicy.adaptiveLowLatency
         var profileRevision: UInt64 = 0
         var bufferFrameSizeRestorations: [String: BufferFrameSizeRestoration] = [:]
         var sampleRateRestorations: [String: SampleRateRestoration] = [:]
@@ -109,7 +113,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         var tapSampleRate: Double
         var originalBufferFrameSize: UInt32
         var profileRevision: UInt64
-        var outputBufferPolicy: OutputBufferPolicy
+        var outputSettingsPolicy: OutputDeviceSettingsPolicy
     }
 
     private struct PreparedOutputHandoff {
@@ -1532,7 +1536,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             output: output,
             profile: profile,
             expectation: nil,
-            outputBufferPolicy: .adaptiveLowLatency
+            outputSettingsPolicy: .adaptiveLowLatency
         )
     }
 
@@ -1544,7 +1548,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             output: output,
             profile: profile,
             expectation: nil,
-            outputBufferPolicy: .preserveCurrent
+            outputSettingsPolicy: .preserveCurrent
         )
     }
 
@@ -1574,7 +1578,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     output: output,
                     profile: profile,
                     profileRevision: state.profileRevision,
-                    outputBufferPolicy: .adaptiveLowLatency
+                    outputSettingsPolicy: .adaptiveLowLatency
                 )
             }
             let refreshedOutput = try CoreAudioDeviceQuery.outputDevice(id: preparation.output.id)
@@ -1582,7 +1586,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             preparation.originalBufferFrameSize = refreshedOutput.bufferFrameSize
             let matchedOutput = try preparePlaybackOutput(
                 tapSampleRate: preparation.tapSampleRate,
-                output: preparation.output
+                output: preparation.output,
+                settingsPolicy: preparation.outputSettingsPolicy
             ) { restoration in
                 try control.withLock { state in
                     guard state.outputRebuildGeneration == preparation.generation,
@@ -1679,7 +1684,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         output: AudioOutputDevice,
         profile: EQProfile,
         expectation: OutputRebuildExpectation?,
-        outputBufferPolicy: OutputBufferPolicy = .adaptiveLowLatency
+        outputSettingsPolicy: OutputDeviceSettingsPolicy = .adaptiveLowLatency
     ) throws {
         try requireCompletedCoreAudioCleanup(operation: "start compatibility audio")
         pausePlaybackBufferAdaptation()
@@ -1710,9 +1715,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 previousState = state.state
                 previousStatus = state.status
                 state.status = .starting
-                // Keep capture alive across ordinary output switches. Leaving a low-rate route
-                // refreshes it under the same mute guard used for topology changes so normal
-                // outputs regain their full capture bandwidth without leaking dry audio.
+                // Keep capture alive while its rate remains valid. Normal-rate changes refresh it
+                // under the same mute guard used for topology changes so the bridge never retains
+                // a tap runtime configured for the preceding device clock.
                 try ensureCaptureHalfLocked(&state, output: output, profile: requestedProfile)
                 state.profileRevision &+= 1
                 return try prepareOutputRebuildLocked(
@@ -1720,7 +1725,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     output: output,
                     profile: requestedProfile,
                     profileRevision: state.profileRevision,
-                    outputBufferPolicy: outputBufferPolicy
+                    outputSettingsPolicy: outputSettingsPolicy
                 )
             }
             let refreshedOutput = try CoreAudioDeviceQuery.outputDevice(id: preparation.output.id)
@@ -1729,7 +1734,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             activePreparation = preparation
             let matchedOutput = try preparePlaybackOutput(
                 tapSampleRate: preparation.tapSampleRate,
-                output: preparation.output
+                output: preparation.output,
+                settingsPolicy: preparation.outputSettingsPolicy
             ) { restoration in
                 try control.withLock { state in
                     guard state.outputRebuildGeneration == preparation.generation,
@@ -2199,13 +2205,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         output: AudioOutputDevice,
         profile: EQProfile,
         profileRevision: UInt64,
-        outputBufferPolicy: OutputBufferPolicy
+        outputSettingsPolicy: OutputDeviceSettingsPolicy
     ) throws -> OutputRebuildPreparation {
         guard let runtime = state.runtime else {
             throw CoreAudioError(operation: "rebuildOutputHalf(missing runtime)", status: kAudioHardwareNotRunningError)
         }
-        // Mismatched low-rate endpoints keep their device-owned rates and receive realtime
-        // sample-rate conversion in the playback callback.
+        // Low-rate endpoints and cold-start staging keep device-owned sample rates and receive
+        // realtime sample-rate conversion in the playback callback.
         let originalBufferFrameSize = output.bufferFrameSize
         _ = try Self.supportedRuntimeChannelCount(for: output)
         stopOutputHalfLocked(&state)
@@ -2218,7 +2224,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             tapSampleRate: state.tapSampleRate,
             originalBufferFrameSize: originalBufferFrameSize,
             profileRevision: profileRevision,
-            outputBufferPolicy: outputBufferPolicy
+            outputSettingsPolicy: outputSettingsPolicy
         )
     }
 
@@ -2254,7 +2260,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             activeProfileRevision: state.profileRevision
         )
         _ = try Self.supportedRuntimeChannelCount(for: matchedOutput)
-        if preparation.outputBufferPolicy == .adaptiveLowLatency,
+        if preparation.outputSettingsPolicy == .adaptiveLowLatency,
            state.bufferFrameSizeRestorations[output.uid] == nil {
             let restoration = BufferFrameSizeRestoration(
                 uid: output.uid,
@@ -2363,10 +2369,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         state.activeOutput = handoff.output
 
         // Compatibility mode applies its low-latency setting only after claiming the device.
-        // Cold-start staging instead preserves the setting used by active clients; changing a
-        // shared device buffer here can destabilize an already-running 512-frame client before
-        // the combined aggregate takes ownership.
-        let tunedOutput = switch preparation.outputBufferPolicy {
+        // Cold-start staging instead preserves the sample rate and buffer used by active clients;
+        // changing either shared setting can destabilize a client before the aggregate takes over.
+        let tunedOutput = switch preparation.outputSettingsPolicy {
         case .adaptiveLowLatency:
             tuneBufferFrameSize(
                 for: handoff.output,
@@ -2379,10 +2384,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         try Self.validatePlaybackConversionCapacity(
             for: tunedOutput,
             tapSampleRate: runtime.sampleRate,
-            captureCallbackFrames: runtime.maximumKnownCaptureCallbackFrames()
+            captureCallbackFrames: runtime.maximumKnownCaptureCallbackFrames(),
+            preservingOutputSampleRate: preparation.outputSettingsPolicy.preservesCurrentSettings
         )
         state.activeOutput = tunedOutput
-        state.activeOutputBufferPolicy = preparation.outputBufferPolicy
+        state.activeOutputSettingsPolicy = preparation.outputSettingsPolicy
         let targetFrames = preferredPlaybackTargetFrames(
             for: tunedOutput,
             tapSampleRate: runtime.sampleRate,
@@ -2393,7 +2399,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             instabilityGeneration: runtime.playbackInstabilitySnapshot().generation,
             timestampDiscontinuities: runtime.playbackTimestampDiscontinuityCount()
         )
-        state.playbackBufferCalibrationProbe = preparation.outputBufferPolicy == .adaptiveLowLatency
+        state.playbackBufferCalibrationProbe = preparation.outputSettingsPolicy == .adaptiveLowLatency
             ? playbackBufferCalibrationProbe(
                 for: tunedOutput,
                 tapSampleRate: runtime.sampleRate,
@@ -2452,7 +2458,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             "restore compatibility device settings end sampleRateRecords=\(state.sampleRateRestorations.count) bufferRecords=\(state.bufferFrameSizeRestorations.count)"
         }
         state.activeOutput = nil
-        state.activeOutputBufferPolicy = .adaptiveLowLatency
+        state.activeOutputSettingsPolicy = .adaptiveLowLatency
         state.playbackBufferCalibrationProbe = nil
     }
 
@@ -2487,9 +2493,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func preparePlaybackOutput(
         tapSampleRate: Double,
         output: AudioOutputDevice,
+        settingsPolicy: OutputDeviceSettingsPolicy,
         recordRestoration: (SampleRateRestoration) throws -> Void
     ) throws -> AudioOutputDevice {
-        if Self.shouldUseSampleRateConversion(tapSampleRate: tapSampleRate, output: output) {
+        if Self.shouldUseSampleRateConversion(
+            tapSampleRate: tapSampleRate,
+            output: output,
+            preservingOutputSampleRate: settingsPolicy.preservesCurrentSettings
+        ) {
             return output
         }
         return try forceSampleRate(
@@ -2685,9 +2696,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     static func validatePlaybackConversionCapacity(
         for output: AudioOutputDevice,
         tapSampleRate: Double,
-        captureCallbackFrames: Int = preferredLowSampleRatePlaybackReservoirFrames
+        captureCallbackFrames: Int = preferredLowSampleRatePlaybackReservoirFrames,
+        preservingOutputSampleRate: Bool = false
     ) throws {
-        guard shouldUseSampleRateConversion(tapSampleRate: tapSampleRate, output: output) else {
+        guard shouldUseSampleRateConversion(
+            tapSampleRate: tapSampleRate,
+            output: output,
+            preservingOutputSampleRate: preservingOutputSampleRate
+        ) else {
             return
         }
         let requiredPrimeFrames = preferredPlaybackPrimeFrames(
@@ -3006,7 +3022,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private func updatePlaybackBufferAdaptationTimer() {
         let shouldRun = control.withLock { state in
             guard case .running = state.state,
-                  state.activeOutputBufferPolicy == .adaptiveLowLatency,
+                  state.activeOutputSettingsPolicy == .adaptiveLowLatency,
                   let output = state.activeOutput else {
                 return false
             }
@@ -3041,7 +3057,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         guard let action = control.withLock({ state -> PlaybackBufferAdaptationAction? in
             guard let runtime = state.runtime,
                   let output = state.activeOutput,
-                  state.activeOutputBufferPolicy == .adaptiveLowLatency,
+                  state.activeOutputSettingsPolicy == .adaptiveLowLatency,
                   Self.shouldAdaptPlaybackBuffer(for: output) else {
                 return nil
             }
@@ -3786,20 +3802,27 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         captureCallbackFrames: Int = preferredLowSampleRatePlaybackReservoirFrames
     ) -> Int {
         let outputCallbackFrames = max(Int(output.bufferFrameSize), 1)
-        if hasLowSampleRateEndpoint(
-            tapSampleRate: tapSampleRate ?? output.nominalSampleRate,
-            output: output
-        ) {
-            let sampleRatePlan = PlaybackSampleRatePlan(
-                inputSampleRate: tapSampleRate ?? output.nominalSampleRate,
-                outputSampleRate: output.nominalSampleRate
+        let sampleRatePlan = PlaybackSampleRatePlan(
+            inputSampleRate: tapSampleRate ?? output.nominalSampleRate,
+            outputSampleRate: output.nominalSampleRate
+        )
+        if sampleRatePlan.requiresConversion {
+            let hasLowRateEndpoint = hasLowSampleRateEndpoint(
+                tapSampleRate: sampleRatePlan.inputSampleRate,
+                output: output
             )
+            let minimumReservoirFrames = hasLowRateEndpoint
+                ? Self.preferredLowSampleRatePlaybackReservoirFrames
+                : Int(Self.preferredCaptureBufferFrameSize)
             let reservoirFrames = min(
-                max(captureCallbackFrames, Self.preferredLowSampleRatePlaybackReservoirFrames),
+                max(captureCallbackFrames, minimumReservoirFrames),
                 Self.maximumSupportedCallbackFrames
             )
+            let referenceOutputFrames = hasLowRateEndpoint
+                ? Int(Self.preferredLowSampleRateBufferFrameSize)
+                : outputCallbackFrames
             return max(
-                sampleRatePlan.inputFrames(forOutputFrames: Int(Self.preferredLowSampleRateBufferFrameSize)),
+                sampleRatePlan.inputFrames(forOutputFrames: referenceOutputFrames),
                 sampleRatePlan.inputFrames(forOutputFrames: outputCallbackFrames)
                     + reservoirFrames
             )
@@ -3841,10 +3864,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     static func shouldUseSampleRateConversion(
         tapSampleRate: Double,
-        output: AudioOutputDevice
+        output: AudioOutputDevice,
+        preservingOutputSampleRate: Bool = false
     ) -> Bool {
         abs(tapSampleRate - output.nominalSampleRate) >= 1
-            && hasLowSampleRateEndpoint(tapSampleRate: tapSampleRate, output: output)
+            && (preservingOutputSampleRate
+                || hasLowSampleRateEndpoint(tapSampleRate: tapSampleRate, output: output))
     }
 
     static func effectiveOutputRebuildProfile(
@@ -3884,8 +3909,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         tapSampleRate: Double,
         output: AudioOutputDevice
     ) -> Bool {
-        isLowSampleRate(tapSampleRate)
-            && output.nominalSampleRate - tapSampleRate >= 1
+        !isLowSampleRateRoute(output)
+            && abs(tapSampleRate - output.nominalSampleRate) >= 1
     }
 
     static func maximumPlaybackReservoirFrames(

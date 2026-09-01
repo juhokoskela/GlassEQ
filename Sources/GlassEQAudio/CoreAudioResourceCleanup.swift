@@ -32,25 +32,45 @@ final class CoreAudioResourceCleanupLedger: @unchecked Sendable {
 
     private static let orphaned = Mutex<[PendingResources]>([])
 
+    private struct AutomaticRetryState {
+        var isScheduled = false
+        var delayIndex = 0
+    }
+
+    private struct CleanupState {
+        var isAttempting = false
+        var inFlightCount = 0
+        var pending: [PendingResources] = []
+    }
+
     private let operations: Operations
     private let preservesFailuresOnDeinit: Bool
-    private let pending = Mutex<[PendingResources]>([])
+    private let automaticRetryDelaysMilliseconds: [Int]
+    private let cleanupState = Mutex(CleanupState())
+    private let automaticRetryState = Mutex(AutomaticRetryState())
+    private let automaticRetryQueue = DispatchQueue(
+        label: "com.glasseq.core-audio-cleanup"
+    )
 
     init(
         operations: Operations = .live,
-        preservesFailuresOnDeinit: Bool = true
+        preservesFailuresOnDeinit: Bool = true,
+        automaticRetryDelaysMilliseconds: [Int] = [50, 100, 250, 500, 1_000]
     ) {
         self.operations = operations
         self.preservesFailuresOnDeinit = preservesFailuresOnDeinit
+        self.automaticRetryDelaysMilliseconds = automaticRetryDelaysMilliseconds.filter {
+            $0 > 0
+        }
     }
 
     deinit {
         guard preservesFailuresOnDeinit else {
             return
         }
-        let unresolved = pending.withLock { pending in
-            defer { pending.removeAll(keepingCapacity: false) }
-            return pending
+        let unresolved = cleanupState.withLock { state in
+            defer { state.pending.removeAll(keepingCapacity: false) }
+            return state.pending
         }
         guard !unresolved.isEmpty else {
             return
@@ -60,21 +80,45 @@ final class CoreAudioResourceCleanupLedger: @unchecked Sendable {
 
     @discardableResult
     func dispose(_ resources: PendingResources) -> Bool {
-        guard let unresolved = attempt(resources, using: operations) else {
+        let ownsAttempt = cleanupState.withLock { state in
+            guard !state.isAttempting else {
+                state.pending.append(resources)
+                return false
+            }
+            state.isAttempting = true
+            state.inFlightCount = 1
             return true
         }
-        pending.withLock { $0.append(unresolved) }
-        return false
+        guard ownsAttempt else {
+            updateAutomaticRetryState(completed: false)
+            return false
+        }
+
+        let unresolved = attempt(resources, using: operations)
+        let completed = finishAttempt(unresolved.map { [$0] } ?? [])
+        updateAutomaticRetryState(completed: completed)
+        return completed
     }
 
     @discardableResult
     func retryPending() -> Bool {
+        let resources = cleanupState.withLock { state -> [PendingResources]? in
+            guard !state.isAttempting else {
+                return nil
+            }
+            state.isAttempting = true
+            let resources = state.pending
+            state.pending.removeAll(keepingCapacity: true)
+            state.inFlightCount = resources.count
+            return resources
+        }
+        guard let resources else {
+            updateAutomaticRetryState(completed: false)
+            return false
+        }
+
         if preservesFailuresOnDeinit {
             Self.retryOrphaned()
-        }
-        let resources = pending.withLock { pending in
-            defer { pending.removeAll(keepingCapacity: true) }
-            return pending
         }
         var unresolved: [PendingResources] = []
         unresolved.reserveCapacity(resources.count)
@@ -83,14 +127,15 @@ final class CoreAudioResourceCleanupLedger: @unchecked Sendable {
                 unresolved.append(resource)
             }
         }
-        if !unresolved.isEmpty {
-            pending.withLock { $0.append(contentsOf: unresolved) }
-        }
-        return pending.withLock(\.isEmpty)
+        let completed = finishAttempt(unresolved)
+        updateAutomaticRetryState(completed: completed)
+        return completed
     }
 
     var pendingCount: Int {
-        pending.withLock(\.count)
+        cleanupState.withLock { state in
+            state.inFlightCount + state.pending.count
+        }
     }
 
     static func isTerminalDestructionStatus(_ status: OSStatus) -> Bool {
@@ -158,5 +203,51 @@ final class CoreAudioResourceCleanupLedger: @unchecked Sendable {
         using operations: Operations
     ) -> PendingResources? {
         Self.attempt(resources, using: operations)
+    }
+
+    private func finishAttempt(_ unresolved: [PendingResources]) -> Bool {
+        cleanupState.withLock { state in
+            state.pending.append(contentsOf: unresolved)
+            state.isAttempting = false
+            state.inFlightCount = 0
+            return state.pending.isEmpty
+        }
+    }
+
+    private func updateAutomaticRetryState(completed: Bool) {
+        if completed {
+            automaticRetryState.withLock { state in
+                state.delayIndex = 0
+            }
+            return
+        }
+        scheduleAutomaticRetry()
+    }
+
+    private func scheduleAutomaticRetry() {
+        let delay = automaticRetryState.withLock { state -> Int? in
+            guard !automaticRetryDelaysMilliseconds.isEmpty,
+                  !state.isScheduled else {
+                return nil
+            }
+            state.isScheduled = true
+            return automaticRetryDelaysMilliseconds[state.delayIndex]
+        }
+        guard let delay else {
+            return
+        }
+        automaticRetryQueue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+            guard let self else {
+                return
+            }
+            self.automaticRetryState.withLock { state in
+                state.isScheduled = false
+                state.delayIndex = min(
+                    state.delayIndex + 1,
+                    self.automaticRetryDelaysMilliseconds.count - 1
+                )
+            }
+            self.retryPending()
+        }
     }
 }

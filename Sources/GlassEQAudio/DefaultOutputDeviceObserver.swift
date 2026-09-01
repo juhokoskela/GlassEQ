@@ -1,6 +1,34 @@
 import CoreAudio
 import Foundation
 
+public enum DefaultOutputDeviceChangeReason: Equatable, Sendable {
+    case initial
+    case defaultOutputDevice
+    case nominalSampleRate
+    case bufferFrameSize
+    case streamConfiguration
+    case deviceAlive
+    case settled
+
+    public var requiresFreshAudioGraph: Bool {
+        switch self {
+        case .nominalSampleRate, .streamConfiguration, .deviceAlive:
+            true
+        case .initial, .defaultOutputDevice, .bufferFrameSize, .settled:
+            false
+        }
+    }
+
+    fileprivate var reportsUnchangedOutput: Bool {
+        self == .initial || requiresFreshAudioGraph
+    }
+}
+
+public typealias DefaultOutputDeviceChangeHandler = @Sendable (
+    Result<AudioOutputDevice, Error>,
+    DefaultOutputDeviceChangeReason
+) -> Void
+
 final class DispatchRefreshCoalescer: @unchecked Sendable {
     private let queue: DispatchQueue
     private let delay: DispatchTimeInterval
@@ -28,6 +56,25 @@ final class DispatchRefreshCoalescer: @unchecked Sendable {
     }
 }
 
+struct DefaultOutputChangeTracker {
+    private var lastObservedOutput: AudioOutputDevice?
+
+    mutating func shouldSendChange(
+        for output: AudioOutputDevice,
+        sendChange: Bool,
+        reason: DefaultOutputDeviceChangeReason
+    ) -> Bool {
+        let shouldSend = sendChange
+            && (reason.reportsUnchangedOutput || output != lastObservedOutput)
+        lastObservedOutput = output
+        return shouldSend
+    }
+
+    mutating func reset() {
+        lastObservedOutput = nil
+    }
+}
+
 public final class DefaultOutputDeviceObserver: @unchecked Sendable {
     private let queue: DispatchQueue
     private let queueSpecific = DispatchSpecificKey<Void>()
@@ -35,8 +82,9 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
     private var systemListeners: [ListenerToken] = []
     private var outputListeners: [ListenerToken] = []
     private var observedOutputID = AudioObjectID(kAudioObjectUnknown)
+    private var outputChangeTracker = DefaultOutputChangeTracker()
     private var isStarted = false
-    private let onChange: @Sendable (Result<AudioOutputDevice, Error>) -> Void
+    private let onChange: DefaultOutputDeviceChangeHandler
 
     private struct ListenerToken {
         var objectID: AudioObjectID
@@ -44,11 +92,19 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         var listener: AudioObjectPropertyListenerBlock
     }
 
-    public init(onChange: @escaping @Sendable (Result<AudioOutputDevice, Error>) -> Void) {
+    public convenience init(
+        onChange: @escaping @Sendable (Result<AudioOutputDevice, Error>) -> Void
+    ) {
+        self.init(onEvent: { result, _ in
+            onChange(result)
+        })
+    }
+
+    public init(onEvent: @escaping DefaultOutputDeviceChangeHandler) {
         let queue = DispatchQueue(label: "com.glasseq.default-output-observer")
         self.queue = queue
         self.refreshCoalescer = DispatchRefreshCoalescer(queue: queue, delay: .milliseconds(50))
-        self.onChange = onChange
+        self.onChange = onEvent
         queue.setSpecific(key: queueSpecific, value: ())
     }
 
@@ -104,7 +160,7 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
     private func startOnQueue(sendInitialValue: Bool) throws {
         guard !isStarted else {
             if sendInitialValue {
-                refreshObservedOutput(sendChange: true)
+                refreshObservedOutput(sendChange: true, reason: .initial)
             }
             return
         }
@@ -115,7 +171,7 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         )
         isStarted = true
 
-        refreshObservedOutput(sendChange: sendInitialValue)
+        refreshObservedOutput(sendChange: sendInitialValue, reason: .initial)
     }
 
     private func stopOnQueue() {
@@ -123,9 +179,13 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         removeListeners(&systemListeners)
         isStarted = false
         refreshCoalescer.cancelPending()
+        outputChangeTracker.reset()
     }
 
-    private func refreshObservedOutput(sendChange: Bool) {
+    private func refreshObservedOutput(
+        sendChange: Bool,
+        reason: DefaultOutputDeviceChangeReason
+    ) {
         guard isStarted else {
             return
         }
@@ -133,18 +193,26 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         do {
             let output = try CoreAudioDeviceQuery.defaultOutputDevice()
             try observeOutputChanges(for: output.id)
-            if sendChange {
-                onChange(.success(output))
+            if outputChangeTracker.shouldSendChange(
+                for: output,
+                sendChange: sendChange,
+                reason: reason
+            ) {
+                onChange(.success(output), reason)
             }
         } catch {
             removeOutputListeners()
+            outputChangeTracker.reset()
             if sendChange {
-                onChange(.failure(error))
+                onChange(.failure(error), reason)
             }
         }
     }
 
-    private func scheduleRefreshObservedOutput(sendChange: Bool) {
+    private func scheduleRefreshObservedOutput(
+        sendChange: Bool,
+        reason: DefaultOutputDeviceChangeReason
+    ) {
         guard isStarted else {
             return
         }
@@ -153,7 +221,10 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
                   self.isStarted else {
                 return
             }
-            self.refreshObservedOutput(sendChange: sendChange)
+            self.refreshObservedOutput(
+                sendChange: sendChange,
+                reason: reason
+            )
         }
     }
 
@@ -198,7 +269,10 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
             mElement: kAudioObjectPropertyElementMain
         )
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            self?.scheduleRefreshObservedOutput(sendChange: true)
+            self?.scheduleRefreshObservedOutput(
+                sendChange: true,
+                reason: .defaultOutputDevice
+            )
         }
         try checkOSStatus(
             AudioObjectAddPropertyListenerBlock(
@@ -238,20 +312,16 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
                 return
             }
 
-            guard selector != kAudioDevicePropertyDeviceIsAlive else {
-                do {
-                    guard try CoreAudioDeviceQuery.isDeviceAlive(id: outputID) else {
-                        self.scheduleRefreshObservedOutput(sendChange: true)
-                        return
-                    }
-                } catch {
-                    self.scheduleRefreshObservedOutput(sendChange: true)
-                    return
-                }
-                self.scheduleRefreshObservedOutput(sendChange: true)
+            let reason = Self.changeReason(for: selector)
+            if Self.shouldRefreshImmediately(selector: selector) {
+                self.refreshObservedOutput(
+                    sendChange: true,
+                    reason: reason
+                )
+                self.scheduleRefreshObservedOutput(sendChange: true, reason: .settled)
                 return
             }
-            self.scheduleRefreshObservedOutput(sendChange: true)
+            self.scheduleRefreshObservedOutput(sendChange: true, reason: reason)
         }
         try checkOSStatus(
             AudioObjectAddPropertyListenerBlock(
@@ -274,6 +344,29 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         // a rebuild) so we don't loop reacting to our own device reconfiguration. Device-alive
         // changes are never suppressed — a real disconnect must always be handled.
         selector != kAudioDevicePropertyDeviceIsAlive && selfChangeGuard.isSelfChange(deviceID: deviceID)
+    }
+
+    static func shouldRefreshImmediately(selector: AudioObjectPropertySelector) -> Bool {
+        selector == kAudioDevicePropertyNominalSampleRate
+            || selector == kAudioDevicePropertyStreamConfiguration
+            || selector == kAudioDevicePropertyDeviceIsAlive
+    }
+
+    static func changeReason(
+        for selector: AudioObjectPropertySelector
+    ) -> DefaultOutputDeviceChangeReason {
+        switch selector {
+        case kAudioDevicePropertyNominalSampleRate:
+            .nominalSampleRate
+        case kAudioDevicePropertyBufferFrameSize:
+            .bufferFrameSize
+        case kAudioDevicePropertyStreamConfiguration:
+            .streamConfiguration
+        case kAudioDevicePropertyDeviceIsAlive:
+            .deviceAlive
+        default:
+            .settled
+        }
     }
 
     private func removeOutputListeners() {

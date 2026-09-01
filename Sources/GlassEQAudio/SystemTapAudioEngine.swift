@@ -934,6 +934,21 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
+    struct ProcessTapFormatNotSettledError: Error, LocalizedError {
+        var expectedSampleRate: Double
+        var mainSampleRate: Double
+        var systemSoundSampleRate: Double
+
+        var errorDescription: String? {
+            "Core Audio process taps are still using \(mainSampleRate) Hz and \(systemSoundSampleRate) Hz while the output is \(expectedSampleRate) Hz."
+        }
+    }
+
+    private struct ProcessTapFormat {
+        var sampleRate: Double
+        var channelCount: Int
+    }
+
     #if DEBUG
     struct CombinedStartupTestBoundary {
         var attempt: (UInt32) throws -> Void
@@ -1083,6 +1098,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var systemSoundTapID = AudioObjectID(kAudioObjectUnknown)
         var tapOutputUID: String?
         var tapOutputStreamIndex: Int?
+        var tapOutputNominalSampleRate: Int64?
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
@@ -1104,6 +1120,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var systemSounds: AudioObjectID
         var outputUID: String
         var outputStreamIndex: Int
+        var outputNominalSampleRate: Int64
     }
 
     private struct DetachedCombinedAggregate {
@@ -2677,9 +2694,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public func aggregateRouteFingerprint(
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
-        guard activeBackend.withLock({ $0 }) == .combinedAggregate else {
-            return nil
-        }
         if Self.shouldUseSeparateClockBackend(for: output) {
             let isActivePromotedRoute = control.withLock { state in
                     state.activeOutput?.uid == output.uid
@@ -2742,17 +2756,27 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let deferredRouteMatches = deferredColdStartupRoute.withLock { route in
             route == Self.deferredColdStartupRoute(for: output)
         }
-        if Self.shouldContinueDeferredColdStartup(
+        var externalClientsMayBeActive = false
+        if activeBackendIsSeparate, !deferredRouteMatches {
+            externalClientsMayBeActive = mayHaveActiveExternalOutputProcess(on: output)
+        }
+        if Self.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: activeBackendIsSeparate,
-            deferredRouteMatches: deferredRouteMatches
+            deferredRouteMatches: deferredRouteMatches,
+            externalClientsMayBeActive: externalClientsMayBeActive
         ) {
             traceDiagnostic {
-                "cold-start aggregate remains deferred during compatibility rebuild"
+                deferredRouteMatches
+                    ? "cold-start aggregate remains deferred during compatibility rebuild"
+                    : "cold-start aggregate deferred for active clients on rebuilt route"
             }
             try startSeparateClockBackendForColdStartup(
                 output: output,
                 profile: profile
             )
+            deferredColdStartupRoute.withLock {
+                $0 = Self.deferredColdStartupRoute(for: output)
+            }
             return
         }
 
@@ -2788,12 +2812,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         try startCombinedAggregate(output: output, profile: profile)
     }
 
-    private func hasActiveExternalOutputProcess(
+    private func mayHaveActiveExternalOutputProcess(
         on output: AudioOutputDevice
-    ) throws -> Bool {
-        try CoreAudioDeviceQuery.hasActiveOutputProcess(
+    ) -> Bool {
+        guard let currentProcessObjectID = try? currentAudioProcessObjectID() else {
+            return true
+        }
+        return CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
             using: output.id,
-            excluding: [try currentAudioProcessObjectID()]
+            excluding: [currentProcessObjectID]
         )
     }
 
@@ -2929,7 +2956,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         var taps: CombinedTapSet?
         var preparedAggregate: PreparedCombinedAggregate?
-
         do {
             let route = try prepareCombinedRoute(output: output)
             traceDiagnostic {
@@ -2943,15 +2969,23 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 state.state = .stopped
                 state.lastTimestampProbeRecords.removeAll(keepingCapacity: true)
 
-                if state.tapOutputUID == route.output.uid,
-                   state.tapOutputStreamIndex == route.outputStreamIndex,
+                if Self.combinedTapMatchesRoute(
+                    existingOutputUID: state.tapOutputUID,
+                    existingOutputStreamIndex: state.tapOutputStreamIndex,
+                    existingNominalSampleRate: state.tapOutputNominalSampleRate,
+                    output: route.output,
+                    outputStreamIndex: route.outputStreamIndex
+                ),
                    state.tapID != kAudioObjectUnknown,
                    state.systemSoundTapID != kAudioObjectUnknown {
                     taps = CombinedTapSet(
                         main: state.tapID,
                         systemSounds: state.systemSoundTapID,
                         outputUID: route.output.uid,
-                        outputStreamIndex: route.outputStreamIndex
+                        outputStreamIndex: route.outputStreamIndex,
+                        outputNominalSampleRate: Int64(
+                            route.output.nominalSampleRate.rounded()
+                        )
                     )
                 } else {
                     staleTaps = detachTapSetLocked(&state)
@@ -2978,7 +3012,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     main: createdTaps.main,
                     systemSounds: createdTaps.systemSounds,
                     outputUID: route.output.uid,
-                    outputStreamIndex: route.outputStreamIndex
+                    outputStreamIndex: route.outputStreamIndex,
+                    outputNominalSampleRate: Int64(
+                        route.output.nominalSampleRate.rounded()
+                    )
                 )
             }
             guard let taps else {
@@ -3069,6 +3106,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 state.systemSoundTapID = prepared.taps.systemSounds
                 state.tapOutputUID = prepared.taps.outputUID
                 state.tapOutputStreamIndex = prepared.taps.outputStreamIndex
+                state.tapOutputNominalSampleRate = prepared.taps.outputNominalSampleRate
                 state.aggregateDeviceID = prepared.deviceID
                 state.ioProcID = prepared.ioProcID
                 state.runtime = prepared.runtime
@@ -3173,6 +3211,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var runtime: AudioRuntime?
 
         do {
+            let tapChannelCounts = try validatedTapChannelCounts(
+                taps: taps,
+                route: route
+            )
             traceDiagnostic {
                 "prepare combined aggregate begin physicalDevice=\(route.output.id) targetBuffer=\(targetFrameSize)"
             }
@@ -3206,14 +3248,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 "aggregate buffer ready device=\(aggregateDeviceID) requested=\(targetFrameSize) actual=\(aggregate.bufferFrameSize)"
             }
             try Self.validatePlaybackCallbackCapacity(for: aggregate)
-            let mainTapChannelCount = try tapChannelCount(taps.main)
-            let systemSoundTapChannelCount = try tapChannelCount(taps.systemSounds)
-            guard mainTapChannelCount == route.outputStreamChannelCounts[route.outputStreamIndex],
-                  systemSoundTapChannelCount == mainTapChannelCount else {
-                throw AudioEngineInternalError(
-                    message: "The process-tap formats do not match the selected output stream."
-                )
-            }
+            let mainTapChannelCount = tapChannelCounts.main
+            let systemSoundTapChannelCount = tapChannelCounts.systemSounds
             let physicalInputChannelCount = try CoreAudioDeviceQuery.getChannelCount(
                 objectID: route.output.id,
                 scope: kAudioDevicePropertyScopeInput
@@ -3320,6 +3356,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var runtime: AudioRuntime?
 
         do {
+            let tapChannelCounts = try validatedTapChannelCounts(
+                taps: taps,
+                route: route
+            )
             traceDiagnostic {
                 "prepare physical-first aggregate begin physicalDevice=\(route.output.id) incumbentBuffer=\(route.output.bufferFrameSize) targetBuffer=\(targetFrameSize)"
             }
@@ -3331,14 +3371,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             try Self.validatePlaybackCallbackCapacity(for: initialAggregate)
 
-            let mainTapChannelCount = try tapChannelCount(taps.main)
-            let systemSoundTapChannelCount = try tapChannelCount(taps.systemSounds)
-            guard mainTapChannelCount == route.outputStreamChannelCounts[route.outputStreamIndex],
-                  systemSoundTapChannelCount == mainTapChannelCount else {
-                throw AudioEngineInternalError(
-                    message: "The process-tap formats do not match the selected output stream."
-                )
-            }
+            let mainTapChannelCount = tapChannelCounts.main
+            let systemSoundTapChannelCount = tapChannelCounts.systemSounds
             let physicalInputChannelCount = try CoreAudioDeviceQuery.getChannelCount(
                 objectID: route.output.id,
                 scope: kAudioDevicePropertyScopeInput
@@ -3538,7 +3572,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             deferredColdStartupRoute.withLock { $0 = nil }
             return .notApplicable
         }
-        if try hasActiveExternalOutputProcess(on: currentDefault) {
+        if mayHaveActiveExternalOutputProcess(on: currentDefault) {
             return .clientsActive
         }
 
@@ -3553,6 +3587,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                   separateClockBackend.activeOutputAndProfile() != nil else {
                 throw error
             }
+            deferredColdStartupRoute.withLock { $0 = nil }
             return .aggregateUnstable
         }
 
@@ -3968,8 +4003,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             state.state = .stopped
             state.status = .stopped
         }
-        // mutedWhenTapped restores direct output when the IOProc stops reading the taps.
-        // Explicit handback skips the fade; rebuild teardown retains it.
+        // Explicit handback skips the fade and destroys the taps immediately after the aggregate;
+        // rebuild teardown retains the fade before replacing the graph.
         if let detachedAggregate {
             let records = disposeDetachedCombinedAggregate(
                 detachedAggregate,
@@ -4050,7 +4085,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 main: state.tapID,
                 systemSounds: state.systemSoundTapID,
                 outputUID: state.tapOutputUID ?? "",
-                outputStreamIndex: state.tapOutputStreamIndex ?? 0
+                outputStreamIndex: state.tapOutputStreamIndex ?? 0,
+                outputNominalSampleRate: state.tapOutputNominalSampleRate ?? 0
             )
         } else {
             tapSet = nil
@@ -4059,6 +4095,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         state.systemSoundTapID = AudioObjectID(kAudioObjectUnknown)
         state.tapOutputUID = nil
         state.tapOutputStreamIndex = nil
+        state.tapOutputNominalSampleRate = nil
         return tapSet
     }
 
@@ -4152,7 +4189,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 main: mainTapID,
                 systemSounds: AudioObjectID(kAudioObjectUnknown),
                 outputUID: output.uid,
-                outputStreamIndex: streamIndex
+                outputStreamIndex: streamIndex,
+                outputNominalSampleRate: Int64(output.nominalSampleRate.rounded())
             ))
             throw error
         }
@@ -4321,7 +4359,39 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
     }
 
-    private func tapChannelCount(_ tapID: AudioObjectID) throws -> Int {
+    private func validatedTapChannelCounts(
+        taps: CombinedTapSet,
+        route: CombinedRoutePreparation
+    ) throws -> (main: Int, systemSounds: Int) {
+        let mainFormat = try processTapFormat(taps.main)
+        let systemSoundFormat = try processTapFormat(taps.systemSounds)
+        let expectedChannelCount = route.outputStreamChannelCounts[route.outputStreamIndex]
+        traceDiagnostic {
+            "process tap formats output=\(route.output.id) expectedRate=\(route.output.nominalSampleRate) mainRate=\(mainFormat.sampleRate) systemRate=\(systemSoundFormat.sampleRate) mainChannels=\(mainFormat.channelCount) systemChannels=\(systemSoundFormat.channelCount)"
+        }
+        guard mainFormat.channelCount == expectedChannelCount,
+              systemSoundFormat.channelCount == mainFormat.channelCount else {
+            throw AudioEngineInternalError(
+                message: "The process-tap formats do not match the selected output stream."
+            )
+        }
+        guard Self.tapSampleRateMatchesOutput(
+            tapSampleRate: mainFormat.sampleRate,
+            outputSampleRate: route.output.nominalSampleRate
+        ), Self.tapSampleRateMatchesOutput(
+            tapSampleRate: systemSoundFormat.sampleRate,
+            outputSampleRate: route.output.nominalSampleRate
+        ) else {
+            throw ProcessTapFormatNotSettledError(
+                expectedSampleRate: route.output.nominalSampleRate,
+                mainSampleRate: mainFormat.sampleRate,
+                systemSoundSampleRate: systemSoundFormat.sampleRate
+            )
+        }
+        return (mainFormat.channelCount, systemSoundFormat.channelCount)
+    }
+
+    private func processTapFormat(_ tapID: AudioObjectID) throws -> ProcessTapFormat {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioTapPropertyFormat,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -4352,7 +4422,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 message: "Core Audio returned an unsupported process-tap sample format."
             )
         }
-        return Int(format.mChannelsPerFrame)
+        return ProcessTapFormat(
+            sampleRate: format.mSampleRate,
+            channelCount: Int(format.mChannelsPerFrame)
+        )
     }
 
     private func waitUntilAggregateIsAlive(_ deviceID: AudioObjectID) throws {
@@ -4949,11 +5022,41 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
-    static func shouldContinueDeferredColdStartup(
-        activeBackendIsSeparate: Bool,
-        deferredRouteMatches: Bool
+    static func combinedTapMatchesRoute(
+        existingOutputUID: String?,
+        existingOutputStreamIndex: Int?,
+        existingNominalSampleRate: Int64?,
+        output: AudioOutputDevice,
+        outputStreamIndex: Int
     ) -> Bool {
-        activeBackendIsSeparate && deferredRouteMatches
+        guard output.nominalSampleRate.isFinite,
+              output.nominalSampleRate > 0,
+              output.nominalSampleRate <= CoreAudioDeviceQuery.maxSampleRate else {
+            return false
+        }
+        return existingOutputUID == output.uid
+            && existingOutputStreamIndex == outputStreamIndex
+            && existingNominalSampleRate == Int64(output.nominalSampleRate.rounded())
+    }
+
+    static func tapSampleRateMatchesOutput(
+        tapSampleRate: Double,
+        outputSampleRate: Double
+    ) -> Bool {
+        tapSampleRate.isFinite
+            && outputSampleRate.isFinite
+            && tapSampleRate > 0
+            && outputSampleRate > 0
+            && abs(tapSampleRate - outputSampleRate) < 1
+    }
+
+    static func shouldUseColdStartupCompatibilityBackend(
+        activeBackendIsSeparate: Bool,
+        deferredRouteMatches: Bool,
+        externalClientsMayBeActive: Bool
+    ) -> Bool {
+        activeBackendIsSeparate
+            && (deferredRouteMatches || externalClientsMayBeActive)
     }
 
     static func coldStartupPromotionResult(
@@ -5003,7 +5106,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     }
                 }
 
-                guard startupError is AggregateStartupQualificationError,
+                guard Self.isRetryableCombinedStartupError(startupError),
                       hasAnotherAttempt else {
                     throw startupError
                 }
@@ -5014,6 +5117,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         if let lastStartupError {
             throw lastStartupError
         }
+    }
+
+    static func isRetryableCombinedStartupError(_ error: any Error) -> Bool {
+        error is AggregateStartupQualificationError
+            || error is ProcessTapFormatNotSettledError
     }
 
     static func startupQualificationTimeout(

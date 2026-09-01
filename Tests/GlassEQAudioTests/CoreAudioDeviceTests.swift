@@ -28,7 +28,8 @@ struct CoreAudioDeviceTests {
         )
         let ledger = CoreAudioResourceCleanupLedger(
             operations: operations,
-            preservesFailuresOnDeinit: false
+            preservesFailuresOnDeinit: false,
+            automaticRetryDelaysMilliseconds: []
         )
 
         #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
@@ -45,6 +46,117 @@ struct CoreAudioDeviceTests {
         #expect(counts.withLock { $0.aggregateDestroyAttempts } == 2)
         #expect(counts.withLock { $0.tapDestroyAttempts } == 1)
         #expect(counts.withLock { $0.completionCount } == 1)
+    }
+
+    @Test
+    func coreAudioCleanupAutomaticallyRetriesRetainedResources() {
+        let attempts = Mutex(0)
+        let completed = DispatchSemaphore(value: 0)
+        let operations = CoreAudioResourceCleanupLedger.Operations(
+            stopIOProc: { _, _ in noErr },
+            destroyIOProc: { _, _ in noErr },
+            destroyAggregate: { _ in noErr },
+            destroyTap: { _ in
+                attempts.withLock { attempts in
+                    attempts += 1
+                    return attempts < 3 ? kAudioHardwareUnspecifiedError : noErr
+                }
+            }
+        )
+        let ledger = CoreAudioResourceCleanupLedger(
+            operations: operations,
+            preservesFailuresOnDeinit: false
+        )
+
+        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "destroy muted process tap",
+            tapIDs: [42],
+            completion: { completed.signal() }
+        )))
+        #expect(completed.wait(timeout: .now() + 2) == .success)
+        #expect(attempts.withLock { $0 } == 3)
+        #expect(ledger.pendingCount == 0)
+    }
+
+    @Test
+    func coreAudioCleanupDoesNotHoldStateLockAcrossDestruction() throws {
+        let tapOneAttempts = Mutex(0)
+        let retryEnteredHAL = DispatchSemaphore(value: 0)
+        let releaseHAL = DispatchSemaphore(value: 0)
+        let retryFinished = DispatchSemaphore(value: 0)
+        let concurrentDisposeFinished = DispatchSemaphore(value: 0)
+        let concurrentDisposeResult = Mutex<Bool?>(nil)
+        let retryQueue = DispatchQueue(
+            label: "com.glasseq.tests.core-audio-cleanup-retry",
+            qos: .userInitiated
+        )
+        let disposeQueue = DispatchQueue(
+            label: "com.glasseq.tests.core-audio-cleanup-dispose",
+            qos: .userInitiated
+        )
+        let operations = CoreAudioResourceCleanupLedger.Operations(
+            stopIOProc: { _, _ in noErr },
+            destroyIOProc: { _, _ in noErr },
+            destroyAggregate: { _ in noErr },
+            destroyTap: { tapID in
+                guard tapID == 1 else {
+                    return noErr
+                }
+                let attempt = tapOneAttempts.withLock { attempts in
+                    attempts += 1
+                    return attempts
+                }
+                guard attempt > 1 else {
+                    return kAudioHardwareUnspecifiedError
+                }
+                retryEnteredHAL.signal()
+                releaseHAL.wait()
+                return noErr
+            }
+        )
+        let ledger = CoreAudioResourceCleanupLedger(
+            operations: operations,
+            preservesFailuresOnDeinit: false,
+            automaticRetryDelaysMilliseconds: []
+        )
+
+        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "retain first tap",
+            tapIDs: [1]
+        )))
+        retryQueue.async {
+            _ = ledger.retryPending()
+            retryFinished.signal()
+        }
+        let retryStarted = retryEnteredHAL.wait(timeout: .now() + 5) == .success
+        if !retryStarted {
+            releaseHAL.signal()
+        }
+        try #require(retryStarted)
+
+        disposeQueue.async {
+            let completed = ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+                operation: "queue second tap",
+                tapIDs: [2]
+            ))
+            concurrentDisposeResult.withLock { $0 = completed }
+            concurrentDisposeFinished.signal()
+        }
+        let disposeReturnedWithoutWaitingForHAL = concurrentDisposeFinished.wait(
+            timeout: .now() + 5
+        ) == .success
+        releaseHAL.signal()
+        if !disposeReturnedWithoutWaitingForHAL {
+            _ = retryFinished.wait(timeout: .now() + 5)
+            _ = concurrentDisposeFinished.wait(timeout: .now() + 5)
+        }
+
+        try #require(disposeReturnedWithoutWaitingForHAL)
+        try #require(retryFinished.wait(timeout: .now() + 5) == .success)
+        #expect(concurrentDisposeResult.withLock { $0 } == false)
+        #expect(ledger.pendingCount == 1)
+        #expect(ledger.retryPending())
+        #expect(ledger.pendingCount == 0)
     }
 
     @Test
@@ -249,7 +361,7 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func systemTapExcludesGlassEQAndSystemSoundsByBundleID() {
+    func systemTapRestoresDryPlaybackWhenItsReaderStops() {
         let description = SystemTapAudioEngine.makeSystemTapDescription(
             excluding: [42],
             outputUID: "test-output",
@@ -264,7 +376,7 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func systemSoundTapIncludesDormantDaemonByBundleID() {
+    func systemSoundTapRestoresDryPlaybackWhenItsReaderStops() {
         let description = SystemTapAudioEngine.makeSystemSoundTapDescription(
             outputUID: "test-output",
             streamIndex: 1
@@ -276,6 +388,46 @@ struct CoreAudioDeviceTests {
         #expect(description.muteBehavior == .mutedWhenTapped)
         #expect(!description.isMixdown)
         #expect(description.isProcessRestoreEnabled)
+    }
+
+    @Test
+    func combinedTapReuseRequiresTheSameNominalSampleRate() {
+        let output = output(
+            uid: "same-device",
+            channelCount: 2,
+            sampleRate: 48_000
+        )
+
+        #expect(SystemTapAudioEngine.combinedTapMatchesRoute(
+            existingOutputUID: output.uid,
+            existingOutputStreamIndex: 1,
+            existingNominalSampleRate: 48_000,
+            output: output,
+            outputStreamIndex: 1
+        ))
+        #expect(!SystemTapAudioEngine.combinedTapMatchesRoute(
+            existingOutputUID: output.uid,
+            existingOutputStreamIndex: 1,
+            existingNominalSampleRate: 44_100,
+            output: output,
+            outputStreamIndex: 1
+        ))
+    }
+
+    @Test
+    func processTapSampleRateMustMatchThePhysicalOutput() {
+        #expect(SystemTapAudioEngine.tapSampleRateMatchesOutput(
+            tapSampleRate: 48_000,
+            outputSampleRate: 48_000
+        ))
+        #expect(!SystemTapAudioEngine.tapSampleRateMatchesOutput(
+            tapSampleRate: 44_100,
+            outputSampleRate: 48_000
+        ))
+        #expect(!SystemTapAudioEngine.tapSampleRateMatchesOutput(
+            tapSampleRate: 0,
+            outputSampleRate: 48_000
+        ))
     }
 
     @Test
@@ -425,6 +577,35 @@ struct CoreAudioDeviceTests {
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 64
         ) == [64, 64])
+    }
+
+    @Test
+    func unsettledProcessTapFormatIsRetryableDuringAggregateStartup() throws {
+        let error = SystemTapAudioEngine.ProcessTapFormatNotSettledError(
+            expectedSampleRate: 96_000,
+            mainSampleRate: 44_100,
+            systemSoundSampleRate: 44_100
+        )
+        var attempts: [UInt32] = []
+        var waitCount = 0
+
+        try SystemTapAudioEngine.runCombinedStartupAttempts(
+            frameSizes: [16, 16],
+            isSeparateClockHandoff: false,
+            attempt: { frameSize in
+                attempts.append(frameSize)
+                if attempts.count == 1 {
+                    throw error
+                }
+            },
+            restoreSeparateClockOutput: {},
+            waitBeforeRetry: {
+                waitCount += 1
+            }
+        )
+
+        #expect(attempts == [16, 16])
+        #expect(waitCount == 1)
     }
 
     @Test
@@ -745,18 +926,26 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func matchingDeferredColdStartupStaysOnCompatibilityBackend() {
-        #expect(SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+    func deferredColdStartupRebuildsStayCompatibleWhileClientsAreActive() {
+        #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
-            deferredRouteMatches: true
+            deferredRouteMatches: true,
+            externalClientsMayBeActive: false
         ))
-        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+        #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
+            activeBackendIsSeparate: true,
+            deferredRouteMatches: false,
+            externalClientsMayBeActive: true
+        ))
+        #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: false,
-            deferredRouteMatches: true
+            deferredRouteMatches: true,
+            externalClientsMayBeActive: true
         ))
-        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+        #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
-            deferredRouteMatches: false
+            deferredRouteMatches: false,
+            externalClientsMayBeActive: false
         ))
     }
 
@@ -785,17 +974,17 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func activeOutputProcessDetectionMatchesTheDeviceAndExclusions() throws {
+    func potentialActiveOutputProcessDetectionMatchesTheDeviceAndExclusions() {
         let processDevices: [AudioObjectID: [AudioObjectID]] = [
             10: [100],
             20: [200],
             30: [100, 200],
         ]
         let runningProcesses: Set<AudioObjectID> = [20, 30]
-        let query: (AudioObjectID, Set<AudioObjectID>) throws -> Bool = {
+        let query: (AudioObjectID, Set<AudioObjectID>) -> Bool = {
             deviceID,
             excluded in
-            try CoreAudioDeviceQuery.hasActiveOutputProcess(
+            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
                 using: deviceID,
                 excluding: excluded,
                 processObjectIDs: { [10, 20, 30] },
@@ -804,46 +993,61 @@ struct CoreAudioDeviceTests {
             )
         }
 
-        #expect(try query(100, []))
-        #expect(try query(200, []))
-        #expect(!(try query(100, [30])))
-        #expect(!(try query(300, [])))
+        #expect(query(100, []))
+        #expect(query(200, []))
+        #expect(!query(100, [30]))
+        #expect(!query(300, []))
     }
 
     @Test
-    func activeOutputProcessDetectionSkipsDisappearingProcessObjects() throws {
-        let hasActiveProcess = try CoreAudioDeviceQuery.hasActiveOutputProcess(
+    func activeOutputProcessDetectionSkipsConfirmedStaleProcessObjects() {
+        let mayHaveActiveProcess = CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
             using: 100,
             excluding: [],
-            processObjectIDs: { [10, 20, 30] },
+            processObjectIDs: { [10, 20] },
             isRunningOutput: { processObjectID in
                 if processObjectID == 10 {
-                    throw ActiveProcessQueryTestError.staleProcess
+                    throw CoreAudioError(
+                        operation: "read running state",
+                        status: kAudioHardwareBadObjectError
+                    )
                 }
                 return true
             },
             outputDeviceIDs: { processObjectID in
                 if processObjectID == 20 {
-                    throw ActiveProcessQueryTestError.staleProcess
+                    throw CoreAudioError(
+                        operation: "read output devices",
+                        status: kAudioHardwareBadObjectError
+                    )
                 }
                 return [100]
             }
         )
 
-        #expect(hasActiveProcess)
+        #expect(!mayHaveActiveProcess)
     }
 
     @Test
-    func activeOutputProcessDetectionPreservesProcessListFailures() {
-        #expect(throws: ActiveProcessQueryTestError.self) {
-            try CoreAudioDeviceQuery.hasActiveOutputProcess(
-                using: 100,
-                excluding: [],
-                processObjectIDs: { throw ActiveProcessQueryTestError.processList },
-                isRunningOutput: { _ in true },
-                outputDeviceIDs: { _ in [100] }
-            )
-        }
+    func activeOutputProcessDetectionTreatsProcessListFailuresAsPotentialActivity() {
+        #expect(CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
+            using: 100,
+            excluding: [],
+            processObjectIDs: { throw ActiveProcessQueryTestError.processList },
+            isRunningOutput: { _ in true },
+            outputDeviceIDs: { _ in [100] }
+        ))
+    }
+
+    @Test
+    func activeOutputProcessDetectionTreatsUnknownPropertyFailuresAsPotentialActivity() {
+        #expect(CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
+            using: 100,
+            excluding: [],
+            processObjectIDs: { [10] },
+            isRunningOutput: { _ in true },
+            outputDeviceIDs: { _ in throw ActiveProcessQueryTestError.propertyQuery }
+        ))
     }
 
     @Test
@@ -1072,6 +1276,72 @@ struct CoreAudioDeviceTests {
         #expect(resolvedOutput.uid == defaultOutput.uid)
         #expect(resolvedOutput.outputChannelCount > 0)
         #expect(try CoreAudioDeviceQuery.outputDevice(uid: "") == nil)
+    }
+
+    @Test
+    func stagingPreservesANormalRateOutputAndUsesConversion() {
+        let nativeOutput = output(
+            uid: "native-rate-output",
+            channelCount: 2,
+            sampleRate: 44_100,
+            bufferFrameSize: 512
+        )
+
+        #expect(!SeparateClockAudioBackend.shouldUseSampleRateConversion(
+            tapSampleRate: 48_000,
+            output: nativeOutput
+        ))
+        #expect(SeparateClockAudioBackend.shouldUseSampleRateConversion(
+            tapSampleRate: 48_000,
+            output: nativeOutput,
+            preservingOutputSampleRate: true
+        ))
+
+        let convertedCallbackFrames = PlaybackSampleRatePlan(
+            inputSampleRate: 48_000,
+            outputSampleRate: 44_100
+        ).inputFrames(forOutputFrames: 512)
+        #expect(SeparateClockAudioBackend.preferredPlaybackPrimeFrames(
+            for: nativeOutput,
+            tapSampleRate: 48_000,
+            captureCallbackFrames: 64
+        ) >= convertedCallbackFrames + 64)
+    }
+
+    @Test
+    func compatibilityCaptureRefreshesForNormalRateChanges() {
+        let output48 = output(
+            uid: "normal-rate-output",
+            channelCount: 2,
+            sampleRate: 48_000
+        )
+        let output88 = output(
+            uid: "normal-rate-output",
+            channelCount: 2,
+            sampleRate: 88_200
+        )
+        let lowRateOutput = output(
+            uid: "low-rate-output",
+            channelCount: 2,
+            sampleRate: 24_000
+        )
+
+        #expect(!SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 48_000,
+            output: output48
+        ))
+        #expect(SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 44_100,
+            output: output48
+        ))
+        #expect(SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 48_000,
+            output: output88
+        ))
+        #expect(!SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 48_000,
+            output: lowRateOutput
+        ))
     }
 
     @Test
@@ -1723,6 +1993,64 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func outputObserverRefreshesRateAndStreamChangesImmediately() {
+        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyNominalSampleRate
+        ))
+        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyStreamConfiguration
+        ))
+        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyDeviceIsAlive
+        ))
+        #expect(!DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyBufferFrameSize
+        ))
+    }
+
+    @Test
+    func outputObserverReportsEachObservedConfigurationOnce() {
+        var tracker = DefaultOutputChangeTracker()
+        let initialOutput = output(channelCount: 2, sampleRate: 96_000)
+        var changedOutput = initialOutput
+        changedOutput.nominalSampleRate = 44_100
+
+        let skippedInitialValue = tracker.shouldSendChange(
+            for: initialOutput,
+            sendChange: false,
+            reason: .initial
+        )
+        let sentChangedValue = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            reason: .settled
+        )
+        let sentStreamEvent = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            reason: .streamConfiguration
+        )
+        let skippedCoalescedDuplicate = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            reason: .settled
+        )
+
+        #expect(!skippedInitialValue)
+        #expect(sentChangedValue)
+        #expect(sentStreamEvent)
+        #expect(!skippedCoalescedDuplicate)
+
+        tracker.reset()
+        let sentAfterReset = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            reason: .settled
+        )
+        #expect(sentAfterReset)
+    }
+
+    @Test
     func refreshCoalescerRunsOnlyLatestScheduledAction() {
         let queue = DispatchQueue(label: "com.glasseq.tests.refresh-coalescer")
         let coalescer = DispatchRefreshCoalescer(queue: queue, delay: .milliseconds(10))
@@ -1979,7 +2307,7 @@ private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
 
 private enum ActiveProcessQueryTestError: Error {
     case processList
-    case staleProcess
+    case propertyQuery
 }
 
 private final class LockedCounter: @unchecked Sendable {
