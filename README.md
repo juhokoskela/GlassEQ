@@ -4,7 +4,7 @@ A native macOS equalizer that processes your **entire system audio** in real tim
 
 [![macOS 26](https://img.shields.io/badge/macOS-26-black)](#supported-target)
 [![Apple Silicon](https://img.shields.io/badge/arch-Apple%20Silicon-black)](#supported-target)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors)](https://github.com/sponsors/juhokoskela)
 
 **[Download the latest GlassEQ alpha](https://github.com/juhokoskela/GlassEQ/releases/latest)** for macOS 26 and Apple Silicon. See the installation notes below.
@@ -90,7 +90,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ## Support the project
 
-GlassEQ is free and MIT-licensed. The biggest thing standing between the current alpha and a build that opens without the Gatekeeper workaround is an Apple Developer Program membership ($99/year), which is required to ship a **Developer ID-signed, notarized** app.
+GlassEQ's source is released under GPL-3.0-or-later. The current alpha is ad hoc-signed and still needs the Gatekeeper workaround described above. Sponsorship helps cover the Apple Developer Program membership and other release costs required for a **Developer ID-signed, notarized** app.
 
 If you'd like to help get there, the **Sponsor** button at the top of this repository goes directly toward that cost. Every bit helps move GlassEQ from "ad hoc-signed alpha" to "double-click to open."
 
@@ -130,7 +130,7 @@ swift run GlassEQDiagnostics 2
 ./Scripts/build-release-app.sh
 ```
 
-The script builds a release app bundle, embeds the app icon, ad hoc-signs the bundle, and writes a zip under `.build/dist/`.
+The script builds a release app bundle, embeds the app icon and GPL text, ad hoc-signs the bundle, and writes a ZIP under `.build/dist/`. The ZIP also contains the full license, the exact Git revision and build inputs, and a machine-readable Corresponding Source archive generated from the clean commit used for the build.
 
 Gatekeeper assessment is *expected to fail* because the alpha is not Developer ID signed or notarized:
 
@@ -153,6 +153,8 @@ GlassEQ intentionally does not implement per-app routing, a virtual output selec
 
 ## License
 
-GlassEQ is released under the MIT License.
+Unless otherwise noted, GlassEQ's source code and documentation are released under the [GNU General Public License, version 3 or later](LICENSE).
+
+The GlassEQ name, logo, app icon, and other product branding are trademarks of Juho Koskela. The source license does not grant permission to brand an independently built or modified distribution as GlassEQ. See the [GlassEQ trademark policy](TRADEMARKS.md).
 
 Copyright (c) 2026 Juho Koskela.
