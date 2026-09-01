@@ -514,6 +514,141 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func duplicateOutputNotificationDoesNotDropAnInFlightColdStartupPromotion() async {
+        let output = makeOutput(uid: "in-flight-cold-promotion", name: "D10s")
+        var promotedOutput = output
+        promotedOutput.bufferFrameSize = 32
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .promoted(promotedOutput)
+        engine.blockColdStartupAggregatePromotion()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.coldStartupAggregatePromotionAttemptCount == 1
+        }
+        #expect(engine.waitUntilColdStartupAggregatePromotionIsBlocked(
+            timeout: .now() + 1
+        ))
+
+        observers.observers[0].emit(.success(output))
+        engine.unblockColdStartupAggregatePromotion()
+
+        let completed = await waitUntil {
+            !engine.isDeferringColdStartupAggregate
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
+                && model.settingsSnapshot().currentOutputBufferFrameSize == 32
+        }
+        #expect(completed)
+        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
+        #expect(model.statusMessage.contains("Processing D10s"))
+    }
+
+    @Test
+    func deferredColdStartupRebuildKeepsTheStoredAggregateBufferPreference() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let output = makeOutput(
+            uid: "deferred-buffer-preference",
+            name: "D10s",
+            bufferFrameSize: 512
+        )
+        let route = AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: 0,
+            nominalSampleRate: output.nominalSampleRate
+        )
+        try AggregateBufferPolicyStore(
+            url: storeURL.deletingPathExtension()
+                .appendingPathExtension("aggregate-buffer-policy.json")
+        ).setMode(.frames64, for: route)
+
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .clientsActive
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            storeURL: storeURL,
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running
+                && engine.startCalls.count == 1
+                && engine.isDeferringColdStartupAggregate
+        }
+
+        var changedOutput = output
+        changedOutput.bufferFrameSize = 256
+        lookup.result = .success(changedOutput)
+        observers.observers[0].emit(.success(changedOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 2
+        }
+
+        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [64, 64])
+        #expect(!model.settingsSnapshot().aggregateBuffer.isAvailable)
+    }
+
+    @Test
+    func unstableColdStartupPromotionIsNotRetriedAfterARejectedProfileChange() async throws {
+        let running = makeProfile(name: "Cold Start Running")
+        let requested = makeProfile(name: "Cold Start Requested")
+        let output = makeOutput(uid: "unstable-cold-promotion", name: "D10s")
+        let store = ProfileStore(
+            profiles: [running, requested],
+            fallbackProfileID: running.id
+        )
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .aggregateUnstable
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.coldStartupAggregatePromotionAttemptCount == 1
+                && model.statusMessage.contains("startup path was unstable")
+        }
+
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        try model.apply(profile: requested)
+        await waitUntil {
+            model.statusMessage.contains("not applied")
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
+        #expect(engine.state == .running(output: output))
+    }
+
+    @Test
     func rejectedProfileChangeRestartsColdStartupPromotion() async throws {
         let running = makeProfile(name: "Cold Start Running")
         let requested = makeProfile(name: "Cold Start Requested")
@@ -5457,6 +5592,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
     private var _preferredFrameSizeBlockers: [UInt32: FakeStartBlocker] = [:]
     private var _updateBlockersByProfileID: [UUID: FakeStartBlocker] = [:]
+    private var _coldStartupPromotionBlocker: FakeStartBlocker?
     private var _startCalls: [StartCall] = []
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
@@ -5722,6 +5858,29 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         blocker?.unblock()
     }
 
+    func blockColdStartupAggregatePromotion() {
+        withLock {
+            _coldStartupPromotionBlocker = FakeStartBlocker()
+        }
+    }
+
+    func waitUntilColdStartupAggregatePromotionIsBlocked(
+        timeout: DispatchTime
+    ) -> Bool {
+        withLock {
+            _coldStartupPromotionBlocker
+        }?.waitUntilEntered(timeout: timeout) ?? false
+    }
+
+    func unblockColdStartupAggregatePromotion() {
+        let blocker = withLock {
+            let blocker = _coldStartupPromotionBlocker
+            _coldStartupPromotionBlocker = nil
+            return blocker
+        }
+        blocker?.unblock()
+    }
+
     func start(output: AudioOutputDevice, profile: EQProfile) throws {
         let startControl = withLock {
             _events.append("start:\(output.uid)")
@@ -5773,9 +5932,16 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     func attemptColdStartupAggregatePromotion() throws
         -> ColdStartupAggregatePromotionResult {
-        withLock {
+        let attempt = withLock {
             _coldStartupAggregatePromotionAttemptCount += 1
-            let result = _coldStartupAggregatePromotionResult
+            return (
+                result: _coldStartupAggregatePromotionResult,
+                blocker: _coldStartupPromotionBlocker
+            )
+        }
+        attempt.blocker?.waitUntilUnblocked()
+        return withLock {
+            let result = attempt.result
             if case .promoted(let output) = result {
                 _state = .running(output: output)
                 _isDeferringColdStartupAggregate = false
@@ -5809,7 +5975,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
         withLock {
-            if _isUsingTransitionalHeadsetBackend || _isDeferringColdStartupAggregate {
+            if _isUsingTransitionalHeadsetBackend {
                 return nil
             }
             return AggregateAudioRouteFingerprint(

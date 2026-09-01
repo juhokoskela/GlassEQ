@@ -596,6 +596,7 @@ final class GlassEQAppModel {
     private let headsetAggregatePromotionDelay: Duration
     private let coldStartupAggregatePromotionPollInterval: Duration
     private var headsetPromotionAttemptedOutputGeneration: Int?
+    private var coldStartupPromotionAttemptedOutputGeneration: Int?
     private let aggregateBufferNotifier: any AggregateBufferChangeNotifying
     private var pendingAggregateBufferIncrease: PendingAggregateBufferIncrease?
     private var fixedBufferRecovery: FixedBufferRecovery?
@@ -2075,10 +2076,12 @@ final class GlassEQAppModel {
         if case .success(let output) = result,
            lastHandledDefaultOutputConfiguration == DefaultOutputConfiguration(output),
            isRunning || engineStartTask != nil {
-            let hadPendingOutputChange = outputChangeTask != nil
+            guard outputChangeTask != nil else {
+                return
+            }
             let shouldResumeOutput = pendingOutputChangeRequestedMute
             invalidatePendingOutputChange()
-            if hadPendingOutputChange, isRunning {
+            if isRunning {
                 if shouldResumeOutput {
                     scheduleEngineResumeAfterCancelledTransition()
                 }
@@ -2310,6 +2313,15 @@ final class GlassEQAppModel {
             return selection.frameSize
         }
         return fixedBufferRecovery.session.runtimeFrameSize
+    }
+
+    private func activeAggregateRouteFingerprint(
+        for output: AudioOutputDevice
+    ) -> AggregateAudioRouteFingerprint? {
+        guard !engine.isUsingSeparateClockBackend else {
+            return nil
+        }
+        return try? engine.aggregateRouteFingerprint(for: output)
     }
 
     private func clearFixedBufferRecoveryAndRestorePreference() {
@@ -2601,7 +2613,7 @@ final class GlassEQAppModel {
         case .success(let output, let latencyMetadata):
             refreshCurrentOutputMetadata(from: output)
             recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
-            activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             lifecycleState = .running
             isRunning = true
@@ -2614,7 +2626,7 @@ final class GlassEQAppModel {
             startHeadsetAggregatePromotionIfNeeded()
         case .profileChangeNotApplied(_, let output, let reconciliation):
             refreshCurrentOutputMetadata(from: output)
-            activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             if let reconciliation {
                 restoreEngineProfileReconciliation(reconciliation, persist: true)
@@ -2657,6 +2669,12 @@ final class GlassEQAppModel {
     }
 
     private func runningEngineStatusMessage(for output: AudioOutputDevice) -> String {
+        if engine.isUsingSeparateClockBackend,
+           coldStartupPromotionAttemptedOutputGeneration == outputChangeGeneration {
+            return localized(
+                "The low-latency startup path was unstable; compatibility mode remains active."
+            )
+        }
         if engine.isDeferringColdStartupAggregate {
             return localized(
                 "Processing \(output.name) in compatibility mode until active playback releases the output"
@@ -2777,7 +2795,8 @@ final class GlassEQAppModel {
     private func startColdStartupAggregatePromotionIfNeeded() {
         coldStartupAggregatePromotionTask?.cancel()
         coldStartupAggregatePromotionTask = nil
-        guard engine.isDeferringColdStartupAggregate else {
+        guard engine.isDeferringColdStartupAggregate,
+              coldStartupPromotionAttemptedOutputGeneration != outputChangeGeneration else {
             return
         }
         let engineGeneration = engineStartGeneration
@@ -2832,7 +2851,7 @@ final class GlassEQAppModel {
         case .success(.promoted(let output), let latencyMetadata):
             refreshCurrentOutputMetadata(from: output)
             recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
-            activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             engineMetrics = engine.snapshotMetrics()
             statusMessage = processingStatus(
                 outputName: output.name,
@@ -2842,6 +2861,7 @@ final class GlassEQAppModel {
         case .success(.clientsActive, _):
             return
         case .success(.aggregateUnstable, _):
+            coldStartupPromotionAttemptedOutputGeneration = outputChangeGeneration
             activeAggregateRoute = nil
             statusMessage = localized(
                 "The low-latency startup path was unstable; compatibility mode remains active."
@@ -2928,7 +2948,7 @@ final class GlassEQAppModel {
         case .success(.promoted(let output), let latencyMetadata):
             refreshCurrentOutputMetadata(from: output)
             recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
-            activeAggregateRoute = try? engine.aggregateRouteFingerprint(for: output)
+            activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             engineMetrics = engine.snapshotMetrics()
             statusMessage = localized(
                 "Processing \(output.name) with \(activeProfile.name) on the low-latency headset path"
