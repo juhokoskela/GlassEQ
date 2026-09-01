@@ -1910,6 +1910,9 @@ struct CoreAudioDeviceTests {
         #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
             selector: kAudioDevicePropertyStreamConfiguration
         ))
+        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyDeviceIsAlive
+        ))
         #expect(!DefaultOutputDeviceObserver.shouldRefreshImmediately(
             selector: kAudioDevicePropertyBufferFrameSize
         ))
@@ -1925,34 +1928,34 @@ struct CoreAudioDeviceTests {
         let skippedInitialValue = tracker.shouldSendChange(
             for: initialOutput,
             sendChange: false,
-            suppressDuplicate: false
+            reason: .initial
         )
         let sentChangedValue = tracker.shouldSendChange(
             for: changedOutput,
             sendChange: true,
-            suppressDuplicate: true
+            reason: .settled
         )
-        let skippedStreamDuplicate = tracker.shouldSendChange(
+        let sentStreamEvent = tracker.shouldSendChange(
             for: changedOutput,
             sendChange: true,
-            suppressDuplicate: true
+            reason: .streamConfiguration
         )
         let skippedCoalescedDuplicate = tracker.shouldSendChange(
             for: changedOutput,
             sendChange: true,
-            suppressDuplicate: true
+            reason: .settled
         )
 
         #expect(!skippedInitialValue)
         #expect(sentChangedValue)
-        #expect(!skippedStreamDuplicate)
+        #expect(sentStreamEvent)
         #expect(!skippedCoalescedDuplicate)
 
         tracker.reset()
         let sentAfterReset = tracker.shouldSendChange(
             for: changedOutput,
             sendChange: true,
-            suppressDuplicate: true
+            reason: .settled
         )
         #expect(sentAfterReset)
     }

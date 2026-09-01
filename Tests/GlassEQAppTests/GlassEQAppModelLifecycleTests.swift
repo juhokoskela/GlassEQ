@@ -2492,6 +2492,52 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.events == ["start:\(initialOutput.uid)", "stop", "start:\(changedOutput.uid)"])
     }
 
+    @Test(arguments: [
+        DefaultOutputDeviceChangeReason.streamConfiguration,
+        .deviceAlive,
+    ])
+    func semanticOutputChangeRebuildsEvenWhenDeviceMetadataIsUnchanged(
+        reason: DefaultOutputDeviceChangeReason
+    ) async {
+        let output = makeOutput(
+            uid: "semantic-change-output",
+            name: "USB DAC",
+            id: 200,
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 256
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .milliseconds(200)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        observer.emit(.success(output), reason: reason)
+
+        await waitUntil {
+            engine.stopCallCount == 1
+        }
+        #expect(engine.startCalls.count == 1)
+
+        await waitUntil {
+            engine.startCalls.count == 2 && model.lifecycleState == .running
+        }
+
+        #expect(engine.startCalls.map(\.output) == [output, output])
+        #expect(engine.events == ["start:\(output.uid)", "stop", "start:\(output.uid)"])
+    }
+
     @Test
     func profileEditDuringStoppedFormatSettlementWaitsForTheSettledRebuild() async throws {
         let profile = makeProfile(name: "Initial")
@@ -5852,8 +5898,11 @@ private final class FakeDefaultOutputObserver: DefaultOutputObserving, @unchecke
         }
     }
 
-    func emit(_ result: Result<AudioOutputDevice, Error>) {
-        onChange(result)
+    func emit(
+        _ result: Result<AudioOutputDevice, Error>,
+        reason: DefaultOutputDeviceChangeReason = .settled
+    ) {
+        onChange(result, reason)
     }
 
     private func withLock<T>(_ body: () -> T) -> T {
@@ -5923,8 +5972,11 @@ private final class BlockingAsyncDefaultOutputObserver: DefaultOutputObserving, 
         stop()
     }
 
-    func emit(_ result: Result<AudioOutputDevice, Error>) {
-        onChange(result)
+    func emit(
+        _ result: Result<AudioOutputDevice, Error>,
+        reason: DefaultOutputDeviceChangeReason = .settled
+    ) {
+        onChange(result, reason)
     }
 
     func resumeStart() {

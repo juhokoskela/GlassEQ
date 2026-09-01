@@ -325,7 +325,7 @@ struct CoreAudioDefaultOutputLookup: DefaultOutputLookingUp {
     }
 }
 
-typealias DefaultOutputObserverHandler = @Sendable (Result<AudioOutputDevice, Error>) -> Void
+typealias DefaultOutputObserverHandler = DefaultOutputDeviceChangeHandler
 
 protocol DefaultOutputObserving: AnyObject, Sendable {
     func start(sendInitialValue: Bool) throws
@@ -352,7 +352,7 @@ protocol DefaultOutputObservingMaking {
 
 struct CoreAudioDefaultOutputObserverFactory: DefaultOutputObservingMaking {
     func makeObserver(onChange: @escaping DefaultOutputObserverHandler) -> any DefaultOutputObserving {
-        DefaultOutputDeviceObserver(onChange: onChange)
+        DefaultOutputDeviceObserver(onEvent: onChange)
     }
 }
 
@@ -1357,9 +1357,13 @@ final class GlassEQAppModel {
 
         observerCallbackGeneration += 1
         let generation = observerCallbackGeneration
-        let observer = observerFactory.makeObserver { [weak self] result in
+        let observer = observerFactory.makeObserver { [weak self] result, reason in
             Task { @MainActor in
-                self?.scheduleDefaultOutputChange(result, observerGeneration: generation)
+                self?.scheduleDefaultOutputChange(
+                    result,
+                    reason: reason,
+                    observerGeneration: generation
+                )
             }
         }
         self.observer = observer
@@ -2084,7 +2088,11 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    private func scheduleDefaultOutputChange(_ result: Result<AudioOutputDevice, Error>, observerGeneration: Int) {
+    private func scheduleDefaultOutputChange(
+        _ result: Result<AudioOutputDevice, Error>,
+        reason: DefaultOutputDeviceChangeReason,
+        observerGeneration: Int
+    ) {
         // Observer callbacks can arrive after stop/sleep/restart; the generation gates them to
         // the observer instance that is currently allowed to drive engine state.
         guard observerGeneration == observerCallbackGeneration,
@@ -2092,7 +2100,8 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
-        if case .success(let output) = result,
+        if !reason.requiresFreshAudioGraph,
+           case .success(let output) = result,
            lastHandledDefaultOutputConfiguration == DefaultOutputConfiguration(output),
            isRunning || engineStartTask != nil {
             guard outputChangeTask != nil else {
@@ -2118,7 +2127,10 @@ final class GlassEQAppModel {
         outputChangeGeneration += 1
         let generation = outputChangeGeneration
         outputChangeTask?.cancel()
-        let shouldStopEngine = shouldStopEngineForSettlingOutputChange(result)
+        let shouldStopEngine = shouldStopEngineForSettlingOutputChange(
+            result,
+            reason: reason
+        )
         let shouldMuteOutput = shouldMuteForSettlingOutputChange(result)
         if shouldStopEngine, pendingOutputTransitionAction != .stopped {
             pendingOutputTransitionAction = .stopped
@@ -2163,8 +2175,17 @@ final class GlassEQAppModel {
     }
 
     private func shouldStopEngineForSettlingOutputChange(
-        _ result: Result<AudioOutputDevice, Error>
+        _ result: Result<AudioOutputDevice, Error>,
+        reason: DefaultOutputDeviceChangeReason
     ) -> Bool {
+        let hasOwnedGraph = isRunning || engineStartTask != nil || engineStateNeedsStop
+        guard hasOwnedGraph else {
+            return false
+        }
+        if reason.requiresFreshAudioGraph {
+            return true
+        }
+
         guard case .success(let output) = result,
               !currentOutputUID.isEmpty,
               output.uid == currentOutputUID,
@@ -2173,7 +2194,7 @@ final class GlassEQAppModel {
             return false
         }
 
-        return isRunning || engineStartTask != nil || engineStateNeedsStop
+        return true
     }
 
     private func shouldMuteForSettlingOutputChange(_ result: Result<AudioOutputDevice, Error>) -> Bool {
