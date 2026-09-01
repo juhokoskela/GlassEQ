@@ -2409,6 +2409,10 @@ final class GlassEQAppModel {
             return
         }
 
+        guard pendingOutputTransitionAction != .stopped else {
+            return
+        }
+
         guard !activeProfile.isBypassed else {
             disableActiveProfileProcessing(updateMetrics: true)
             return
@@ -2432,10 +2436,6 @@ final class GlassEQAppModel {
 
         if lifecycleState == .waking {
             reschedulePendingEngineStartWithActiveProfile()
-            return
-        }
-
-        guard pendingOutputTransitionAction != .stopped else {
             return
         }
 

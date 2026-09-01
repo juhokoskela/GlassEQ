@@ -2492,6 +2492,78 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.events == ["start:\(initialOutput.uid)", "stop", "start:\(changedOutput.uid)"])
     }
 
+    @Test(arguments: [false, true])
+    func bypassDuringFormatSettlementPreservesSettledOutput(
+        reenableBeforeSettlement: Bool
+    ) async {
+        let initialOutput = makeOutput(
+            uid: "bypass-settlement-output",
+            name: "USB DAC",
+            nominalSampleRate: 48_000,
+            bufferFrameSize: 256
+        )
+        let changedOutput = makeOutput(
+            uid: initialOutput.uid,
+            name: initialOutput.name,
+            nominalSampleRate: 44_100,
+            bufferFrameSize: 512
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .milliseconds(300)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(initialOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(changedOutput)
+        observer.emit(.success(changedOutput))
+        await waitUntil {
+            model.lifecycleState == .stopped && engine.stopCallCount == 1
+        }
+
+        model.setBypass(true)
+        if reenableBeforeSettlement {
+            model.setBypass(false)
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+
+        #expect(engine.startCalls.map(\.output) == [initialOutput])
+        #expect(model.currentOutputSampleRate == initialOutput.nominalSampleRate)
+
+        if reenableBeforeSettlement {
+            await waitUntil {
+                model.lifecycleState == .running
+                    && model.currentOutputSampleRate == changedOutput.nominalSampleRate
+                    && engine.startCalls.count == 2
+            }
+            #expect(engine.startCalls.map(\.output) == [initialOutput, changedOutput])
+            #expect(engine.events == [
+                "start:\(initialOutput.uid)",
+                "stop",
+                "start:\(changedOutput.uid)",
+            ])
+        } else {
+            await waitUntil {
+                model.currentOutputSampleRate == changedOutput.nominalSampleRate
+            }
+            #expect(model.activeProfile.isBypassed)
+            #expect(model.lifecycleState == .stopped)
+            #expect(engine.startCalls.map(\.output) == [initialOutput])
+            #expect(engine.events == ["start:\(initialOutput.uid)", "stop"])
+        }
+        #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
+    }
+
     @Test(arguments: [
         DefaultOutputDeviceChangeReason.streamConfiguration,
         .deviceAlive,
