@@ -249,25 +249,31 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func systemTapExcludesGlassEQAndSystemSoundsByBundleID() {
+    func completeCompositionSystemTapStaysMutedUntilDestroyed() {
         let description = SystemTapAudioEngine.makeSystemTapDescription(
             excluding: [42],
             outputUID: "test-output",
-            streamIndex: 1
+            streamIndex: 1,
+            muteBehavior: SystemTapAudioEngine.combinedTapMuteBehavior(
+                usePhysicalFirstOrdering: false
+            )
         )
 
         #expect(description.processes == [42])
         #expect(description.bundleIDs == ["systemsoundserverd"])
         #expect(description.isExclusive)
-        #expect(description.muteBehavior == .mutedWhenTapped)
+        #expect(description.muteBehavior == .muted)
         #expect(description.isProcessRestoreEnabled)
     }
 
     @Test
-    func systemSoundTapIncludesDormantDaemonByBundleID() {
+    func physicalFirstSystemSoundTapMutesOnlyWhileRead() {
         let description = SystemTapAudioEngine.makeSystemSoundTapDescription(
             outputUID: "test-output",
-            streamIndex: 1
+            streamIndex: 1,
+            muteBehavior: SystemTapAudioEngine.combinedTapMuteBehavior(
+                usePhysicalFirstOrdering: true
+            )
         )
 
         #expect(description.processes.isEmpty)
@@ -745,18 +751,26 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func matchingDeferredColdStartupStaysOnCompatibilityBackend() {
-        #expect(SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+    func deferredColdStartupRebuildsStayCompatibleWhileClientsAreActive() {
+        #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
-            deferredRouteMatches: true
+            deferredRouteMatches: true,
+            hasActiveExternalOutputProcess: false
         ))
-        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+        #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
+            activeBackendIsSeparate: true,
+            deferredRouteMatches: false,
+            hasActiveExternalOutputProcess: true
+        ))
+        #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: false,
-            deferredRouteMatches: true
+            deferredRouteMatches: true,
+            hasActiveExternalOutputProcess: true
         ))
-        #expect(!SystemTapAudioEngine.shouldContinueDeferredColdStartup(
+        #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: true,
-            deferredRouteMatches: false
+            deferredRouteMatches: false,
+            hasActiveExternalOutputProcess: false
         ))
     }
 

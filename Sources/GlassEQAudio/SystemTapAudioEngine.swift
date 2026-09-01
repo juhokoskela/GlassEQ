@@ -1076,6 +1076,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var nominalSampleRate: Int64
     }
 
+    private enum CombinedTapMutePolicy: Equatable {
+        case completeComposition
+        case physicalFirstStartup
+
+        var muteBehavior: CATapMuteBehavior {
+            SystemTapAudioEngine.combinedTapMuteBehavior(
+                usePhysicalFirstOrdering: self == .physicalFirstStartup
+            )
+        }
+    }
+
     private struct ControlState {
         var state: AudioEngineState = .stopped
         var status: AudioEngineStatus = .stopped
@@ -1083,6 +1094,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var systemSoundTapID = AudioObjectID(kAudioObjectUnknown)
         var tapOutputUID: String?
         var tapOutputStreamIndex: Int?
+        var tapMutePolicy = CombinedTapMutePolicy.completeComposition
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
@@ -1104,6 +1116,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var systemSounds: AudioObjectID
         var outputUID: String
         var outputStreamIndex: Int
+        var mutePolicy: CombinedTapMutePolicy
     }
 
     private struct DetachedCombinedAggregate {
@@ -2677,9 +2690,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public func aggregateRouteFingerprint(
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
-        guard activeBackend.withLock({ $0 }) == .combinedAggregate else {
-            return nil
-        }
         if Self.shouldUseSeparateClockBackend(for: output) {
             let isActivePromotedRoute = control.withLock { state in
                     state.activeOutput?.uid == output.uid
@@ -2742,17 +2752,27 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let deferredRouteMatches = deferredColdStartupRoute.withLock { route in
             route == Self.deferredColdStartupRoute(for: output)
         }
-        if Self.shouldContinueDeferredColdStartup(
+        var externalClientsAreActive = false
+        if activeBackendIsSeparate, !deferredRouteMatches {
+            externalClientsAreActive = try hasActiveExternalOutputProcess(on: output)
+        }
+        if Self.shouldUseColdStartupCompatibilityBackend(
             activeBackendIsSeparate: activeBackendIsSeparate,
-            deferredRouteMatches: deferredRouteMatches
+            deferredRouteMatches: deferredRouteMatches,
+            hasActiveExternalOutputProcess: externalClientsAreActive
         ) {
             traceDiagnostic {
-                "cold-start aggregate remains deferred during compatibility rebuild"
+                deferredRouteMatches
+                    ? "cold-start aggregate remains deferred during compatibility rebuild"
+                    : "cold-start aggregate deferred for active clients on rebuilt route"
             }
             try startSeparateClockBackendForColdStartup(
                 output: output,
                 profile: profile
             )
+            deferredColdStartupRoute.withLock {
+                $0 = Self.deferredColdStartupRoute(for: output)
+            }
             return
         }
 
@@ -2929,6 +2949,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         var taps: CombinedTapSet?
         var preparedAggregate: PreparedCombinedAggregate?
+        // A complete-composition rebuild must hold the new route silent until its IOProc reads.
+        // Physical-first startup creates the IOProc first, so its unattached taps must play dry.
+        let requiredTapMutePolicy = usePhysicalFirstOrdering
+            ? CombinedTapMutePolicy.physicalFirstStartup
+            : .completeComposition
 
         do {
             let route = try prepareCombinedRoute(output: output)
@@ -2945,13 +2970,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
                 if state.tapOutputUID == route.output.uid,
                    state.tapOutputStreamIndex == route.outputStreamIndex,
+                   state.tapMutePolicy == requiredTapMutePolicy,
                    state.tapID != kAudioObjectUnknown,
                    state.systemSoundTapID != kAudioObjectUnknown {
                     taps = CombinedTapSet(
                         main: state.tapID,
                         systemSounds: state.systemSoundTapID,
                         outputUID: route.output.uid,
-                        outputStreamIndex: route.outputStreamIndex
+                        outputStreamIndex: route.outputStreamIndex,
+                        mutePolicy: state.tapMutePolicy
                     )
                 } else {
                     staleTaps = detachTapSetLocked(&state)
@@ -2972,13 +2999,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if taps == nil {
                 let createdTaps = try createSystemTaps(
                     output: route.output,
-                    streamIndex: route.outputStreamIndex
+                    streamIndex: route.outputStreamIndex,
+                    mutePolicy: requiredTapMutePolicy
                 )
                 taps = CombinedTapSet(
                     main: createdTaps.main,
                     systemSounds: createdTaps.systemSounds,
                     outputUID: route.output.uid,
-                    outputStreamIndex: route.outputStreamIndex
+                    outputStreamIndex: route.outputStreamIndex,
+                    mutePolicy: requiredTapMutePolicy
                 )
             }
             guard let taps else {
@@ -3069,6 +3098,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 state.systemSoundTapID = prepared.taps.systemSounds
                 state.tapOutputUID = prepared.taps.outputUID
                 state.tapOutputStreamIndex = prepared.taps.outputStreamIndex
+                state.tapMutePolicy = prepared.taps.mutePolicy
                 state.aggregateDeviceID = prepared.deviceID
                 state.ioProcID = prepared.ioProcID
                 state.runtime = prepared.runtime
@@ -3553,6 +3583,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                   separateClockBackend.activeOutputAndProfile() != nil else {
                 throw error
             }
+            deferredColdStartupRoute.withLock { $0 = nil }
             return .aggregateUnstable
         }
 
@@ -3968,8 +3999,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             state.state = .stopped
             state.status = .stopped
         }
-        // mutedWhenTapped restores direct output when the IOProc stops reading the taps.
-        // Explicit handback skips the fade; rebuild teardown retains it.
+        // Explicit handback skips the fade and destroys the taps immediately after the aggregate;
+        // rebuild teardown retains the fade before replacing the graph.
         if let detachedAggregate {
             let records = disposeDetachedCombinedAggregate(
                 detachedAggregate,
@@ -4050,7 +4081,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 main: state.tapID,
                 systemSounds: state.systemSoundTapID,
                 outputUID: state.tapOutputUID ?? "",
-                outputStreamIndex: state.tapOutputStreamIndex ?? 0
+                outputStreamIndex: state.tapOutputStreamIndex ?? 0,
+                mutePolicy: state.tapMutePolicy
             )
         } else {
             tapSet = nil
@@ -4059,6 +4091,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         state.systemSoundTapID = AudioObjectID(kAudioObjectUnknown)
         state.tapOutputUID = nil
         state.tapOutputStreamIndex = nil
+        state.tapMutePolicy = .completeComposition
         return tapSet
     }
 
@@ -4110,17 +4143,20 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     private func createSystemTaps(
         output: AudioOutputDevice,
-        streamIndex: Int
+        streamIndex: Int,
+        mutePolicy: CombinedTapMutePolicy
     ) throws -> (main: AudioObjectID, systemSounds: AudioObjectID) {
         let ownProcess = try currentAudioProcessObjectID()
         let mainDescription = Self.makeSystemTapDescription(
             excluding: [ownProcess],
             outputUID: output.uid,
-            streamIndex: streamIndex
+            streamIndex: streamIndex,
+            muteBehavior: mutePolicy.muteBehavior
         )
         let systemSoundDescription = Self.makeSystemSoundTapDescription(
             outputUID: output.uid,
-            streamIndex: streamIndex
+            streamIndex: streamIndex,
+            muteBehavior: mutePolicy.muteBehavior
         )
 
         var mainTapID = AudioObjectID(kAudioObjectUnknown)
@@ -4152,7 +4188,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 main: mainTapID,
                 systemSounds: AudioObjectID(kAudioObjectUnknown),
                 outputUID: output.uid,
-                outputStreamIndex: streamIndex
+                outputStreamIndex: streamIndex,
+                mutePolicy: mutePolicy
             ))
             throw error
         }
@@ -4161,7 +4198,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     static func makeSystemTapDescription(
         excluding processes: [AudioObjectID],
         outputUID: String,
-        streamIndex: Int
+        streamIndex: Int,
+        muteBehavior: CATapMuteBehavior
     ) -> CATapDescription {
         let description = CATapDescription(
             excludingProcesses: processes,
@@ -4171,7 +4209,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         description.name = "GlassEQ System Output Tap"
         description.uuid = UUID()
         description.isPrivate = true
-        description.muteBehavior = .mutedWhenTapped
+        description.muteBehavior = muteBehavior
         description.isMixdown = false
         description.bundleIDs = [Self.systemSoundServerBundleID]
         description.isProcessRestoreEnabled = true
@@ -4180,7 +4218,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     static func makeSystemSoundTapDescription(
         outputUID: String,
-        streamIndex: Int
+        streamIndex: Int,
+        muteBehavior: CATapMuteBehavior
     ) -> CATapDescription {
         let description = CATapDescription(
             processes: [],
@@ -4190,7 +4229,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         description.name = "GlassEQ System Sounds Tap"
         description.uuid = UUID()
         description.isPrivate = true
-        description.muteBehavior = .mutedWhenTapped
+        description.muteBehavior = muteBehavior
         description.isMixdown = false
         description.bundleIDs = [Self.systemSoundServerBundleID]
         description.isProcessRestoreEnabled = true
@@ -4949,11 +4988,19 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
-    static func shouldContinueDeferredColdStartup(
+    static func combinedTapMuteBehavior(
+        usePhysicalFirstOrdering: Bool
+    ) -> CATapMuteBehavior {
+        usePhysicalFirstOrdering ? .mutedWhenTapped : .muted
+    }
+
+    static func shouldUseColdStartupCompatibilityBackend(
         activeBackendIsSeparate: Bool,
-        deferredRouteMatches: Bool
+        deferredRouteMatches: Bool,
+        hasActiveExternalOutputProcess: Bool
     ) -> Bool {
-        activeBackendIsSeparate && deferredRouteMatches
+        activeBackendIsSeparate
+            && (deferredRouteMatches || hasActiveExternalOutputProcess)
     }
 
     static func coldStartupPromotionResult(
