@@ -2828,9 +2828,19 @@ final class GlassEQAppModel {
                     }
                 }
                 let result = await work.value
+                guard self.lifecycleState == .running,
+                      self.engineStartGeneration == engineGeneration else {
+                    return
+                }
+                // The worker may have committed the backend switch before a transient output
+                // notification cancelled this monitor. Reconcile a successful promotion unless
+                // newer engine work has taken ownership; that work will publish its own result.
+                if case .success(.promoted, _) = result {
+                    self.coldStartupAggregatePromotionTask = nil
+                    self.completeColdStartupAggregatePromotion(result)
+                    return
+                }
                 guard !Task.isCancelled,
-                      self.lifecycleState == .running,
-                      self.engineStartGeneration == engineGeneration,
                       self.outputChangeGeneration == outputGeneration else {
                     return
                 }

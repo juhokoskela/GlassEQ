@@ -554,6 +554,48 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func cancelledTransientOutputChangeDoesNotDropAnInFlightColdStartupPromotion() async {
+        let output = makeOutput(uid: "reverted-cold-promotion", name: "D10s")
+        let transientOutput = makeOutput(uid: "transient-output", name: "Transient")
+        var promotedOutput = output
+        promotedOutput.bufferFrameSize = 32
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .promoted(promotedOutput)
+        engine.blockColdStartupAggregatePromotion()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .seconds(1),
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            engine.coldStartupAggregatePromotionAttemptCount == 1
+        }
+        #expect(engine.waitUntilColdStartupAggregatePromotionIsBlocked(
+            timeout: .now() + 1
+        ))
+
+        observers.observers[0].emit(.success(transientOutput))
+        observers.observers[0].emit(.success(output))
+        engine.unblockColdStartupAggregatePromotion()
+
+        let completed = await waitUntil {
+            !engine.isDeferringColdStartupAggregate
+                && model.settingsSnapshot().aggregateBuffer.isAvailable
+                && model.settingsSnapshot().currentOutputBufferFrameSize == 32
+        }
+        #expect(completed)
+        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
+        #expect(model.currentOutputUID == output.uid)
+    }
+
+    @Test
     func deferredColdStartupRebuildKeepsTheStoredAggregateBufferPreference() async throws {
         let storeURL = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: storeURL) }
