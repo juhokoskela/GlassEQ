@@ -24,7 +24,7 @@ Alpha-0.9 bridged the process tap and physical output with a bounded ring buffer
 
 Alpha-0.9.2 creates one private aggregate containing the physical output and process taps. The physical device owns the clock, and one Core Audio callback receives the system mix, applies the active EQ bank, and writes the result directly to the output. There is no separate playback queue or asynchronous sample-rate converter on this path.
 
-The aggregate requests 16-frame callbacks without changing the physical device's shared buffer setting. GlassEQ then qualifies the result before fading in. Automatic mode remembers the smallest reliable setting for each device stream and sample rate, and it can climb through safer buffer sizes when the measured route requires it. A same-device sample-rate change releases the old graph to direct playback, waits for the new clock to settle, and validates fresh rate-bound process taps before the replacement aggregate starts.
+The aggregate requests 16-frame callbacks without changing the physical device's shared buffer setting. GlassEQ then qualifies the result before fading in. Automatic mode remembers the smallest reliable setting for each device stream and sample rate, and it can climb through safer buffer sizes when the measured route requires it.
 
 ![The D10s USB DAC stable on the low-latency path with Automatic mode holding a 16-frame buffer, 1.32 ms measured added latency, and no underrun events](Screenshots/alpha-0.9.2-automatic-16-frames.png)
 
