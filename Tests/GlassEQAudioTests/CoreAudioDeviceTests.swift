@@ -79,13 +79,21 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func coreAudioCleanupDoesNotHoldStateLockAcrossDestruction() {
+    func coreAudioCleanupDoesNotHoldStateLockAcrossDestruction() throws {
         let tapOneAttempts = Mutex(0)
         let retryEnteredHAL = DispatchSemaphore(value: 0)
         let releaseHAL = DispatchSemaphore(value: 0)
         let retryFinished = DispatchSemaphore(value: 0)
         let concurrentDisposeFinished = DispatchSemaphore(value: 0)
         let concurrentDisposeResult = Mutex<Bool?>(nil)
+        let retryQueue = DispatchQueue(
+            label: "com.glasseq.tests.core-audio-cleanup-retry",
+            qos: .userInitiated
+        )
+        let disposeQueue = DispatchQueue(
+            label: "com.glasseq.tests.core-audio-cleanup-dispose",
+            qos: .userInitiated
+        )
         let operations = CoreAudioResourceCleanupLedger.Operations(
             stopIOProc: { _, _ in noErr },
             destroyIOProc: { _, _ in noErr },
@@ -116,13 +124,17 @@ struct CoreAudioDeviceTests {
             operation: "retain first tap",
             tapIDs: [1]
         )))
-        DispatchQueue.global().async {
+        retryQueue.async {
             _ = ledger.retryPending()
             retryFinished.signal()
         }
-        #expect(retryEnteredHAL.wait(timeout: .now() + 1) == .success)
+        let retryStarted = retryEnteredHAL.wait(timeout: .now() + 5) == .success
+        if !retryStarted {
+            releaseHAL.signal()
+        }
+        try #require(retryStarted)
 
-        DispatchQueue.global().async {
+        disposeQueue.async {
             let completed = ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
                 operation: "queue second tap",
                 tapIDs: [2]
@@ -131,12 +143,16 @@ struct CoreAudioDeviceTests {
             concurrentDisposeFinished.signal()
         }
         let disposeReturnedWithoutWaitingForHAL = concurrentDisposeFinished.wait(
-            timeout: .now() + 1
+            timeout: .now() + 5
         ) == .success
         releaseHAL.signal()
+        if !disposeReturnedWithoutWaitingForHAL {
+            _ = retryFinished.wait(timeout: .now() + 5)
+            _ = concurrentDisposeFinished.wait(timeout: .now() + 5)
+        }
 
-        #expect(disposeReturnedWithoutWaitingForHAL)
-        #expect(retryFinished.wait(timeout: .now() + 1) == .success)
+        try #require(disposeReturnedWithoutWaitingForHAL)
+        try #require(retryFinished.wait(timeout: .now() + 5) == .success)
         #expect(concurrentDisposeResult.withLock { $0 } == false)
         #expect(ledger.pendingCount == 1)
         #expect(ledger.retryPending())
