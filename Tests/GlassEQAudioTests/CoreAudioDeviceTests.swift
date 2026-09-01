@@ -285,6 +285,46 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func combinedTapReuseRequiresTheSameNominalSampleRate() {
+        let output = output(
+            uid: "same-device",
+            channelCount: 2,
+            sampleRate: 48_000
+        )
+
+        #expect(SystemTapAudioEngine.combinedTapMatchesRoute(
+            existingOutputUID: output.uid,
+            existingOutputStreamIndex: 1,
+            existingNominalSampleRate: 48_000,
+            output: output,
+            outputStreamIndex: 1
+        ))
+        #expect(!SystemTapAudioEngine.combinedTapMatchesRoute(
+            existingOutputUID: output.uid,
+            existingOutputStreamIndex: 1,
+            existingNominalSampleRate: 44_100,
+            output: output,
+            outputStreamIndex: 1
+        ))
+    }
+
+    @Test
+    func processTapSampleRateMustMatchThePhysicalOutput() {
+        #expect(SystemTapAudioEngine.tapSampleRateMatchesOutput(
+            tapSampleRate: 48_000,
+            outputSampleRate: 48_000
+        ))
+        #expect(!SystemTapAudioEngine.tapSampleRateMatchesOutput(
+            tapSampleRate: 44_100,
+            outputSampleRate: 48_000
+        ))
+        #expect(!SystemTapAudioEngine.tapSampleRateMatchesOutput(
+            tapSampleRate: 0,
+            outputSampleRate: 48_000
+        ))
+    }
+
+    @Test
     func aggregateStartupRequiresMatchingFramesAndStableTimestamps() {
         #expect(SystemTapAudioEngine.startupCallbackIsValid(
             mainInputFrameCount: 16,
@@ -431,6 +471,35 @@ struct CoreAudioDeviceTests {
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 64
         ) == [64, 64])
+    }
+
+    @Test
+    func unsettledProcessTapFormatIsRetryableDuringAggregateStartup() throws {
+        let error = SystemTapAudioEngine.ProcessTapFormatNotSettledError(
+            expectedSampleRate: 96_000,
+            mainSampleRate: 44_100,
+            systemSoundSampleRate: 44_100
+        )
+        var attempts: [UInt32] = []
+        var waitCount = 0
+
+        try SystemTapAudioEngine.runCombinedStartupAttempts(
+            frameSizes: [16, 16],
+            isSeparateClockHandoff: false,
+            attempt: { frameSize in
+                attempts.append(frameSize)
+                if attempts.count == 1 {
+                    throw error
+                }
+            },
+            restoreSeparateClockOutput: {},
+            waitBeforeRetry: {
+                waitCount += 1
+            }
+        )
+
+        #expect(attempts == [16, 16])
+        #expect(waitCount == 1)
     }
 
     @Test
@@ -1119,6 +1188,42 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func compatibilityCaptureRefreshesForNormalRateChanges() {
+        let output48 = output(
+            uid: "normal-rate-output",
+            channelCount: 2,
+            sampleRate: 48_000
+        )
+        let output88 = output(
+            uid: "normal-rate-output",
+            channelCount: 2,
+            sampleRate: 88_200
+        )
+        let lowRateOutput = output(
+            uid: "low-rate-output",
+            channelCount: 2,
+            sampleRate: 24_000
+        )
+
+        #expect(!SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 48_000,
+            output: output48
+        ))
+        #expect(SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 44_100,
+            output: output48
+        ))
+        #expect(SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 48_000,
+            output: output88
+        ))
+        #expect(!SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+            tapSampleRate: 48_000,
+            output: lowRateOutput
+        ))
+    }
+
+    @Test
     func sampleRateMutationRecordsRestorationBeforeDeviceWrite() throws {
         let output = output(uid: "record-before-set", channelCount: 2, sampleRate: 44_100)
         var events: [String] = []
@@ -1763,6 +1868,19 @@ struct CoreAudioDeviceTests {
             selector: kAudioDevicePropertyDeviceIsAlive,
             deviceID: 42,
             selfChangeGuard: changeGuard
+        ))
+    }
+
+    @Test
+    func outputObserverRefreshesRateAndStreamChangesImmediately() {
+        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyNominalSampleRate
+        ))
+        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyStreamConfiguration
+        ))
+        #expect(!DefaultOutputDeviceObserver.shouldRefreshImmediately(
+            selector: kAudioDevicePropertyBufferFrameSize
         ))
     }
 

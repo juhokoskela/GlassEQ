@@ -251,6 +251,9 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
                 self.scheduleRefreshObservedOutput(sendChange: true)
                 return
             }
+            if Self.shouldRefreshImmediately(selector: selector) {
+                self.refreshObservedOutput(sendChange: true)
+            }
             self.scheduleRefreshObservedOutput(sendChange: true)
         }
         try checkOSStatus(
@@ -274,6 +277,11 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         // a rebuild) so we don't loop reacting to our own device reconfiguration. Device-alive
         // changes are never suppressed — a real disconnect must always be handled.
         selector != kAudioDevicePropertyDeviceIsAlive && selfChangeGuard.isSelfChange(deviceID: deviceID)
+    }
+
+    static func shouldRefreshImmediately(selector: AudioObjectPropertySelector) -> Bool {
+        selector == kAudioDevicePropertyNominalSampleRate
+            || selector == kAudioDevicePropertyStreamConfiguration
     }
 
     private func removeOutputListeners() {

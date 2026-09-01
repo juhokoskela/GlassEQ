@@ -1715,9 +1715,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 previousState = state.state
                 previousStatus = state.status
                 state.status = .starting
-                // Keep capture alive across ordinary output switches. Leaving a low-rate route
-                // refreshes it under the same mute guard used for topology changes so normal
-                // outputs regain their full capture bandwidth without leaking dry audio.
+                // Keep capture alive while its rate remains valid. Normal-rate changes refresh it
+                // under the same mute guard used for topology changes so the bridge never retains
+                // a tap runtime configured for the preceding device clock.
                 try ensureCaptureHalfLocked(&state, output: output, profile: requestedProfile)
                 state.profileRevision &+= 1
                 return try prepareOutputRebuildLocked(
@@ -3909,8 +3909,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         tapSampleRate: Double,
         output: AudioOutputDevice
     ) -> Bool {
-        isLowSampleRate(tapSampleRate)
-            && output.nominalSampleRate - tapSampleRate >= 1
+        !isLowSampleRateRoute(output)
+            && abs(tapSampleRate - output.nominalSampleRate) >= 1
     }
 
     static func maximumPlaybackReservoirFrames(
