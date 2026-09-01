@@ -28,7 +28,8 @@ struct CoreAudioDeviceTests {
         )
         let ledger = CoreAudioResourceCleanupLedger(
             operations: operations,
-            preservesFailuresOnDeinit: false
+            preservesFailuresOnDeinit: false,
+            automaticRetryDelaysMilliseconds: []
         )
 
         #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
@@ -45,6 +46,36 @@ struct CoreAudioDeviceTests {
         #expect(counts.withLock { $0.aggregateDestroyAttempts } == 2)
         #expect(counts.withLock { $0.tapDestroyAttempts } == 1)
         #expect(counts.withLock { $0.completionCount } == 1)
+    }
+
+    @Test
+    func coreAudioCleanupAutomaticallyRetriesRetainedResources() {
+        let attempts = Mutex(0)
+        let completed = DispatchSemaphore(value: 0)
+        let operations = CoreAudioResourceCleanupLedger.Operations(
+            stopIOProc: { _, _ in noErr },
+            destroyIOProc: { _, _ in noErr },
+            destroyAggregate: { _ in noErr },
+            destroyTap: { _ in
+                attempts.withLock { attempts in
+                    attempts += 1
+                    return attempts < 3 ? kAudioHardwareUnspecifiedError : noErr
+                }
+            }
+        )
+        let ledger = CoreAudioResourceCleanupLedger(
+            operations: operations,
+            preservesFailuresOnDeinit: false
+        )
+
+        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "destroy muted process tap",
+            tapIDs: [42],
+            completion: { completed.signal() }
+        )))
+        #expect(completed.wait(timeout: .now() + 2) == .success)
+        #expect(attempts.withLock { $0 } == 3)
+        #expect(ledger.pendingCount == 0)
     }
 
     @Test
