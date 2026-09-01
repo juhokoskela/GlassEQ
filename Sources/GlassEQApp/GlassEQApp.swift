@@ -576,6 +576,8 @@ final class GlassEQAppModel {
     private var aggregateStabilityTask: Task<Void, Never>?
     private var headsetAggregatePromotionTask: Task<Void, Never>?
     private var coldStartupAggregatePromotionTask: Task<Void, Never>?
+    private var headsetAggregatePromotionTaskGeneration = 0
+    private var coldStartupAggregatePromotionTaskGeneration = 0
     private var outputChangeTask: Task<Void, Never>?
     private var pendingOutputTransitionAction = PendingOutputTransitionAction.none
     private var engineStartTask: Task<Void, Never>?
@@ -1629,6 +1631,10 @@ final class GlassEQAppModel {
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
+        guard pendingOutputTransitionAction != .stopped else {
+            notifyModelDidChange()
+            return
+        }
         if activeProfile.isBypassed {
             disableActiveProfileProcessing(updateMetrics: true)
         } else if hasPendingProfileReplacingEngineWork {
@@ -1657,6 +1663,10 @@ final class GlassEQAppModel {
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
+        guard pendingOutputTransitionAction != .stopped else {
+            notifyModelDidChange()
+            return
+        }
         if activeProfile.isBypassed {
             disableActiveProfileProcessing(updateMetrics: true)
         } else if hasPendingProfileReplacingEngineWork {
@@ -2051,7 +2061,8 @@ final class GlassEQAppModel {
     private func restartEngineWithActiveProfile(rollback: ProfileRollback? = nil) {
         guard lifecycleState != .terminating,
               lifecycleState != .sleeping,
-              lifecycleState != .waking else {
+              lifecycleState != .waking,
+              pendingOutputTransitionAction != .stopped else {
             return
         }
 
@@ -2110,7 +2121,9 @@ final class GlassEQAppModel {
         let shouldMuteOutput = shouldMuteForSettlingOutputChange(result)
         if shouldStopEngine, pendingOutputTransitionAction != .stopped {
             pendingOutputTransitionAction = .stopped
-            pauseEngineMonitoringForOutputTransition()
+            lifecycleState = .stopped
+            isRunning = false
+            invalidatePendingEngineStart()
             scheduleEngineStop(updateMetrics: false)
         } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
             pendingOutputTransitionAction = .muted
@@ -2151,26 +2164,28 @@ final class GlassEQAppModel {
     private func shouldStopEngineForSettlingOutputChange(
         _ result: Result<AudioOutputDevice, Error>
     ) -> Bool {
-        guard isRunning,
-              case .success(let output) = result,
-              output.uid == currentOutputUID else {
+        guard case .success(let output) = result,
+              !currentOutputUID.isEmpty,
+              output.uid == currentOutputUID,
+              output.nominalSampleRate != currentOutputSampleRate
+                || output.outputChannelCount != currentOutputChannelCount else {
             return false
         }
 
-        return output.nominalSampleRate != currentOutputSampleRate
-            || output.outputChannelCount != currentOutputChannelCount
+        return isRunning || engineStartTask != nil || engineStateNeedsStop
     }
 
     private func shouldMuteForSettlingOutputChange(_ result: Result<AudioOutputDevice, Error>) -> Bool {
-        guard isRunning,
-              case .success(let output) = result,
+        guard case .success(let output) = result,
               !currentOutputUID.isEmpty else {
             return false
         }
 
-        return output.uid != currentOutputUID
+        let outputChanged = output.uid != currentOutputUID
             || output.nominalSampleRate != currentOutputSampleRate
             || output.outputChannelCount != currentOutputChannelCount
+        return outputChanged
+            && (isRunning || engineStartTask != nil || engineStateNeedsStop)
     }
 
     private func outputChangeStatusMessage(for result: Result<AudioOutputDevice, Error>) -> String {
@@ -2265,15 +2280,7 @@ final class GlassEQAppModel {
 
         engineStartGeneration += 1
         let generation = engineStartGeneration
-        renderWatchdogTask?.cancel()
-        renderWatchdogTask = nil
-        renderWatchdog.pause()
-        aggregateStabilityTask?.cancel()
-        aggregateStabilityTask = nil
-        headsetAggregatePromotionTask?.cancel()
-        headsetAggregatePromotionTask = nil
-        coldStartupAggregatePromotionTask?.cancel()
-        coldStartupAggregatePromotionTask = nil
+        pauseEngineMonitoring()
         engineStartTask?.cancel()
         switch work {
         case .start(let output, _, _, _, _):
@@ -2406,6 +2413,10 @@ final class GlassEQAppModel {
             return
         }
 
+        guard pendingOutputTransitionAction != .stopped else {
+            return
+        }
+
         startObserver(sendInitialValue: false)
         if isRunning {
             if engine.updateDSP(profile: activeProfile) {
@@ -2459,7 +2470,7 @@ final class GlassEQAppModel {
         }
     }
 
-    private func pauseEngineMonitoringForOutputTransition() {
+    private func pauseEngineMonitoring() {
         renderWatchdogTask?.cancel()
         renderWatchdogTask = nil
         renderWatchdog.pause()
@@ -2467,8 +2478,10 @@ final class GlassEQAppModel {
         aggregateStabilityTask = nil
         headsetAggregatePromotionTask?.cancel()
         headsetAggregatePromotionTask = nil
+        headsetAggregatePromotionTaskGeneration += 1
         coldStartupAggregatePromotionTask?.cancel()
         coldStartupAggregatePromotionTask = nil
+        coldStartupAggregatePromotionTaskGeneration += 1
     }
 
     private func scheduleEngineMuteForTransition() {
@@ -2635,7 +2648,8 @@ final class GlassEQAppModel {
         // newer generation is pending or running; only clean up if the app's current intent is no
         // running engine at all.
         guard generation != engineStartGeneration,
-              engineStartTask == nil else {
+              engineStartTask == nil,
+              pendingOutputTransitionAction != .stopped else {
             return
         }
         guard case .success = result else {
@@ -2845,18 +2859,27 @@ final class GlassEQAppModel {
     private func startColdStartupAggregatePromotionIfNeeded() {
         coldStartupAggregatePromotionTask?.cancel()
         coldStartupAggregatePromotionTask = nil
+        coldStartupAggregatePromotionTaskGeneration += 1
         guard engine.isDeferringColdStartupAggregate,
               coldStartupPromotionAttemptedOutputGeneration != outputChangeGeneration else {
             return
         }
         let engineGeneration = engineStartGeneration
         let outputGeneration = outputChangeGeneration
+        let taskGeneration = coldStartupAggregatePromotionTaskGeneration
         let pollInterval = coldStartupAggregatePromotionPollInterval
         coldStartupAggregatePromotionTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            defer {
+                if self.coldStartupAggregatePromotionTaskGeneration == taskGeneration {
+                    self.coldStartupAggregatePromotionTask = nil
+                }
+            }
             while !Task.isCancelled {
                 try? await Task.sleep(for: pollInterval)
-                guard let self,
-                      !Task.isCancelled,
+                guard !Task.isCancelled,
                       self.lifecycleState == .running,
                       self.isRunning,
                       self.engineStartGeneration == engineGeneration,
@@ -2879,6 +2902,8 @@ final class GlassEQAppModel {
                 }
                 let result = await work.value
                 guard self.lifecycleState == .running,
+                      self.isRunning,
+                      self.pendingOutputTransitionAction != .stopped,
                       self.engineStartGeneration == engineGeneration else {
                     return
                 }
@@ -2886,7 +2911,6 @@ final class GlassEQAppModel {
                 // notification cancelled this monitor. Reconcile a successful promotion unless
                 // newer engine work has taken ownership; that work will publish its own result.
                 if case .success(.promoted, _) = result {
-                    self.coldStartupAggregatePromotionTask = nil
                     self.completeColdStartupAggregatePromotion(result)
                     return
                 }
@@ -2897,7 +2921,6 @@ final class GlassEQAppModel {
                 if case .success(.clientsActive, _) = result {
                     continue
                 }
-                self.coldStartupAggregatePromotionTask = nil
                 self.completeColdStartupAggregatePromotion(result)
                 return
             }
@@ -2949,20 +2972,29 @@ final class GlassEQAppModel {
     private func startHeadsetAggregatePromotionIfNeeded() {
         headsetAggregatePromotionTask?.cancel()
         headsetAggregatePromotionTask = nil
+        headsetAggregatePromotionTaskGeneration += 1
         guard engine.isUsingTransitionalHeadsetBackend,
               headsetPromotionAttemptedOutputGeneration != outputChangeGeneration else {
             return
         }
         let engineGeneration = engineStartGeneration
         let outputGeneration = outputChangeGeneration
+        let taskGeneration = headsetAggregatePromotionTaskGeneration
         let delay = headsetAggregatePromotionDelay
         statusMessage = localized(
             "Processing \(currentOutputName) in compatibility mode while its clock settles..."
         )
         headsetAggregatePromotionTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            defer {
+                if self.headsetAggregatePromotionTaskGeneration == taskGeneration {
+                    self.headsetAggregatePromotionTask = nil
+                }
+            }
             try? await Task.sleep(for: delay)
-            guard let self,
-                  !Task.isCancelled,
+            guard !Task.isCancelled,
                   self.lifecycleState == .running,
                   self.isRunning,
                   self.engineStartGeneration == engineGeneration,
@@ -2990,13 +3022,20 @@ final class GlassEQAppModel {
                 }
             }
             let result = await work.value
+            guard self.lifecycleState == .running,
+                  self.isRunning,
+                  self.pendingOutputTransitionAction != .stopped,
+                  self.engineStartGeneration == engineGeneration else {
+                return
+            }
+            if case .success(.promoted, _) = result {
+                self.completeHeadsetAggregatePromotion(result)
+                return
+            }
             guard !Task.isCancelled,
-                  self.lifecycleState == .running,
-                  self.engineStartGeneration == engineGeneration,
                   self.outputChangeGeneration == outputGeneration else {
                 return
             }
-            self.headsetAggregatePromotionTask = nil
             self.completeHeadsetAggregatePromotion(result)
         }
     }
@@ -3817,15 +3856,7 @@ final class GlassEQAppModel {
         engineStartTask?.cancel()
         engineStartTask = nil
         clearFixedBufferRecoveryAndRestorePreference()
-        renderWatchdogTask?.cancel()
-        renderWatchdogTask = nil
-        renderWatchdog.pause()
-        aggregateStabilityTask?.cancel()
-        aggregateStabilityTask = nil
-        headsetAggregatePromotionTask?.cancel()
-        headsetAggregatePromotionTask = nil
-        coldStartupAggregatePromotionTask?.cancel()
-        coldStartupAggregatePromotionTask = nil
+        pauseEngineMonitoring()
         pendingEngineStartOutput = nil
         activeAggregateRoute = nil
         pendingAggregateBufferIncrease = nil
