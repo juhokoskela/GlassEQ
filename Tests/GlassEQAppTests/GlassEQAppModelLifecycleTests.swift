@@ -807,6 +807,47 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func revertedOutputChangePreservesUnstableColdStartupStatus() async {
+        let output = makeOutput(uid: "unstable-status-output", name: "D10s")
+        let transientOutput = makeOutput(uid: "transient-output", name: "Transient")
+        let engine = FakeAudioEngine()
+        engine.coldStartupPromotionCandidateUIDs = [output.uid]
+        engine.coldStartupAggregatePromotionResult = .aggregateUnstable
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .seconds(1),
+            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(output))
+        await waitUntil {
+            engine.coldStartupAggregatePromotionAttemptCount == 1
+                && model.statusMessage.contains("startup path was unstable")
+        }
+
+        lookup.result = .success(transientOutput)
+        observer.emit(.success(transientOutput))
+        await waitUntil {
+            model.statusMessage == "Audio output changed; rebuilding..."
+        }
+        lookup.result = .success(output)
+        observer.emit(.success(output))
+        let statusWasRestored = await waitUntil {
+            model.statusMessage.contains("startup path was unstable")
+        }
+
+        #expect(statusWasRestored)
+        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
+        #expect(model.currentOutputUID == output.uid)
+    }
+
+    @Test
     func rejectedProfileChangeRestartsColdStartupPromotion() async throws {
         let running = makeProfile(name: "Cold Start Running")
         let requested = makeProfile(name: "Cold Start Requested")
@@ -2614,7 +2655,7 @@ struct GlassEQAppModelLifecycleTests {
         lookup.result = .success(runningOutput)
         observer.emit(.success(runningOutput))
         await waitUntil {
-            engine.startCalls.count == 2
+            engine.startCalls.count == 2 && model.lifecycleState == .running
         }
 
         #expect(engine.startCalls.map(\.output) == [runningOutput, runningOutput])
@@ -5947,6 +5988,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _headsetPromotionCandidateUIDs: Set<String> = []
     private var _headsetAggregatePromotionResult = HeadsetAggregatePromotionResult.notApplicable
     private var _headsetAggregatePromotionAttemptCount = 0
+    private var _isUsingSeparateClockBackend = false
     private var _isUsingTransitionalHeadsetBackend = false
     private var _isUsingPromotedHeadsetAggregate = false
     private var _promotedHeadsetOutputUID: String?
@@ -5974,9 +6016,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     }
 
     var isUsingSeparateClockBackend: Bool {
-        withLock {
-            _isUsingTransitionalHeadsetBackend || _isDeferringColdStartupAggregate
-        }
+        withLock { _isUsingSeparateClockBackend }
     }
 
     var isUsingPromotedHeadsetAggregate: Bool {
@@ -6285,6 +6325,8 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 _promotedHeadsetOutputUID = nil
             }
             _isDeferringColdStartupAggregate = _coldStartupPromotionCandidateUIDs.contains(output.uid)
+            _isUsingSeparateClockBackend = _isUsingTransitionalHeadsetBackend
+                || _isDeferringColdStartupAggregate
         }
     }
 
@@ -6300,9 +6342,15 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         attempt.blocker?.waitUntilUnblocked()
         return withLock {
             let result = attempt.result
-            if case .promoted(let output) = result {
+            switch result {
+            case .promoted(let output):
                 _state = .running(output: output)
                 _isDeferringColdStartupAggregate = false
+                _isUsingSeparateClockBackend = false
+            case .aggregateUnstable:
+                _isDeferringColdStartupAggregate = false
+            case .clientsActive, .notApplicable:
+                break
             }
             return result
         }
@@ -6323,6 +6371,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 _state = .running(output: output)
                 _isUsingTransitionalHeadsetBackend = false
                 _isUsingPromotedHeadsetAggregate = true
+                _isUsingSeparateClockBackend = false
                 _promotedHeadsetOutputUID = output.uid
             }
             return result
@@ -6480,6 +6529,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
             _isUsingTransitionalHeadsetBackend = false
             _isUsingPromotedHeadsetAggregate = false
             _isDeferringColdStartupAggregate = false
+            _isUsingSeparateClockBackend = false
         }
     }
 
