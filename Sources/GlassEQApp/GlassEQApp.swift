@@ -147,7 +147,14 @@ private enum SessionActivationReconnectPolicy {
 
 private enum OutputChangeReconnectPolicy {
     static let routeSwitchDelay: Duration = .milliseconds(50)
+    static let formatChangeDelay: Duration = .milliseconds(650)
     static let fallbackDelay: Duration = .milliseconds(350)
+}
+
+private enum PendingOutputTransitionAction {
+    case none
+    case muted
+    case stopped
 }
 
 private let appResourcesBundle: Bundle = {
@@ -570,7 +577,7 @@ final class GlassEQAppModel {
     private var headsetAggregatePromotionTask: Task<Void, Never>?
     private var coldStartupAggregatePromotionTask: Task<Void, Never>?
     private var outputChangeTask: Task<Void, Never>?
-    private var pendingOutputChangeRequestedMute = false
+    private var pendingOutputTransitionAction = PendingOutputTransitionAction.none
     private var engineStartTask: Task<Void, Never>?
     @ObservationIgnored private var lastProcessingSampleRate: (
         outputUID: String,
@@ -2079,29 +2086,41 @@ final class GlassEQAppModel {
             guard outputChangeTask != nil else {
                 return
             }
-            let shouldResumeOutput = pendingOutputChangeRequestedMute
-            invalidatePendingOutputChange()
-            if isRunning {
-                if shouldResumeOutput {
-                    scheduleEngineResumeAfterCancelledTransition()
+            if pendingOutputTransitionAction != .stopped {
+                let shouldResumeOutput = pendingOutputTransitionAction == .muted
+                invalidatePendingOutputChange()
+                if isRunning {
+                    if shouldResumeOutput {
+                        scheduleEngineResumeAfterCancelledTransition()
+                    }
+                    statusMessage = runningEngineStatusMessage(for: output)
+                    startAggregateStabilityMonitoring()
+                    startColdStartupAggregatePromotionIfNeeded()
+                    startHeadsetAggregatePromotionIfNeeded()
+                    notifyModelDidChange()
                 }
-                statusMessage = runningEngineStatusMessage(for: output)
-                startAggregateStabilityMonitoring()
-                startColdStartupAggregatePromotionIfNeeded()
-                startHeadsetAggregatePromotionIfNeeded()
-                notifyModelDidChange()
+                return
             }
-            return
         }
 
         outputChangeGeneration += 1
         let generation = outputChangeGeneration
-        let settlingDelay = outputChangeSettlingDelay(for: result)
         outputChangeTask?.cancel()
+        let shouldStopEngine = shouldStopEngineForSettlingOutputChange(result)
         let shouldMuteOutput = shouldMuteForSettlingOutputChange(result)
-        pendingOutputChangeRequestedMute = pendingOutputChangeRequestedMute || shouldMuteOutput
-        if shouldMuteOutput {
+        if shouldStopEngine, pendingOutputTransitionAction != .stopped {
+            pendingOutputTransitionAction = .stopped
+            pauseEngineMonitoringForOutputTransition()
+            scheduleEngineStop(updateMetrics: false)
+        } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
+            pendingOutputTransitionAction = .muted
             scheduleEngineMuteForTransition()
+        }
+        let settlingDelay = outputChangeSettlingDelay(
+            for: result,
+            transitionAction: pendingOutputTransitionAction
+        )
+        if shouldStopEngine || shouldMuteOutput {
             statusMessage = outputChangeStatusMessage(for: result)
             notifyModelDidChange()
         }
@@ -2123,10 +2142,23 @@ final class GlassEQAppModel {
             }
 
             self.outputChangeTask = nil
-            self.pendingOutputChangeRequestedMute = false
+            self.pendingOutputTransitionAction = .none
             let settledResult = Result { try self.defaultOutputLookup.defaultOutputDevice() }
             self.handleDefaultOutputChange(settledResult)
         }
+    }
+
+    private func shouldStopEngineForSettlingOutputChange(
+        _ result: Result<AudioOutputDevice, Error>
+    ) -> Bool {
+        guard isRunning,
+              case .success(let output) = result,
+              output.uid == currentOutputUID else {
+            return false
+        }
+
+        return output.nominalSampleRate != currentOutputSampleRate
+            || output.outputChannelCount != currentOutputChannelCount
     }
 
     private func shouldMuteForSettlingOutputChange(_ result: Result<AudioOutputDevice, Error>) -> Bool {
@@ -2151,11 +2183,17 @@ final class GlassEQAppModel {
         return localized("Audio output changed; rebuilding...")
     }
 
-    private func outputChangeSettlingDelay(for result: Result<AudioOutputDevice, Error>) -> Duration {
+    private func outputChangeSettlingDelay(
+        for result: Result<AudioOutputDevice, Error>,
+        transitionAction: PendingOutputTransitionAction
+    ) -> Duration {
         if let outputChangeSettlingDelayOverride {
             return outputChangeSettlingDelayOverride
         }
 
+        if transitionAction == .stopped {
+            return OutputChangeReconnectPolicy.formatChangeDelay
+        }
         guard case .success = result else {
             return OutputChangeReconnectPolicy.fallbackDelay
         }
@@ -2419,6 +2457,18 @@ final class GlassEQAppModel {
                 notifyModelDidChange()
             }
         }
+    }
+
+    private func pauseEngineMonitoringForOutputTransition() {
+        renderWatchdogTask?.cancel()
+        renderWatchdogTask = nil
+        renderWatchdog.pause()
+        aggregateStabilityTask?.cancel()
+        aggregateStabilityTask = nil
+        headsetAggregatePromotionTask?.cancel()
+        headsetAggregatePromotionTask = nil
+        coldStartupAggregatePromotionTask?.cancel()
+        coldStartupAggregatePromotionTask = nil
     }
 
     private func scheduleEngineMuteForTransition() {
@@ -3353,7 +3403,7 @@ final class GlassEQAppModel {
         outputChangeGeneration += 1
         let generation = outputChangeGeneration
         outputChangeTask?.cancel()
-        pendingOutputChangeRequestedMute = false
+        pendingOutputTransitionAction = .none
         outputChangeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: self?.wakeReconnectDelayOverride ?? WakeReconnectPolicy.retryDelay)
             guard !Task.isCancelled,
@@ -3759,7 +3809,7 @@ final class GlassEQAppModel {
         outputChangeGeneration += 1
         outputChangeTask?.cancel()
         outputChangeTask = nil
-        pendingOutputChangeRequestedMute = false
+        pendingOutputTransitionAction = .none
     }
 
     private func invalidatePendingEngineStart() {

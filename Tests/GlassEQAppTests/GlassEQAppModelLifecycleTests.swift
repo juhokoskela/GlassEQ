@@ -2286,7 +2286,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func runningOutputFormatChangeMutesImmediatelyThenRebuildsSettledOutput() async {
+    func runningOutputFormatChangeStopsImmediatelyThenRebuildsSettledOutput() async {
         let initialOutput = makeOutput(
             uid: "same-output",
             name: "USB DAC",
@@ -2322,9 +2322,9 @@ struct GlassEQAppModelLifecycleTests {
         observer.emit(.success(changedOutput))
 
         await waitUntil {
-            engine.muteOutputCallCount == 1
+            engine.stopCallCount == 1
         }
-        #expect(engine.muteOutputCallCount == 1)
+        #expect(engine.muteOutputCallCount == 0)
 
         await waitUntil {
             engine.startCalls.map(\.output) == [initialOutput, changedOutput]
@@ -2332,7 +2332,60 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
-        #expect(engine.events == ["start:\(initialOutput.uid)", "mute", "start:\(changedOutput.uid)"])
+        #expect(engine.events == ["start:\(initialOutput.uid)", "stop", "start:\(changedOutput.uid)"])
+    }
+
+    @Test
+    func returningToOriginalFormatAfterTransitionStopStillRebuilds() async {
+        let runningOutput = makeOutput(
+            uid: "same-output",
+            name: "USB DAC",
+            id: 200,
+            nominalSampleRate: 44_100
+        )
+        let transientOutput = makeOutput(
+            uid: runningOutput.uid,
+            name: runningOutput.name,
+            id: runningOutput.id,
+            nominalSampleRate: 48_000
+        )
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(runningOutput))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .milliseconds(200)
+        )
+
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        lookup.result = .success(transientOutput)
+        observer.emit(.success(transientOutput))
+        await waitUntil {
+            engine.stopCallCount == 1
+        }
+
+        lookup.result = .success(runningOutput)
+        observer.emit(.success(runningOutput))
+        await waitUntil {
+            engine.startCalls.count == 2
+        }
+
+        #expect(engine.startCalls.map(\.output) == [runningOutput, runningOutput])
+        #expect(engine.resumeOutputCallCount == 0)
+        #expect(engine.events == [
+            "start:\(runningOutput.uid)",
+            "stop",
+            "start:\(runningOutput.uid)",
+        ])
+        #expect(model.lifecycleState == .running)
     }
 
     @Test
