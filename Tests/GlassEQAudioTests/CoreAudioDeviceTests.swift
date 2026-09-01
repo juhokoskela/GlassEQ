@@ -1075,6 +1075,36 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func stagingPreservesANormalRateOutputAndUsesConversion() {
+        let nativeOutput = output(
+            uid: "native-rate-output",
+            channelCount: 2,
+            sampleRate: 44_100,
+            bufferFrameSize: 512
+        )
+
+        #expect(!SeparateClockAudioBackend.shouldUseSampleRateConversion(
+            tapSampleRate: 48_000,
+            output: nativeOutput
+        ))
+        #expect(SeparateClockAudioBackend.shouldUseSampleRateConversion(
+            tapSampleRate: 48_000,
+            output: nativeOutput,
+            preservingOutputSampleRate: true
+        ))
+
+        let convertedCallbackFrames = PlaybackSampleRatePlan(
+            inputSampleRate: 48_000,
+            outputSampleRate: 44_100
+        ).inputFrames(forOutputFrames: 512)
+        #expect(SeparateClockAudioBackend.preferredPlaybackPrimeFrames(
+            for: nativeOutput,
+            tapSampleRate: 48_000,
+            captureCallbackFrames: 64
+        ) >= convertedCallbackFrames + 64)
+    }
+
+    @Test
     func sampleRateMutationRecordsRestorationBeforeDeviceWrite() throws {
         let output = output(uid: "record-before-set", channelCount: 2, sampleRate: 44_100)
         var events: [String] = []
