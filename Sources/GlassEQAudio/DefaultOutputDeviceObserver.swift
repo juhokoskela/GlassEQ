@@ -28,6 +28,25 @@ final class DispatchRefreshCoalescer: @unchecked Sendable {
     }
 }
 
+struct DefaultOutputChangeTracker {
+    private var lastObservedOutput: AudioOutputDevice?
+
+    mutating func shouldSendChange(
+        for output: AudioOutputDevice,
+        sendChange: Bool,
+        suppressDuplicate: Bool
+    ) -> Bool {
+        let shouldSend = sendChange
+            && (!suppressDuplicate || output != lastObservedOutput)
+        lastObservedOutput = output
+        return shouldSend
+    }
+
+    mutating func reset() {
+        lastObservedOutput = nil
+    }
+}
+
 public final class DefaultOutputDeviceObserver: @unchecked Sendable {
     private let queue: DispatchQueue
     private let queueSpecific = DispatchSpecificKey<Void>()
@@ -35,6 +54,7 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
     private var systemListeners: [ListenerToken] = []
     private var outputListeners: [ListenerToken] = []
     private var observedOutputID = AudioObjectID(kAudioObjectUnknown)
+    private var outputChangeTracker = DefaultOutputChangeTracker()
     private var isStarted = false
     private let onChange: @Sendable (Result<AudioOutputDevice, Error>) -> Void
 
@@ -123,9 +143,13 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         removeListeners(&systemListeners)
         isStarted = false
         refreshCoalescer.cancelPending()
+        outputChangeTracker.reset()
     }
 
-    private func refreshObservedOutput(sendChange: Bool) {
+    private func refreshObservedOutput(
+        sendChange: Bool,
+        suppressDuplicateChange: Bool = false
+    ) {
         guard isStarted else {
             return
         }
@@ -133,11 +157,16 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         do {
             let output = try CoreAudioDeviceQuery.defaultOutputDevice()
             try observeOutputChanges(for: output.id)
-            if sendChange {
+            if outputChangeTracker.shouldSendChange(
+                for: output,
+                sendChange: sendChange,
+                suppressDuplicate: suppressDuplicateChange
+            ) {
                 onChange(.success(output))
             }
         } catch {
             removeOutputListeners()
+            outputChangeTracker.reset()
             if sendChange {
                 onChange(.failure(error))
             }
@@ -153,7 +182,10 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
                   self.isStarted else {
                 return
             }
-            self.refreshObservedOutput(sendChange: sendChange)
+            self.refreshObservedOutput(
+                sendChange: sendChange,
+                suppressDuplicateChange: true
+            )
         }
     }
 
@@ -252,7 +284,10 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
                 return
             }
             if Self.shouldRefreshImmediately(selector: selector) {
-                self.refreshObservedOutput(sendChange: true)
+                self.refreshObservedOutput(
+                    sendChange: true,
+                    suppressDuplicateChange: true
+                )
             }
             self.scheduleRefreshObservedOutput(sendChange: true)
         }

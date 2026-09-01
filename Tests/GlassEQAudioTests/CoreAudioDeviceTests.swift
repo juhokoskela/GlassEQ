@@ -1885,6 +1885,48 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func outputObserverReportsEachObservedConfigurationOnce() {
+        var tracker = DefaultOutputChangeTracker()
+        let initialOutput = output(channelCount: 2, sampleRate: 96_000)
+        var changedOutput = initialOutput
+        changedOutput.nominalSampleRate = 44_100
+
+        let skippedInitialValue = tracker.shouldSendChange(
+            for: initialOutput,
+            sendChange: false,
+            suppressDuplicate: false
+        )
+        let sentChangedValue = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            suppressDuplicate: true
+        )
+        let skippedStreamDuplicate = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            suppressDuplicate: true
+        )
+        let skippedCoalescedDuplicate = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            suppressDuplicate: true
+        )
+
+        #expect(!skippedInitialValue)
+        #expect(sentChangedValue)
+        #expect(!skippedStreamDuplicate)
+        #expect(!skippedCoalescedDuplicate)
+
+        tracker.reset()
+        let sentAfterReset = tracker.shouldSendChange(
+            for: changedOutput,
+            sendChange: true,
+            suppressDuplicate: true
+        )
+        #expect(sentAfterReset)
+    }
+
+    @Test
     func refreshCoalescerRunsOnlyLatestScheduledAction() {
         let queue = DispatchQueue(label: "com.glasseq.tests.refresh-coalescer")
         let coalescer = DispatchRefreshCoalescer(queue: queue, delay: .milliseconds(10))
