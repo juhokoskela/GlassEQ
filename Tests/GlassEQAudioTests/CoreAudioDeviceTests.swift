@@ -280,31 +280,25 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func completeCompositionSystemTapStaysMutedUntilDestroyed() {
+    func systemTapRestoresDryPlaybackWhenItsReaderStops() {
         let description = SystemTapAudioEngine.makeSystemTapDescription(
             excluding: [42],
             outputUID: "test-output",
-            streamIndex: 1,
-            muteBehavior: SystemTapAudioEngine.combinedTapMuteBehavior(
-                usePhysicalFirstOrdering: false
-            )
+            streamIndex: 1
         )
 
         #expect(description.processes == [42])
         #expect(description.bundleIDs == ["systemsoundserverd"])
         #expect(description.isExclusive)
-        #expect(description.muteBehavior == .muted)
+        #expect(description.muteBehavior == .mutedWhenTapped)
         #expect(description.isProcessRestoreEnabled)
     }
 
     @Test
-    func physicalFirstSystemSoundTapMutesOnlyWhileRead() {
+    func systemSoundTapRestoresDryPlaybackWhenItsReaderStops() {
         let description = SystemTapAudioEngine.makeSystemSoundTapDescription(
             outputUID: "test-output",
-            streamIndex: 1,
-            muteBehavior: SystemTapAudioEngine.combinedTapMuteBehavior(
-                usePhysicalFirstOrdering: true
-            )
+            streamIndex: 1
         )
 
         #expect(description.processes.isEmpty)
