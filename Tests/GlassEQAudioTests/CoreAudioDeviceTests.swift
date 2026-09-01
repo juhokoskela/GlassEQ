@@ -79,6 +79,71 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func coreAudioCleanupDoesNotHoldStateLockAcrossDestruction() {
+        let tapOneAttempts = Mutex(0)
+        let retryEnteredHAL = DispatchSemaphore(value: 0)
+        let releaseHAL = DispatchSemaphore(value: 0)
+        let retryFinished = DispatchSemaphore(value: 0)
+        let concurrentDisposeFinished = DispatchSemaphore(value: 0)
+        let concurrentDisposeResult = Mutex<Bool?>(nil)
+        let operations = CoreAudioResourceCleanupLedger.Operations(
+            stopIOProc: { _, _ in noErr },
+            destroyIOProc: { _, _ in noErr },
+            destroyAggregate: { _ in noErr },
+            destroyTap: { tapID in
+                guard tapID == 1 else {
+                    return noErr
+                }
+                let attempt = tapOneAttempts.withLock { attempts in
+                    attempts += 1
+                    return attempts
+                }
+                guard attempt > 1 else {
+                    return kAudioHardwareUnspecifiedError
+                }
+                retryEnteredHAL.signal()
+                releaseHAL.wait()
+                return noErr
+            }
+        )
+        let ledger = CoreAudioResourceCleanupLedger(
+            operations: operations,
+            preservesFailuresOnDeinit: false,
+            automaticRetryDelaysMilliseconds: []
+        )
+
+        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+            operation: "retain first tap",
+            tapIDs: [1]
+        )))
+        DispatchQueue.global().async {
+            _ = ledger.retryPending()
+            retryFinished.signal()
+        }
+        #expect(retryEnteredHAL.wait(timeout: .now() + 1) == .success)
+
+        DispatchQueue.global().async {
+            let completed = ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
+                operation: "queue second tap",
+                tapIDs: [2]
+            ))
+            concurrentDisposeResult.withLock { $0 = completed }
+            concurrentDisposeFinished.signal()
+        }
+        let disposeReturnedWithoutWaitingForHAL = concurrentDisposeFinished.wait(
+            timeout: .now() + 1
+        ) == .success
+        releaseHAL.signal()
+
+        #expect(disposeReturnedWithoutWaitingForHAL)
+        #expect(retryFinished.wait(timeout: .now() + 1) == .success)
+        #expect(concurrentDisposeResult.withLock { $0 } == false)
+        #expect(ledger.pendingCount == 1)
+        #expect(ledger.retryPending())
+        #expect(ledger.pendingCount == 0)
+    }
+
+    @Test
     func coreAudioCleanupTreatsAlreadyDestroyedObjectsAsTerminal() {
         #expect(CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(noErr))
         #expect(CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
