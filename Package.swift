@@ -33,7 +33,12 @@ let package = Package(
                 .linkedFramework("AudioToolbox")
             ]
         ),
-        .target(name: "GlassEQLicensing"),
+        .target(
+            name: "GlassEQLicensing",
+            linkerSettings: [
+                .linkedFramework("Security")
+            ]
+        ),
         .target(
             name: "GlassEQSettingsIPC",
             dependencies: ["GlassEQCore"]
