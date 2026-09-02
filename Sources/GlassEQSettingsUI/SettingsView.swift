@@ -179,11 +179,15 @@ private func localizedFrameCount(_ value: UInt32) -> String {
 }
 
 func settingsCanDeleteSelectedProfile(_ snapshot: SettingsSnapshot) -> Bool {
+    settingsCanDeleteProfile(snapshot, id: snapshot.selectedProfileID)
+}
+
+func settingsCanDeleteProfile(_ snapshot: SettingsSnapshot, id: UUID) -> Bool {
     !snapshot.profileStoreProtection.isProtected
         && snapshot.profiles.count > 1
         && !snapshot.isPreviewing
         && !snapshot.programmeComparison.isActive
-        && snapshot.selectedProfileID != snapshot.activeProfileID
+        && id != snapshot.activeProfileID
 }
 
 func settingsSnapshotPreservingLocalDraft(
@@ -254,6 +258,9 @@ public struct SettingsView: View {
     @State private var tab = EditorSection.editor
     @State private var draftEditGeneration = 0
     @State private var isImportSheetPresented = false
+    @State private var isNewProfileSheetPresented = false
+    @State private var importRequestedFromNewProfileSheet = false
+    @State private var profilePendingDeletion: EQProfile?
 
     public init(model: GlassEQSettingsViewModel) {
         self._model = Bindable(wrappedValue: model)
@@ -264,19 +271,43 @@ public struct SettingsView: View {
         HStack(spacing: 0) {
             ProfileSidebar(
                 profiles: snapshot.profiles,
-                mappedProfileID: snapshot.currentOutputMappedProfileID,
+                activeProfileID: snapshot.activeProfileID,
                 selectedProfileID: snapshot.selectedProfileID,
+                hasCurrentOutput: !snapshot.currentOutputUID.isEmpty,
                 onSelect: selectProfile,
-                onCreateGraphic31: createGraphic31Profile,
-                onCreateGraphic10: createGraphic10Profile,
-                onCreateParametric: createParametricProfile,
-                onCreateConvolution: createConvolutionProfile,
-                onDuplicate: duplicateSelectedProfile,
-                onDelete: deleteSelectedProfile,
-                canDeleteSelectedProfile: canDeleteSelectedProfile,
+                onCreate: { isNewProfileSheetPresented = true },
+                onDuplicate: duplicateProfile,
+                onDelete: requestProfileDeletion,
+                onAssignToCurrentOutput: assignProfileToCurrentOutput,
+                canDeleteProfile: { settingsCanDeleteProfile(snapshot, id: $0) },
                 isReadOnly: isProfileStoreProtected || snapshot.programmeComparison.isActive
             )
                 .frame(width: 260)
+                .sheet(isPresented: $isNewProfileSheetPresented, onDismiss: presentImportIfRequested) {
+                    NewProfileSheet(
+                        onCreate: createProfile,
+                        onImport: { importRequestedFromNewProfileSheet = true }
+                    )
+                }
+                .confirmationDialog(
+                    profilePendingDeletion.map { localized("Delete \"\($0.name)\"?") } ?? "",
+                    isPresented: Binding(
+                        get: { profilePendingDeletion != nil },
+                        set: { isPresented in
+                            if !isPresented {
+                                profilePendingDeletion = nil
+                            }
+                        }
+                    ),
+                    titleVisibility: .visible,
+                    presenting: profilePendingDeletion
+                ) { profile in
+                    Button(localized("Delete"), role: .destructive) {
+                        perform(.deleteProfile(profile.id))
+                    }
+                } message: { _ in
+                    Text(localized("This also removes any output assignment that uses the profile. It can't be undone."))
+                }
 
             ProfileDetail(
                 snapshot: snapshot,
@@ -480,28 +511,31 @@ public struct SettingsView: View {
         perform(.resetUnsupportedProfileStore)
     }
 
-    private func createGraphic31Profile() {
-        perform(.createProfile(.graphic31))
+    private func createProfile(_ kind: SettingsProfileKind) {
+        perform(.createProfile(kind))
     }
 
-    private func createGraphic10Profile() {
-        perform(.createProfile(.graphic10))
+    private func presentImportIfRequested() {
+        guard importRequestedFromNewProfileSheet else {
+            return
+        }
+        importRequestedFromNewProfileSheet = false
+        isImportSheetPresented = true
     }
 
-    private func createParametricProfile() {
-        perform(.createProfile(.parametric))
+    private func duplicateProfile(_ id: UUID) {
+        perform(.duplicateProfile(id))
     }
 
-    private func createConvolutionProfile() {
-        perform(.createProfile(.convolution))
+    private func requestProfileDeletion(_ id: UUID) {
+        profilePendingDeletion = snapshot.profiles.first(where: { $0.id == id })
     }
 
-    private func duplicateSelectedProfile() {
-        perform(.duplicateProfile(snapshot.selectedProfileID))
-    }
-
-    private func deleteSelectedProfile() {
-        perform(.deleteProfile(snapshot.selectedProfileID))
+    private func assignProfileToCurrentOutput(_ id: UUID) {
+        guard let profile = snapshot.profiles.first(where: { $0.id == id }) else {
+            return
+        }
+        perform(.useProfileForCurrentOutput(profile))
     }
 
     private func refreshMetricsFromModel() {
@@ -1076,55 +1110,29 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
 
 private struct ProfileSidebar: View {
     var profiles: [EQProfile]
-    var mappedProfileID: UUID?
+    var activeProfileID: UUID
     var selectedProfileID: UUID
+    var hasCurrentOutput: Bool
     var onSelect: (UUID) -> Void
-    var onCreateGraphic31: () -> Void
-    var onCreateGraphic10: () -> Void
-    var onCreateParametric: () -> Void
-    var onCreateConvolution: () -> Void
-    var onDuplicate: () -> Void
-    var onDelete: () -> Void
-    var canDeleteSelectedProfile: Bool
+    var onCreate: () -> Void
+    var onDuplicate: (UUID) -> Void
+    var onDelete: (UUID) -> Void
+    var onAssignToCurrentOutput: (UUID) -> Void
+    var canDeleteProfile: (UUID) -> Bool
     var isReadOnly: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionNamespace
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                LazyVStack(spacing: 4) {
+                VStack(spacing: 2) {
                     ForEach(profiles) { profile in
-                        Button {
-                            onSelect(profile.id)
-                        } label: {
-                            HStack {
-                                Text(profile.name)
-                                    .lineLimit(1)
-                                Spacer()
-                                if profile.id == mappedProfileID {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                        .foregroundStyle(profile.id == selectedProfileID ? Color.white.opacity(0.85) : Color.secondary)
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                            .foregroundStyle(profile.id == selectedProfileID ? Color.white : Color.primary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(.rect)
-                            .background(
-                                profile.id == selectedProfileID
-                                    ? Color.accentColor
-                                    : Color.clear,
-                                in: .rect(cornerRadius: 8)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel(Text(profile.name))
-                        .accessibilityValue(Text(profileAccessibilityValue(profile)))
-                        .accessibilityHint(Text(localized("Selects this profile for editing")))
+                        row(for: profile)
                     }
                 }
+                .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: selectedProfileID)
                 // Align the row text (which sits 10pt inside the selection capsule) with the
                 // sidebar's content leading.
                 .padding(.horizontal, sidebarContentLeading - sidebarCardInset - 10)
@@ -1136,88 +1144,50 @@ private struct ProfileSidebar: View {
 
             Divider()
 
-            VStack(spacing: 10) {
-                HStack {
-                    Button {
-                        onCreateGraphic31()
-                    } label: {
-                        Image(systemName: "31.circle")
-                            .frame(width: 28, height: 28)
-                            .contentShape(.rect)
-                    }
-                    .help(localized("New 31-band profile"))
-                    .disabled(isReadOnly)
-                    .accessibilityLabel(Text(localized("New 31-band profile")))
-                    .accessibilityHint(Text(localized("Creates a 31-band graphic equalizer profile")))
+            HStack(spacing: 4) {
+                Button {
+                    onCreate()
+                } label: {
+                    Label(localized("New Profile"), systemImage: "plus")
+                        .frame(minHeight: 28)
+                        .contentShape(.rect)
+                }
+                .controlSize(.large)
+                .disabled(isReadOnly)
+                .accessibilityHint(Text(localized("Chooses a profile type or import source")))
 
-                    Button {
-                        onCreateGraphic10()
-                    } label: {
-                        Image(systemName: "10.circle")
-                            .frame(width: 28, height: 28)
-                            .contentShape(.rect)
-                    }
-                    .help(localized("New 10-band profile"))
-                    .disabled(isReadOnly)
-                    .accessibilityLabel(Text(localized("New 10-band profile")))
-                    .accessibilityHint(Text(localized("Creates a 10-band graphic equalizer profile")))
+                Spacer()
 
-                    Button {
-                        onCreateParametric()
-                    } label: {
-                        Image(systemName: "waveform.path.ecg")
-                            .frame(width: 28, height: 28)
-                            .contentShape(.rect)
-                    }
-                    .help(localized("New parametric profile"))
-                    .disabled(isReadOnly)
-                    .accessibilityLabel(Text(localized("New parametric profile")))
-                    .accessibilityHint(Text(localized("Creates a parametric equalizer profile")))
-
-                    Button {
-                        onCreateConvolution()
-                    } label: {
-                        Image(systemName: "waveform.path")
-                            .frame(width: 28, height: 28)
-                            .contentShape(.rect)
-                    }
-                    .help(localized("New response curve profile"))
-                    .disabled(isReadOnly)
-                    .accessibilityLabel(Text(localized("New response curve profile")))
-                    .accessibilityHint(Text(localized("Creates a minimum-phase response curve profile")))
-
-                    Spacer()
-
-                    Button {
-                        onDuplicate()
-                    } label: {
-                        Image(systemName: "plus.square.on.square")
-                            .frame(width: 28, height: 28)
-                            .contentShape(.rect)
-                    }
-                    .help(localized("Duplicate profile"))
-                    .disabled(isReadOnly)
-                    .accessibilityLabel(Text(localized("Duplicate profile")))
-                    .accessibilityHint(Text(localized("Copies the selected profile")))
-
-                    Button(role: .destructive) {
-                        onDelete()
-                    } label: {
-                        Image(systemName: "trash")
-                            .frame(width: 28, height: 28)
-                            .contentShape(.rect)
-                    }
-                    .help(canDeleteSelectedProfile ? localized("Delete profile") : localized("Switch away from the active profile before deleting it"))
-                    .disabled(!canDeleteSelectedProfile)
-                    .opacity(canDeleteSelectedProfile ? 1 : 0.35)
-                    .accessibilityLabel(Text(localized("Delete profile")))
-                    .accessibilityValue(Text(canDeleteSelectedProfile ? localized("Available") : localized("Unavailable for active profile")))
-                    .accessibilityHint(Text(canDeleteSelectedProfile ? localized("Deletes the selected profile") : localized("Switch away from the active profile before deleting it")))
+                Button {
+                    onDuplicate(selectedProfileID)
+                } label: {
+                    Image(systemName: "plus.square.on.square")
+                        .frame(width: 28, height: 28)
+                        .contentShape(.rect)
                 }
                 .buttonStyle(.borderless)
+                .help(localized("Duplicate profile"))
+                .disabled(isReadOnly)
+                .accessibilityLabel(Text(localized("Duplicate profile")))
+                .accessibilityHint(Text(localized("Copies the selected profile")))
+
+                Button(role: .destructive) {
+                    onDelete(selectedProfileID)
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 28, height: 28)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.borderless)
+                .help(canDeleteSelectedProfile ? localized("Delete profile") : localized("Switch away from the active profile before deleting it"))
+                .disabled(!canDeleteSelectedProfile)
+                .opacity(canDeleteSelectedProfile ? 1 : 0.35)
+                .accessibilityLabel(Text(localized("Delete profile")))
+                .accessibilityValue(Text(canDeleteSelectedProfile ? localized("Available") : localized("Unavailable for active profile")))
+                .accessibilityHint(Text(canDeleteSelectedProfile ? localized("Deletes the selected profile") : localized("Switch away from the active profile before deleting it")))
             }
             .padding(.horizontal, sidebarContentLeading - sidebarCardInset)
-            .padding(.vertical, 16)
+            .padding(.vertical, 14)
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: sidebarCardCornerRadius, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: sidebarCardCornerRadius, style: .continuous))
@@ -1231,15 +1201,112 @@ private struct ProfileSidebar: View {
         .padding(sidebarCardInset)
     }
 
+    private var canDeleteSelectedProfile: Bool {
+        canDeleteProfile(selectedProfileID)
+    }
+
+    private func row(for profile: EQProfile) -> some View {
+        let isSelected = profile.id == selectedProfileID
+        let isActive = profile.id == activeProfileID
+        let secondary = isSelected ? Color.white.opacity(0.78) : Color.secondary
+        return Button {
+            onSelect(profile.id)
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: profile.mode.symbol)
+                    .font(.body)
+                    .frame(width: 20)
+                    .foregroundStyle(secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(profile.name)
+                        .lineLimit(1)
+                    Text(profileSubtitle(profile))
+                        .font(.caption)
+                        .foregroundStyle(secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 6)
+                if isActive {
+                    Image(systemName: profile.isBypassed ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.caption)
+                        .foregroundStyle(secondary)
+                        .accessibilityHidden(true)
+                }
+            }
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor)
+                        .matchedGeometryEffect(id: "selection", in: selectionNamespace)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contextMenu {
+            Button(localized("Duplicate")) {
+                onDuplicate(profile.id)
+            }
+            .disabled(isReadOnly)
+            Button(localized("Use for Current Output")) {
+                onAssignToCurrentOutput(profile.id)
+            }
+            .disabled(isReadOnly || !hasCurrentOutput)
+            Divider()
+            Button(localized("Delete…"), role: .destructive) {
+                onDelete(profile.id)
+            }
+            .disabled(!canDeleteProfile(profile.id))
+        }
+        .accessibilityLabel(Text(profile.name))
+        .accessibilityValue(Text(profileAccessibilityValue(profile)))
+        .accessibilityHint(Text(localized("Selects this profile for editing")))
+    }
+
+    private func profileSubtitle(_ profile: EQProfile) -> String {
+        var parts = [profile.mode.title]
+        switch profile.mode {
+        case .parametric:
+            let count = profile.channelMode == .stereo
+                ? max(profile.leftFilters.count, profile.rightFilters.count)
+                : profile.filters.count
+            parts.append(count == 1 ? localized("1 filter") : localized("\(count) filters"))
+        case .graphic10, .graphic31:
+            break
+        case .convolution:
+            switch profile.channelMode == .stereo ? profile.leftConvolution : profile.convolution {
+            case .magnitudeCurve(let curve):
+                parts.append(curve.points.count == 1 ? localized("1 point") : localized("\(curve.points.count) points"))
+            case .impulseResponse:
+                parts.append(localized("impulse response"))
+            case nil:
+                break
+            }
+        }
+        if profile.channelMode == .stereo {
+            parts.append(localized("L/R"))
+        }
+        if profile.isBypassed {
+            parts.append(localized("bypassed"))
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func profileAccessibilityValue(_ profile: EQProfile) -> String {
-        var values: [String] = []
+        var values = [profileSubtitle(profile)]
         if profile.id == selectedProfileID {
             values.append(localized("Selected"))
         }
-        if profile.id == mappedProfileID {
-            values.append(localized("Mapped to current output"))
+        if profile.id == activeProfileID {
+            values.append(profile.isBypassed ? localized("Active, bypassed") : localized("Active"))
         }
-        return values.isEmpty ? localized("Not selected") : values.joined(separator: ", ")
+        return values.joined(separator: ", ")
     }
 }
 
@@ -3643,21 +3710,6 @@ func outputBufferSummary(
             )
         }
         return localized("\(selected) frames")
-    }
-}
-
-private extension EQMode {
-    var title: String {
-        switch self {
-        case .parametric:
-            localized("Parametric")
-        case .graphic10:
-            localized("10-Band")
-        case .graphic31:
-            localized("31-Band")
-        case .convolution:
-            localized("Response Curve")
-        }
     }
 }
 
