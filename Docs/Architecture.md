@@ -49,7 +49,7 @@ Programme-loudness A/B comparison is another transient render mode, not a profil
 
 ## Current Implementation Status
 
-This repository contains the SwiftPM project, biquad and minimum-phase convolution DSP engines, guided EqualizerAPO, AutoEq, REW text, and WAV impulse-response import, native search of AutoEq's recommended results, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, and the transitional separate-clock Bluetooth headset backend. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
+This repository contains the SwiftPM project, biquad and minimum-phase convolution DSP engines, guided EqualizerAPO, AutoEq, REW text, and WAV impulse-response import, native search of AutoEq's recommended results, profile persistence, menu bar shell, the combined Core Audio tap/output fast path, the transitional separate-clock Bluetooth headset backend, and the protocol-level client licensing module. The Core Audio bridge is intentionally isolated under `GlassEQAudio` so device-format support and hardware QA can be hardened without disturbing UI/profile code.
 
 ## Clocking And Routing
 
@@ -120,6 +120,12 @@ Profile data belongs to the main app sandbox and is migrated by the main app thr
 ## First Launch
 
 The main app records setup completion in `UserDefaults` under `onboarding.completedVersion`. Until that key is set, `GlassEQApp` constructs its model with `autoStart` disabled and presents the onboarding window at launch with a regular activation policy, so a fresh install shows a Dock icon and a foreground window instead of only a menu bar item. The engine starts when the guide's permission step asks for it, which is what triggers the system audio capture prompt. `GlassEQAppModel` owns the guide's audio-capture state and publishes explicit idle, pending, running, permission-denied, failed, and bypassed states. Closing the window at any step marks setup complete, starts audio if it has not started, and only then requests notification authorization. The Settings helper reopens the guide through the `showSetupGuide` command, and the main app raises it with the same generation-counter pattern used for the in-process settings window.
+
+## Licensing
+
+`GlassEQLicensing` currently owns only the trust boundary for server-issued entitlements. It verifies compact Ed25519 JWS values against caller-supplied public keys, rejects unknown or duplicate claims, checks the installation identity and entitlement revision, validates the signed timeline, and maps verified timestamps to processing and update-access states.
+
+Activation requests, credential persistence, refresh scheduling, clock-rollback handling, and application enforcement remain unimplemented. They should be added with the licensing service and their first real application call sites. Adding audio enforcement must preserve dry system playback when a monthly entitlement expires.
 
 ## Backlog
 
