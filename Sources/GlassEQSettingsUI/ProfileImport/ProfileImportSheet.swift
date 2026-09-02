@@ -35,13 +35,13 @@ struct SettingsFileImportChoice {
 }
 
 struct ProfileImportSheet: View {
+    @Binding var route: ProfileImportRoute
     var currentProfile: EQProfile
     var isReadOnly: Bool
     var onImport: (SettingsImportFormat, String, String) async -> String?
     var onImportParsedProfile: (EQProfile) async -> String?
     var onChooseImportFiles: (SettingsFileImportMode) async -> SettingsFileImportChoice
 
-    @State private var route = ProfileImportRoute.autoEQ
     @State private var model = ProfileImportModel()
 
     var body: some View {

@@ -2,58 +2,77 @@ import GlassEQCore
 import GlassEQSettingsIPC
 import SwiftUI
 
-enum NewProfileChoice: Hashable, Identifiable {
-    case create(SettingsProfileKind)
-    case importProfile
-
-    static let createChoices: [NewProfileChoice] = [
-        .create(.parametric),
-        .create(.graphic10),
-        .create(.graphic31),
-        .create(.convolution)
-    ]
-
-    var id: Self { self }
+private enum NewProfileStep {
+    case startingPoint
+    case profileType
 
     var title: String {
         switch self {
-        case .create(let kind):
-            kind.mode.title
-        case .importProfile:
-            localized("Import")
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .create(let kind):
-            kind.mode.symbol
-        case .importProfile:
-            "square.and.arrow.down"
+        case .startingPoint:
+            localized("New Profile")
+        case .profileType:
+            localized("Build Your Own")
         }
     }
 
     var summary: String {
         switch self {
-        case .create(.parametric):
-            localized("A few filters you place by hand. Peaks, shelves, and cuts at any frequency.")
-        case .create(.graphic10):
-            localized("Ten fixed bands, one octave apart. Quick tone adjustments.")
-        case .create(.graphic31):
-            localized("Thirty-one fixed bands, a third of an octave apart. Fine control.")
-        case .create(.convolution):
-            localized("A target response curve or impulse response, rendered as a minimum-phase FIR filter.")
-        case .importProfile:
-            localized("From an AutoEq result, an EqualizerAPO or REW file, or a WAV impulse response.")
+        case .startingPoint:
+            localized("Choose how you want to get started.")
+        case .profileType:
+            localized("Choose a profile type. You can rename it afterwards.")
+        }
+    }
+}
+
+private enum NewProfileStartingPoint: String, CaseIterable, Identifiable {
+    case build
+    case importFile
+    case searchAutoEQ
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .build:
+            localized("Build Your Own")
+        case .importFile:
+            localized("Import a File")
+        case .searchAutoEQ:
+            localized("Search AutoEq")
         }
     }
 
-    var actionTitle: String {
+    var symbol: String {
         switch self {
-        case .create:
-            localized("Create")
-        case .importProfile:
-            localized("Import…")
+        case .build:
+            "slider.horizontal.3"
+        case .importFile:
+            "square.and.arrow.down"
+        case .searchAutoEQ:
+            "magnifyingglass"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .build:
+            localized("Start with a blank Parametric, Graphic, or Convolution profile.")
+        case .importFile:
+            localized("Open an EqualizerAPO or REW file, or a WAV impulse response.")
+        case .searchAutoEQ:
+            localized("Find a headphone profile in the AutoEq catalogue.")
+        }
+    }
+
+    var accessibilityHint: String {
+        switch self {
+        case .build:
+            localized("Shows the available profile types")
+        case .importFile:
+            localized("Opens the file importer")
+        case .searchAutoEQ:
+            localized("Opens the AutoEq catalogue search")
         }
     }
 }
@@ -71,97 +90,175 @@ extension SettingsProfileKind {
             .convolution
         }
     }
+
+    var summary: String {
+        switch self {
+        case .parametric:
+            localized("Place peaks, shelves, and cuts at any frequency.")
+        case .graphic10:
+            localized("Ten fixed bands, one octave apart.")
+        case .graphic31:
+            localized("Thirty-one fixed bands, a third of an octave apart.")
+        case .convolution:
+            localized("Use a target response curve or impulse response.")
+        }
+    }
 }
 
 struct NewProfileSheet: View {
     let onCreate: (SettingsProfileKind) -> Void
-    let onImport: () -> Void
+    let onImport: (ProfileImportRoute) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var choice = NewProfileChoice.create(.parametric)
-
-    private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+    @State private var step = NewProfileStep.startingPoint
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(localized("New Profile"))
-                    .font(.title2.weight(.semibold))
-                Text(localized("Pick how you want to shape the sound. You can rename the profile afterwards."))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            NewProfileSheetHeader(step: step)
+
+            switch step {
+            case .startingPoint:
+                NewProfileStartingPointChoices(onSelect: selectStartingPoint)
+            case .profileType:
+                NewProfileKindChoices(onSelect: createProfile)
             }
 
-            VStack(spacing: 12) {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(NewProfileChoice.createChoices) { option in
-                        NewProfileChoiceCard(option: option, choice: $choice, onConfirm: confirm)
-                    }
-                }
-                NewProfileChoiceCard(option: .importProfile, choice: $choice, onConfirm: confirm)
-            }
-            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: choice)
+            Spacer(minLength: 0)
 
-            HStack {
-                Spacer()
-                Button(localized("Cancel")) {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                Button(choice.actionTitle) {
-                    confirm()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-            }
-            .controlSize(.large)
+            NewProfileSheetFooter(
+                canGoBack: step == .profileType,
+                onBack: { step = .startingPoint },
+                onCancel: { dismiss() }
+            )
         }
         .padding(24)
         .frame(width: 560)
+        .frame(minHeight: 400)
     }
 
-    private func confirm() {
+    private func selectStartingPoint(_ startingPoint: NewProfileStartingPoint) {
+        switch startingPoint {
+        case .build:
+            step = .profileType
+        case .importFile:
+            openImporter(at: .text)
+        case .searchAutoEQ:
+            openImporter(at: .autoEQ)
+        }
+    }
+
+    private func createProfile(_ kind: SettingsProfileKind) {
         dismiss()
-        switch choice {
-        case .create(let kind):
-            onCreate(kind)
-        case .importProfile:
-            onImport()
+        onCreate(kind)
+    }
+
+    private func openImporter(at route: ProfileImportRoute) {
+        dismiss()
+        onImport(route)
+    }
+}
+
+private struct NewProfileSheetHeader: View {
+    let step: NewProfileStep
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(step.title)
+                .font(.title2.weight(.semibold))
+            Text(step.summary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 }
 
+private struct NewProfileStartingPointChoices: View {
+    let onSelect: (NewProfileStartingPoint) -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ForEach(NewProfileStartingPoint.allCases) { startingPoint in
+                NewProfileChoiceCard(
+                    title: startingPoint.title,
+                    summary: startingPoint.summary,
+                    symbol: startingPoint.symbol,
+                    accessibilityHint: startingPoint.accessibilityHint,
+                    action: { onSelect(startingPoint) }
+                )
+            }
+        }
+    }
+}
+
+private struct NewProfileKindChoices: View {
+    let onSelect: (SettingsProfileKind) -> Void
+
+    private let kinds: [SettingsProfileKind] = [
+        .parametric,
+        .convolution,
+        .graphic10,
+        .graphic31
+    ]
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(kinds, id: \.rawValue) { kind in
+                NewProfileChoiceCard(
+                    title: kind.mode.title,
+                    summary: kind.summary,
+                    symbol: kind.mode.symbol,
+                    accessibilityHint: localized("Creates this profile type"),
+                    action: { onSelect(kind) }
+                )
+            }
+        }
+    }
+}
+
+private struct NewProfileSheetFooter: View {
+    let canGoBack: Bool
+    let onBack: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack {
+            if canGoBack {
+                Button(localized("Back"), action: onBack)
+            }
+            Spacer()
+            Button(localized("Cancel"), action: onCancel)
+                .keyboardShortcut(.cancelAction)
+        }
+        .controlSize(.large)
+    }
+}
+
 private struct NewProfileChoiceCard: View {
-    let option: NewProfileChoice
-    @Binding var choice: NewProfileChoice
-    let onConfirm: () -> Void
+    let title: String
+    let summary: String
+    let symbol: String
+    let accessibilityHint: String
+    let action: () -> Void
 
     @State private var isHovering = false
 
-    private var isSelected: Bool {
-        option == choice
-    }
-
     var body: some View {
-        Button {
-            choice = option
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: option.symbol)
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: symbol)
                     .font(.title3.weight(.medium))
-                    .frame(width: 34, height: 34)
-                    .foregroundStyle(isSelected ? Color(nsColor: .alternateSelectedControlTextColor) : Color.accentColor)
-                    .background(
-                        isSelected ? Color.accentColor : Color.accentColor.opacity(0.12),
-                        in: .rect(cornerRadius: 9)
-                    )
-                    .symbolEffect(.bounce, options: .nonRepeating, value: isSelected)
+                    .frame(width: 40, height: 40)
+                    .foregroundStyle(Color.accentColor)
+                    .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 10))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(option.title)
+                    Text(title)
                         .font(.body.weight(.semibold))
-                    Text(option.summary)
+                    Text(summary)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -169,32 +266,23 @@ private struct NewProfileChoiceCard: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
             .contentShape(.rect(cornerRadius: 12))
             .background(
-                isSelected ? Color.accentColor.opacity(0.1) : Color.primary.opacity(isHovering ? 0.06 : 0.035),
+                Color.primary.opacity(isHovering ? 0.06 : 0.035),
                 in: .rect(cornerRadius: 12)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(
-                        isSelected ? Color.accentColor : Color.primary.opacity(0.08),
-                        lineWidth: isSelected ? 1.5 : 1
-                    )
+                    .strokeBorder(Color.primary.opacity(0.08))
             }
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
-        .simultaneousGesture(TapGesture(count: 2).onEnded { onConfirm() })
-        .accessibilityLabel(Text(option.title))
-        .accessibilityValue(Text(option.summary))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .accessibilityHint(Text(localized("Selects this profile type")))
-        .accessibilityAction(named: Text(option.actionTitle)) {
-            choice = option
-            onConfirm()
-        }
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(summary))
+        .accessibilityHint(Text(accessibilityHint))
     }
 }
 

@@ -327,6 +327,23 @@ struct SettingsIPCTests {
     }
 
     @Test
+    @MainActor
+    func newProfileSheetPresentsTheRequestedImportRouteAfterDismissing() {
+        for route in ProfileImportRoute.allCases {
+            let controller = SettingsController(model: GlassEQSettingsViewModel())
+
+            controller.requestImportFromNewProfileSheet(route)
+
+            #expect(!controller.isImportSheetPresented)
+
+            controller.newProfileSheetDidDismiss()
+
+            #expect(controller.isImportSheetPresented)
+            #expect(controller.importRoute == route)
+        }
+    }
+
+    @Test
     func sliderQuantizationDoesNotIntroduceDisplayNoise() {
         let locale = Locale(identifier: "en_US_POSIX")
 

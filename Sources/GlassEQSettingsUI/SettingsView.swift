@@ -42,6 +42,7 @@ public struct SettingsView: View {
         }
         .sheet(isPresented: $controller.isImportSheetPresented) {
             ProfileImportSheet(
+                route: $controller.importRoute,
                 currentProfile: controller.draftProfile,
                 isReadOnly: controller.isProfileStoreProtected,
                 onImport: controller.importProfile,

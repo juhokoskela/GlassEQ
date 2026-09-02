@@ -28,7 +28,7 @@ struct ProfileDetail: View {
                         case .editor:
                             if controller.snapshot.profiles.allSatisfy(\.isNeutral) {
                                 StartingPointHint(
-                                    onImport: { controller.isImportSheetPresented = true },
+                                    onImport: { controller.presentImport(.text) },
                                     onCreate: { controller.isNewProfileSheetPresented = true }
                                 )
                                 .padding(.bottom, 12)
@@ -135,7 +135,7 @@ struct ProfileHeader: View {
             Spacer()
 
             Button {
-                controller.isImportSheetPresented = true
+                controller.presentImport(.text)
             } label: {
                 Label(localized("Import"), systemImage: "square.and.arrow.down")
             }

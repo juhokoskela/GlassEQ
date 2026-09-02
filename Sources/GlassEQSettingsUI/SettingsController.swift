@@ -40,6 +40,7 @@ final class SettingsController {
     var tab = EditorSection.editor
     var editChannel = EQEditChannel.left
     var isImportSheetPresented = false
+    var importRoute = ProfileImportRoute.text
     var isNewProfileSheetPresented = false
     var profilePendingDeletion: EQProfile?
     private(set) var draftEditGeneration = 0
@@ -47,7 +48,7 @@ final class SettingsController {
     // The stored copy of the selected profile as of the last reconciled snapshot. Comparing the
     // draft against it separates local edits from stored changes that arrived from the app.
     private var storedProfile: EQProfile
-    private var importRequestedFromNewProfileSheet = false
+    private var pendingNewProfileImportRoute: ProfileImportRoute?
 
     init(model: GlassEQSettingsViewModel) {
         self.model = model
@@ -252,16 +253,21 @@ final class SettingsController {
         perform(.useProfileForCurrentOutput(profile))
     }
 
-    func requestImportFromNewProfileSheet() {
-        importRequestedFromNewProfileSheet = true
+    func presentImport(_ route: ProfileImportRoute) {
+        importRoute = route
+        isImportSheetPresented = true
+    }
+
+    func requestImportFromNewProfileSheet(_ route: ProfileImportRoute) {
+        pendingNewProfileImportRoute = route
     }
 
     func newProfileSheetDidDismiss() {
-        guard importRequestedFromNewProfileSheet else {
+        guard let route = pendingNewProfileImportRoute else {
             return
         }
-        importRequestedFromNewProfileSheet = false
-        isImportSheetPresented = true
+        pendingNewProfileImportRoute = nil
+        presentImport(route)
     }
 
     func importProfile(format: ImportFormat, name: String, text: String) async -> String? {
