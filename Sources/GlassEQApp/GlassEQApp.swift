@@ -1444,6 +1444,18 @@ final class GlassEQAppModel {
         }
     }
 
+    func activateProfile(_ id: UUID) {
+        guard let profile = profileStore.profiles.first(where: { $0.id == id }),
+              profile.id != activeProfile.id else {
+            return
+        }
+        do {
+            try apply(profile: profile)
+        } catch {
+            reportProfileActionFailure(error)
+        }
+    }
+
     func apply(profile: EQProfile) throws {
         try ensureProfileStoreWritable()
         try ensureCompatibleWithCurrentOutput(profile)
@@ -4153,8 +4165,8 @@ private struct MenuBarView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Picker(localized("Profile"), selection: Binding(
-                    get: { model.selectedProfileID },
-                    set: { model.selectProfile($0) }
+                    get: { model.activeProfile.id },
+                    set: { model.activateProfile($0) }
                 )) {
                     ForEach(model.profileStore.profiles) { profile in
                         Text(profile.name).tag(profile.id)
@@ -4162,8 +4174,8 @@ private struct MenuBarView: View {
                 }
                 .labelsHidden()
                 .accessibilityLabel(Text(localized("Profile")))
-                .accessibilityValue(Text(model.selectedProfile.name))
-                .accessibilityHint(Text(localized("Chooses a profile for editing")))
+                .accessibilityValue(Text(model.activeProfile.name))
+                .accessibilityHint(Text(localized("Switches the profile that is processing audio")))
             }
 
             HStack(spacing: 10) {
