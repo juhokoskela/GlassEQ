@@ -1254,7 +1254,7 @@ private struct ProfileSidebar: View {
                 onDuplicate(profile.id)
             }
             .disabled(isReadOnly)
-            Button(localized("Use for Current Output")) {
+            Button(localized("Use for This Output")) {
                 onAssignToCurrentOutput(profile.id)
             }
             .disabled(isReadOnly || !hasCurrentOutput)
@@ -1483,11 +1483,23 @@ private struct ProfileHeader: View {
                     }
                 }
 
-                Text(localized("\(draftProfile.mode.title) profile, \(snapshot.currentOutputName)"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .accessibilityLabel(Text(localized("Profile summary")))
+                HStack(spacing: 8) {
+                    Label(draftProfile.mode.title, systemImage: draftProfile.mode.symbol)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(statusChips, id: \.title) { chip in
+                        Text(chip.title)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(chip.color)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(chip.color.opacity(0.12), in: .capsule)
+                    }
+                }
+                .lineLimit(1)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Text(localized("Profile summary")))
+                .accessibilityValue(Text(([draftProfile.mode.title] + statusChips.map(\.title)).joined(separator: ", ")))
             }
 
             Spacer()
@@ -1514,6 +1526,33 @@ private struct ProfileHeader: View {
             .accessibilityHint(Text(localized("Switches between editor and output details")))
         }
         .cardPanel(padding: 16)
+    }
+
+    private struct StatusChip {
+        var title: String
+        var color: Color
+    }
+
+    // Describes where the selected profile is used right now, as opposed to the draft's contents.
+    private var statusChips: [StatusChip] {
+        var chips: [StatusChip] = []
+        let id = draftProfile.id
+        if id == snapshot.activeProfileID {
+            chips.append(StatusChip(
+                title: snapshot.isRunning ? localized("Playing now") : localized("Active"),
+                color: snapshot.isRunning ? Color(nsColor: .systemGreen) : .secondary
+            ))
+        }
+        if id == snapshot.currentOutputMappedProfileID {
+            chips.append(StatusChip(
+                title: localized("Assigned to \(snapshot.currentOutputName)"),
+                color: .accentColor
+            ))
+        }
+        if id == snapshot.fallbackProfileID {
+            chips.append(StatusChip(title: localized("Fallback"), color: .secondary))
+        }
+        return chips
     }
 }
 
@@ -1599,27 +1638,6 @@ private struct EditorTab: View {
     var body: some View {
         VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 10) {
-                SettingRow(title: localized("Profile type")) {
-                    Picker(localized("Profile type"), selection: Binding(
-                        get: { draftProfile.mode },
-                        set: { mode in
-                            // Assign once: writes through this binding are not readable back within
-                            // the same event on macOS 26, so partial mutations would be lost.
-                            draftProfile = draftProfile.convertedToMode(mode)
-                        }
-                    )) {
-                        ForEach(EQMode.allCases, id: \.self) { mode in
-                            Text(mode.title).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: 420)
-                    .accessibilityLabel(Text(localized("Profile type")))
-                    .accessibilityValue(Text(draftProfile.mode.title))
-                    .accessibilityHint(Text(localized("Changes the equalizer profile type")))
-                }
-
                 SettingRow(title: localized("Channels")) {
                     Picker(localized("Channels"), selection: Binding(
                         get: { draftProfile.channelMode },
@@ -1874,36 +1892,8 @@ private struct EditorTab: View {
     }
 }
 
-// Whole-profile conversions used by the editor's type and channel switches.
+// Whole-profile conversion used by the editor's channel switch.
 extension EQProfile {
-    func convertedToMode(_ mode: EQMode) -> EQProfile {
-        let filters: [EQFilter]
-        switch mode {
-        case .parametric:
-            filters = [EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)]
-        case .graphic10:
-            filters = GraphicEQBands.tenBand.map {
-                EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
-            }
-        case .graphic31:
-            filters = GraphicEQBands.thirtyOneBand.map {
-                EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
-            }
-        case .convolution:
-            filters = []
-        }
-        var converted = self
-        converted.mode = mode
-        converted.filters = filters
-        converted.leftFilters = filters
-        converted.rightFilters = filters
-        let source = mode == .convolution ? EQProfile.flatConvolution.convolution : nil
-        converted.convolution = source
-        converted.leftConvolution = source
-        converted.rightConvolution = source
-        return converted
-    }
-
     func convertedToChannelMode(
         _ mode: EQChannelMode,
         editedChannel: EQEditChannel
@@ -2055,7 +2045,7 @@ private struct ApplyBar: View {
                 .buttonStyle(ToolbarButtonStyle())
                 .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
 
-                Button(localized("Assign to current output")) {
+                Button(localized("Use for This Output")) {
                     onUseForCurrentOutput()
                 }
                 .disabled(
@@ -2118,7 +2108,7 @@ private struct HeadroomRow: View {
                 .accessibilityLabel(Text(localized("Headroom")))
                 .accessibilityValue(Text(status))
             Spacer()
-            Button(localized("Apply")) {
+            Button(localized("Use Recommended")) {
                 if let adjustedProfile {
                     profile = adjustedProfile
                 }
@@ -2310,7 +2300,7 @@ private struct MagnitudeCurveEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(localized("Response Curve"))
+                Text(localized("Target Response"))
                     .font(.headline)
                 Spacer()
                 Button {
@@ -2977,7 +2967,7 @@ private struct OutputTab: View {
                         .font(.headline)
                     LabeledContent(localized("Mapped Profile"), value: mappedProfileName)
                     HStack {
-                        Button(localized("Use for this output")) {
+                        Button(localized("Use for This Output")) {
                             onUseForCurrentOutput()
                         }
                         .disabled(isProfileStoreProtected || snapshot.currentOutputUID.isEmpty)
