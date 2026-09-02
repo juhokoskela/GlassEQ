@@ -628,8 +628,8 @@ final class GlassEQAppModel {
     var inProcessSettingsPresentationGeneration = 0
     var onboardingPresentationGeneration = 0
     @ObservationIgnored private var visibleForegroundWindowCount = 0
-    private(set) var hasStartedAudio = false
-    private(set) var lastAudioEngineFailureCategory: AudioEngineFailure.Category?
+    private var hasStartedAudio = false
+    private(set) var onboardingAudioCaptureState = OnboardingAudioCaptureState.idle
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
@@ -1341,6 +1341,7 @@ final class GlassEQAppModel {
             return
         }
         hasStartedAudio = true
+        onboardingAudioCaptureState = .pending
         startObserver(sendInitialValue: true)
     }
 
@@ -1439,6 +1440,7 @@ final class GlassEQAppModel {
                 } else {
                     lifecycleState = .stopped
                     isRunning = false
+                    onboardingAudioCaptureState = .failed(message: statusMessage)
                 }
             }
             guard self.observer === observer,
@@ -1467,6 +1469,7 @@ final class GlassEQAppModel {
         clearProgrammeComparisonSession()
         lifecycleState = .stopped
         isRunning = false
+        onboardingAudioCaptureState = .idle
         statusMessage = localized("Stopped")
         notifyModelDidChange()
     }
@@ -1698,7 +1701,10 @@ final class GlassEQAppModel {
             return
         }
         if activeProfile.isBypassed {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .bypassed
+            )
         } else if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
         } else if engine.updateDSP(profile: profile) {
@@ -1730,7 +1736,10 @@ final class GlassEQAppModel {
             return
         }
         if activeProfile.isBypassed {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .bypassed
+            )
         } else if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
         } else if engine.updateDSP(profile: profile) {
@@ -2134,7 +2143,10 @@ final class GlassEQAppModel {
             processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .failed(message: message)
+            )
             statusMessage = message
             notifyModelDidChange()
             return
@@ -2172,6 +2184,7 @@ final class GlassEQAppModel {
                         scheduleEngineResumeAfterCancelledTransition()
                     }
                     statusMessage = runningEngineStatusMessage(for: output)
+                    onboardingAudioCaptureState = .running(outputName: output.name)
                     startAggregateStabilityMonitoring()
                     startColdStartupAggregatePromotionIfNeeded()
                     startHeadsetAggregatePromotionIfNeeded()
@@ -2193,10 +2206,12 @@ final class GlassEQAppModel {
             pendingOutputTransitionAction = .stopped
             lifecycleState = .stopped
             isRunning = false
+            onboardingAudioCaptureState = .pending
             invalidatePendingEngineStart()
             scheduleEngineStop(updateMetrics: false)
         } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
             pendingOutputTransitionAction = .muted
+            onboardingAudioCaptureState = .pending
             scheduleEngineMuteForTransition()
         }
         let settlingDelay = outputChangeSettlingDelay(
@@ -2322,13 +2337,19 @@ final class GlassEQAppModel {
             draftProfile = activeProfile
 
             if activeProfile.isBypassed {
-                disableActiveProfileProcessing(updateMetrics: false)
+                disableActiveProfileProcessing(
+                    updateMetrics: false,
+                    onboardingState: .bypassed
+                )
             } else if let message = impulseResponseCompatibilityFailureMessage(
                 profile: activeProfile,
                 processingSampleRate: processingSampleRateForSettings(),
                 outputChannelCount: output.outputChannelCount
             ) {
-                disableActiveProfileProcessing(updateMetrics: false)
+                disableActiveProfileProcessing(
+                    updateMetrics: false,
+                    onboardingState: .failed(message: message)
+                )
                 statusMessage = message
             } else {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
@@ -2347,6 +2368,7 @@ final class GlassEQAppModel {
             lifecycleState = .stopped
             isRunning = false
             statusMessage = localized("Default output unavailable: \(error.localizedDescription)")
+            onboardingAudioCaptureState = .failed(message: statusMessage)
         }
         notifyModelDidChange()
     }
@@ -2359,6 +2381,7 @@ final class GlassEQAppModel {
 
         engineStartGeneration += 1
         let generation = engineStartGeneration
+        onboardingAudioCaptureState = .pending
         pauseEngineMonitoring()
         engineStartTask?.cancel()
         switch work {
@@ -2471,7 +2494,10 @@ final class GlassEQAppModel {
         }
 
         guard !activeProfile.isBypassed else {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .bypassed
+            )
             return
         }
 
@@ -2481,7 +2507,10 @@ final class GlassEQAppModel {
             processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .failed(message: message)
+            )
             statusMessage = message
             return
         }
@@ -2501,6 +2530,7 @@ final class GlassEQAppModel {
             if engine.updateDSP(profile: activeProfile) {
                 confirmedEngineProfileState.confirm(EngineProfileConfirmation(profileRollback()))
                 statusMessage = processingStatus(outputName: currentOutputName, profileName: activeProfile.name)
+                onboardingAudioCaptureState = .running(outputName: currentOutputName)
             } else {
                 restartEngineWithActiveProfile(rollback: rollback)
             }
@@ -2509,7 +2539,10 @@ final class GlassEQAppModel {
         }
     }
 
-    private func disableActiveProfileProcessing(updateMetrics: Bool) {
+    private func disableActiveProfileProcessing(
+        updateMetrics: Bool,
+        onboardingState: OnboardingAudioCaptureState
+    ) {
         clearProgrammeComparisonSession()
         let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
         invalidatePendingOutputChange()
@@ -2520,6 +2553,7 @@ final class GlassEQAppModel {
         }
         lifecycleState = .stopped
         isRunning = false
+        onboardingAudioCaptureState = onboardingState
         wakeReconnectAttempts = 0
         wasRunningBeforeSleep = false
         statusMessage = disabledStatus(outputName: currentOutputName)
@@ -2754,13 +2788,13 @@ final class GlassEQAppModel {
 
         switch result {
         case .success(let output, let latencyMetadata):
-            lastAudioEngineFailureCategory = nil
             refreshCurrentOutputMetadata(from: output)
             recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
             activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             lifecycleState = .running
             isRunning = true
+            onboardingAudioCaptureState = .running(outputName: output.name)
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
             statusMessage = runningEngineStatusMessage(for: output)
@@ -2781,6 +2815,7 @@ final class GlassEQAppModel {
             }
             lifecycleState = .running
             isRunning = true
+            onboardingAudioCaptureState = .running(outputName: output.name)
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
             pendingAggregateBufferIncrease = nil
@@ -2800,8 +2835,11 @@ final class GlassEQAppModel {
             recordDiagnosticsRuntimeStop()
             activeAggregateRoute = nil
             pendingAggregateBufferIncrease = nil
-            lastAudioEngineFailureCategory = audioEngineFailureCategory(error)
             statusMessage = audioEngineStatusMessage(error)
+            onboardingAudioCaptureState = onboardingAudioFailureState(
+                for: error,
+                message: statusMessage
+            )
         case .cancelled:
             return
         }
@@ -3023,6 +3061,7 @@ final class GlassEQAppModel {
                 outputName: output.name,
                 profileName: activeProfile.name
             )
+            onboardingAudioCaptureState = .running(outputName: output.name)
             startAggregateStabilityMonitoring()
         case .success(.clientsActive, _):
             return
@@ -3049,6 +3088,7 @@ final class GlassEQAppModel {
                 lifecycleState = .stopped
                 isRunning = false
                 statusMessage = localized("Audio engine failed: \(message)")
+                onboardingAudioCaptureState = .failed(message: statusMessage)
             }
         }
         notifyModelDidChange()
@@ -3137,6 +3177,7 @@ final class GlassEQAppModel {
             statusMessage = localized(
                 "Processing \(output.name) with \(activeProfile.name) on the low-latency headset path"
             )
+            onboardingAudioCaptureState = .running(outputName: output.name)
             startAggregateStabilityMonitoring()
         case .success(.clockUnstable, _):
             statusMessage = localized(
@@ -3162,6 +3203,7 @@ final class GlassEQAppModel {
                 lifecycleState = .stopped
                 isRunning = false
                 statusMessage = localized("Audio engine failed: \(message)")
+                onboardingAudioCaptureState = .failed(message: statusMessage)
             }
         }
         notifyModelDidChange()
@@ -3263,6 +3305,7 @@ final class GlassEQAppModel {
             statusMessage = localized(
                 "64-frame processing missed audio deadlines again, so GlassEQ stopped processing. Retry the audio engine when ready."
             )
+            onboardingAudioCaptureState = .failed(message: statusMessage)
             notifyModelDidChange()
         }
         return true
@@ -3518,6 +3561,7 @@ final class GlassEQAppModel {
             lifecycleState = .stopped
             isRunning = false
             statusMessage = status
+            onboardingAudioCaptureState = .failed(message: status)
             notifyModelDidChange()
             return
         }
@@ -3661,6 +3705,7 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        onboardingAudioCaptureState = .pending
         guard !activeProfile.isBypassed else {
             synchronizeActiveProfileProcessing()
             notifyModelDidChange()
@@ -3753,6 +3798,20 @@ final class GlassEQAppModel {
         throw SettingsCommandFailure(
             message: localized("Could not open System Settings. Open Privacy & Security manually and enable system audio capture for GlassEQ.")
         )
+    }
+
+    func openPrivacySettingsForOnboarding() {
+        do {
+            try openPrivacySettings()
+            if case .permissionDenied = onboardingAudioCaptureState {
+                onboardingAudioCaptureState = .permissionDenied(settingsError: nil)
+            }
+        } catch {
+            onboardingAudioCaptureState = .permissionDenied(
+                settingsError: error.localizedDescription
+            )
+            notifyModelDidChange()
+        }
     }
 
     private func processingStatus(outputName: String, profileName: String) -> String {
@@ -3904,6 +3963,7 @@ final class GlassEQAppModel {
             statusMessage = localized(
                 "Audio rendering stalled again, so GlassEQ stopped processing. Retry the audio engine when ready."
             )
+            onboardingAudioCaptureState = .failed(message: statusMessage)
             notifyModelDidChange()
         }
     }
@@ -4000,6 +4060,7 @@ final class GlassEQAppModel {
         clearProgrammeComparisonSession()
         lifecycleState = .sleeping
         isRunning = false
+        onboardingAudioCaptureState = wasRunningBeforeSleep ? .pending : .idle
         statusMessage = localized("Paused for system sleep")
         notifyModelDidChange()
     }
@@ -4016,6 +4077,7 @@ final class GlassEQAppModel {
             wasRunningBeforeSleep = false
             lifecycleState = .stopped
             isRunning = false
+            onboardingAudioCaptureState = .idle
             statusMessage = localized("Stopped")
             notifyModelDidChange()
             return
@@ -4053,6 +4115,7 @@ final class GlassEQAppModel {
         let generation = outputChangeGeneration
         wakeReconnectAttempts = 0
         lifecycleState = .waking
+        onboardingAudioCaptureState = .pending
         statusMessage = status
         notifyModelDidChange()
         outputChangeTask = Task { @MainActor [weak self] in
@@ -4106,6 +4169,7 @@ final class GlassEQAppModel {
         previewReturnProfile = nil
         clearProgrammeComparisonSession()
         isRunning = false
+        onboardingAudioCaptureState = .idle
         if shutdownSettings {
             settingsCoordinator.shutdown()
         }
@@ -4114,6 +4178,9 @@ final class GlassEQAppModel {
     }
 
     private func audioEngineFailureCategory(_ error: Error) -> AudioEngineFailure.Category? {
+        if let failure = error as? AudioEngineFailure {
+            return failure.category
+        }
         if let coreAudioError = error as? CoreAudioError {
             return classifyCoreAudioError(coreAudioError).category
         }
@@ -4121,6 +4188,16 @@ final class GlassEQAppModel {
             return .outputDeviceUnavailable
         }
         return nil
+    }
+
+    private func onboardingAudioFailureState(
+        for error: Error,
+        message: String
+    ) -> OnboardingAudioCaptureState {
+        if audioEngineFailureCategory(error) == .systemAudioCapturePermission {
+            return .permissionDenied(settingsError: nil)
+        }
+        return .failed(message: message)
     }
 
     private func audioEngineStatusMessage(_ error: Error) -> String {
@@ -4165,8 +4242,10 @@ final class GlassEQAppModel {
         invalidatePendingEngineStart()
         lifecycleState = .stopped
         isRunning = false
-        lastAudioEngineFailureCategory = failure.category
         statusMessage = audioEngineStatusMessage(failure)
+        onboardingAudioCaptureState = failure.category == .systemAudioCapturePermission
+            ? .permissionDenied(settingsError: nil)
+            : .failed(message: statusMessage)
         notifyModelDidChange()
     }
 

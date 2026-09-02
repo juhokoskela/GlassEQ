@@ -1,5 +1,4 @@
-import AppKit
-import GlassEQAudio
+import Foundation
 import ServiceManagement
 import SwiftUI
 
@@ -19,24 +18,71 @@ enum OnboardingState {
 @MainActor
 @Observable
 final class LaunchAtLoginModel {
+    typealias StatusProvider = @MainActor () -> SMAppService.Status
+    typealias ServiceAction = @MainActor () throws -> Void
+    typealias SettingsAction = @MainActor () -> Void
+
     private(set) var errorMessage: String?
-    private var isRegistered = SMAppService.mainApp.status == .enabled
+    private(set) var status: SMAppService.Status
+    @ObservationIgnored private let statusProvider: StatusProvider
+    @ObservationIgnored private let register: ServiceAction
+    @ObservationIgnored private let unregister: ServiceAction
+    @ObservationIgnored private let openLoginItemsSettings: SettingsAction
+
+    init(
+        status: @escaping StatusProvider = { SMAppService.mainApp.status },
+        register: @escaping ServiceAction = { try SMAppService.mainApp.register() },
+        unregister: @escaping ServiceAction = { try SMAppService.mainApp.unregister() },
+        openLoginItemsSettings: @escaping SettingsAction = {
+            SMAppService.openSystemSettingsLoginItems()
+        }
+    ) {
+        self.statusProvider = status
+        self.register = register
+        self.unregister = unregister
+        self.openLoginItemsSettings = openLoginItemsSettings
+        self.status = status()
+    }
 
     var isEnabled: Bool {
-        get { isRegistered }
+        get {
+            switch status {
+            case .enabled, .requiresApproval:
+                true
+            case .notRegistered, .notFound:
+                false
+            @unknown default:
+                false
+            }
+        }
         set {
+            guard newValue != isEnabled else {
+                return
+            }
             do {
                 if newValue {
-                    try SMAppService.mainApp.register()
+                    try register()
                 } else {
-                    try SMAppService.mainApp.unregister()
+                    try unregister()
                 }
                 errorMessage = nil
             } catch {
                 errorMessage = localized("macOS did not accept the change: \(error.localizedDescription)")
             }
-            isRegistered = SMAppService.mainApp.status == .enabled
+            refresh()
         }
+    }
+
+    var requiresApproval: Bool {
+        status == .requiresApproval
+    }
+
+    func refresh() {
+        status = statusProvider()
+    }
+
+    func openApprovalSettings() {
+        openLoginItemsSettings()
     }
 }
 
@@ -69,30 +115,12 @@ enum OnboardingStep: Int, CaseIterable {
 }
 
 enum OnboardingAudioCaptureState: Equatable {
-    case notRequested
-    case waiting
-    case running
-    case permissionDenied
-    case failed
-
-    init(isRunning: Bool, hasRequested: Bool, failureCategory: AudioEngineFailure.Category?) {
-        if isRunning {
-            self = .running
-            return
-        }
-        guard hasRequested else {
-            self = .notRequested
-            return
-        }
-        switch failureCategory {
-        case .systemAudioCapturePermission:
-            self = .permissionDenied
-        case .outputDeviceUnavailable, .deviceFormatUnsupported, .coreAudioOperationFailed:
-            self = .failed
-        case nil:
-            self = .waiting
-        }
-    }
+    case idle
+    case pending
+    case running(outputName: String)
+    case permissionDenied(settingsError: String?)
+    case failed(message: String)
+    case bypassed
 }
 
 struct OnboardingView: View {
@@ -101,7 +129,6 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = OnboardingStep.welcome
     @State private var scrolledStep: OnboardingStep? = .welcome
-    @State private var hasRequestedAudio = false
 
     static let width: CGFloat = 560
 
@@ -131,29 +158,18 @@ struct OnboardingView: View {
 
             OnboardingFooter(
                 step: step,
-                canSkipAudioCapture: audioCaptureState == .notRequested,
+                canSkipAudioCapture: model.onboardingAudioCaptureState == .idle,
                 back: { step = step.previous },
                 advance: { step = step.next },
                 finish: { dismiss() }
             )
         }
         .background(Color.macOSWindowBackground)
-        .onAppear {
-            hasRequestedAudio = model.hasStartedAudio
-        }
         .onChange(of: step) {
             withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
                 scrolledStep = step
             }
         }
-    }
-
-    private var audioCaptureState: OnboardingAudioCaptureState {
-        OnboardingAudioCaptureState(
-            isRunning: model.isRunning,
-            hasRequested: hasRequestedAudio,
-            failureCategory: model.lastAudioEngineFailureCategory
-        )
     }
 
     @ViewBuilder
@@ -163,12 +179,10 @@ struct OnboardingView: View {
             OnboardingWelcomeStep(isCurrent: step == .welcome)
         case .audioCapture:
             OnboardingAudioCaptureStep(
-                state: audioCaptureState,
-                statusMessage: model.statusMessage,
-                outputName: model.currentOutputName,
+                state: model.onboardingAudioCaptureState,
                 isCurrent: step == .audioCapture,
-                requestAudio: requestAudio,
-                openPrivacySettings: { try? model.openPrivacySettings() }
+                requestAudio: { model.startAudioForOnboarding() },
+                openPrivacySettings: { model.openPrivacySettingsForOnboarding() }
             )
         case .preferences:
             OnboardingPreferencesStep(
@@ -184,10 +198,5 @@ struct OnboardingView: View {
                 isCurrent: step == .done
             )
         }
-    }
-
-    private func requestAudio() {
-        hasRequestedAudio = true
-        model.startAudioForOnboarding()
     }
 }

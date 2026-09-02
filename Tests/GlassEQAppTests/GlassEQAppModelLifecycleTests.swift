@@ -4573,6 +4573,135 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func onboardingAudioStateReportsObserverStartupFailure() async {
+        let observers = FakeDefaultOutputObserverFactory(
+            startError: TestAudioError.startFailed
+        )
+        let model = makeModel(observers: observers)
+
+        #expect(model.onboardingAudioCaptureState == .idle)
+        model.startAudioForOnboarding()
+        #expect(model.onboardingAudioCaptureState == .pending)
+
+        await waitUntil {
+            if case .failed = model.onboardingAudioCaptureState {
+                return true
+            }
+            return false
+        }
+
+        guard case .failed(let message) = model.onboardingAudioCaptureState else {
+            Issue.record("Expected observer startup failure")
+            return
+        }
+        #expect(message.contains("Default output observer failed"))
+    }
+
+    @Test
+    func onboardingAudioStateReportsDefaultOutputFailure() async {
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            lookup: FakeDefaultOutputLookup(.failure(TestAudioError.defaultOutputUnavailable)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.startAudioForOnboarding()
+        observers.observers[0].emit(.failure(TestAudioError.defaultOutputUnavailable))
+
+        await waitUntil {
+            if case .failed = model.onboardingAudioCaptureState {
+                return true
+            }
+            return false
+        }
+
+        guard case .failed(let message) = model.onboardingAudioCaptureState else {
+            Issue.record("Expected default output failure")
+            return
+        }
+        #expect(message.contains("Default output unavailable"))
+    }
+
+    @Test
+    func onboardingAudioStateClearsPermissionFailureWhenRetrying() async {
+        let output = makeOutput(name: "Permission Output")
+        let engine = FakeAudioEngine()
+        engine.startError = CoreAudioError(
+            operation: "AudioHardwareCreateProcessTap",
+            status: kAudioDevicePermissionsError
+        )
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.startAudioForOnboarding()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            if case .permissionDenied = model.onboardingAudioCaptureState {
+                return true
+            }
+            return false
+        }
+
+        #expect(model.onboardingAudioCaptureState == .permissionDenied(settingsError: nil))
+
+        engine.startError = nil
+        model.startAudioForOnboarding()
+        #expect(model.onboardingAudioCaptureState == .pending)
+        await waitUntil {
+            model.onboardingAudioCaptureState == .running(outputName: output.name)
+        }
+
+        #expect(model.onboardingAudioCaptureState == .running(outputName: output.name))
+    }
+
+    @Test
+    func onboardingAudioStateReportsBypassedProfile() async {
+        var profile = makeProfile(name: "Disabled")
+        profile.isBypassed = true
+        let output = makeOutput()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+
+        model.startAudioForOnboarding()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.onboardingAudioCaptureState == .bypassed
+        }
+
+        #expect(model.onboardingAudioCaptureState == .bypassed)
+    }
+
+    @Test
+    func onboardingPrivacySettingsFailureRemainsVisibleUntilOpeningSucceeds() {
+        let opener = FakeWorkspaceOpener(results: [false, false, true])
+        let model = makeModel(workspaceOpener: opener)
+
+        model.openPrivacySettingsForOnboarding()
+
+        guard case .permissionDenied(let settingsError) = model.onboardingAudioCaptureState else {
+            Issue.record("Expected a visible privacy settings failure")
+            return
+        }
+        #expect(settingsError?.contains("Could not open System Settings") == true)
+
+        model.openPrivacySettingsForOnboarding()
+
+        #expect(model.onboardingAudioCaptureState == .permissionDenied(settingsError: nil))
+        #expect(opener.openedURLs.count == 3)
+    }
+
+    @Test
     func debouncedProfileSavesCoalesceAndFlushPersistsLatestState() async throws {
         let storeURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQAppTests-\(UUID().uuidString).json")
@@ -5927,10 +6056,18 @@ private final class FakeDefaultOutputLookup: DefaultOutputLookingUp, @unchecked 
 }
 
 private final class FakeDefaultOutputObserverFactory: DefaultOutputObservingMaking {
+    private let startError: Error?
     private(set) var observers: [FakeDefaultOutputObserver] = []
 
+    init(startError: Error? = nil) {
+        self.startError = startError
+    }
+
     func makeObserver(onChange: @escaping DefaultOutputObserverHandler) -> any DefaultOutputObserving {
-        let observer = FakeDefaultOutputObserver(onChange: onChange)
+        let observer = FakeDefaultOutputObserver(
+            onChange: onChange,
+            startError: startError
+        )
         observers.append(observer)
         return observer
     }
@@ -5939,6 +6076,7 @@ private final class FakeDefaultOutputObserverFactory: DefaultOutputObservingMaki
 private final class FakeDefaultOutputObserver: DefaultOutputObserving, @unchecked Sendable {
     private let onChange: DefaultOutputObserverHandler
     private let lock = NSLock()
+    private let startError: Error?
     private var _startCalls: [Bool] = []
     private var _stopCallCount = 0
 
@@ -5954,13 +6092,20 @@ private final class FakeDefaultOutputObserver: DefaultOutputObserving, @unchecke
         }
     }
 
-    init(onChange: @escaping DefaultOutputObserverHandler) {
+    init(
+        onChange: @escaping DefaultOutputObserverHandler,
+        startError: Error? = nil
+    ) {
         self.onChange = onChange
+        self.startError = startError
     }
 
     func start(sendInitialValue: Bool) throws {
         withLock {
             _startCalls.append(sendInitialValue)
+        }
+        if let startError {
+            throw startError
         }
     }
 

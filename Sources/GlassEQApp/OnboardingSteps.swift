@@ -66,8 +66,6 @@ private struct OnboardingMenuBarHint: View {
 
 struct OnboardingAudioCaptureStep: View {
     let state: OnboardingAudioCaptureState
-    let statusMessage: String
-    let outputName: String
     let isCurrent: Bool
     let requestAudio: () -> Void
     let openPrivacySettings: () -> Void
@@ -96,8 +94,6 @@ struct OnboardingAudioCaptureStep: View {
 
             OnboardingAudioCaptureStatus(
                 state: state,
-                statusMessage: statusMessage,
-                outputName: outputName,
                 isCurrent: isCurrent,
                 requestAudio: requestAudio,
                 openPrivacySettings: openPrivacySettings
@@ -111,15 +107,13 @@ struct OnboardingAudioCaptureStep: View {
 
 private struct OnboardingAudioCaptureStatus: View {
     let state: OnboardingAudioCaptureState
-    let statusMessage: String
-    let outputName: String
     let isCurrent: Bool
     let requestAudio: () -> Void
     let openPrivacySettings: () -> Void
 
     var body: some View {
         switch state {
-        case .notRequested:
+        case .idle:
             Button(action: requestAudio) {
                 Label(localized("Allow System Audio Capture"), systemImage: "checkmark.shield")
                     .frame(minWidth: 240, minHeight: 28)
@@ -129,7 +123,7 @@ private struct OnboardingAudioCaptureStatus: View {
             // Only the visible step may own Return; the strip keeps the other steps mounted.
             .keyboardShortcut(isCurrent ? .defaultAction : nil)
             .accessibilityHint(Text(localized("Starts GlassEQ and shows the macOS permission prompt")))
-        case .waiting:
+        case .pending:
             HStack(spacing: 10) {
                 ProgressView()
                     .controlSize(.small)
@@ -137,13 +131,13 @@ private struct OnboardingAudioCaptureStatus: View {
                     .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .combine)
-        case .running:
+        case .running(let outputName):
             Label(localized("GlassEQ is processing audio on \(outputName)."), systemImage: "checkmark.circle.fill")
                 .foregroundStyle(Color.macOSSystemGreen)
                 .font(.body.weight(.medium))
                 .symbolEffect(.bounce, options: .nonRepeating, value: state)
                 .transition(.scale(scale: 0.9).combined(with: .opacity))
-        case .permissionDenied:
+        case .permissionDenied(let settingsError):
             VStack(spacing: 10) {
                 Label(localized("GlassEQ was not allowed to capture system audio."), systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(Color.macOSSystemOrange)
@@ -153,6 +147,13 @@ private struct OnboardingAudioCaptureStatus: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                if let settingsError {
+                    Text(settingsError)
+                        .font(.callout)
+                        .foregroundStyle(Color.macOSSystemOrange)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 10) {
                     Button(localized("Open Privacy Settings"), action: openPrivacySettings)
                     Button(localized("Try Again"), action: requestAudio)
@@ -160,15 +161,26 @@ private struct OnboardingAudioCaptureStatus: View {
                 }
                 .controlSize(.large)
             }
-        case .failed:
+        case .failed(let message):
             VStack(spacing: 10) {
-                Text(statusMessage)
+                Text(message)
                     .font(.callout)
                     .foregroundStyle(Color.macOSSystemOrange)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                 Button(localized("Try Again"), action: requestAudio)
                     .controlSize(.large)
+            }
+        case .bypassed:
+            VStack(spacing: 10) {
+                Label(localized("Audio processing is off for the active profile."), systemImage: "pause.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.body.weight(.medium))
+                Text(localized("Continue setup, then turn processing on from the menu bar or Settings."))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -214,6 +226,7 @@ struct OnboardingPreferencesStep: View {
 
 private struct LaunchAtLoginRow: View {
     @State private var launchAtLogin = LaunchAtLoginModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         @Bindable var launchAtLogin = launchAtLogin
@@ -227,6 +240,19 @@ private struct LaunchAtLoginRow: View {
                 }
             }
             .toggleStyle(.switch)
+            if launchAtLogin.requiresApproval {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(localized("macOS needs your approval before GlassEQ can open at login."))
+                        .font(.caption)
+                        .foregroundStyle(Color.macOSSystemOrange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button(localized("Open Login Items")) {
+                        launchAtLogin.openApprovalSettings()
+                    }
+                    .controlSize(.small)
+                }
+            }
             if let errorMessage = launchAtLogin.errorMessage {
                 Text(errorMessage)
                     .font(.caption)
@@ -236,6 +262,14 @@ private struct LaunchAtLoginRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+        .onAppear {
+            launchAtLogin.refresh()
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase == .active {
+                launchAtLogin.refresh()
+            }
+        }
     }
 }
 
