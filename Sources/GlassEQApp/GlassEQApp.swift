@@ -8,12 +8,15 @@ import SwiftUI
 
 private enum GlassEQWindowID {
     static let inProcessSettings = "in-process-settings"
+    static let onboarding = "onboarding"
 }
 
 @main
 struct GlassEQApp: App {
     @NSApplicationDelegateAdaptor(GlassEQAppDelegate.self) private var appDelegate
-    @State private var model = GlassEQAppModel()
+    // A first launch waits for the onboarding permission step before touching Core Audio, so the
+    // system audio capture prompt appears after GlassEQ has explained it.
+    @State private var model = GlassEQAppModel(autoStart: OnboardingState.isComplete)
 
     var body: some Scene {
         MenuBarExtra {
@@ -26,9 +29,25 @@ struct GlassEQApp: App {
                 .accessibilityHint(Text(localized("Opens GlassEQ controls")))
                 .background {
                     InProcessSettingsPresenter(model: model)
+                    OnboardingPresenter(model: model)
                 }
         }
         .menuBarExtraStyle(.window)
+
+        Window(localized("Welcome to GlassEQ"), id: GlassEQWindowID.onboarding) {
+            OnboardingView(model: model)
+                .onAppear {
+                    NSApplication.shared.setActivationPolicy(.regular)
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+                .onDisappear {
+                    model.finishOnboarding()
+                    NSApplication.shared.setActivationPolicy(.accessory)
+                }
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(OnboardingState.isComplete ? .suppressed : .presented)
+        .restorationBehavior(.disabled)
 
         Window(localized("Configure GlassEQ"), id: GlassEQWindowID.inProcessSettings) {
             SettingsView(model: model.inProcessSettingsViewModel())
@@ -47,6 +66,21 @@ struct GlassEQApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
+    }
+}
+
+private struct OnboardingPresenter: View {
+    let model: GlassEQAppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: model.onboardingPresentationGeneration) {
+                NSApplication.shared.setActivationPolicy(.regular)
+                openWindow(id: GlassEQWindowID.onboarding)
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            }
     }
 }
 
@@ -633,6 +667,9 @@ final class GlassEQAppModel {
     @ObservationIgnored var inProcessSettingsIsPresented = false
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0
+    var onboardingPresentationGeneration = 0
+    private(set) var hasStartedAudio = false
+    private(set) var lastAudioEngineFailureCategory: AudioEngineFailure.Category?
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
@@ -999,7 +1036,9 @@ final class GlassEQAppModel {
         }
         if registerAppDelegate {
             GlassEQAppDelegate.model = self
-            AggregateBufferNotifier.shared.start()
+            if OnboardingState.isComplete {
+                AggregateBufferNotifier.shared.start()
+            }
             lifecycleObserverTokens.append(
                 NotificationCenter.default.addObserver(
                     forName: .glassEQOpenOutputSettingsRequest,
@@ -1339,7 +1378,35 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        hasStartedAudio = true
         startObserver(sendInitialValue: true)
+    }
+
+    func requestOnboardingPresentation() {
+        onboardingPresentationGeneration &+= 1
+    }
+
+    // Onboarding's permission step. The first call starts audio for the first time, which is
+    // what triggers the macOS capture prompt; later calls retry after a denial or failure.
+    func startAudioForOnboarding() {
+        if hasStartedAudio {
+            retryAudioEngine()
+        } else {
+            start()
+        }
+    }
+
+    // Called when the onboarding window closes, finished or not. Audio must never stay parked
+    // because someone dismissed the guide early.
+    func finishOnboarding() {
+        let wasComplete = OnboardingState.isComplete
+        OnboardingState.markComplete()
+        if !hasStartedAudio {
+            start()
+        }
+        if !wasComplete, GlassEQAppDelegate.model === self {
+            AggregateBufferNotifier.shared.start()
+        }
     }
 
     private func startObserver(sendInitialValue: Bool) {
@@ -2709,6 +2776,7 @@ final class GlassEQAppModel {
 
         switch result {
         case .success(let output, let latencyMetadata):
+            lastAudioEngineFailureCategory = nil
             refreshCurrentOutputMetadata(from: output)
             recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
             activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
@@ -2754,6 +2822,7 @@ final class GlassEQAppModel {
             recordDiagnosticsRuntimeStop()
             activeAggregateRoute = nil
             pendingAggregateBufferIncrease = nil
+            lastAudioEngineFailureCategory = audioEngineFailureCategory(error)
             statusMessage = audioEngineStatusMessage(error)
         case .cancelled:
             return
@@ -4066,6 +4135,16 @@ final class GlassEQAppModel {
         return true
     }
 
+    private func audioEngineFailureCategory(_ error: Error) -> AudioEngineFailure.Category? {
+        if let coreAudioError = error as? CoreAudioError {
+            return classifyCoreAudioError(coreAudioError).category
+        }
+        if error is AudioDeviceAvailabilityError {
+            return .outputDeviceUnavailable
+        }
+        return nil
+    }
+
     private func audioEngineStatusMessage(_ error: Error) -> String {
         if let coreAudioError = error as? CoreAudioError {
             return audioEngineStatusMessage(classifyCoreAudioError(coreAudioError))
@@ -4108,6 +4187,7 @@ final class GlassEQAppModel {
         invalidatePendingEngineStart()
         lifecycleState = .stopped
         isRunning = false
+        lastAudioEngineFailureCategory = failure.category
         statusMessage = audioEngineStatusMessage(failure)
         notifyModelDidChange()
     }

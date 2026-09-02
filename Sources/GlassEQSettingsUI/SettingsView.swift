@@ -331,6 +331,7 @@ public struct SettingsView: View {
                 onRetryAutomaticAggregateBuffer: retryAutomaticAggregateBuffer,
                 onRetryAudioEngine: retryAudioEngine,
                 onOpenPrivacySettings: openPrivacySettings,
+                onShowSetupGuide: { perform(.showSetupGuide) },
                 onResetUnsupportedProfileStore: resetUnsupportedProfileStore
             )
                 .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
@@ -1333,6 +1334,7 @@ private struct ProfileDetail: View {
     var onRetryAutomaticAggregateBuffer: () -> Void
     var onRetryAudioEngine: () -> Void
     var onOpenPrivacySettings: () -> Void
+    var onShowSetupGuide: () -> Void
     var onResetUnsupportedProfileStore: () -> Void
 
     var body: some View {
@@ -1391,7 +1393,8 @@ private struct ProfileDetail: View {
                                 onSetAggregateBufferMode: onSetAggregateBufferMode,
                                 onRetryAutomaticAggregateBuffer: onRetryAutomaticAggregateBuffer,
                                 onRetryAudioEngine: onRetryAudioEngine,
-                                onOpenPrivacySettings: onOpenPrivacySettings
+                                onOpenPrivacySettings: onOpenPrivacySettings,
+                                onShowSetupGuide: onShowSetupGuide
                             )
                         }
                     }
@@ -3084,6 +3087,7 @@ private struct OutputTab: View {
     var onRetryAutomaticAggregateBuffer: () -> Void
     var onRetryAudioEngine: () -> Void
     var onOpenPrivacySettings: () -> Void
+    var onShowSetupGuide: () -> Void
     @State private var isShowingDiagnostics = false
 
     var body: some View {
@@ -3156,6 +3160,24 @@ private struct OutputTab: View {
                         .disabled(isProfileStoreProtected)
                         .controlSize(.large)
                     }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .cardPanel(padding: 16)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(localized("Setup Guide"))
+                        .font(.headline)
+                    Text(localized("Walk through system audio capture permission, Launch at Login, and how GlassEQ follows your output."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        onShowSetupGuide()
+                    } label: {
+                        Label(localized("Open Setup Guide"), systemImage: "questionmark.circle")
+                    }
+                    .controlSize(.large)
+                    .accessibilityHint(Text(localized("Reopens the first-launch walkthrough in GlassEQ")))
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .cardPanel(padding: 16)
