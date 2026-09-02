@@ -1494,7 +1494,7 @@ private enum EditorSection: String, CaseIterable, Identifiable {
     }
 }
 
-private enum EQEditChannel: String, CaseIterable, Identifiable {
+enum EQEditChannel: String, CaseIterable, Identifiable {
     case left
     case right
 
@@ -1536,8 +1536,9 @@ private struct EditorTab: View {
                     Picker(localized("Profile type"), selection: Binding(
                         get: { draftProfile.mode },
                         set: { mode in
-                            draftProfile.mode = mode
-                            normalizeFilters(for: mode)
+                            // Assign once: writes through this binding are not readable back within
+                            // the same event on macOS 26, so partial mutations would be lost.
+                            draftProfile = draftProfile.convertedToMode(mode)
                         }
                     )) {
                         ForEach(EQMode.allCases, id: \.self) { mode in
@@ -1725,37 +1726,6 @@ private struct EditorTab: View {
         }
     }
 
-    private func normalizeFilters(for mode: EQMode) {
-        let filters: [EQFilter]
-        switch mode {
-        case .parametric:
-            filters = [EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)]
-        case .graphic10:
-            filters = GraphicEQBands.tenBand.map {
-                EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
-            }
-        case .graphic31:
-            filters = GraphicEQBands.thirtyOneBand.map {
-                EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
-            }
-        case .convolution:
-            filters = []
-        }
-        draftProfile.filters = filters
-        draftProfile.leftFilters = filters
-        draftProfile.rightFilters = filters
-        if mode == .convolution {
-            let source = EQProfile.flatConvolution.convolution
-            draftProfile.convolution = source
-            draftProfile.leftConvolution = source
-            draftProfile.rightConvolution = source
-        } else {
-            draftProfile.convolution = nil
-            draftProfile.leftConvolution = nil
-            draftProfile.rightConvolution = nil
-        }
-    }
-
     private var activePreampBinding: Binding<Double> {
         switch (draftProfile.channelMode, editChannel) {
         case (.stereo, .left):
@@ -1830,28 +1800,64 @@ private struct EditorTab: View {
         guard mode != draftProfile.channelMode else {
             return
         }
-
-        switch mode {
-        case .linked:
-            let sourceFilters = editChannel == .right ? draftProfile.rightFilters : draftProfile.leftFilters
-            let sourcePreamp = editChannel == .right ? draftProfile.rightPreampDB : draftProfile.leftPreampDB
-            let sourceConvolution = editChannel == .right
-                ? draftProfile.rightConvolution
-                : draftProfile.leftConvolution
-            draftProfile.filters = sourceFilters
-            draftProfile.preampDB = sourcePreamp
-            draftProfile.convolution = sourceConvolution
-        case .stereo:
-            draftProfile.leftFilters = draftProfile.filters
-            draftProfile.rightFilters = draftProfile.filters
-            draftProfile.leftPreampDB = draftProfile.preampDB
-            draftProfile.rightPreampDB = draftProfile.preampDB
-            draftProfile.leftConvolution = draftProfile.convolution
-            draftProfile.rightConvolution = draftProfile.convolution
+        draftProfile = draftProfile.convertedToChannelMode(mode, editedChannel: editChannel)
+        if mode == .stereo {
             editChannel = .left
         }
+    }
+}
 
-        draftProfile.channelMode = mode
+// Whole-profile conversions used by the editor's type and channel switches.
+extension EQProfile {
+    func convertedToMode(_ mode: EQMode) -> EQProfile {
+        let filters: [EQFilter]
+        switch mode {
+        case .parametric:
+            filters = [EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)]
+        case .graphic10:
+            filters = GraphicEQBands.tenBand.map {
+                EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
+            }
+        case .graphic31:
+            filters = GraphicEQBands.thirtyOneBand.map {
+                EQFilter(kind: .peak, frequency: $0, gainDB: 0, q: GraphicEQBands.graphicQ)
+            }
+        case .convolution:
+            filters = []
+        }
+        var converted = self
+        converted.mode = mode
+        converted.filters = filters
+        converted.leftFilters = filters
+        converted.rightFilters = filters
+        let source = mode == .convolution ? EQProfile.flatConvolution.convolution : nil
+        converted.convolution = source
+        converted.leftConvolution = source
+        converted.rightConvolution = source
+        return converted
+    }
+
+    func convertedToChannelMode(
+        _ mode: EQChannelMode,
+        editedChannel: EQEditChannel
+    ) -> EQProfile {
+        var converted = self
+        switch mode {
+        case .linked:
+            let useRight = editedChannel == .right
+            converted.filters = useRight ? rightFilters : leftFilters
+            converted.preampDB = useRight ? rightPreampDB : leftPreampDB
+            converted.convolution = useRight ? rightConvolution : leftConvolution
+        case .stereo:
+            converted.leftFilters = filters
+            converted.rightFilters = filters
+            converted.leftPreampDB = preampDB
+            converted.rightPreampDB = preampDB
+            converted.leftConvolution = convolution
+            converted.rightConvolution = convolution
+        }
+        converted.channelMode = mode
+        return converted
     }
 }
 
@@ -2314,8 +2320,8 @@ private struct MagnitudeCurveEditor: View {
             frequency: frequency,
             points: sorted
         )
-        points.append(EQMagnitudePoint(frequency: frequency, gainDB: gain))
-        points.sort { $0.frequency < $1.frequency }
+        points = (sorted + [EQMagnitudePoint(frequency: frequency, gainDB: gain)])
+            .sorted { $0.frequency < $1.frequency }
     }
 }
 
