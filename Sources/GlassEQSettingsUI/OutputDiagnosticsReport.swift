@@ -2,6 +2,28 @@ import AppKit
 import GlassEQSettingsIPC
 import SwiftUI
 
+func outputAddedLatencyLabel(_ snapshot: SettingsSnapshot) -> String {
+    let routeMode = snapshot.metrics.diagnostics.status.routeMode
+    if routeMode == .compatibility || routeMode == .headsetCompatibility {
+        guard snapshot.metrics.playbackBufferObservations > 0 else {
+            return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
+        }
+        return localizedLatency(
+            milliseconds: playbackFramesToMilliseconds(
+                snapshot.metrics.averagePlaybackBufferedFrames,
+                bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
+                fallbackSampleRate: snapshot.currentOutputSampleRate
+            )
+        )
+    }
+    guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
+        return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
+    }
+    return localizedLatency(
+        milliseconds: snapshot.metrics.averageTapToOutputLatencyNanoseconds / 1_000_000
+    )
+}
+
 struct OutputDiagnosticsReport {
     enum SectionID: Hashable {
         case observation
@@ -53,19 +75,6 @@ struct OutputDiagnosticsReport {
             }
         }
         return lines.joined(separator: "\n")
-    }
-
-    var addedLatencyLabel: String {
-        if usesSeparateClockDiagnostics {
-            guard snapshot.metrics.playbackBufferObservations > 0 else {
-                return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
-            }
-            return bridgeLatencyLabel
-        }
-        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
-            return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
-        }
-        return tapToOutputLatencyLabel
     }
 
     private func makeSections() -> [Section] {

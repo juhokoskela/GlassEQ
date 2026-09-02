@@ -121,7 +121,7 @@ struct OutputTab: View {
                     LabeledContent(localized("Current Output"), value: snapshot.currentOutputName)
                     LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
                     LabeledContent(localized("Buffer"), value: bufferSummary)
-                    LabeledContent(localized("Added Latency"), value: report.addedLatencyLabel)
+                    LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
                     LabeledContent(
                         localized("Underrun Events"),
                         value: snapshot.metrics.playbackUnderrunEvents == 0
@@ -166,7 +166,7 @@ struct OutputTab: View {
                 .cardPanel(padding: 16)
                 .sheet(isPresented: $isShowingDiagnostics) {
                     OutputDiagnosticsSheet(
-                        report: report,
+                        report: OutputDiagnosticsReport(snapshot: snapshot),
                         onReset: controller.resetDiagnostics
                     )
                 }
@@ -241,10 +241,6 @@ struct OutputTab: View {
             aggregateBuffer: snapshot.aggregateBuffer,
             currentFrameSize: snapshot.currentOutputBufferFrameSize
         )
-    }
-
-    private var report: OutputDiagnosticsReport {
-        OutputDiagnosticsReport(snapshot: snapshot)
     }
 }
 
