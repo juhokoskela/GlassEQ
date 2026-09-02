@@ -203,9 +203,6 @@ public actor LicensingController {
         let task = Task { await self.performRefresh() }
         inFlightRefresh = task
         await task.value
-        if inFlightRefresh == task {
-            inFlightRefresh = nil
-        }
     }
 
     /// Persists the trusted-time floor if it advanced since the last write.
@@ -464,6 +461,9 @@ public actor LicensingController {
     }
 
     private func performRefresh() async {
+        // Cleared here rather than in `refreshNow` so the marker drops in the same actor turn
+        // that publishes the result; a caller can never join a refresh that already finished.
+        defer { inFlightRefresh = nil }
         guard case let .state(state) = activation, let identity else {
             return
         }
