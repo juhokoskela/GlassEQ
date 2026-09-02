@@ -127,7 +127,7 @@ The main app records setup completion in `UserDefaults` under `onboarding.comple
 
 Enforcement lives in `GlassEQAppModel` and is active only when the app bundle embeds entitlement public keys. A bundle without the key dictionary is a source build and runs unrestricted; a dictionary that is present but unusable fails closed. Every tap start passes one gate, so a non-permitting snapshot never starts the observer or the engine. When a monthly entitlement reaches its signed expiry while processing, the model publishes the active profile as a bypassed bank, which renders as identity filters with unity preamp, waits for the render thread's DSP transition counters to report that exact transition complete, and only then stops the tap. `stop()` does not fade, so this ordering is what keeps the return to dry playback click-free. A transition that never completes is stopped after a bounded timeout because restoring dry playback outranks the fade. Renewal resumes through the ordinary startup path, never from the licensing callback.
 
-The Settings helper never receives credentials or Keychain access. Settings license DTOs, the activation UI, and Sparkle download authorization are not implemented yet.
+A released activation slot revokes service access but never the signed offline authority; a local deactivation tombstones the record before the request so the installation fails closed. The Settings helper never receives credentials or Keychain access. Settings license DTOs, the activation UI, and Sparkle download authorization are not implemented yet.
 
 ## Backlog
 

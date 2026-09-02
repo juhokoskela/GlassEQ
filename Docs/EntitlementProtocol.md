@@ -668,6 +668,12 @@ An invalid signature, wrong audience, wrong installation, unknown key, impossibl
 
 A `403 license_not_eligible` answer to a refresh is persisted in the activation-state record as a server denial. After a refund, the server's shortened grace window can end while the cached JWS still carries a later `exp`; the persisted denial keeps the installation in `monthlyExpired` across an offline relaunch. Only a successful refresh or a new activation clears it.
 
+A `403 activation_revoked` or `invalid_credentials` answer to a refresh means the activation token is gone, for example because the slot was released from another Mac. The client records that service access is revoked and stops refreshing, but it does not erase the signed entitlement: a monthly license keeps processing until its signed `exp`, and a perpetual license keeps processing indefinitely, exactly as the management API section promises. The snapshot reports the revoked credential so the UI can offer re-activation, and update access is withdrawn.
+
+Local deactivation writes a tombstone into the activation-state record before sending the request. From that point the installation is unlicensed even if the request or the Keychain deletion fails; the idempotent request and the deletion are retried on the bounded schedule, including after a relaunch.
+
+Storage failures and network failures keep separate retry schedules. A recovered Keychain failure never escalates the next refresh retry, and a storage retry never suppresses an earlier `refresh_after`. An overdue trusted-time checkpoint is written immediately after launch rather than waiting for the next signed boundary.
+
 When monthly processing reaches `exp`, the main app requests the normal click-free transition to identity filters and unity preamp. It stops and destroys the tap only after that transition completes. If the app launches in an expired state, it never starts the tap. Profiles, mappings, imports, and calibration records remain available.
 
 Renewal follows the ordinary startup path. It does not publish state from a network callback to the render thread.
