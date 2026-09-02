@@ -2,7 +2,7 @@
 
 This document defines the v1 protocol for licensing the official GlassEQ distribution. It covers server data, application credentials, signed offline entitlements, Stripe event processing, activation management, and update authorization.
 
-This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the fixed-origin HTTP API, Keychain persistence, trusted-time handling, and actor-owned activation state. The main app does not enforce entitlements yet because production signing keys and the separate licensing service have not been provisioned. The server, Settings UI, audio transition, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for the implemented client behavior.
+This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state and fades to identity before stopping on expiry, but only in builds that embed entitlement public keys; production keys have not been provisioned. The server, the management and recovery HTTP calls, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for the implemented client behavior.
 
 ## Product invariants
 
@@ -185,7 +185,7 @@ Clock checks apply only to monthly entitlements.
 
 The app permits up to six hours of backward wall-clock movement. A larger rollback requests an immediate background refresh. If the service is unavailable, GlassEQ keeps processing under the cached entitlement and displays verification messaging. A clock anomaly never causes immediate expiry.
 
-For the current process, advance trusted time with a monotonic clock anchored to the latest authenticated `iat`. Persist the advanced value at bounded license-state checkpoints and clean termination, never from the realtime path. Across launches, use the greater of the current wall clock and the highest trusted time stored in Keychain. A successful refresh may replace an anomalous wall-clock anchor with authenticated server time. The signed `exp`, evaluated against the trusted-time floor, remains the final cutoff.
+For the current process, advance trusted time with a monotonic clock anchored to the latest authenticated `iat`. Persist the advanced value at bounded license-state checkpoints and clean termination, never from the realtime path. While a monthly entitlement is held, the checkpoint runs at least hourly, so a long-running app never relies on clean termination alone. Across launches, use the greater of the current wall clock and the highest trusted time stored in Keychain. A successful refresh may replace an anomalous wall-clock anchor with authenticated server time; after that, only a further six-hour move of the wall clock counts as a new rollback, not its standing distance from the floor. The signed `exp`, evaluated against the trusted-time floor, remains the final cutoff.
 
 This is modest replay resistance, not an attempt to defeat a customer who controls an open-source process.
 
@@ -662,8 +662,11 @@ The client-visible states are:
 - `monthlyExpired`
 - `verificationNeeded`
 - `invalidEntitlement`
+- `storageUnavailable`
 
-An invalid signature, wrong audience, wrong installation, unknown key, impossible timestamp relationship, or rollback to an older revision never authorizes processing. A transient network failure does not invalidate a correctly signed cached entitlement.
+An invalid signature, wrong audience, wrong installation, unknown key, impossible timestamp relationship, or rollback to an older revision never authorizes processing. A transient network failure does not invalidate a correctly signed cached entitlement. A Keychain read failure is `storageUnavailable`: the cached state is unknown, so processing is not permitted and the read is retried on the refresh backoff. It is reported separately from an invalid entitlement.
+
+A `403 license_not_eligible` answer to a refresh is persisted in the activation-state record as a server denial. After a refund, the server's shortened grace window can end while the cached JWS still carries a later `exp`; the persisted denial keeps the installation in `monthlyExpired` across an offline relaunch. Only a successful refresh or a new activation clears it.
 
 When monthly processing reaches `exp`, the main app requests the normal click-free transition to identity filters and unity preamp. It stops and destroys the tap only after that transition completes. If the app launches in an expired state, it never starts the tap. Profiles, mappings, imports, and calibration records remain available.
 
@@ -718,6 +721,7 @@ Logs record opaque request IDs, result codes, and bounded timing. They never rec
 - Six-hour clock boundary and larger rollback while offline
 - Long-running refresh scheduling from `refresh_after`
 - Expiry while audio is running, including a verified click-free return to dry playback
+- The DSP transition counters advancing on both audio backends so the identity fade completes before the tap stops
 - Renewal after expiry
 - Sparkle download authorization to the exact archive origin
 - Token omission and update abortion for another host, port, path, or redirect

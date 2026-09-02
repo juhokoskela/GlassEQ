@@ -29,13 +29,13 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 - [ ] Receive Stripe purchase, subscription, refund, and chargeback events through a server-side webhook endpoint.
 - [ ] Process webhook events idempotently and verify their Stripe signatures.
 - [ ] Issue a GlassEQ license key after a successful perpetual purchase or subscription start.
-- [ ] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
+- [x] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
 - [ ] Use the same entitlement service to authorize Sparkle archive downloads.
 - [ ] Keep all Stripe secret keys and webhook secrets on the server. The app must never contain or receive them.
 - [ ] Store only the billing identifiers and entitlement state needed to operate licensing, updates, refunds, and account recovery.
 - [ ] Document the customer data exchanged with Stripe and the GlassEQ entitlement service.
 - [x] License one purchaser for two concurrently activated Macs under either payment plan.
-- [ ] Generate a random installation identifier and store it in Keychain. Do not derive it from hardware identifiers.
+- [x] Generate a random installation identifier and store it in Keychain. Do not derive it from hardware identifiers.
 - [ ] Let the purchaser deactivate an old Mac and transfer an activation without support intervention.
 - [ ] Record the policy version accepted at checkout with the purchase.
 - [x] Apply material entitlement restrictions prospectively. Do not silently reduce the rights attached to an existing purchase.
@@ -44,8 +44,8 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 
 - [ ] Convert a completed EUR 29 Managed Payments purchase into a non-expiring GlassEQ entitlement.
 - [ ] Issue a server-signed entitlement that the app can verify locally with an embedded public key.
-- [ ] Store the entitlement and license credential in Keychain.
-- [ ] Keep an installed version working without recurring license checks.
+- [x] Store the entitlement and license credential in Keychain.
+- [x] Keep an installed version working without recurring license checks.
 - [x] Include every official v1.x update, including security and compatibility fixes published for v1. A perpetual v1 license does not include v2.
 - [x] Offer a voluntary 14-day refund window while honoring later refunds required by Stripe or applicable law.
 - [x] After a refund or chargeback, block new activations, official downloads, updates, and support. Do not disable an already activated offline installation.
@@ -71,10 +71,10 @@ Proposed check policy:
 8. Show a persistent message in the menu bar and Settings. Explain that the subscription expired and GlassEQ has returned to unprocessed playback.
 9. After renewal, retry verification and resume the selected profile through the normal click-free startup path.
 
-- [ ] Decide whether the seven-day grace period starts at the subscription expiry time or when GlassEQ first detects expiry. Detection-based grace can allow almost two weeks of use after the actual expiry when checks run weekly.
-- [ ] Decide whether an authoritative expired response and a network outage receive the same grace period.
-- [ ] Decide whether startup always triggers a network check. Startup-only checks are simpler, but an app left running can avoid checks indefinitely.
-- [ ] Decide what happens to critical security updates after a subscription lapses.
+- [x] Grace runs from the signed timeline. The server sets `recovery_until` and `exp`, and the app evaluates them against its trusted-time floor, so detection time never extends the window.
+- [x] An authoritative expired response and a network outage share the signed window. A refund or chargeback denial is persisted so an offline relaunch cannot resurrect processing.
+- [x] Refresh is driven by the signed `refresh_after` claim. Launch refreshes only when it has passed, and a running app schedules the next check from the same claim.
+- [x] Security updates after a lapse follow the signed `security_updates_after_expiry` claim, which selects the security-only feed.
 - [ ] Test clock changes, stale cached state, invalid signatures, replayed entitlements, account recovery, cancellation, renewal, refund, and service outages.
 
 License verification must run outside the realtime path. It must not make Core Audio ownership, route recovery, profile editing, or dry-playback restoration depend on a network response.
@@ -127,6 +127,8 @@ License verification must run outside the realtime path. It must not make Core A
 - [ ] Install the browser-downloaded artifact on a clean account without development certificates.
 - [ ] Detect or explain launches from a read-only DMG, Downloads, or another location where updates cannot be installed reliably.
 - [ ] Update `Docs/Distribution.md`, README installation instructions, and the release notes for the production channel.
+- [ ] Embed the entitlement public keys in the official build's Info.plist under `GlassEQEntitlementPublicKeys`. A build without the key dictionary runs unrestricted by design.
+- [ ] Add a "licensing required" marker to the release checks so a build that is missing the key dictionary fails the release instead of shipping unrestricted.
 
 ## Diagnostics and support
 

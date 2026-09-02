@@ -123,9 +123,11 @@ The main app records setup completion in `UserDefaults` under `onboarding.comple
 
 ## Licensing
 
-`GlassEQLicensing` currently owns only the trust boundary for server-issued entitlements. It verifies compact Ed25519 JWS values against caller-supplied public keys, rejects unknown or duplicate claims, checks the installation identity and entitlement revision, validates the signed timeline, and maps verified timestamps to processing and update-access states.
+`GlassEQLicensing` owns the client side of the entitlement protocol in `Docs/EntitlementProtocol.md`. `EntitlementVerifier` is the trust boundary: it verifies compact Ed25519 JWS values against embedded public keys, rejects unknown or duplicate claims, checks the installation identity and entitlement revision, and validates the signed timeline. `LicensingController` is an actor that owns everything derived from that: the two device-only Keychain records, the trusted-time floor, activation and refresh requests through `LicenseServiceClient`, the refresh schedule, and the immutable `LicenseSnapshot` values it publishes. It never touches audio.
 
-Activation requests, credential persistence, refresh scheduling, clock-rollback handling, and application enforcement remain unimplemented. They should be added with the licensing service and their first real application call sites. Adding audio enforcement must preserve dry system playback when a monthly entitlement expires.
+Enforcement lives in `GlassEQAppModel` and is active only when the app bundle embeds entitlement public keys. A bundle without the key dictionary is a source build and runs unrestricted; a dictionary that is present but unusable fails closed. Every tap start passes one gate, so a non-permitting snapshot never starts the observer or the engine. When a monthly entitlement reaches its signed expiry while processing, the model publishes the active profile as a bypassed bank, which renders as identity filters with unity preamp, waits for the render thread's DSP transition counters to report that exact transition complete, and only then stops the tap. `stop()` does not fade, so this ordering is what keeps the return to dry playback click-free. A transition that never completes is stopped after a bounded timeout because restoring dry playback outranks the fade. Renewal resumes through the ordinary startup path, never from the licensing callback.
+
+The Settings helper never receives credentials or Keychain access. Settings license DTOs, the activation UI, and Sparkle download authorization are not implemented yet.
 
 ## Backlog
 
