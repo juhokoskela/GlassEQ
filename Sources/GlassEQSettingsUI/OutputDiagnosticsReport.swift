@@ -2,111 +2,37 @@ import AppKit
 import GlassEQSettingsIPC
 import SwiftUI
 
-// Formats the audio metrics snapshot into titled sections. The Output tab shows a summary, the
-// diagnostics sheet renders every section, and Copy as Text serializes the same rows.
 struct OutputDiagnosticsReport {
+    enum SectionID: Hashable {
+        case observation
+        case timing
+        case reliability
+        case recovery
+        case callbackSizes
+        case timestamps
+        case route
+    }
+
     struct Row: Identifiable {
+        let id: String
         var title: String
         var value: String
-        var id: String { title }
     }
 
     struct Section: Identifiable {
+        let id: SectionID
         var title: String
         var symbol: String
         var note: String?
         var rows: [Row]
-        var id: String { title }
     }
 
     let snapshot: SettingsSnapshot
+    private(set) var sections: [Section] = []
 
     init(snapshot: SettingsSnapshot) {
         self.snapshot = snapshot
-    }
-
-    var sections: [Section] {
-        [
-            Section(
-                title: localized("Observation"),
-                symbol: "clock",
-                note: nil,
-                rows: [
-                    Row(title: localized("Reset"), value: diagnosticsResetLabel),
-                    Row(title: localized("Observed"), value: observationDurationLabel),
-                    Row(title: localized("Current Runtime"), value: runtimeDurationLabel)
-                ]
-            ),
-            Section(
-                title: localized("Timing"),
-                symbol: "timer",
-                note: localized("Values are p50 / p99 / p99.9 / p99.99 / max. Percentiles use bounded realtime histograms and publish every 1,024 callbacks."),
-                rows: timingRows
-            ),
-            Section(
-                title: localized("Reliability"),
-                symbol: "checkmark.shield",
-                note: localized("Failure categories can overlap."),
-                rows: reliabilityRows
-            ),
-            Section(
-                title: localized("Recovery"),
-                symbol: "arrow.counterclockwise",
-                note: nil,
-                rows: [
-                    Row(title: localized("Runtime Rebuilds"), value: localizedInteger(diagnostics.recovery.runtimeRebuilds)),
-                    Row(title: localized("Automatic Recoveries"), value: localizedInteger(diagnostics.recovery.automaticRecoveries)),
-                    Row(title: localized("Buffer Escalations"), value: localizedInteger(diagnostics.recovery.bufferEscalations)),
-                    Row(title: localized("Headset Fallbacks"), value: localizedInteger(diagnostics.recovery.headsetFallbacks)),
-                    Row(title: localized("Last Recovery"), value: lastRecoveryLabel)
-                ]
-            ),
-            Section(
-                title: localized("Callback Sizes"),
-                symbol: "square.stack.3d.up",
-                note: nil,
-                rows: [
-                    Row(title: localized("Capture"), value: callbackSizeHistogramLabel(snapshot.metrics.captureCallbackSizeObservations)),
-                    Row(title: localized("Output"), value: callbackSizeHistogramLabel(snapshot.metrics.playbackCallbackSizeObservations)),
-                    Row(title: localized("Capture / Output Peak"), value: callbackPeaksLabel)
-                ]
-            ),
-            Section(
-                title: localized("Timestamps"),
-                symbol: "waveform.path.ecg",
-                note: nil,
-                rows: [
-                    Row(title: localized("Last Sample-Time Jumps"), value: timestampJumpLabel),
-                    Row(title: localized("Last Host-Time Errors"), value: hostIntervalErrorLabel),
-                    Row(title: localized("Jump Interval min / avg / max"), value: timestampJumpIntervalLabel),
-                    Row(title: localized("Input Age min / avg / max"), value: inputAgeLabel),
-                    Row(title: localized("Output Lead min / avg / max"), value: outputLeadLabel)
-                ]
-            ),
-            Section(
-                title: localized("Route"),
-                symbol: "point.3.connected.trianglepath.dotted",
-                note: nil,
-                rows: [
-                    Row(title: localized("Output UID"), value: snapshot.currentOutputUID.isEmpty ? localized("Unavailable") : snapshot.currentOutputUID),
-                    Row(title: localized("Transport"), value: diagnostics.route.transport),
-                    Row(title: localized("Observed / Active Rate"), value: observedAndActiveRateLabel),
-                    Row(title: localized("Processing Rate"), value: processingRateLabel),
-                    Row(title: localized("Native Output Stream"), value: nativeOutputStreamLabel),
-                    Row(title: localized("Physical Output Streams"), value: streamChannelCountsLabel(diagnostics.route.physicalOutputStreamChannelCounts)),
-                    Row(title: localized("Aggregate Input / Output Streams"), value: aggregateStreamCountsLabel),
-                    Row(title: localized("Physical / Aggregate Buffer"), value: routeBufferSizesLabel),
-                    Row(title: localized("Physical Safety Offsets in / out"), value: physicalSafetyOffsetsLabel),
-                    Row(title: localized("Aggregate Safety Offsets in / out"), value: aggregateSafetyOffsetsLabel),
-                    Row(
-                        title: localized("Sample Rate Conversion"),
-                        value: snapshot.metrics.playbackSampleRateConversionActive
-                            ? localized("Active")
-                            : localized("Inactive")
-                    )
-                ]
-            )
-        ]
+        sections = makeSections()
     }
 
     var text: String {
@@ -129,6 +55,106 @@ struct OutputDiagnosticsReport {
         return lines.joined(separator: "\n")
     }
 
+    var addedLatencyLabel: String {
+        if usesSeparateClockDiagnostics {
+            guard snapshot.metrics.playbackBufferObservations > 0 else {
+                return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
+            }
+            return bridgeLatencyLabel
+        }
+        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
+            return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
+        }
+        return tapToOutputLatencyLabel
+    }
+
+    private func makeSections() -> [Section] {
+        [
+            Section(
+                id: .observation,
+                title: localized("Observation"),
+                symbol: "clock",
+                rows: [
+                    Row(id: "reset", title: localized("Reset"), value: diagnosticsResetLabel),
+                    Row(id: "observed", title: localized("Observed"), value: observationDurationLabel),
+                    Row(id: "currentRuntime", title: localized("Current Runtime"), value: runtimeDurationLabel)
+                ]
+            ),
+            Section(
+                id: .timing,
+                title: localized("Timing"),
+                symbol: "timer",
+                note: localized("Values are p50 / p99 / p99.9 / p99.99 / max. Percentiles use bounded realtime histograms and publish every 1,024 callbacks."),
+                rows: timingRows
+            ),
+            Section(
+                id: .reliability,
+                title: localized("Reliability"),
+                symbol: "checkmark.shield",
+                note: localized("Failure categories can overlap."),
+                rows: reliabilityRows
+            ),
+            Section(
+                id: .recovery,
+                title: localized("Recovery"),
+                symbol: "arrow.counterclockwise",
+                rows: [
+                    Row(id: "runtimeRebuilds", title: localized("Runtime Rebuilds"), value: localizedInteger(diagnostics.recovery.runtimeRebuilds)),
+                    Row(id: "automaticRecoveries", title: localized("Automatic Recoveries"), value: localizedInteger(diagnostics.recovery.automaticRecoveries)),
+                    Row(id: "bufferEscalations", title: localized("Buffer Escalations"), value: localizedInteger(diagnostics.recovery.bufferEscalations)),
+                    Row(id: "headsetFallbacks", title: localized("Headset Fallbacks"), value: localizedInteger(diagnostics.recovery.headsetFallbacks)),
+                    Row(id: "lastRecovery", title: localized("Last Recovery"), value: lastRecoveryLabel)
+                ]
+            ),
+            Section(
+                id: .callbackSizes,
+                title: localized("Callback Sizes"),
+                symbol: "square.stack.3d.up",
+                rows: [
+                    Row(id: "capture", title: localized("Capture"), value: callbackSizeHistogramLabel(snapshot.metrics.captureCallbackSizeObservations)),
+                    Row(id: "output", title: localized("Output"), value: callbackSizeHistogramLabel(snapshot.metrics.playbackCallbackSizeObservations)),
+                    Row(id: "peaks", title: localized("Capture / Output Peak"), value: callbackPeaksLabel)
+                ]
+            ),
+            Section(
+                id: .timestamps,
+                title: localized("Timestamps"),
+                symbol: "waveform.path.ecg",
+                rows: [
+                    Row(id: "sampleTimeJumps", title: localized("Last Sample-Time Jumps"), value: timestampJumpLabel),
+                    Row(id: "hostTimeErrors", title: localized("Last Host-Time Errors"), value: hostIntervalErrorLabel),
+                    Row(id: "jumpInterval", title: localized("Jump Interval min / avg / max"), value: timestampJumpIntervalLabel),
+                    Row(id: "inputAge", title: localized("Input Age min / avg / max"), value: inputAgeLabel),
+                    Row(id: "outputLead", title: localized("Output Lead min / avg / max"), value: outputLeadLabel)
+                ]
+            ),
+            Section(
+                id: .route,
+                title: localized("Route"),
+                symbol: "point.3.connected.trianglepath.dotted",
+                rows: [
+                    Row(id: "outputUID", title: localized("Output UID"), value: snapshot.currentOutputUID.isEmpty ? localized("Unavailable") : snapshot.currentOutputUID),
+                    Row(id: "transport", title: localized("Transport"), value: diagnostics.route.transport),
+                    Row(id: "sampleRates", title: localized("Observed / Active Rate"), value: observedAndActiveRateLabel),
+                    Row(id: "processingRate", title: localized("Processing Rate"), value: processingRateLabel),
+                    Row(id: "nativeOutputStream", title: localized("Native Output Stream"), value: nativeOutputStreamLabel),
+                    Row(id: "physicalOutputStreams", title: localized("Physical Output Streams"), value: streamChannelCountsLabel(diagnostics.route.physicalOutputStreamChannelCounts)),
+                    Row(id: "aggregateStreams", title: localized("Aggregate Input / Output Streams"), value: aggregateStreamCountsLabel),
+                    Row(id: "bufferSizes", title: localized("Physical / Aggregate Buffer"), value: routeBufferSizesLabel),
+                    Row(id: "physicalSafetyOffsets", title: localized("Physical Safety Offsets in / out"), value: physicalSafetyOffsetsLabel),
+                    Row(id: "aggregateSafetyOffsets", title: localized("Aggregate Safety Offsets in / out"), value: aggregateSafetyOffsetsLabel),
+                    Row(
+                        id: "sampleRateConversion",
+                        title: localized("Sample Rate Conversion"),
+                        value: snapshot.metrics.playbackSampleRateConversionActive
+                            ? localized("Active")
+                            : localized("Inactive")
+                    )
+                ]
+            )
+        ]
+    }
+
     private var diagnostics: SettingsAudioDiagnosticsDTO {
         snapshot.metrics.diagnostics
     }
@@ -137,6 +163,7 @@ struct OutputDiagnosticsReport {
         let timing = snapshot.metrics.renderTiming
         var rows = [
             Row(
+                id: "callbackStartLateness",
                 title: localized("Callback Start Lateness"),
                 value: durationPercentilesLabel(
                     observations: timing.callbackStartLatenessObservations,
@@ -151,6 +178,7 @@ struct OutputDiagnosticsReport {
         if timing.directHeadObservations > 0 {
             rows += [
                 Row(
+                    id: "firHead",
                     title: localized("FIR Head"),
                     value: durationPercentilesLabel(
                         observations: timing.directHeadObservations,
@@ -162,6 +190,7 @@ struct OutputDiagnosticsReport {
                     )
                 ),
                 Row(
+                    id: "firTail",
                     title: localized("FIR Tail"),
                     value: durationPercentilesLabel(
                         observations: timing.tailWorkObservations,
@@ -172,12 +201,13 @@ struct OutputDiagnosticsReport {
                         maximum: timing.maximumTailWorkNanoseconds
                     )
                 ),
-                Row(title: localized("Tail Slack Minimum / Misses"), value: tailCompletionSlackLabel),
-                Row(title: localized("FIR Partition Misses"), value: localizedInteger(timing.tailDeadlineMisses))
+                Row(id: "tailSlack", title: localized("Tail Slack Minimum / Misses"), value: tailCompletionSlackLabel),
+                Row(id: "firPartitionMisses", title: localized("FIR Partition Misses"), value: localizedInteger(timing.tailDeadlineMisses))
             ]
         }
         rows += [
             Row(
+                id: "totalRender",
                 title: localized("Total Render"),
                 value: durationPercentilesLabel(
                     observations: timing.totalRenderObservations,
@@ -189,6 +219,7 @@ struct OutputDiagnosticsReport {
                 )
             ),
             Row(
+                id: "completionLateness",
                 title: localized("Completion Lateness"),
                 value: durationPercentilesLabel(
                     observations: timing.completionLatenessObservations,
@@ -205,38 +236,25 @@ struct OutputDiagnosticsReport {
 
     private var reliabilityRows: [Row] {
         var rows = [
-            Row(title: localized("Captured Frames"), value: localizedInteger(snapshot.metrics.capturedFrames)),
-            Row(title: localized("Played Frames"), value: localizedInteger(snapshot.metrics.playedFrames)),
-            Row(title: localized("Underrun Events / Frames"), value: underrunDetailLabel),
-            Row(title: localized("Dropped Input / Buffered"), value: droppedFramesLabel),
-            Row(title: localized("Saturated Samples"), value: localizedInteger(snapshot.metrics.saturatedSamples)),
-            Row(title: localized("Deadline Misses"), value: deadlineMissesLabel),
-            Row(title: localized("Discontinuities"), value: discontinuityLabel)
+            Row(id: "capturedFrames", title: localized("Captured Frames"), value: localizedInteger(snapshot.metrics.capturedFrames)),
+            Row(id: "playedFrames", title: localized("Played Frames"), value: localizedInteger(snapshot.metrics.playedFrames)),
+            Row(id: "underruns", title: localized("Underrun Events / Frames"), value: underrunDetailLabel),
+            Row(id: "droppedFrames", title: localized("Dropped Input / Buffered"), value: droppedFramesLabel),
+            Row(id: "saturatedSamples", title: localized("Saturated Samples"), value: localizedInteger(snapshot.metrics.saturatedSamples)),
+            Row(id: "deadlineMisses", title: localized("Deadline Misses"), value: deadlineMissesLabel),
+            Row(id: "discontinuities", title: localized("Discontinuities"), value: discontinuityLabel)
         ]
         if usesSeparateClockDiagnostics {
             rows += [
-                Row(title: localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures)),
-                Row(title: localized("Buffered / Peak"), value: bufferedFramesLabel),
-                Row(title: localized("Clock Correction"), value: playbackRateCorrectionLabel),
-                Row(title: localized("Servo Buffer"), value: servoBufferLabel),
-                Row(title: localized("Bridge Latency"), value: bridgeLatencyLabel),
-                Row(title: localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
+                Row(id: "ringGateFailures", title: localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures)),
+                Row(id: "bufferedFrames", title: localized("Buffered / Peak"), value: bufferedFramesLabel),
+                Row(id: "clockCorrection", title: localized("Clock Correction"), value: playbackRateCorrectionLabel),
+                Row(id: "servoBuffer", title: localized("Servo Buffer"), value: servoBufferLabel),
+                Row(id: "bridgeLatency", title: localized("Bridge Latency"), value: bridgeLatencyLabel),
+                Row(id: "bridgeLatencyRange", title: localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel)
             ]
         }
         return rows
-    }
-
-    var addedLatencyLabel: String {
-        if usesSeparateClockDiagnostics {
-            guard snapshot.metrics.playbackBufferObservations > 0 else {
-                return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
-            }
-            return bridgeLatencyLabel
-        }
-        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
-            return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
-        }
-        return tapToOutputLatencyLabel
     }
 
     private func durationPercentilesLabel(
@@ -257,7 +275,7 @@ struct OutputDiagnosticsReport {
             durationPercentileValue(p9999, observations: observations, minimum: 10_000),
             durationPercentileValue(maximum, observations: observations, minimum: 1)
         ]
-        return localized("\(values.joined(separator: " / ")) us")
+        return localized("\(values.joined(separator: " / ")) µs")
     }
 
     private func durationPercentileValue(
@@ -282,19 +300,6 @@ struct OutputDiagnosticsReport {
         return localizedLatency(
             milliseconds: snapshot.metrics.averageTapToOutputLatencyNanoseconds / 1_000_000
         )
-    }
-
-    private var tapToOutputLatencyRangeLabel: String {
-        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
-            return localized("No samples")
-        }
-        let minimum = localizedLatency(
-            milliseconds: Double(snapshot.metrics.minimumTapToOutputLatencyNanoseconds) / 1_000_000
-        )
-        let maximum = localizedLatency(
-            milliseconds: Double(snapshot.metrics.maximumTapToOutputLatencyNanoseconds) / 1_000_000
-        )
-        return localized("\(minimum) to \(maximum)")
     }
 
     private var usesSeparateClockDiagnostics: Bool {
@@ -460,7 +465,7 @@ struct OutputDiagnosticsReport {
             maximumFractionDigits: 2,
             signed: true
         )
-        return localized("\(input) input / \(output) output us")
+        return localized("\(input) input / \(output) output µs")
     }
 
     private var timestampJumpIntervalLabel: String {
@@ -621,7 +626,6 @@ struct OutputDiagnosticsReport {
         let target = localizedInteger(snapshot.metrics.playbackOccupancyTargetFrames)
         return localized("\(occupancy) / \(target) frames")
     }
-
 }
 
 struct OutputDiagnosticsSheet: View {
@@ -629,7 +633,7 @@ struct OutputDiagnosticsSheet: View {
     var onReset: () -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedSectionID: String?
+    @State private var selectedSectionID = OutputDiagnosticsReport.SectionID.observation
     @State private var didCopy = false
 
     var body: some View {
@@ -640,11 +644,8 @@ struct OutputDiagnosticsSheet: View {
                     .padding(.horizontal, 14)
                     .padding(.top, 16)
 
-                List(selection: $selectedSectionID) {
-                    ForEach(report.sections) { section in
-                        Label(section.title, systemImage: section.symbol)
-                            .tag(section.id)
-                    }
+                List(report.sections, selection: $selectedSectionID) { section in
+                    Label(section.title, systemImage: section.symbol)
                 }
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)
@@ -657,43 +658,8 @@ struct OutputDiagnosticsSheet: View {
             VStack(alignment: .leading, spacing: 0) {
                 ScrollView {
                     if let section = selectedSection {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text(section.title)
-                                .font(.title3.weight(.semibold))
-                            VStack(spacing: 0) {
-                                ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
-                                    if index > 0 {
-                                        Divider()
-                                    }
-                                    HStack(alignment: .firstTextBaseline, spacing: 16) {
-                                        Text(row.title)
-                                            .foregroundStyle(.secondary)
-                                        Spacer(minLength: 0)
-                                        Text(row.value)
-                                            .font(.body.monospacedDigit())
-                                            .multilineTextAlignment(.trailing)
-                                            .textSelection(.enabled)
-                                    }
-                                    .padding(.vertical, 9)
-                                    .padding(.horizontal, 12)
-                                    .accessibilityElement(children: .combine)
-                                }
-                            }
-                            .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 10))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                            )
-                            if let note = section.note {
-                                Text(note)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .id(section.id)
+                        OutputDiagnosticsSectionView(section: section)
+                            .id(section.id)
                     }
                 }
 
@@ -722,28 +688,70 @@ struct OutputDiagnosticsSheet: View {
                 }
                 .controlSize(.large)
                 .padding(16)
+                .task(id: didCopy) {
+                    guard didCopy else { return }
+                    try? await Task.sleep(for: .seconds(2))
+                    didCopy = false
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 580)
-        .onAppear {
-            if selectedSectionID == nil {
-                selectedSectionID = report.sections.first?.id
-            }
-        }
     }
 
     private var selectedSection: OutputDiagnosticsReport.Section? {
-        report.sections.first { $0.id == selectedSectionID } ?? report.sections.first
+        report.sections.first { $0.id == selectedSectionID }
     }
 
     private func copyReport() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(report.text, forType: .string)
         didCopy = true
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
-            didCopy = false
+    }
+}
+
+private struct OutputDiagnosticsSectionView: View {
+    let section: OutputDiagnosticsReport.Section
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(section.title)
+                .font(.title3.weight(.semibold))
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 0) {
+                ForEach(section.rows) { row in
+                    if row.id != section.rows[0].id {
+                        Divider()
+                            .gridCellUnsizedAxes(.horizontal)
+                    }
+                    GridRow {
+                        Text(row.title)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        Text(row.value)
+                            .font(.body.monospacedDigit())
+                            .multilineTextAlignment(.trailing)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .accessibilityLabel(row.title)
+                            .accessibilityValue(row.value)
+                    }
+                    .padding(.vertical, 9)
+                }
+            }
+            .padding(.horizontal, 12)
+            .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            }
+            if let note = section.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
