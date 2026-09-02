@@ -61,7 +61,7 @@ The server checks every cryptographic random-generation result. The display form
 The main app stores two non-synchronizable, device-only Keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
 
 1. The installation identity, containing the installation ID.
-2. One atomically replaced activation-state value containing the activation token, compact entitlement, highest accepted revision, highest trusted time, last authenticated wall-clock reading, and any clock-anomaly, denial, or deactivation state.
+2. One versioned, atomically replaced activation-state value containing the activation token, compact entitlement, highest accepted revision, highest trusted time, last authenticated wall-clock reading, and any clock-anomaly, denial, or deactivation state. A client rejects schema versions newer than it understands.
 
 The entitlement, replay state, and trusted time must not use separate persistence classes. Clearing the activation-state value removes every cached authority that depends on it. The Settings helper never receives the activation token or direct Keychain access.
 
@@ -672,7 +672,7 @@ A `403 license_not_eligible` answer to a refresh is persisted in the activation-
 
 A `403 activation_revoked` or `401 invalid_credentials` answer to a refresh means the activation token is gone, for example because the slot was released from another Mac. The server deliberately returns the same permanent `invalid_credentials` response when the request's installation ID does not match the token. The client therefore records either code as permanent service revocation and stops refreshing, but it does not erase the signed entitlement: a monthly license keeps processing until its signed `exp`, and a perpetual license keeps processing indefinitely, exactly as the management API section promises.
 
-Local deactivation writes a tombstone into the activation-state record before sending the request. From that point the installation is unlicensed even if the request or the Keychain deletion fails; the idempotent request and the deletion are retried on the bounded schedule, including after a relaunch. Activation refuses to replace any existing record, including an unfinished tombstone, so the old server slot cannot become unreachable.
+Local deactivation writes a tombstone into the activation-state record before sending the request. From that point the installation is unlicensed even if the request or the Keychain deletion fails; the idempotent request and the deletion are retried on the bounded schedule, including after a relaunch. If activation succeeds remotely but its entitlement cannot be verified or the active record cannot be saved, the client retains the token in a cleanup-only tombstone and uses the same retry path. Activation refuses to replace any existing record, including an unfinished tombstone, so the old server slot cannot become unreachable.
 
 Storage failures and network failures keep separate retry schedules. A recovered Keychain failure never escalates the next refresh retry, and a storage retry never suppresses an earlier `refresh_after`. An overdue trusted-time checkpoint is written immediately after launch rather than waiting for the next signed boundary.
 

@@ -217,7 +217,7 @@ public actor LicensingController {
                 effectiveTime: fresh.effectiveTime(wallClock: wallClock(), now: now)
             )
         } catch let error as EntitlementVerificationError {
-            await releaseUnusableActivation(response.activationToken)
+            await retireUnusableActivation(response.activationToken)
             throw LicensingError.entitlement(error)
         }
         fresh.anchor(issuedAt: verified.claims.issuedAt, at: now)
@@ -232,7 +232,7 @@ public actor LicensingController {
         do {
             try store.saveActivationState(state)
         } catch let error {
-            await releaseUnusableActivation(response.activationToken)
+            await retireUnusableActivation(response.activationToken)
             throw LicensingError.storage(error)
         }
         fresh.markPersisted()
@@ -246,8 +246,14 @@ public actor LicensingController {
         resetRefreshFailures()
     }
 
-    private func releaseUnusableActivation(_ token: String) async {
-        try? await service.deactivateCurrent(activationToken: token)
+    private func retireUnusableActivation(_ token: String) async {
+        let requestedAt = max(wallClock(), 0)
+        let state = ActivationState.pendingDeactivation(
+            activationToken: token,
+            requestedAt: requestedAt
+        )
+        persist(state)
+        try? await completeDeactivation(state)
     }
 
     /// Releases this installation's server registration and its local authority. The record is
@@ -866,6 +872,12 @@ public actor LicensingController {
         loadIfNeeded()
         if clearPending, storageRetry.isDue(now: clock.now()) {
             clearActivation()
+        }
+        if persistencePending,
+           storageRetry.isDue(now: clock.now()),
+           case let .state(state) = activation,
+           state.deactivationRequestedAt != nil {
+            persist(state)
         }
         if case let .state(state) = activation, state.deactivationRequestedAt != nil {
             if refreshRetry.isDue(now: clock.now()), !exclusiveOperationInProgress {

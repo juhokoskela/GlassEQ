@@ -203,6 +203,7 @@ struct LicensingControllerTests {
         harness.service.onActivate { _, _, _ in
             ActivationResponse(activationToken: "gea_new", entitlement: try fixture.sign(payload: fixture.monthlyPayload()))
         }
+        harness.service.onDeactivate { _ in }
         harness.store.saveFailure = .keychain(-25_291)
         await #expect(throws: LicensingError.storage(.keychain(-25_291))) {
             try await harness.controller.activate(licenseKey: "GEQ1-KEY")
@@ -221,6 +222,69 @@ struct LicensingControllerTests {
             try await harness.controller.activate(licenseKey: "GEQ1-KEY")
         }
         #expect(harness.service.calls.last == .deactivate(activationToken: "gea_unverifiable"))
+    }
+
+    @Test
+    func failedVerificationRetainsTheActivationTokenUntilCleanupSucceeds() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture)
+        harness.service.onActivate { _, _, _ in
+            ActivationResponse(
+                activationToken: "gea_unverifiable",
+                entitlement: try fixture.sign(payload: fixture.monthlyPayload(installationID: UUID()))
+            )
+        }
+        harness.service.onDeactivate { _ in throw LicenseServiceError.transport(.offline) }
+
+        await #expect(throws: LicensingError.entitlement(.installationMismatch)) {
+            try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        }
+
+        let tombstone = try #require(harness.store.activation)
+        #expect(tombstone.activationToken == "gea_unverifiable")
+        #expect(tombstone.deactivationRequestedAt == fixture.issuedAt)
+        #expect(await harness.controller.currentSnapshot().content.state == .unlicensed)
+        #expect(try #require(await harness.clock.waitForSleeper()) == .seconds(60))
+
+        harness.service.onDeactivate { _ in }
+        harness.advance(seconds: 60)
+
+        #expect(await waitUntil { harness.store.activation == nil })
+        #expect(harness.service.calls.filter {
+            $0 == .deactivate(activationToken: "gea_unverifiable")
+        }.count == 2)
+    }
+
+    @Test
+    func failedActivationSaveKeepsCleanupAliveUntilStorageRecovers() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture)
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_unsaved",
+                entitlement: try fixture.sign(payload: fixture.monthlyPayload(installationID: installationID))
+            )
+        }
+        harness.service.onDeactivate { _ in throw LicenseServiceError.transport(.offline) }
+        harness.store.saveFailure = .keychain(-25_291)
+
+        await #expect(throws: LicensingError.storage(.keychain(-25_291))) {
+            try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        }
+
+        #expect(harness.store.activation == nil)
+        #expect(await harness.controller.currentSnapshot().content.state == .unlicensed)
+        #expect(try #require(await harness.clock.waitForSleeper()) == .seconds(60))
+
+        harness.store.saveFailure = nil
+        harness.service.onDeactivate { _ in }
+        harness.advance(seconds: 60)
+
+        #expect(await waitUntil { harness.store.clearCount == 1 })
+        #expect(harness.store.activation == nil)
+        #expect(harness.service.calls.filter {
+            $0 == .deactivate(activationToken: "gea_unsaved")
+        }.count == 2)
     }
 
     @Test

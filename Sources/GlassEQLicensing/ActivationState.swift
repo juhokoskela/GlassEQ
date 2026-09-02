@@ -12,7 +12,11 @@ public struct InstallationIdentity: Codable, Equatable, Sendable {
 /// removes the token, the entitlement, the replay floor, and the trusted-time floor together.
 public struct ActivationState: Codable, Equatable, Sendable {
     public static let maximumEncodedBytes = 16 * 1_024
+    /// Increment before a persisted shape or meaning changes. Older clients reject records with
+    /// a version they do not understand instead of restoring partial authority.
+    static let currentSchemaVersion = 1
 
+    let schemaVersion: Int
     public var activationToken: String
     public var entitlement: String
     public var highestAcceptedRevision: Int64
@@ -45,6 +49,7 @@ public struct ActivationState: Codable, Equatable, Sendable {
         serviceRevokedAt: Int64? = nil,
         deactivationRequestedAt: Int64? = nil
     ) {
+        schemaVersion = Self.currentSchemaVersion
         self.activationToken = activationToken
         self.entitlement = entitlement
         self.highestAcceptedRevision = highestAcceptedRevision
@@ -56,12 +61,25 @@ public struct ActivationState: Codable, Equatable, Sendable {
         self.deactivationRequestedAt = deactivationRequestedAt
     }
 
+    static func pendingDeactivation(
+        activationToken: String,
+        requestedAt: Int64
+    ) -> ActivationState {
+        ActivationState(
+            activationToken: activationToken,
+            entitlement: "",
+            highestAcceptedRevision: 0,
+            highestTrustedTime: requestedAt,
+            deactivationRequestedAt: requestedAt
+        )
+    }
+
     func validate() throws(LicenseCredentialStoreError) {
-        guard !activationToken.isEmpty,
+        guard schemaVersion == Self.currentSchemaVersion,
+              !activationToken.isEmpty,
               activationToken.utf8.count <= 256,
-              !entitlement.isEmpty,
               entitlement.utf8.count <= EntitlementVerifier.maximumTokenBytes,
-              highestAcceptedRevision > 0,
+              highestAcceptedRevision >= 0,
               highestTrustedTime >= 0,
               [
                   wallClockAtLastVerification,
@@ -70,6 +88,14 @@ public struct ActivationState: Codable, Equatable, Sendable {
                   serviceRevokedAt,
                   deactivationRequestedAt
               ].allSatisfy({ $0.map { $0 >= 0 } ?? true }) else {
+            throw .corruptRecord
+        }
+
+        let hasActiveAuthority = !entitlement.isEmpty && highestAcceptedRevision > 0
+        let isCleanupOnly = entitlement.isEmpty
+            && highestAcceptedRevision == 0
+            && deactivationRequestedAt != nil
+        guard hasActiveAuthority || isCleanupOnly else {
             throw .corruptRecord
         }
     }

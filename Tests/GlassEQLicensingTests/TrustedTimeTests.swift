@@ -92,6 +92,38 @@ struct ActivationStateTests {
     }
 
     @Test
+    func rejectsFutureActivationStateSchemas() throws {
+        let state = ActivationState(
+            activationToken: "gea_token",
+            entitlement: "a.b.c",
+            highestAcceptedRevision: 9,
+            highestTrustedTime: 1_234
+        )
+        let data = try LicenseRecordCodec.encode(state)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        object["schemaVersion"] = ActivationState.currentSchemaVersion + 1
+        let futureData = try JSONSerialization.data(withJSONObject: object)
+
+        #expect(throws: LicenseCredentialStoreError.corruptRecord) {
+            try LicenseRecordCodec.decodeActivationState(from: futureData)
+        }
+    }
+
+    @Test
+    func cleanupOnlyStateRoundTrips() throws {
+        let state = ActivationState.pendingDeactivation(
+            activationToken: "gea_token",
+            requestedAt: 1_234
+        )
+
+        let data = try LicenseRecordCodec.encode(state)
+
+        #expect(try LicenseRecordCodec.decodeActivationState(from: data) == state)
+    }
+
+    @Test
     func rejectsOversizedAndCorruptRecords() throws {
         let oversized = Data(repeating: 0x20, count: ActivationState.maximumEncodedBytes + 1)
         let corrupt = Data("{\"activationToken\":1}".utf8)
