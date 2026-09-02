@@ -1473,6 +1473,11 @@ final class GlassEQAppModel {
         if snapshot.content.permitsProcessing {
             if !wasLicensed,
                processingRequested,
+               lifecycleState == .sleeping {
+                wasRunningBeforeSleep = true
+            }
+            if !wasLicensed,
+               processingRequested,
                licenseStopTask == nil,
                lifecycleState == .stopped,
                engineStartTask == nil {

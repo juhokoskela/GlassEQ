@@ -7246,6 +7246,31 @@ struct LicenseEnforcementTests {
     }
 
     @Test
+    func renewalDuringSleepAfterAnExpiryFadeResumesOnWake() async throws {
+        let running = await makeRunningModel { $0.deferDSPTransitionCompletion = true }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 1 }
+        running.model.handleWillSleep()
+        await waitUntil { running.engine.stopCallCount == 1 }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 3 }
+        #expect(running.model.lifecycleState == .sleeping)
+
+        running.model.handleDidWake()
+        try #require(running.model.lifecycleState == .waking)
+        running.engine.completeDSPTransition()
+        await settleAsyncWork()
+        await waitUntil { running.observers.observers.count == 2 }
+        try #require(running.observers.observers.count == 2)
+        running.observers.observers[1].emit(.success(running.output))
+        await waitUntil {
+            running.model.lifecycleState == .running && running.engine.startCalls.count == 2
+        }
+    }
+
+    @Test
     func expiryDuringTerminationLeavesTerminationToStopTheEngine() async {
         let running = await makeRunningModel()
         let stopCountAtShutdown = StopCountRecorder()
