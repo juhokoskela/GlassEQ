@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import GlassEQCore
 
-public enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
+package enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     case empty
     case unsupportedChannelCount(Int)
     case tooManyFrames(count: Int, maximum: Int)
@@ -12,7 +12,7 @@ public enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     case unreadableSamples
     case nonFiniteSample(channel: Int, frame: Int)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .empty:
             "The WAV file does not contain an impulse response."
@@ -34,24 +34,24 @@ public enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     }
 }
 
-public struct ImportedImpulseResponse: Equatable, Sendable {
-    public struct Channel: Equatable, Sendable {
-        public var filename: String
-        public var frameCount: Int
-        public var sampleRate: Double
+package struct ImportedImpulseResponse: Equatable, Sendable {
+    package struct Channel: Equatable, Sendable {
+        package var filename: String
+        package var frameCount: Int
+        package var sampleRate: Double
 
-        public init(filename: String, frameCount: Int, sampleRate: Double) {
+        package init(filename: String, frameCount: Int, sampleRate: Double) {
             self.filename = filename
             self.frameCount = frameCount
             self.sampleRate = sampleRate
         }
     }
 
-    public enum Channels: Equatable, Sendable {
+    package enum Channels: Equatable, Sendable {
         case mono(Channel)
         case stereo(left: Channel, right: Channel)
 
-        public var count: Int {
+        package var count: Int {
             switch self {
             case .mono:
                 1
@@ -60,7 +60,7 @@ public struct ImportedImpulseResponse: Equatable, Sendable {
             }
         }
 
-        public var first: Channel {
+        package var first: Channel {
             switch self {
             case .mono(let channel), .stereo(let channel, _):
                 channel
@@ -68,21 +68,21 @@ public struct ImportedImpulseResponse: Equatable, Sendable {
         }
     }
 
-    public var profile: EQProfile
-    public var channels: Channels
-    public var sourceFileCount: Int
+    package var profile: EQProfile
+    package var channels: Channels
+    package var sourceFileCount: Int
 
-    public init(profile: EQProfile, channels: Channels, sourceFileCount: Int) {
+    package init(profile: EQProfile, channels: Channels, sourceFileCount: Int) {
         self.profile = profile
         self.channels = channels
         self.sourceFileCount = sourceFileCount
     }
 
-    public var sampleRate: Double {
+    package var sampleRate: Double {
         channels.first.sampleRate
     }
 
-    public mutating func swapStereoChannels() {
+    package mutating func swapStereoChannels() {
         guard case let .stereo(left, right) = channels else {
             return
         }
@@ -90,7 +90,7 @@ public struct ImportedImpulseResponse: Equatable, Sendable {
         channels = .stereo(left: right, right: left)
     }
 
-    public static func sampleRateLabel(_ sampleRate: Double) -> String {
+    package static func sampleRateLabel(_ sampleRate: Double) -> String {
         if sampleRate >= 1_000 {
             return Measurement(value: sampleRate / 1_000, unit: UnitFrequency.kilohertz)
                 .formatted(.measurement(
@@ -108,8 +108,8 @@ public struct ImportedImpulseResponse: Equatable, Sendable {
     }
 }
 
-public enum ImpulseResponseWAVImporter {
-    public static func load(from url: URL) throws -> ImportedImpulseResponse {
+package enum ImpulseResponseWAVImporter {
+    package static func load(from url: URL) throws -> ImportedImpulseResponse {
         let hasAccess = url.startAccessingSecurityScopedResource()
         defer {
             if hasAccess {
@@ -212,7 +212,7 @@ public enum ImpulseResponseWAVImporter {
         )
     }
 
-    public static func loadStereoPair(
+    package static func loadStereoPair(
         leftURL: URL,
         rightURL: URL
     ) throws -> ImportedImpulseResponse {

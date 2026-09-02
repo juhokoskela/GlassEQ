@@ -1,21 +1,21 @@
 import Foundation
 
-public struct AutoEQCatalogueEntry: Hashable, Identifiable, Sendable {
-    public let name: String
-    public let encodedResultPath: String
-    public let source: String
-    public let form: String?
+package struct AutoEQCatalogueEntry: Hashable, Identifiable, Sendable {
+    package let name: String
+    package let encodedResultPath: String
+    package let source: String
+    package let form: String?
 
-    public init(name: String, encodedResultPath: String, source: String, form: String?) {
+    package init(name: String, encodedResultPath: String, source: String, form: String?) {
         self.name = name
         self.encodedResultPath = encodedResultPath
         self.source = source
         self.form = form
     }
 
-    public var id: String { encodedResultPath }
+    package var id: String { encodedResultPath }
 
-    public var detail: String {
+    package var detail: String {
         if let form {
             return "\(source) · \(form)"
         }
@@ -23,7 +23,7 @@ public struct AutoEQCatalogueEntry: Hashable, Identifiable, Sendable {
     }
 }
 
-public enum AutoEQProfileKind: Sendable {
+package enum AutoEQProfileKind: Sendable {
     case responseCurve
     case parametric
 
@@ -37,7 +37,7 @@ public enum AutoEQProfileKind: Sendable {
     }
 }
 
-public enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
+package enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
     case invalidResponse
     case catalogueTooLarge
     case profileTooLarge
@@ -45,7 +45,7 @@ public enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
     case invalidResultPath(String)
     case unreadableText
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .invalidResponse:
             "AutoEq returned an unexpected response. Try again in a moment."
@@ -63,13 +63,13 @@ public enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
     }
 }
 
-public enum AutoEQCatalogueParser {
-    public static let maximumEntryCount = 10_000
+package enum AutoEQCatalogueParser {
+    package static let maximumEntryCount = 10_000
     private static let maximumNameUTF8Bytes = 512
     private static let maximumPathUTF8Bytes = 2_048
     private static let maximumPathComponentUTF8Bytes = 512
 
-    public static func parse(
+    package static func parse(
         _ markdown: String,
         maximumEntryCount: Int = Self.maximumEntryCount
     ) throws -> [AutoEQCatalogueEntry] {
@@ -155,20 +155,20 @@ public enum AutoEQCatalogueParser {
     }
 }
 
-public struct AutoEQRepositoryClient: Sendable {
+package struct AutoEQRepositoryClient: Sendable {
     private static let catalogueURL = URL(
         string: "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/README.md"
     )!
     private static let resultRoot =
         "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
-    public static let defaultMaximumCatalogueBytes = 2_000_000
-    public static let defaultMaximumProfileBytes = 1_048_576
+    package static let defaultMaximumCatalogueBytes = 2_000_000
+    package static let defaultMaximumProfileBytes = 1_048_576
 
     private let session: URLSession
     private let maximumCatalogueBytes: Int
     private let maximumProfileBytes: Int
 
-    public init(
+    package init(
         session: URLSession = .shared,
         maximumCatalogueBytes: Int = Self.defaultMaximumCatalogueBytes,
         maximumProfileBytes: Int = Self.defaultMaximumProfileBytes
@@ -178,7 +178,7 @@ public struct AutoEQRepositoryClient: Sendable {
         self.maximumProfileBytes = maximumProfileBytes
     }
 
-    public func catalogue() async throws -> [AutoEQCatalogueEntry] {
+    package func catalogue() async throws -> [AutoEQCatalogueEntry] {
         let data = try await download(
             Self.catalogueURL,
             maximumBytes: maximumCatalogueBytes,
@@ -190,7 +190,7 @@ public struct AutoEQRepositoryClient: Sendable {
         return try AutoEQCatalogueParser.parse(markdown)
     }
 
-    public func profileText(
+    package func profileText(
         for entry: AutoEQCatalogueEntry,
         kind: AutoEQProfileKind
     ) async throws -> String {
@@ -206,7 +206,7 @@ public struct AutoEQRepositoryClient: Sendable {
         return text
     }
 
-    public static func profileURL(
+    package static func profileURL(
         for entry: AutoEQCatalogueEntry,
         kind: AutoEQProfileKind
     ) throws -> URL {

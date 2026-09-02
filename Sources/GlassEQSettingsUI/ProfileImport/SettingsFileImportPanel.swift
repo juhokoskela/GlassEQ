@@ -3,9 +3,9 @@ import GlassEQProfileImport
 import GlassEQSettingsIPC
 import UniformTypeIdentifiers
 
-public enum SettingsFileImportPicker {
+package enum SettingsFileImportPicker {
     @MainActor
-    public static func choose(
+    package static func choose(
         mode: SettingsFileImportMode
     ) async throws -> SettingsFileImportSelectionDTO? {
         let previousApplication = NSWorkspace.shared.frontmostApplication
@@ -47,20 +47,33 @@ public enum SettingsFileImportPicker {
         }
 
         let urls = panel.urls
+        let load: @Sendable () throws -> SettingsFileImportSelectionDTO
         switch mode {
         case .single:
-            guard urls.count == 1 else {
+            guard urls.count == 1,
+                  let url = urls.first else {
                 throw SettingsCommandFailure(message: localized("Select one file to import."))
+            }
+            load = {
+                try SettingsFileImportLoader.load(from: url)
             }
         case .stereoPair:
             guard urls.count == 2 else {
                 throw SettingsCommandFailure(message: localized("Select exactly two files: one for the left channel and one for the right."))
             }
+            let leftURL = urls[0]
+            let rightURL = urls[1]
+            load = {
+                try SettingsFileImportLoader.loadStereoPair(
+                    leftURL: leftURL,
+                    rightURL: rightURL
+                )
+            }
         }
 
         let loadTask = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let selection = try SettingsFileImportLoader.load(mode: mode, urls: urls)
+            let selection = try load()
             try Task.checkCancellation()
             return selection
         }

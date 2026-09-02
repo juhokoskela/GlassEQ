@@ -1,7 +1,7 @@
 import Foundation
 
-public enum ProfileTextFileReader {
-    public static func read(
+package enum ProfileTextFileReader {
+    package static func read(
         _ url: URL,
         maximumBytes: Int = ProfileImportLimits.default.maxUTF8Bytes
     ) throws -> String {
@@ -31,7 +31,7 @@ public enum ProfileTextFileReader {
         )
     }
 
-    public static func readBounded(
+    package static func readBounded(
         from handle: FileHandle,
         knownFileSize: Int?,
         maximumBytes: Int

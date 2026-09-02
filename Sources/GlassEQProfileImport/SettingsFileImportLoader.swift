@@ -2,45 +2,40 @@ import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
 
-public enum SettingsFileImportLoader {
-    public static func load(
-        mode: SettingsFileImportMode,
-        urls: [URL]
-    ) throws -> SettingsFileImportSelectionDTO {
-        switch mode {
-        case .single:
-            let url = urls[0]
-            if isWAV(url) {
-                return selection(for: try ImpulseResponseWAVImporter.load(from: url))
-            }
-            return .text(
-                suggestedName: url.deletingPathExtension().lastPathComponent,
-                filename: url.lastPathComponent,
-                text: try ProfileTextFileReader.read(url)
-            )
+package enum SettingsFileImportLoader {
+    package static func load(from url: URL) throws -> SettingsFileImportSelectionDTO {
+        if isWAV(url) {
+            return selection(for: try ImpulseResponseWAVImporter.load(from: url))
+        }
+        return .text(
+            suggestedName: url.deletingPathExtension().lastPathComponent,
+            filename: url.lastPathComponent,
+            text: try ProfileTextFileReader.read(url)
+        )
+    }
 
-        case .stereoPair:
-            let leftURL = urls[0]
-            let rightURL = urls[1]
-            guard isWAV(leftURL) == isWAV(rightURL) else {
-                throw StereoTextPairImportError.filesMustUseSameFormat
-            }
-            if isWAV(leftURL) {
-                return selection(for: try ImpulseResponseWAVImporter.loadStereoPair(
-                    leftURL: leftURL,
-                    rightURL: rightURL
-                ))
-            }
-            let imported = try StereoTextPairImporter.load(
+    package static func loadStereoPair(
+        leftURL: URL,
+        rightURL: URL
+    ) throws -> SettingsFileImportSelectionDTO {
+        guard isWAV(leftURL) == isWAV(rightURL) else {
+            throw StereoTextPairImportError.filesMustUseSameFormat
+        }
+        if isWAV(leftURL) {
+            return selection(for: try ImpulseResponseWAVImporter.loadStereoPair(
                 leftURL: leftURL,
                 rightURL: rightURL
-            )
-            return .stereoText(
-                profile: imported.profile,
-                leftFilename: imported.leftFilename,
-                rightFilename: imported.rightFilename
-            )
+            ))
         }
+        let imported = try StereoTextPairImporter.load(
+            leftURL: leftURL,
+            rightURL: rightURL
+        )
+        return .stereoText(
+            profile: imported.profile,
+            leftFilename: imported.leftFilename,
+            rightFilename: imported.rightFilename
+        )
     }
 
     private static func isWAV(_ url: URL) -> Bool {
@@ -71,7 +66,7 @@ public enum SettingsFileImportLoader {
 }
 
 extension ImportedImpulseResponse.Channels {
-    public init?(_ channels: [SettingsImpulseResponseChannelDTO]) {
+    package init?(_ channels: [SettingsImpulseResponseChannelDTO]) {
         let converted = channels.map {
             ImportedImpulseResponse.Channel(
                 filename: $0.filename,

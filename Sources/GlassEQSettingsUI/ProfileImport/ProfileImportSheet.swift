@@ -1,7 +1,4 @@
 import GlassEQCore
-// Re-exported so GlassEQSettingsUI clients keep seeing the import types that
-// used to live in this module.
-import GlassEQProfileImport
 import GlassEQSettingsIPC
 import SwiftUI
 

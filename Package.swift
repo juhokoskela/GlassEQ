@@ -12,7 +12,6 @@ let package = Package(
         .library(name: "GlassEQCore", targets: ["GlassEQCore"]),
         .library(name: "GlassEQAudio", targets: ["GlassEQAudio"]),
         .library(name: "GlassEQSettingsIPC", targets: ["GlassEQSettingsIPC"]),
-        .library(name: "GlassEQProfileImport", targets: ["GlassEQProfileImport"]),
         .library(name: "GlassEQSettingsUI", targets: ["GlassEQSettingsUI"]),
         .executable(name: "GlassEQ", targets: ["GlassEQApp"]),
         .executable(name: "GlassEQSettings", targets: ["GlassEQSettings"]),

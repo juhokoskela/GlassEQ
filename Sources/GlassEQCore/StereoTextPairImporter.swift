@@ -1,12 +1,12 @@
 import Foundation
 
-public enum StereoTextPairImportError: Error, Equatable, Sendable, LocalizedError {
+package enum StereoTextPairImportError: Error, Equatable, Sendable, LocalizedError {
     case filesMustUseSameFormat
     case filesMustDescribeLinkedChannels
     case profileTypesDoNotMatch(left: EQMode, right: EQMode)
     case missingConvolutionSource
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .filesMustUseSameFormat:
             "Choose either two text files or two mono WAV files for separate left and right import."
@@ -20,25 +20,25 @@ public enum StereoTextPairImportError: Error, Equatable, Sendable, LocalizedErro
     }
 }
 
-public struct ImportedStereoTextPair: Equatable, Sendable {
-    public var profile: EQProfile
-    public var leftFilename: String
-    public var rightFilename: String
+package struct ImportedStereoTextPair: Equatable, Sendable {
+    package var profile: EQProfile
+    package var leftFilename: String
+    package var rightFilename: String
 
-    public init(profile: EQProfile, leftFilename: String, rightFilename: String) {
+    package init(profile: EQProfile, leftFilename: String, rightFilename: String) {
         self.profile = profile
         self.leftFilename = leftFilename
         self.rightFilename = rightFilename
     }
 
-    public mutating func swapChannels() {
+    package mutating func swapChannels() {
         profile.swapStereoChannels()
         swap(&leftFilename, &rightFilename)
     }
 }
 
-public enum StereoTextPairImporter {
-    public static func load(leftURL: URL, rightURL: URL) throws -> ImportedStereoTextPair {
+package enum StereoTextPairImporter {
+    package static func load(leftURL: URL, rightURL: URL) throws -> ImportedStereoTextPair {
         let left = try importProfile(from: leftURL)
         let right = try importProfile(from: rightURL)
         guard left.channelMode == .linked,
@@ -111,13 +111,13 @@ public enum StereoTextPairImporter {
 }
 
 extension EQProfile {
-    public mutating func swapStereoChannels() {
+    package mutating func swapStereoChannels() {
         swap(&leftPreampDB, &rightPreampDB)
         swap(&leftFilters, &rightFilters)
         swap(&leftConvolution, &rightConvolution)
     }
 
-    public static func inferredStereoImportName(
+    package static func inferredStereoImportName(
         leftURL: URL,
         rightURL: URL,
         fallback: String

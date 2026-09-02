@@ -1,14 +1,14 @@
 import AVFoundation
 import Foundation
 import GlassEQCore
+import GlassEQProfileImport
 import GlassEQSettingsIPC
 import Testing
-import GlassEQProfileImport
 
 @Suite
 struct ImpulseResponseWAVImporterTests {
     @Test
-    func mainProcessFileLoaderPackagesTextAndImpulseResponseSelections() throws {
+    func fileLoaderPackagesSingleTextAndImpulseResponseSelections() throws {
         let textURL = try writeText("Preamp: -3 dB")
         let wavURL = try writeWAV(channels: [[1, 0.25]])
         defer {
@@ -16,10 +16,7 @@ struct ImpulseResponseWAVImporterTests {
             try? FileManager.default.removeItem(at: wavURL)
         }
 
-        let textSelection = try SettingsFileImportLoader.load(
-            mode: .single,
-            urls: [textURL]
-        )
+        let textSelection = try SettingsFileImportLoader.load(from: textURL)
         guard case let .text(suggestedName, filename, text) = textSelection else {
             Issue.record("Expected a text-file selection")
             return
@@ -28,10 +25,7 @@ struct ImpulseResponseWAVImporterTests {
         #expect(filename == textURL.lastPathComponent)
         #expect(text == "Preamp: -3 dB")
 
-        let wavSelection = try SettingsFileImportLoader.load(
-            mode: .single,
-            urls: [wavURL]
-        )
+        let wavSelection = try SettingsFileImportLoader.load(from: wavURL)
         guard case let .impulseResponse(profile, channels, sourceFileCount) = wavSelection else {
             Issue.record("Expected an impulse-response selection")
             return
@@ -39,6 +33,48 @@ struct ImpulseResponseWAVImporterTests {
         #expect(profile.mode == .convolution)
         #expect(channels.map(\.frameCount) == [2])
         #expect(sourceFileCount == 1)
+    }
+
+    @Test
+    func fileLoaderPackagesStereoTextSelection() throws {
+        let leftURL = try writeText("Preamp: -2 dB")
+        let rightURL = try writeText("Preamp: -4 dB")
+        defer {
+            try? FileManager.default.removeItem(at: leftURL)
+            try? FileManager.default.removeItem(at: rightURL)
+        }
+
+        let selection = try SettingsFileImportLoader.loadStereoPair(
+            leftURL: leftURL,
+            rightURL: rightURL
+        )
+
+        guard case let .stereoText(profile, leftFilename, rightFilename) = selection else {
+            Issue.record("Expected a stereo text selection")
+            return
+        }
+        #expect(profile.channelMode == .stereo)
+        #expect(profile.leftPreampDB == -2)
+        #expect(profile.rightPreampDB == -4)
+        #expect(leftFilename == leftURL.lastPathComponent)
+        #expect(rightFilename == rightURL.lastPathComponent)
+    }
+
+    @Test
+    func fileLoaderRejectsMixedStereoFileTypes() throws {
+        let leftURL = try writeText("Preamp: -2 dB")
+        let rightURL = try writeWAV(channels: [[1]])
+        defer {
+            try? FileManager.default.removeItem(at: leftURL)
+            try? FileManager.default.removeItem(at: rightURL)
+        }
+
+        #expect(throws: StereoTextPairImportError.filesMustUseSameFormat) {
+            _ = try SettingsFileImportLoader.loadStereoPair(
+                leftURL: leftURL,
+                rightURL: rightURL
+            )
+        }
     }
 
     @Test
