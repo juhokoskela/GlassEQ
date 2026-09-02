@@ -16,9 +16,9 @@ public protocol LicenseServicing: Sendable {
         licenseKey: String,
         installationID: UUID,
         idempotencyKey: UUID
-    ) async throws -> ActivationResponse
-    func refresh(activationToken: String, installationID: UUID) async throws -> String
-    func deactivateCurrent(activationToken: String) async throws
+    ) async throws(LicenseServiceError) -> ActivationResponse
+    func refresh(activationToken: String, installationID: UUID) async throws(LicenseServiceError) -> String
+    func deactivateCurrent(activationToken: String) async throws(LicenseServiceError)
 }
 
 public enum LicenseServiceErrorCode: Equatable, Sendable {
@@ -59,8 +59,6 @@ public enum LicenseServiceError: Error, Equatable, Sendable {
     case invalidLicenseKey
     case service(
         code: LicenseServiceErrorCode,
-        retryable: Bool,
-        requestID: String?,
         retryAfterSeconds: Int?
     )
     case transport(LicenseTransportFailure)
@@ -90,7 +88,7 @@ public struct LicenseServiceClient: LicenseServicing {
         licenseKey: String,
         installationID: UUID,
         idempotencyKey: UUID
-    ) async throws -> ActivationResponse {
+    ) async throws(LicenseServiceError) -> ActivationResponse {
         let key = licenseKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, key.utf8.count <= Self.maximumLicenseKeyBytes else {
             throw LicenseServiceError.invalidLicenseKey
@@ -98,7 +96,7 @@ public struct LicenseServiceClient: LicenseServicing {
         var request = makeRequest(
             method: "POST",
             path: "/v1/activations",
-            body: try JSONEncoder().encode(
+            body: try Self.encode(
                 ActivationRequestBody(licenseKey: key, installationID: installationID.uuidString)
             )
         )
@@ -112,11 +110,11 @@ public struct LicenseServiceClient: LicenseServicing {
         return ActivationResponse(activationToken: body.activationToken, entitlement: body.entitlement)
     }
 
-    public func refresh(activationToken: String, installationID: UUID) async throws -> String {
+    public func refresh(activationToken: String, installationID: UUID) async throws(LicenseServiceError) -> String {
         var request = makeRequest(
             method: "POST",
             path: "/v1/entitlements/refresh",
-            body: try JSONEncoder().encode(RefreshRequestBody(installationID: installationID.uuidString))
+            body: try Self.encode(RefreshRequestBody(installationID: installationID.uuidString))
         )
         request.setValue("Bearer \(activationToken)", forHTTPHeaderField: "Authorization")
         let data = try await perform(request, accepting: [200])
@@ -127,7 +125,7 @@ public struct LicenseServiceClient: LicenseServicing {
         return body.entitlement
     }
 
-    public func deactivateCurrent(activationToken: String) async throws {
+    public func deactivateCurrent(activationToken: String) async throws(LicenseServiceError) {
         var request = makeRequest(method: "DELETE", path: "/v1/activations/current", body: nil)
         request.setValue("Bearer \(activationToken)", forHTTPHeaderField: "Authorization")
         _ = try await perform(request, accepting: [204])
@@ -148,7 +146,10 @@ public struct LicenseServiceClient: LicenseServicing {
         return request
     }
 
-    private func perform(_ request: URLRequest, accepting statuses: Set<Int>) async throws -> Data {
+    private func perform(
+        _ request: URLRequest,
+        accepting statuses: Set<Int>
+    ) async throws(LicenseServiceError) -> Data {
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -157,16 +158,19 @@ public struct LicenseServiceClient: LicenseServicing {
                 delegate: RedirectRefusingDelegate()
             )
         } catch {
+            if Task.isCancelled {
+                throw .cancelled
+            }
             throw Self.transportError(error)
         }
         guard let http = response as? HTTPURLResponse else {
-            throw LicenseServiceError.malformedResponse
+            throw .malformedResponse
         }
         if (300 ..< 400).contains(http.statusCode) {
-            throw LicenseServiceError.redirected
+            throw .redirected
         }
         guard http.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
-            throw LicenseServiceError.malformedResponse
+            throw .malformedResponse
         }
         var data = Data()
         do {
@@ -179,41 +183,39 @@ public struct LicenseServiceClient: LicenseServicing {
         } catch let error as LicenseServiceError {
             throw error
         } catch {
+            if Task.isCancelled {
+                throw .cancelled
+            }
             throw Self.transportError(error)
         }
         guard statuses.contains(http.statusCode) else {
-            throw Self.error(status: http.statusCode, data: data, headers: http.allHeaderFields)
+            throw Self.error(status: http.statusCode, data: data, response: http)
         }
         return data
     }
 
-    private static func error(status: Int, data: Data, headers: [AnyHashable: Any]) -> LicenseServiceError {
+    private static func error(status: Int, data: Data, response: HTTPURLResponse) -> LicenseServiceError {
         guard status >= 400,
               let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data) else {
             return .unexpectedStatus(status)
         }
         var retryAfter: Int?
-        if let header = headers["Retry-After"] as? String, let seconds = Int(header) {
+        if let header = response.value(forHTTPHeaderField: "Retry-After"), let seconds = Int(header) {
             retryAfter = min(max(seconds, minimumRetryAfterSeconds), maximumRetryAfterSeconds)
         }
         return .service(
             code: LicenseServiceErrorCode(rawValue: envelope.error.code),
-            retryable: envelope.error.retryable,
-            requestID: envelope.error.requestID.map { String($0.prefix(128)) },
             retryAfterSeconds: retryAfter
         )
     }
 
     private static func transportError(_ error: any Error) -> LicenseServiceError {
-        if error is CancellationError {
-            return .cancelled
-        }
         guard let urlError = error as? URLError else {
             return .transport(.other)
         }
         switch urlError.code {
         case .cancelled:
-            return .cancelled
+            return .transport(.other)
         case .timedOut:
             return .transport(.timedOut)
         case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
@@ -224,7 +226,18 @@ public struct LicenseServiceClient: LicenseServicing {
         }
     }
 
-    private static func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws -> Value {
+    private static func encode<Value: Encodable>(_ value: Value) throws(LicenseServiceError) -> Data {
+        do {
+            return try JSONEncoder().encode(value)
+        } catch {
+            throw .malformedResponse
+        }
+    }
+
+    private static func decode<Value: Decodable>(
+        _ type: Value.Type,
+        from data: Data
+    ) throws(LicenseServiceError) -> Value {
         do {
             return try JSONDecoder().decode(type, from: data)
         } catch {
@@ -276,14 +289,6 @@ private struct RefreshResponseBody: Decodable {
 private struct ErrorEnvelope: Decodable {
     struct Body: Decodable {
         let code: String
-        let retryable: Bool
-        let requestID: String?
-
-        enum CodingKeys: String, CodingKey {
-            case code
-            case retryable
-            case requestID = "request_id"
-        }
     }
 
     let error: Body

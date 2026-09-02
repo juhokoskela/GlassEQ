@@ -61,6 +61,16 @@ struct TrustedTimeTests {
         #expect(state.lastPersistedTrustedTime == 42)
         #expect(!state.hasUnpersistedAdvance)
     }
+
+    @Test
+    func extremePersistedTimesDoNotOverflow() {
+        var state = TrustedTimeState(persistedTrustedTime: .max, wallClock: 0, now: .zero)
+
+        #expect(state.effectiveTime(wallClock: 0, now: .seconds(Int64.max)) == .max)
+        #expect(!state.needsPersistence)
+        state.advance(to: .max)
+        #expect(!state.needsPersistence)
+    }
 }
 
 @Suite
@@ -72,12 +82,13 @@ struct ActivationStateTests {
             entitlement: "a.b.c",
             highestAcceptedRevision: 9,
             highestTrustedTime: 1_234,
+            wallClockAtLastVerification: 1_190,
             clockAnomalyDetectedAt: 1_200,
             serverDeniedAt: 1_230
         )
 
         let data = try LicenseRecordCodec.encode(state)
-        #expect(try LicenseRecordCodec.decode(ActivationState.self, from: data) == state)
+        #expect(try LicenseRecordCodec.decodeActivationState(from: data) == state)
     }
 
     @Test
@@ -86,10 +97,26 @@ struct ActivationStateTests {
         let corrupt = Data("{\"activationToken\":1}".utf8)
 
         #expect(throws: LicenseCredentialStoreError.corruptRecord) {
-            try LicenseRecordCodec.decode(ActivationState.self, from: oversized)
+            try LicenseRecordCodec.decodeActivationState(from: oversized)
         }
         #expect(throws: LicenseCredentialStoreError.corruptRecord) {
-            try LicenseRecordCodec.decode(ActivationState.self, from: corrupt)
+            try LicenseRecordCodec.decodeActivationState(from: corrupt)
+        }
+    }
+
+    @Test
+    func rejectsSemanticallyInvalidRecords() throws {
+        let invalid = ActivationState(
+            activationToken: "gea_token",
+            entitlement: "a.b.c",
+            highestAcceptedRevision: 0,
+            highestTrustedTime: .max
+        )
+
+        #expect(throws: LicenseCredentialStoreError.corruptRecord) {
+            try LicenseRecordCodec.decodeActivationState(
+                from: LicenseRecordCodec.encode(invalid)
+            )
         }
     }
 }

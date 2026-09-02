@@ -17,6 +17,7 @@ struct TrustedTimeState: Equatable, Sendable {
     private(set) var anchor: Anchor
 
     init(persistedTrustedTime: Int64?, wallClock: Int64, now: Duration) {
+        let wallClock = max(wallClock, 0)
         let floor = max(wallClock, persistedTrustedTime ?? wallClock)
         highestTrustedTime = floor
         lastPersistedTrustedTime = persistedTrustedTime ?? floor
@@ -25,15 +26,18 @@ struct TrustedTimeState: Equatable, Sendable {
 
     func effectiveTime(wallClock: Int64, now: Duration) -> Int64 {
         let elapsed = max((now - anchor.at).components.seconds, 0)
-        return max(wallClock, highestTrustedTime, anchor.issuedAt + elapsed)
+        let anchored = anchor.issuedAt.addingReportingOverflow(elapsed)
+        return max(wallClock, highestTrustedTime, anchored.overflow ? .max : anchored.partialValue)
     }
 
     func detectsRollback(wallClock: Int64) -> Bool {
-        wallClock < highestTrustedTime - Self.rollbackToleranceSeconds
+        let threshold = highestTrustedTime.subtractingReportingOverflow(Self.rollbackToleranceSeconds)
+        return wallClock < (threshold.overflow ? .min : threshold.partialValue)
     }
 
     var needsPersistence: Bool {
-        highestTrustedTime - lastPersistedTrustedTime >= Self.persistenceIntervalSeconds
+        guard highestTrustedTime >= lastPersistedTrustedTime else { return false }
+        return highestTrustedTime - lastPersistedTrustedTime >= Self.persistenceIntervalSeconds
     }
 
     var hasUnpersistedAdvance: Bool {
@@ -47,6 +51,12 @@ struct TrustedTimeState: Equatable, Sendable {
     mutating func anchor(issuedAt: Int64, at now: Duration) {
         anchor = Anchor(issuedAt: issuedAt, at: now)
         advance(to: issuedAt)
+    }
+
+    mutating func rebase(issuedAt: Int64, wallClock: Int64, at now: Duration) {
+        let floor = max(issuedAt, wallClock, 0)
+        highestTrustedTime = floor
+        anchor = Anchor(issuedAt: floor, at: now)
     }
 
     mutating func markPersisted() {

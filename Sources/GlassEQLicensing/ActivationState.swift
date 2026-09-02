@@ -17,6 +17,10 @@ public struct ActivationState: Codable, Equatable, Sendable {
     public var entitlement: String
     public var highestAcceptedRevision: Int64
     public var highestTrustedTime: Int64
+    /// The wall clock observed when the service last returned a verified entitlement. Persisting
+    /// this baseline prevents the same standing clock offset from looking like a new rollback on
+    /// every launch.
+    public var wallClockAtLastVerification: Int64?
     public var clockAnomalyDetectedAt: Int64?
     /// Set when the service answered a refresh with `license_not_eligible`. The cached entitlement
     /// may still carry a later `exp` than the server's shortened window, so the denial has to
@@ -35,6 +39,7 @@ public struct ActivationState: Codable, Equatable, Sendable {
         entitlement: String,
         highestAcceptedRevision: Int64,
         highestTrustedTime: Int64,
+        wallClockAtLastVerification: Int64? = nil,
         clockAnomalyDetectedAt: Int64? = nil,
         serverDeniedAt: Int64? = nil,
         serviceRevokedAt: Int64? = nil,
@@ -44,28 +49,57 @@ public struct ActivationState: Codable, Equatable, Sendable {
         self.entitlement = entitlement
         self.highestAcceptedRevision = highestAcceptedRevision
         self.highestTrustedTime = highestTrustedTime
+        self.wallClockAtLastVerification = wallClockAtLastVerification
         self.clockAnomalyDetectedAt = clockAnomalyDetectedAt
         self.serverDeniedAt = serverDeniedAt
         self.serviceRevokedAt = serviceRevokedAt
         self.deactivationRequestedAt = deactivationRequestedAt
     }
+
+    func validate() throws(LicenseCredentialStoreError) {
+        guard !activationToken.isEmpty,
+              activationToken.utf8.count <= 256,
+              !entitlement.isEmpty,
+              entitlement.utf8.count <= EntitlementVerifier.maximumTokenBytes,
+              highestAcceptedRevision > 0,
+              highestTrustedTime >= 0,
+              [
+                  wallClockAtLastVerification,
+                  clockAnomalyDetectedAt,
+                  serverDeniedAt,
+                  serviceRevokedAt,
+                  deactivationRequestedAt
+              ].allSatisfy({ $0.map { $0 >= 0 } ?? true }) else {
+            throw .corruptRecord
+        }
+    }
 }
 
 enum LicenseRecordCodec {
-    static func encode<Value: Encodable>(_ value: Value) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(value)
+    static func encode<Value: Encodable>(_ value: Value) throws(LicenseCredentialStoreError) -> Data {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try encoder.encode(value)
+        } catch {
+            throw .corruptRecord
+        }
     }
 
-    static func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws -> Value {
+    static func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws(LicenseCredentialStoreError) -> Value {
         guard data.count <= ActivationState.maximumEncodedBytes else {
-            throw LicenseCredentialStoreError.corruptRecord
+            throw .corruptRecord
         }
         do {
             return try JSONDecoder().decode(type, from: data)
         } catch {
-            throw LicenseCredentialStoreError.corruptRecord
+            throw .corruptRecord
         }
+    }
+
+    static func decodeActivationState(from data: Data) throws(LicenseCredentialStoreError) -> ActivationState {
+        let state = try decode(ActivationState.self, from: data)
+        try state.validate()
+        return state
     }
 }

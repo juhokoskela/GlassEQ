@@ -10,11 +10,11 @@ public enum LicenseCredentialStoreError: Error, Equatable, Sendable {
 }
 
 public protocol LicenseCredentialStore: Sendable {
-    func loadInstallationIdentity() throws -> InstallationIdentity?
-    func saveInstallationIdentity(_ identity: InstallationIdentity) throws
-    func loadActivationState() throws -> ActivationState?
-    func saveActivationState(_ state: ActivationState) throws
-    func clearActivationState() throws
+    func loadInstallationIdentity() throws(LicenseCredentialStoreError) -> InstallationIdentity?
+    func saveInstallationIdentity(_ identity: InstallationIdentity) throws(LicenseCredentialStoreError)
+    func loadActivationState() throws(LicenseCredentialStoreError) -> ActivationState?
+    func saveActivationState(_ state: ActivationState) throws(LicenseCredentialStoreError)
+    func clearActivationState() throws(LicenseCredentialStoreError)
 }
 
 /// Two device-only, non-synchronizable generic-password items. The Settings helper never receives
@@ -29,29 +29,30 @@ public struct KeychainCredentialStore: LicenseCredentialStore {
 
     public init() {}
 
-    public func loadInstallationIdentity() throws -> InstallationIdentity? {
+    public func loadInstallationIdentity() throws(LicenseCredentialStoreError) -> InstallationIdentity? {
         guard let data = try loadData(account: .installationIdentity) else {
             return nil
         }
         return try LicenseRecordCodec.decode(InstallationIdentity.self, from: data)
     }
 
-    public func saveInstallationIdentity(_ identity: InstallationIdentity) throws {
+    public func saveInstallationIdentity(_ identity: InstallationIdentity) throws(LicenseCredentialStoreError) {
         try saveData(try LicenseRecordCodec.encode(identity), account: .installationIdentity)
     }
 
-    public func loadActivationState() throws -> ActivationState? {
+    public func loadActivationState() throws(LicenseCredentialStoreError) -> ActivationState? {
         guard let data = try loadData(account: .activationState) else {
             return nil
         }
-        return try LicenseRecordCodec.decode(ActivationState.self, from: data)
+        return try LicenseRecordCodec.decodeActivationState(from: data)
     }
 
-    public func saveActivationState(_ state: ActivationState) throws {
+    public func saveActivationState(_ state: ActivationState) throws(LicenseCredentialStoreError) {
+        try state.validate()
         try saveData(try LicenseRecordCodec.encode(state), account: .activationState)
     }
 
-    public func clearActivationState() throws {
+    public func clearActivationState() throws(LicenseCredentialStoreError) {
         let status = SecItemDelete(baseQuery(account: .activationState) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw LicenseCredentialStoreError.keychain(status)
@@ -66,7 +67,7 @@ public struct KeychainCredentialStore: LicenseCredentialStore {
         ]
     }
 
-    private func loadData(account: Account) throws -> Data? {
+    private func loadData(account: Account) throws(LicenseCredentialStoreError) -> Data? {
         var query = baseQuery(account: account)
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
@@ -85,7 +86,7 @@ public struct KeychainCredentialStore: LicenseCredentialStore {
         }
     }
 
-    private func saveData(_ data: Data, account: Account) throws {
+    private func saveData(_ data: Data, account: Account) throws(LicenseCredentialStoreError) {
         let query = baseQuery(account: account)
         let update: [CFString: Any] = [kSecValueData: data]
         var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)

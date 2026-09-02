@@ -129,8 +129,6 @@ struct LicenseServiceClientTests {
 
         await #expect(throws: LicenseServiceError.service(
             code: expected,
-            retryable: retryable,
-            requestID: "req_01",
             retryAfterSeconds: nil
         )) {
             try await LicenseServiceClient(session: session).refresh(
@@ -152,9 +150,28 @@ struct LicenseServiceClientTests {
 
         await #expect(throws: LicenseServiceError.service(
             code: .rateLimited,
-            retryable: true,
-            requestID: nil,
             retryAfterSeconds: expected
+        )) {
+            try await LicenseServiceClient(session: session).refresh(
+                activationToken: "gea_secret",
+                installationID: installationID
+            )
+        }
+    }
+
+    @Test
+    func retryAfterLookupIsCaseInsensitive() async throws {
+        let session = LicenseTestURLProtocol.makeSession()
+        defer { LicenseTestURLProtocol.reset() }
+        LicenseTestURLProtocol.enqueue(.init(
+            status: 503,
+            headers: ["retry-after": "120", "content-type": "application/json"],
+            body: Data(#"{"error":{"code":"temporarily_unavailable","message":"","retryable":true}}"#.utf8)
+        ))
+
+        await #expect(throws: LicenseServiceError.service(
+            code: .temporarilyUnavailable,
+            retryAfterSeconds: 120
         )) {
             try await LicenseServiceClient(session: session).refresh(
                 activationToken: "gea_secret",
@@ -168,7 +185,7 @@ struct LicenseServiceClientTests {
         (.cannotConnectToHost, .transport(.offline)),
         (.dnsLookupFailed, .transport(.offline)),
         (.timedOut, .transport(.timedOut)),
-        (.cancelled, .cancelled),
+        (.cancelled, .transport(.other)),
         (.badServerResponse, .transport(.other))
     ])
     func transportFailuresAreClassified(code: URLError.Code, expected: LicenseServiceError) async throws {
