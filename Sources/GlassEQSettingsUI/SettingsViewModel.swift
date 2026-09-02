@@ -3,7 +3,7 @@ import GlassEQSettingsIPC
 import Observation
 
 @MainActor
-public protocol SettingsCommanding: AnyObject, Sendable {
+public protocol SettingsCommanding: AnyObject {
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse
 }
 
@@ -16,7 +16,7 @@ public final class GlassEQSettingsViewModel {
     public var commandErrorMessage: String?
 
     private var client: (any SettingsCommanding)?
-    private var fileImportCommandTasks: [UUID: Task<SettingsCommandResponse, Error>] = [:]
+    private var fileImportTask: Task<SettingsCommandResponse, Error>?
 
     public init(snapshot: SettingsSnapshotDTO = .disconnected, client: (any SettingsCommanding)? = nil) {
         self.snapshot = snapshot
@@ -96,33 +96,63 @@ public final class GlassEQSettingsViewModel {
     }
 
     public func cancelPendingFileImportPickers() async {
-        let tasks = Array(fileImportCommandTasks.values)
-        tasks.forEach { $0.cancel() }
-        for task in tasks {
-            _ = try? await task.value
+        guard let fileImportTask else {
+            return
         }
+        fileImportTask.cancel()
+        _ = try? await fileImportTask.value
     }
 
     @discardableResult
     public func perform(_ command: SettingsCommand) async -> SettingsCommandResponse? {
-        guard let client else {
-            switch command {
-            case .startMetricsPolling, .stopMetricsPolling:
-                return nil
-            default:
-                break
-            }
-            commandErrorMessage = "Settings is not connected to GlassEQ."
-            return nil
+        if case .chooseImportFiles(let mode) = command {
+            return await chooseImportFiles(mode: mode)
         }
+        guard let client else {
+            return reportDisconnected(for: command)
+        }
+        return await complete {
+            try await client.perform(command)
+        }
+    }
 
-        do {
-            let response: SettingsCommandResponse
-            if case .chooseImportFiles = command {
-                response = try await performFileImportCommand(command, using: client)
-            } else {
-                response = try await client.perform(command)
+    // The picker blocks in the main app until the user dismisses it, so it is tracked separately
+    // to let shutdown cancel it. Only one picker can be outstanding at a time.
+    public func chooseImportFiles(mode: SettingsFileImportMode) async -> SettingsCommandResponse? {
+        guard let client else {
+            return reportDisconnected(for: .chooseImportFiles(mode: mode))
+        }
+        let task = Task { @MainActor in
+            try await client.perform(.chooseImportFiles(mode: mode))
+        }
+        fileImportTask = task
+        defer {
+            fileImportTask = nil
+        }
+        return await complete {
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
             }
+        }
+    }
+
+    private func reportDisconnected(for command: SettingsCommand) -> SettingsCommandResponse? {
+        switch command {
+        case .startMetricsPolling, .stopMetricsPolling:
+            break
+        default:
+            commandErrorMessage = "Settings is not connected to GlassEQ."
+        }
+        return nil
+    }
+
+    private func complete(
+        _ operation: () async throws -> SettingsCommandResponse
+    ) async -> SettingsCommandResponse? {
+        do {
+            let response = try await operation()
             if let snapshot = response.snapshot {
                 accept(snapshot: snapshot)
             }
@@ -134,27 +164,6 @@ public final class GlassEQSettingsViewModel {
         } catch {
             commandErrorMessage = error.localizedDescription
             return nil
-        }
-    }
-
-    private func performFileImportCommand(
-        _ command: SettingsCommand,
-        using client: any SettingsCommanding
-    ) async throws -> SettingsCommandResponse {
-        let commandID = UUID()
-        let task = Task { @MainActor in
-            try await client.perform(command)
-        }
-        fileImportCommandTasks[commandID] = task
-        defer {
-            fileImportCommandTasks[commandID] = nil
-        }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: { [weak self] in
-            Task { @MainActor in
-                self?.fileImportCommandTasks[commandID]?.cancel()
-            }
         }
     }
 }

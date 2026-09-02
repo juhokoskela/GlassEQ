@@ -265,13 +265,13 @@ struct SettingsIPCTests {
         snapshot.activeProfileID = previewProfile.id
         snapshot.isPreviewing = true
 
-        #expect(!settingsCanDeleteSelectedProfile(snapshot))
+        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
 
         snapshot.isPreviewing = false
-        #expect(settingsCanDeleteSelectedProfile(snapshot))
+        #expect(settingsCanDeleteProfile(snapshot, id: returnProfile.id))
 
         snapshot.programmeComparison.isActive = true
-        #expect(!settingsCanDeleteSelectedProfile(snapshot))
+        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
     }
 
     @Test
@@ -345,29 +345,58 @@ struct SettingsIPCTests {
     }
 
     @Test
+    @MainActor
     func delayedSnapshotPreservesNewerLocalDraftAndSelection() {
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
         let second = EQProfile(name: "Second", mode: .parametric, filters: [])
         var editedSecond = second
         editedSecond.preampDB = -3.25
-        var current = SettingsSnapshotDTO.disconnected
-        current.profiles = [first, second]
-        current.selectedProfileID = second.id
-        current.draftProfile = editedSecond
-        var latest = current
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [first, second]
+        initial.selectedProfileID = second.id
+        initial.draftProfile = second
+        let model = GlassEQSettingsViewModel(snapshot: initial)
+        let controller = SettingsController(model: model)
+        controller.draftProfile = editedSecond
+        var latest = initial
         latest.selectedProfileID = first.id
         latest.draftProfile = first
         latest.statusMessage = "Command completed"
 
-        let merged = settingsSnapshotPreservingLocalDraft(current: current, latest: latest)
+        model.accept(snapshot: latest)
+        controller.reconcileWithSnapshot()
 
-        #expect(merged.selectedProfileID == second.id)
-        #expect(merged.draftProfile == editedSecond)
-        #expect(merged.statusMessage == "Command completed")
+        #expect(controller.selectedProfileID == second.id)
+        #expect(controller.draftProfile == editedSecond)
+        #expect(controller.hasUnsavedDraft)
+        #expect(controller.snapshot.statusMessage == "Command completed")
     }
 
     @Test
-    func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() {
+    @MainActor
+    func delayedSnapshotRefreshesAnUneditedDraftFromTheStore() {
+        let profile = EQProfile(name: "Profile", mode: .parametric, filters: [])
+        var renamed = profile
+        renamed.name = "Renamed"
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let model = GlassEQSettingsViewModel(snapshot: initial)
+        let controller = SettingsController(model: model)
+        var latest = initial
+        latest.profiles = [renamed]
+
+        model.accept(snapshot: latest)
+        controller.reconcileWithSnapshot()
+
+        #expect(controller.draftProfile == renamed)
+        #expect(!controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
+    func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() async {
         let original = EQProfile(name: "Original", mode: .parametric, filters: [])
         let duplicate = EQProfile(name: "Duplicate", mode: .parametric, filters: [])
         var dispatched = SettingsSnapshotDTO.disconnected
@@ -378,40 +407,40 @@ struct SettingsIPCTests {
         latest.profiles = [original, duplicate]
         latest.selectedProfileID = duplicate.id
         latest.draftProfile = duplicate
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: latest))
+        let model = GlassEQSettingsViewModel(snapshot: dispatched, client: client)
+        let controller = SettingsController(model: model)
 
-        let merged = settingsSnapshotAfterCommand(
-            current: dispatched,
-            dispatched: dispatched,
-            latest: latest
-        )
+        await controller.dispatch(.duplicateProfile(original.id))
 
-        #expect(merged.selectedProfileID == duplicate.id)
-        #expect(merged.draftProfile == duplicate)
+        #expect(controller.selectedProfileID == duplicate.id)
+        #expect(controller.draftProfile == duplicate)
+        #expect(!controller.hasUnsavedDraft)
     }
 
     @Test
-    func commandSnapshotPreservesEditsMadeWhileCommandWasPending() {
+    @MainActor
+    func commandSnapshotPreservesEditsMadeWhileCommandWasPending() async {
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
         let second = EQProfile(name: "Second", mode: .parametric, filters: [])
         var dispatched = SettingsSnapshotDTO.disconnected
         dispatched.profiles = [first, second]
         dispatched.selectedProfileID = first.id
         dispatched.draftProfile = first
-        var current = dispatched
-        current.selectedProfileID = second.id
-        current.draftProfile = second
         var latest = dispatched
         latest.statusMessage = "Command completed"
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: latest))
+        let model = GlassEQSettingsViewModel(snapshot: dispatched, client: client)
+        let controller = SettingsController(model: model)
+        client.onPerform = {
+            controller.selectProfile(second.id)
+        }
 
-        let merged = settingsSnapshotAfterCommand(
-            current: current,
-            dispatched: dispatched,
-            latest: latest
-        )
+        await controller.dispatch(.applyProfile(first))
 
-        #expect(merged.selectedProfileID == second.id)
-        #expect(merged.draftProfile == second)
-        #expect(merged.statusMessage == "Command completed")
+        #expect(controller.selectedProfileID == second.id)
+        #expect(controller.draftProfile == second)
+        #expect(controller.snapshot.statusMessage == "Command completed")
     }
 
     @Test
@@ -1603,6 +1632,21 @@ private final class FakeSettingsPipeClientFactory: SettingsPipeClientMaking {
 private final class CancellingSettingsCommandClient: SettingsCommanding {
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
         throw CancellationError()
+    }
+}
+
+@MainActor
+private final class ScriptedSettingsCommandClient: SettingsCommanding {
+    let response: SettingsCommandResponse
+    var onPerform: () -> Void = {}
+
+    init(response: SettingsCommandResponse) {
+        self.response = response
+    }
+
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        onPerform()
+        return response
     }
 }
 
