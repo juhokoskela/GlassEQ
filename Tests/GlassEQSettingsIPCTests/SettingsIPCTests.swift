@@ -250,6 +250,83 @@ struct SettingsIPCTests {
     }
 
     @Test
+    @MainActor
+    func snapshotlessCommandPreservesUnsavedDraft() async {
+        let profile = EQProfile(name: "Profile", mode: .parametric, filters: [])
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse())
+        let model = GlassEQSettingsViewModel(snapshot: initial, client: client)
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4.5
+
+        let response = await controller.dispatch(.showSetupGuide)
+
+        #expect(response?.snapshot == nil)
+        #expect(controller.draftProfile.preampDB == -4.5)
+        #expect(controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
+    func failedCommandPreservesUnsavedDraft() async {
+        let profile = EQProfile(name: "Profile", mode: .parametric, filters: [])
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let model = GlassEQSettingsViewModel(
+            snapshot: initial,
+            client: FailingSettingsCommandClient()
+        )
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4.5
+
+        let response = await controller.dispatch(.applyProfile(controller.draftProfile))
+
+        #expect(response == nil)
+        #expect(controller.draftProfile.preampDB == -4.5)
+        #expect(controller.hasUnsavedDraft)
+        #expect(model.commandErrorMessage == "Command failed")
+    }
+
+    @Test
+    @MainActor
+    func metricsDoNotAdvanceProfileSnapshotRevision() {
+        let model = GlassEQSettingsViewModel()
+        let initialRevision = model.profileSnapshotRevision
+        var metrics = SettingsAudioMetricsDTO()
+        metrics.capturedFrames = 42
+
+        model.accept(metrics: metrics)
+        model.accept(patch: SettingsSnapshotPatchDTO(isRunning: true))
+
+        #expect(model.snapshot.metrics.capturedFrames == 42)
+        #expect(model.profileSnapshotRevision == initialRevision)
+
+        model.accept(snapshot: model.snapshot)
+
+        #expect(model.profileSnapshotRevision == initialRevision + 1)
+    }
+
+    @Test
+    @MainActor
+    func overlappingFilePickerIsIgnoredWithoutMaskingCancellation() async {
+        let client = ReentrantCancellingSettingsCommandClient()
+        let model = GlassEQSettingsViewModel(client: client)
+        client.model = model
+
+        let response = await model.chooseImportFiles(mode: .single)
+
+        #expect(response == nil)
+        #expect(client.callCount == 1)
+        #expect(client.reentrantResponse == nil)
+        #expect(model.commandErrorMessage == nil)
+    }
+
+    @Test
     func sliderQuantizationDoesNotIntroduceDisplayNoise() {
         let locale = Locale(identifier: "en_US_POSIX")
 
@@ -1222,30 +1299,13 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
-    func settingsLaunchConnectsWhenModelAttachesBeforeArgumentsAreParsed() async {
+    func settingsLaunchConnectsAfterArgumentsAreParsed() async {
         let factory = FakeSettingsPipeClientFactory()
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
         let model = GlassEQSettingsViewModel()
+        let coordinator = SettingsLaunchCoordinator(model: model, clientFactory: factory)
 
-        coordinator.attach(model: model)
         #expect(model.commandErrorMessage == nil)
         coordinator.finishLaunching(arguments: launchArguments())
-        await coordinator.waitForConnectionTask()
-
-        #expect(model.isConnected)
-        #expect(model.commandErrorMessage == nil)
-        #expect(factory.launchInfos.map(\.mainProcessIdentifier) == [123])
-    }
-
-    @Test
-    @MainActor
-    func settingsLaunchConnectsWhenArgumentsAreParsedBeforeModelAttaches() async {
-        let factory = FakeSettingsPipeClientFactory()
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
-        let model = GlassEQSettingsViewModel()
-
-        coordinator.finishLaunching(arguments: launchArguments())
-        coordinator.attach(model: model)
         await coordinator.waitForConnectionTask()
 
         #expect(model.isConnected)
@@ -1257,10 +1317,9 @@ struct SettingsIPCTests {
     @MainActor
     func settingsLaunchWithoutGlassEQArgumentsShowsDirectLaunchWarning() {
         let factory = FakeSettingsPipeClientFactory()
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
         let model = GlassEQSettingsViewModel()
+        let coordinator = SettingsLaunchCoordinator(model: model, clientFactory: factory)
 
-        coordinator.attach(model: model)
         coordinator.finishLaunching(arguments: ["GlassEQSettings"])
 
         #expect(!model.isConnected)
@@ -1274,11 +1333,10 @@ struct SettingsIPCTests {
         let factory = FakeSettingsPipeClientFactory(
             makeError: SettingsCommandFailure(message: "Settings was launched by an unexpected host application.")
         )
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
         let model = GlassEQSettingsViewModel()
+        let coordinator = SettingsLaunchCoordinator(model: model, clientFactory: factory)
 
         coordinator.finishLaunching(arguments: launchArguments())
-        coordinator.attach(model: model)
         await coordinator.waitForConnectionTask()
 
         #expect(!model.isConnected)
@@ -1334,6 +1392,28 @@ private final class CancellingSettingsCommandClient: SettingsCommanding {
 }
 
 @MainActor
+private final class FailingSettingsCommandClient: SettingsCommanding {
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        throw SettingsCommandFailure(message: "Command failed")
+    }
+}
+
+@MainActor
+private final class ReentrantCancellingSettingsCommandClient: SettingsCommanding {
+    weak var model: GlassEQSettingsViewModel?
+    private(set) var callCount = 0
+    private(set) var reentrantResponse: SettingsCommandResponse?
+
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        callCount += 1
+        if callCount == 1 {
+            reentrantResponse = await model?.chooseImportFiles(mode: .stereoPair)
+        }
+        throw CancellationError()
+    }
+}
+
+@MainActor
 private final class ScriptedSettingsCommandClient: SettingsCommanding {
     let response: SettingsCommandResponse
     var onPerform: () -> Void = {}
@@ -1350,7 +1430,6 @@ private final class ScriptedSettingsCommandClient: SettingsCommanding {
 
 @MainActor
 private final class FakeSettingsPipeClient: SettingsPipeClientConnection, @unchecked Sendable {
-    let token: String? = "fake-token"
     private let snapshot: SettingsSnapshotDTO
     private let connectError: (any Error)?
     private(set) var didDisconnect = false

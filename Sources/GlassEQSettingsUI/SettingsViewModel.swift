@@ -11,7 +11,7 @@ public protocol SettingsCommanding: AnyObject {
 @Observable
 public final class GlassEQSettingsViewModel {
     public private(set) var snapshot: SettingsSnapshotDTO
-    public private(set) var snapshotVersion = 0
+    public private(set) var profileSnapshotRevision = 0
     public private(set) var isConnected = false
     public var commandErrorMessage: String?
 
@@ -32,7 +32,7 @@ public final class GlassEQSettingsViewModel {
 
     public func accept(snapshot: SettingsSnapshotDTO) {
         self.snapshot = snapshot
-        snapshotVersion += 1
+        profileSnapshotRevision += 1
     }
 
     public func accept(patch: SettingsSnapshotPatchDTO) {
@@ -87,12 +87,10 @@ public final class GlassEQSettingsViewModel {
         case nil:
             break
         }
-        snapshotVersion += 1
     }
 
     public func accept(metrics: SettingsAudioMetricsDTO) {
         snapshot.metrics = metrics
-        snapshotVersion += 1
     }
 
     public func cancelPendingFileImportPickers() async {
@@ -121,6 +119,9 @@ public final class GlassEQSettingsViewModel {
     public func chooseImportFiles(mode: SettingsFileImportMode) async -> SettingsCommandResponse? {
         guard let client else {
             return reportDisconnected(for: .chooseImportFiles(mode: mode))
+        }
+        guard fileImportTask == nil else {
+            return nil
         }
         let task = Task { @MainActor in
             try await client.perform(.chooseImportFiles(mode: mode))

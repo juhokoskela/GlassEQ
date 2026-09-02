@@ -345,6 +345,9 @@ final class SettingsController {
         let dispatchedSelection = selectedProfileID
         let dispatchedDraft = draftProfile
         let response = await model.perform(command)
+        guard response?.snapshot != nil else {
+            return response
+        }
         reconcileAfterCommand(
             dispatchedSelection: dispatchedSelection,
             dispatchedDraft: dispatchedDraft

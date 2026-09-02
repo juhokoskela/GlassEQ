@@ -1,13 +1,8 @@
-import AppKit
 import GlassEQCore
 import SwiftUI
 
 struct ApplyBar: View {
     @Bindable var controller: SettingsController
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showsAppliedConfirmation = false
-    @State private var appliedConfirmationTask: Task<Void, Never>?
 
     var body: some View {
         let hasUnsavedDraft = controller.hasUnsavedDraft
@@ -53,24 +48,11 @@ struct ApplyBar: View {
             Divider()
 
             HStack {
-                Group {
-                    if hasUnsavedDraft {
-                        Text(localized("Unsaved changes"))
-                            .foregroundStyle(.secondary)
-                    } else if showsAppliedConfirmation {
-                        Label(localized("Applied"), systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(Color(nsColor: .systemGreen))
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    } else {
-                        Text(localized("All changes saved"))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .font(.caption.weight(.medium))
-                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: showsAppliedConfirmation)
-                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: hasUnsavedDraft)
-                .accessibilityLabel(Text(localized("Profile edit state")))
-                .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+                Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
+                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.medium))
+                    .accessibilityLabel(Text(localized("Profile edit state")))
+                    .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
                 Spacer()
                 Button(localized("Revert")) {
                     controller.revertDraft()
@@ -80,7 +62,6 @@ struct ApplyBar: View {
 
                 Button(localized("Apply")) {
                     controller.applyDraft()
-                    flashAppliedConfirmation()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(isReadOnly || !hasUnsavedDraft || programmeComparison.isActive)
@@ -100,18 +81,6 @@ struct ApplyBar: View {
                 .buttonStyle(ToolbarButtonStyle())
                 .accessibilityHint(Text(hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
             }
-        }
-    }
-
-    private func flashAppliedConfirmation() {
-        appliedConfirmationTask?.cancel()
-        showsAppliedConfirmation = true
-        appliedConfirmationTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else {
-                return
-            }
-            showsAppliedConfirmation = false
         }
     }
 

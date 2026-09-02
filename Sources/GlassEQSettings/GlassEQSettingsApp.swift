@@ -28,12 +28,14 @@ struct GlassEQSettingsApp: App {
 
 @MainActor
 final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
-    let model = GlassEQSettingsViewModel()
-    private let launchCoordinator = SettingsLaunchCoordinator()
+    let model: GlassEQSettingsViewModel
+    private let launchCoordinator: SettingsLaunchCoordinator
 
     override init() {
+        let model = GlassEQSettingsViewModel()
+        self.model = model
+        launchCoordinator = SettingsLaunchCoordinator(model: model)
         super.init()
-        launchCoordinator.attach(model: model)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -71,8 +73,6 @@ final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 protocol SettingsPipeClientConnection: SettingsCommanding {
-    var token: String? { get }
-
     func connect() async throws -> SettingsSnapshotDTO
     func acknowledgeReady() async throws
     func disconnect()
@@ -98,28 +98,35 @@ struct LiveSettingsPipeClientFactory: SettingsPipeClientMaking {
 
 @MainActor
 final class SettingsLaunchCoordinator {
-    private weak var model: GlassEQSettingsViewModel?
+    private let model: GlassEQSettingsViewModel
     private var client: (any SettingsPipeClientConnection)?
-    private var pendingLaunchInfo: SettingsLaunchInfo?
-    private var connectedToken: String?
     private var connectedMainProcessIdentifier: pid_t?
-    private var didFinishLaunching = false
     private var connectionTask: Task<Void, Never>?
     private let clientFactory: any SettingsPipeClientMaking
 
-    init(clientFactory: any SettingsPipeClientMaking = LiveSettingsPipeClientFactory()) {
+    init(
+        model: GlassEQSettingsViewModel,
+        clientFactory: any SettingsPipeClientMaking = LiveSettingsPipeClientFactory()
+    ) {
+        self.model = model
         self.clientFactory = clientFactory
     }
 
     func finishLaunching(arguments: [String]) {
-        didFinishLaunching = true
-        pendingLaunchInfo = SettingsLaunchInfo(commandLineArguments: arguments)
-        connectIfReady()
-    }
-
-    func attach(model: GlassEQSettingsViewModel) {
-        self.model = model
-        connectIfReady()
+        guard let launchInfo = SettingsLaunchInfo(commandLineArguments: arguments) else {
+            guard !model.isConnected else {
+                return
+            }
+            model.commandErrorMessage = localized("Settings was not launched by GlassEQ.")
+            return
+        }
+        guard launchInfo.mainProcessIdentifier != connectedMainProcessIdentifier else {
+            return
+        }
+        connectionTask?.cancel()
+        connectionTask = Task { @MainActor [weak self] in
+            await self?.connect(launchInfo: launchInfo)
+        }
     }
 
     func disconnect() {
@@ -127,7 +134,6 @@ final class SettingsLaunchCoordinator {
         connectionTask = nil
         client?.disconnect()
         client = nil
-        connectedToken = nil
         connectedMainProcessIdentifier = nil
     }
 
@@ -135,36 +141,7 @@ final class SettingsLaunchCoordinator {
         await connectionTask?.value
     }
 
-    private func connectIfReady() {
-        guard let model else {
-            return
-        }
-        guard didFinishLaunching else {
-            return
-        }
-        guard let pendingLaunchInfo else {
-            guard !model.isConnected else {
-                return
-            }
-            model.commandErrorMessage = localized("Settings was not launched by GlassEQ.")
-            return
-        }
-        guard pendingLaunchInfo.mainProcessIdentifier != connectedMainProcessIdentifier else {
-            return
-        }
-
-        self.pendingLaunchInfo = nil
-        connectionTask?.cancel()
-        connectionTask = Task { @MainActor [weak self, weak model] in
-            guard let self,
-                  let model else {
-                return
-            }
-            await self.connect(launchInfo: pendingLaunchInfo, model: model)
-        }
-    }
-
-    private func connect(launchInfo: SettingsLaunchInfo, model: GlassEQSettingsViewModel) async {
+    private func connect(launchInfo: SettingsLaunchInfo) async {
         do {
             guard launchInfo.mainProcessIdentifier != connectedMainProcessIdentifier else {
                 return
@@ -176,7 +153,6 @@ final class SettingsLaunchCoordinator {
                 return
             }
             self.client = client
-            connectedToken = client.token
             connectedMainProcessIdentifier = launchInfo.mainProcessIdentifier
             model.attach(client: client, snapshot: snapshot)
             try await client.acknowledgeReady()

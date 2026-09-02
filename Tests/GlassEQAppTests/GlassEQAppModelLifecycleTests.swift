@@ -5214,12 +5214,12 @@ struct GlassEQAppModelLifecycleTests {
     func inProcessSettingsFallbackPerformsCommandsAndTracksModelChanges() async throws {
         let model = makeModel()
         let settingsModel = model.inProcessSettingsViewModel()
-        let snapshotVersion = settingsModel.snapshotVersion
+        let profileSnapshotRevision = settingsModel.profileSnapshotRevision
 
         #expect(settingsModel.isConnected)
         #expect(settingsModel.snapshot == model.settingsSnapshot())
         #expect(model.inProcessSettingsViewModel() === settingsModel)
-        #expect(settingsModel.snapshotVersion == snapshotVersion)
+        #expect(settingsModel.profileSnapshotRevision == profileSnapshotRevision)
 
         let response = await settingsModel.perform(.createProfile(.parametric))
         #expect(response?.snapshot?.profiles.count == 2)

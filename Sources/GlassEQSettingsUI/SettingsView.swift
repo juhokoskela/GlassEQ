@@ -3,11 +3,9 @@ import GlassEQSettingsIPC
 import SwiftUI
 
 public struct SettingsView: View {
-    let model: GlassEQSettingsViewModel
     @State private var controller: SettingsController
 
     public init(model: GlassEQSettingsViewModel) {
-        self.model = model
         _controller = State(initialValue: SettingsController(model: model))
     }
 
@@ -56,7 +54,7 @@ public struct SettingsView: View {
         // beneath the traffic lights, matching System Settings.
         .ignoresSafeArea(.container, edges: .top)
         .overlay(alignment: .bottom) {
-            if let message = model.commandErrorMessage {
+            if let message = controller.model.commandErrorMessage {
                 Text(message)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.macOSSystemRed)
@@ -66,7 +64,7 @@ public struct SettingsView: View {
                     .padding()
             }
         }
-        .onChange(of: model.snapshotVersion) {
+        .onChange(of: controller.model.profileSnapshotRevision) {
             controller.reconcileWithSnapshot()
         }
         .onAppear {
