@@ -1,17 +1,35 @@
 import Foundation
 
-public enum LicensingError: Error, Equatable, Sendable {
+public enum LicensingError: Error, Equatable, LocalizedError, Sendable {
     case operationInProgress
+    case activationAlreadyExists
     case storage(LicenseCredentialStoreError)
     case service(LicenseServiceError)
     case entitlement(EntitlementVerificationError)
+
+    public var errorDescription: String? {
+        switch self {
+        case .operationInProgress:
+            "Another licensing operation is already in progress."
+        case .activationAlreadyExists:
+            "Deactivate the current license before activating another one."
+        case .storage:
+            "The license could not be read from or saved to Keychain."
+        case .service:
+            "The licensing service could not complete the request."
+        case .entitlement(.issuedInFuture):
+            "Check this Mac's date and time, then try activating again."
+        case .entitlement:
+            "The licensing service returned an invalid entitlement."
+        }
+    }
 }
 
 /// The single owner of licensing state in the main app. It loads and persists the Keychain
 /// records, verifies the cached entitlement, tracks trusted time, refreshes on the signed
 /// schedule, and publishes immutable snapshots. It never touches audio.
 public actor LicensingController {
-    public static let defaultRetryBackoff: [Duration] = [
+    private static let retryBackoff: [Duration] = [
         .seconds(60), .seconds(5 * 60), .seconds(15 * 60), .seconds(60 * 60)
     ]
 
@@ -34,18 +52,32 @@ public actor LicensingController {
         var failures = 0
         var deadline: Duration?
 
-        mutating func recordFailure(now: Duration, backoff: [Duration], atLeast minimum: Duration? = nil) {
+        mutating func recordFailure(
+            now: Duration,
+            jitterMultiplier: Double,
+            atLeast minimum: Duration? = nil
+        ) {
             failures += 1
-            var delay = backoff[min(failures, backoff.count) - 1]
+            let base = LicensingController.retryBackoff[
+                min(failures, LicensingController.retryBackoff.count) - 1
+            ]
+            var delay = Duration.seconds(max(
+                Int64((Double(base.components.seconds) * jitterMultiplier).rounded()),
+                1
+            ))
             if let minimum {
                 delay = max(delay, minimum)
             }
             deadline = now + delay
         }
 
-        mutating func holdAtCap(now: Duration, backoff: [Duration]) {
-            failures = backoff.count
-            deadline = now + backoff[backoff.count - 1]
+        mutating func holdAtCap(now: Duration, jitterMultiplier: Double) {
+            failures = LicensingController.retryBackoff.count
+            let seconds = Double(
+                LicensingController.retryBackoff[LicensingController.retryBackoff.count - 1]
+                    .components.seconds
+            )
+            deadline = now + .seconds(max(Int64((seconds * jitterMultiplier).rounded()), 1))
         }
 
         mutating func reset() {
@@ -64,7 +96,7 @@ public actor LicensingController {
     private let verifier: EntitlementVerifier
     private let wallClock: @Sendable () -> Int64
     private let clock: any LicensingClock
-    private let retryBackoff: [Duration]
+    private let retryJitterMultiplier: Double
 
     private var identity: InstallationIdentity?
     private var activation = LoadedActivation.notLoaded
@@ -77,15 +109,14 @@ public actor LicensingController {
     private var storageRetry = RetryState()
     private var lastRefreshFailure: LicenseRefreshFailure?
     private var refreshRetry = RetryState()
-    private var immediateRefreshRequested = false
-    /// The wall clock at the last authenticated refresh. After that point a rollback is only a
-    /// further move of the wall clock, not its standing distance from the trusted floor.
-    private var wallClockAtLastVerification: Int64?
+    private var verifiedEntitlement: VerifiedEntitlement?
 
     private var operationGeneration: UInt64 = 0
     private var exclusiveOperationInProgress = false
     private var inFlightRefresh: Task<Void, Never>?
     private var scheduler: Task<Void, Never>?
+    private var schedulerGeneration: UInt64 = 0
+    private var isShutdown = false
     private var handler: (@Sendable (LicenseSnapshot) -> Void)?
     private var lastPublished: LicenseSnapshot?
 
@@ -94,22 +125,38 @@ public actor LicensingController {
         service: any LicenseServicing,
         verifier: EntitlementVerifier,
         wallClock: @escaping @Sendable () -> Int64 = { Int64(Date().timeIntervalSince1970) },
-        clock: any LicensingClock = ContinuousLicensingClock(),
-        retryBackoff: [Duration] = LicensingController.defaultRetryBackoff
+        clock: any LicensingClock = ContinuousLicensingClock()
     ) {
-        precondition(!retryBackoff.isEmpty, "Retry backoff needs at least one interval")
+        self.init(
+            store: store,
+            service: service,
+            verifier: verifier,
+            wallClock: wallClock,
+            clock: clock,
+            retryJitterMultiplier: Double.random(in: 0.8 ... 1.2)
+        )
+    }
+
+    init(
+        store: any LicenseCredentialStore,
+        service: any LicenseServicing,
+        verifier: EntitlementVerifier,
+        wallClock: @escaping @Sendable () -> Int64,
+        clock: any LicensingClock,
+        retryJitterMultiplier: Double
+    ) {
+        precondition((0.8 ... 1.2).contains(retryJitterMultiplier))
         self.store = store
         self.service = service
         self.verifier = verifier
         self.wallClock = wallClock
         self.clock = clock
-        self.retryBackoff = retryBackoff
+        self.retryJitterMultiplier = retryJitterMultiplier
         trustedTime = TrustedTimeState(persistedTrustedTime: nil, wallClock: wallClock(), now: clock.now())
     }
 
     deinit {
         scheduler?.cancel()
-        inFlightRefresh?.cancel()
     }
 
     // MARK: Public surface
@@ -119,26 +166,30 @@ public actor LicensingController {
     public func subscribe(
         _ handler: @escaping @Sendable (LicenseSnapshot) -> Void
     ) -> LicenseSnapshot {
+        let snapshot = currentSnapshot()
         self.handler = handler
-        return currentSnapshot()
+        return snapshot
     }
 
     public func currentSnapshot() -> LicenseSnapshot {
         loadIfNeeded()
         let evaluation = evaluate()
-        if lastPublished == nil {
-            lastPublished = LicenseSnapshot(sequence: 1, content: evaluation.content)
-        } else {
-            publish(evaluation.content)
-        }
+        let snapshot = publish(evaluation.content)
         reschedule(evaluation)
-        return lastPublished ?? LicenseSnapshot(sequence: 1, content: evaluation.content)
+        return snapshot
     }
 
     public func activate(licenseKey: String) async throws {
         try beginExclusiveOperation()
         defer { endExclusiveOperation() }
         try loadForMutation()
+        guard case .state = activation else {
+            return try await activateNewLicense(licenseKey: licenseKey)
+        }
+        throw LicensingError.activationAlreadyExists
+    }
+
+    private func activateNewLicense(licenseKey: String) async throws {
         let identity = try ensureIdentity()
         let idempotencyKey = UUID()
 
@@ -149,12 +200,8 @@ public actor LicensingController {
                 installationID: identity.installationID,
                 idempotencyKey: idempotencyKey
             )
-        } catch let error as LicenseServiceError {
+        } catch let error {
             throw LicensingError.service(error)
-        } catch is CancellationError {
-            throw LicensingError.service(.cancelled)
-        } catch {
-            throw LicensingError.service(.transport(.other))
         }
 
         // A replacement license starts its own trusted-time floor. The server's authenticated
@@ -170,6 +217,7 @@ public actor LicensingController {
                 effectiveTime: fresh.effectiveTime(wallClock: wallClock(), now: now)
             )
         } catch let error as EntitlementVerificationError {
+            await releaseUnusableActivation(response.activationToken)
             throw LicensingError.entitlement(error)
         }
         fresh.anchor(issuedAt: verified.claims.issuedAt, at: now)
@@ -178,23 +226,28 @@ public actor LicensingController {
             activationToken: response.activationToken,
             entitlement: response.entitlement,
             highestAcceptedRevision: verified.claims.revision,
-            highestTrustedTime: fresh.highestTrustedTime
+            highestTrustedTime: fresh.highestTrustedTime,
+            wallClockAtLastVerification: wallClock()
         )
         do {
             try store.saveActivationState(state)
-        } catch let error as LicenseCredentialStoreError {
+        } catch let error {
+            await releaseUnusableActivation(response.activationToken)
             throw LicensingError.storage(error)
         }
         fresh.markPersisted()
         trustedTime = fresh
-        wallClockAtLastVerification = wallClock()
         activation = .state(state)
+        verifiedEntitlement = verified
         storageFailure = nil
         persistencePending = false
         clearPending = false
         storageRetry.reset()
         resetRefreshFailures()
-        publishAndReschedule()
+    }
+
+    private func releaseUnusableActivation(_ token: String) async {
+        try? await service.deactivateCurrent(activationToken: token)
     }
 
     /// Releases this installation's server registration and its local authority. The record is
@@ -211,7 +264,7 @@ public actor LicensingController {
             state.deactivationRequestedAt = wallClock()
             do {
                 try store.saveActivationState(state)
-            } catch let error as LicenseCredentialStoreError {
+            } catch let error {
                 throw LicensingError.storage(error)
             }
             activation = .state(state)
@@ -224,12 +277,14 @@ public actor LicensingController {
 
     /// Performs one refresh, coalescing onto an in-flight one.
     public func refreshNow() async {
+        loadIfNeeded()
         if let inFlightRefresh {
             await inFlightRefresh.value
             return
         }
         let task = Task { await self.performRefresh() }
         inFlightRefresh = task
+        publishAndReschedule()
         await task.value
     }
 
@@ -240,6 +295,8 @@ public actor LicensingController {
     }
 
     public func shutdown() {
+        isShutdown = true
+        schedulerGeneration &+= 1
         scheduler?.cancel()
         scheduler = nil
         inFlightRefresh?.cancel()
@@ -247,14 +304,16 @@ public actor LicensingController {
 
     // MARK: Loading and persistence
 
-    private func loadIfNeeded() {
+    @discardableResult
+    private func loadIfNeeded() -> LicenseCredentialStoreError? {
         guard activation == .notLoaded else {
-            return
+            return nil
         }
         do {
             identity = try store.loadInstallationIdentity()
             if let state = try store.loadActivationState() {
                 activation = .state(state)
+                verifiedEntitlement = nil
                 trustedTime = TrustedTimeState(
                     persistedTrustedTime: state.highestTrustedTime,
                     wallClock: wallClock(),
@@ -262,23 +321,30 @@ public actor LicensingController {
                 )
             } else {
                 activation = .none
+                verifiedEntitlement = nil
             }
             storageFailure = nil
             storageRetry.reset()
+            return nil
         } catch LicenseCredentialStoreError.corruptRecord {
             activation = .corrupt
+            verifiedEntitlement = nil
             storageFailure = nil
             storageRetry.reset()
-        } catch {
+            return nil
+        } catch let error {
             recordStorageFailure(error)
+            return error
         }
     }
 
     /// Mutating operations must know the stored state before they change it.
     private func loadForMutation() throws {
-        loadIfNeeded()
-        if activation == .notLoaded {
-            throw LicensingError.storage(storageFailure ?? .keychain(errSecInternalError))
+        if let error = loadIfNeeded() {
+            throw LicensingError.storage(error)
+        }
+        if activation == .corrupt {
+            throw LicensingError.storage(.corruptRecord)
         }
     }
 
@@ -289,7 +355,7 @@ public actor LicensingController {
         let identity = InstallationIdentity(installationID: UUID())
         do {
             try store.saveInstallationIdentity(identity)
-        } catch let error as LicenseCredentialStoreError {
+        } catch let error {
             throw LicensingError.storage(error)
         }
         self.identity = identity
@@ -306,7 +372,7 @@ public actor LicensingController {
             storageFailure = nil
             persistencePending = false
             storageRetry.reset()
-        } catch {
+        } catch let error {
             persistencePending = true
             recordStorageFailure(error)
         }
@@ -316,8 +382,8 @@ public actor LicensingController {
     /// never brings the authority back.
     private func clearActivation() {
         activation = .none
+        verifiedEntitlement = nil
         trustedTime = TrustedTimeState(persistedTrustedTime: nil, wallClock: wallClock(), now: clock.now())
-        wallClockAtLastVerification = nil
         persistencePending = false
         resetRefreshFailures()
         do {
@@ -325,15 +391,18 @@ public actor LicensingController {
             storageFailure = nil
             clearPending = false
             storageRetry.reset()
-        } catch {
+        } catch let error {
             clearPending = true
             recordStorageFailure(error)
         }
     }
 
-    private func recordStorageFailure(_ error: any Error) {
-        storageFailure = (error as? LicenseCredentialStoreError) ?? .keychain(errSecInternalError)
-        storageRetry.recordFailure(now: clock.now(), backoff: retryBackoff)
+    private func recordStorageFailure(_ error: LicenseCredentialStoreError) {
+        storageFailure = error
+        storageRetry.recordFailure(
+            now: clock.now(),
+            jitterMultiplier: retryJitterMultiplier
+        )
     }
 
     private func persistTrustedTime(force: Bool) {
@@ -360,7 +429,7 @@ public actor LicensingController {
            state.deactivationRequestedAt == nil,
            state.clockAnomalyDetectedAt == nil {
             state.clockAnomalyDetectedAt = trustedTime.highestTrustedTime
-            immediateRefreshRequested = true
+            refreshRetry.reset()
             persist(state)
         }
         let effective = trustedTime.effectiveTime(wallClock: wall, now: clock.now())
@@ -369,8 +438,12 @@ public actor LicensingController {
     }
 
     private func detectsRollback(wallClock wall: Int64) -> Bool {
-        if let wallClockAtLastVerification {
-            return wall < wallClockAtLastVerification - TrustedTimeState.rollbackToleranceSeconds
+        if case let .state(state) = activation,
+           let baseline = state.wallClockAtLastVerification {
+            let threshold = baseline.subtractingReportingOverflow(
+                TrustedTimeState.rollbackToleranceSeconds
+            )
+            return wall < (threshold.overflow ? .min : threshold.partialValue)
         }
         return trustedTime.detectsRollback(wallClock: wall)
     }
@@ -406,17 +479,27 @@ public actor LicensingController {
             claims: nil,
             effectiveTime: effectiveTime
         )
-        guard let identity,
-              let verified = try? verifier.verify(
-                  state.entitlement,
-                  installationID: identity.installationID,
-                  highestAcceptedRevision: state.highestAcceptedRevision,
-                  effectiveTime: effectiveTime
-              ) else {
+        guard let identity else {
             return invalid
         }
+        let verified: VerifiedEntitlement
+        if let cached = verifiedEntitlement,
+           cached.compactJWS == state.entitlement,
+           cached.claims.revision == state.highestAcceptedRevision {
+            verified = cached
+        } else {
+            guard let fresh = try? verifier.verify(
+                state.entitlement,
+                installationID: identity.installationID,
+                highestAcceptedRevision: state.highestAcceptedRevision,
+                effectiveTime: effectiveTime
+            ) else {
+                return invalid
+            }
+            verifiedEntitlement = fresh
+            verified = fresh
+        }
         let claims = verified.claims
-        let evaluation = verified.evaluate(atUnixTime: effectiveTime)
         let refreshFailure = state.serviceRevokedAt != nil
             ? LicenseRefreshFailure.rejected(.activationRevoked)
             : lastRefreshFailure
@@ -428,42 +511,25 @@ public actor LicensingController {
         case let .monthly(terms):
             if state.serverDeniedAt != nil {
                 licenseState = .monthlyExpired
+            } else if effectiveTime >= terms.expiresAt {
+                licenseState = .monthlyExpired
+            } else if effectiveTime >= terms.recoveryUntil {
+                licenseState = .monthlyGrace
             } else {
                 let unverified = state.clockAnomalyDetectedAt != nil
                     || (refreshFailure != nil && effectiveTime >= terms.refreshAfter)
-                switch evaluation.processingState {
-                case .active:
+                if effectiveTime < terms.billingPeriodEnd {
                     licenseState = unverified ? .verificationNeeded : .monthlyActive
-                case .paymentRecovery:
+                } else {
                     licenseState = unverified ? .verificationNeeded : .monthlyRecovery
-                case .grace:
-                    licenseState = .monthlyGrace
-                case .expired:
-                    licenseState = .monthlyExpired
-                case .perpetual:
-                    licenseState = .perpetual
                 }
             }
-        }
-
-        let updateAccess: EntitlementUpdateAccess
-        if state.serviceRevokedAt != nil {
-            updateAccess = .none
-        } else if licenseState == .monthlyExpired {
-            updateAccess = claims.securityUpdatesAfterExpiry ? .securityOnly : .none
-        } else {
-            updateAccess = evaluation.updateAccess
         }
 
         return Evaluation(
             content: LicenseSnapshotContent(
                 state: licenseState,
-                plan: claims.plan,
-                billingState: claims.monthlyTerms?.billingState,
-                billingPeriodEnd: claims.monthlyTerms?.billingPeriodEnd,
-                recoveryUntil: claims.monthlyTerms?.recoveryUntil,
-                expiresAt: claims.monthlyTerms?.expiresAt,
-                updateAccess: updateAccess,
+                terms: claims.monthlyTerms,
                 lastRefreshFailure: refreshFailure,
                 storageFailure: storageFailure
             ),
@@ -474,9 +540,10 @@ public actor LicensingController {
 
     // MARK: Publishing
 
-    private func publish(_ content: LicenseSnapshotContent) {
+    @discardableResult
+    private func publish(_ content: LicenseSnapshotContent) -> LicenseSnapshot {
         if let lastPublished, lastPublished.content == content {
-            return
+            return lastPublished
         }
         let snapshot = LicenseSnapshot(
             sequence: (lastPublished?.sequence ?? 0) + 1,
@@ -484,6 +551,7 @@ public actor LicensingController {
         )
         lastPublished = snapshot
         handler?(snapshot)
+        return snapshot
     }
 
     private func publishAndReschedule(_ evaluation: Evaluation? = nil) {
@@ -500,7 +568,7 @@ public actor LicensingController {
         licenseKey: String,
         installationID: UUID,
         idempotencyKey: UUID
-    ) async throws -> ActivationResponse {
+    ) async throws(LicenseServiceError) -> ActivationResponse {
         do {
             return try await service.activate(
                 licenseKey: licenseKey,
@@ -523,27 +591,22 @@ public actor LicensingController {
         let token = state.activationToken
         do {
             try await service.deactivateCurrent(activationToken: token)
-        } catch let error as LicenseServiceError {
+        } catch let error {
             switch error {
-            case .service(.invalidCredentials, _, _, _), .service(.activationRevoked, _, _, _):
+            case .service(.invalidCredentials, _), .service(.activationRevoked, _):
                 break
             case .cancelled:
                 throw LicensingError.service(error)
             default:
                 if generation == operationGeneration {
-                    refreshRetry.recordFailure(now: clock.now(), backoff: retryBackoff)
+                    refreshRetry.recordFailure(
+                        now: clock.now(),
+                        jitterMultiplier: retryJitterMultiplier
+                    )
                     publishAndReschedule()
                 }
                 throw LicensingError.service(error)
             }
-        } catch is CancellationError {
-            throw LicensingError.service(.cancelled)
-        } catch {
-            if generation == operationGeneration {
-                refreshRetry.recordFailure(now: clock.now(), backoff: retryBackoff)
-                publishAndReschedule()
-            }
-            throw LicensingError.service(.transport(.other))
         }
         guard generation == operationGeneration,
               case let .state(current) = activation,
@@ -560,7 +623,12 @@ public actor LicensingController {
     private func performRefresh() async {
         // Cleared here rather than in `refreshNow` so the marker drops in the same actor turn
         // that publishes the result; a caller can never join a refresh that already finished.
-        defer { inFlightRefresh = nil }
+        defer {
+            inFlightRefresh = nil
+            if !isShutdown {
+                publishAndReschedule()
+            }
+        }
         // Perpetual entitlements never refresh; there is no schedule to keep and nothing a
         // refresh could grant that the signed entitlement does not already carry.
         guard case let .state(state) = activation,
@@ -578,19 +646,12 @@ public actor LicensingController {
                 activationToken: token,
                 installationID: identity.installationID
             ))
-        } catch let error as LicenseServiceError {
+        } catch let error {
             result = .failure(error)
-        } catch is CancellationError {
-            result = .failure(.cancelled)
-        } catch {
-            result = .failure(.transport(.other))
         }
         // Anything that changed the activation while the request was in flight wins. The schedule
         // is still rebuilt so a failed exclusive operation cannot leave the controller idle.
-        guard generation == operationGeneration, case .state = activation else {
-            if case .state = activation {
-                publishAndReschedule()
-            }
+        guard generation == operationGeneration else {
             return
         }
         let now = clock.now()
@@ -598,7 +659,6 @@ public actor LicensingController {
         guard case var .state(current) = activation,
               current.activationToken == token,
               current.deactivationRequestedAt == nil else {
-            publishAndReschedule()
             return
         }
 
@@ -611,18 +671,27 @@ public actor LicensingController {
                     highestAcceptedRevision: current.highestAcceptedRevision,
                     effectiveTime: effectiveTime
                 )
-                trustedTime.anchor(issuedAt: verified.claims.issuedAt, at: now)
-                wallClockAtLastVerification = wallClock()
+                let verifiedWallClock = wallClock()
+                trustedTime.rebase(
+                    issuedAt: verified.claims.issuedAt,
+                    wallClock: verifiedWallClock,
+                    at: now
+                )
                 current.entitlement = jws
                 current.highestAcceptedRevision = verified.claims.revision
                 current.highestTrustedTime = trustedTime.highestTrustedTime
+                current.wallClockAtLastVerification = verifiedWallClock
                 current.clockAnomalyDetectedAt = nil
                 current.serverDeniedAt = nil
+                verifiedEntitlement = verified
                 resetRefreshFailures()
                 if let terms = verified.claims.monthlyTerms, terms.refreshAfter <= effectiveTime {
                     // The server handed back a schedule that is already due. Retry at the cap
                     // rather than immediately.
-                    refreshRetry.holdAtCap(now: now, backoff: retryBackoff)
+                    refreshRetry.holdAtCap(
+                        now: now,
+                        jitterMultiplier: retryJitterMultiplier
+                    )
                 }
                 persist(current)
             } catch let error as EntitlementVerificationError {
@@ -632,15 +701,17 @@ public actor LicensingController {
             }
         case .failure(.cancelled):
             return
-        case .failure(.service(.licenseNotEligible, _, _, _)):
+        case .failure(.service(.licenseNotEligible, _)):
             current.serverDeniedAt = effectiveTime
             current.highestTrustedTime = trustedTime.highestTrustedTime
             lastRefreshFailure = nil
-            immediateRefreshRequested = false
-            refreshRetry.holdAtCap(now: now, backoff: retryBackoff)
+            refreshRetry.holdAtCap(
+                now: now,
+                jitterMultiplier: retryJitterMultiplier
+            )
             persist(current)
-        case .failure(.service(.activationRevoked, _, _, _)),
-             .failure(.service(.invalidCredentials, _, _, _)):
+        case .failure(.service(.activationRevoked, _)),
+             .failure(.service(.invalidCredentials, _)):
             // Service access is gone, but the signed entitlement keeps its offline authority
             // until `exp`. No further refresh is possible with this token.
             current.serviceRevokedAt = effectiveTime
@@ -648,9 +719,11 @@ public actor LicensingController {
             current.clockAnomalyDetectedAt = nil
             resetRefreshFailures()
             persist(current)
-        case .failure(.service(.rateLimited, _, _, let retryAfterSeconds)):
+        case .failure(.service(.rateLimited, let retryAfterSeconds)):
             recordRefreshFailure(.rateLimited, retryAfterSeconds: retryAfterSeconds)
-        case .failure(.service(let code, _, _, let retryAfterSeconds)):
+        case .failure(.service(.temporarilyUnavailable, let retryAfterSeconds)):
+            recordRefreshFailure(.serviceUnavailable, retryAfterSeconds: retryAfterSeconds)
+        case .failure(.service(let code, let retryAfterSeconds)):
             recordRefreshFailure(.rejected(code), retryAfterSeconds: retryAfterSeconds)
         case .failure(.transport(.offline)):
             recordRefreshFailure(.offline, retryAfterSeconds: nil)
@@ -660,22 +733,19 @@ public actor LicensingController {
              .failure(.unexpectedStatus), .failure(.redirected), .failure(.invalidLicenseKey):
             recordRefreshFailure(.serviceUnavailable, retryAfterSeconds: nil)
         }
-        publishAndReschedule()
     }
 
     private func recordRefreshFailure(_ failure: LicenseRefreshFailure, retryAfterSeconds: Int?) {
         lastRefreshFailure = failure
-        immediateRefreshRequested = false
         refreshRetry.recordFailure(
             now: clock.now(),
-            backoff: retryBackoff,
+            jitterMultiplier: retryJitterMultiplier,
             atLeast: retryAfterSeconds.map { .seconds($0) }
         )
     }
 
     private func resetRefreshFailures() {
         lastRefreshFailure = nil
-        immediateRefreshRequested = false
         refreshRetry.reset()
     }
 
@@ -698,15 +768,14 @@ public actor LicensingController {
 
     private func refreshIsDue(_ evaluation: Evaluation, now: Duration) -> Bool {
         guard !exclusiveOperationInProgress,
+              inFlightRefresh == nil,
               case let .state(state) = activation,
               state.deactivationRequestedAt == nil,
               state.serviceRevokedAt == nil,
               let terms = evaluation.claims?.monthlyTerms else {
             return false
         }
-        if immediateRefreshRequested {
-            return true
-        }
+        if state.clockAnomalyDetectedAt != nil { return refreshRetry.isDue(now: now) }
         guard evaluation.effectiveTime >= terms.refreshAfter else {
             return false
         }
@@ -722,7 +791,9 @@ public actor LicensingController {
 
         func addProtocolTime(_ time: Int64) {
             guard time > evaluation.effectiveTime else { return }
-            candidates.append(now + .seconds(time - evaluation.effectiveTime))
+            let delta = time.subtractingReportingOverflow(evaluation.effectiveTime)
+            guard !delta.overflow else { return }
+            candidates.append(now + .seconds(delta.partialValue))
         }
 
         if activation == .notLoaded || persistencePending || clearPending {
@@ -732,7 +803,9 @@ public actor LicensingController {
             return candidates.min()
         }
         if state.deactivationRequestedAt != nil {
-            candidates.append(refreshRetry.deadline ?? now)
+            if !exclusiveOperationInProgress {
+                candidates.append(refreshRetry.deadline ?? now)
+            }
             return candidates.min()
         }
         guard let terms = evaluation.claims?.monthlyTerms else {
@@ -754,18 +827,25 @@ public actor LicensingController {
         if trustedTime.needsPersistence, !persistencePending {
             return now
         }
-        addProtocolTime(trustedTime.lastPersistedTrustedTime + TrustedTimeState.persistenceIntervalSeconds)
+        let persistenceTime = trustedTime.lastPersistedTrustedTime.addingReportingOverflow(
+            TrustedTimeState.persistenceIntervalSeconds
+        )
+        if !persistenceTime.overflow {
+            addProtocolTime(persistenceTime.partialValue)
+        }
         return candidates.min()
     }
 
     private func reschedule(_ evaluation: Evaluation) {
+        schedulerGeneration &+= 1
         scheduler?.cancel()
         scheduler = nil
-        guard let deadline = nextDeadline(evaluation) else {
+        guard !isShutdown, let deadline = nextDeadline(evaluation) else {
             return
         }
         let clock = clock
-        scheduler = Task.detached { [weak self] in
+        let generation = schedulerGeneration
+        scheduler = Task { [weak self] in
             do {
                 try await clock.sleep(until: deadline)
             } catch {
@@ -774,11 +854,14 @@ public actor LicensingController {
             guard !Task.isCancelled, let self else {
                 return
             }
-            await self.schedulerDidFire()
+            await self.schedulerDidFire(generation: generation)
         }
     }
 
-    private func schedulerDidFire() async {
+    private func schedulerDidFire(generation: UInt64) async {
+        guard generation == schedulerGeneration else {
+            return
+        }
         scheduler = nil
         loadIfNeeded()
         if clearPending, storageRetry.isDue(now: clock.now()) {
@@ -792,15 +875,18 @@ public actor LicensingController {
             }
             return
         }
-        _ = observeTime()
+        let evaluation = evaluate()
+        publish(evaluation.content)
         if storageRetry.isDue(now: clock.now()) {
             persistTrustedTime(force: false)
         }
-        let evaluation = evaluate()
         if refreshIsDue(evaluation, now: clock.now()) {
-            await refreshNow()
+            let refresh = Task { await self.performRefresh() }
+            inFlightRefresh = refresh
+            reschedule(evaluation)
+            await refresh.value
         } else {
-            publishAndReschedule(evaluation)
+            reschedule(evaluation)
         }
     }
 }

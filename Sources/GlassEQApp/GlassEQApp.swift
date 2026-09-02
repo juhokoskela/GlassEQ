@@ -1595,15 +1595,15 @@ final class GlassEQAppModel {
         switch content.state {
         case .monthlyRecovery:
             // Only an authenticated recovering state may say a payment failed.
-            if content.billingState == .recovering {
+            if content.terms?.billingState == .recovering {
                 return localized("Payment needs attention. Update your payment details to keep processing.")
             }
             return localized("Subscription renewal could not be verified yet")
         case .monthlyGrace:
-            guard let expiresAt = content.expiresAt else {
+            guard let terms = content.terms else {
                 return localized("Subscription ended. Processing stops soon.")
             }
-            let deadline = Date(timeIntervalSince1970: TimeInterval(expiresAt))
+            let deadline = Date(timeIntervalSince1970: TimeInterval(terms.expiresAt))
                 .formatted(date: .abbreviated, time: .shortened)
             return localized("Subscription ended. Processing stops on \(deadline).")
         case .verificationNeeded:

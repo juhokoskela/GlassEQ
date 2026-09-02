@@ -7431,19 +7431,23 @@ private func makeLicenseSnapshot(
     billingState: MonthlyBillingState? = nil,
     expiresAt: Int64? = nil
 ) -> LicenseSnapshot {
-    let plan: EntitlementPlan? = switch state {
-    case .perpetual: .perpetualV1
-    case .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded: .monthly
+    let terms: MonthlyTerms? = switch state {
+    case .perpetual: nil
+    case .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded:
+        MonthlyTerms(
+            billingState: billingState ?? .active,
+            billingPeriodEnd: 0,
+            recoveryUntil: 0,
+            refreshAfter: 0,
+            expiresAt: expiresAt ?? 0
+        )
     case .unlicensed, .invalidEntitlement, .storageUnavailable: nil
     }
     return LicenseSnapshot(
         sequence: sequence,
         content: LicenseSnapshotContent(
             state: state,
-            plan: plan,
-            billingState: billingState ?? (plan == .monthly ? .active : nil),
-            expiresAt: expiresAt,
-            updateAccess: plan == .perpetualV1 ? .v1 : (plan == .monthly ? .current : .none)
+            terms: terms
         )
     )
 }

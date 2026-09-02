@@ -1,95 +1,102 @@
 import Foundation
+import Synchronization
 @testable import GlassEQLicensing
 
-final class InMemoryCredentialStore: LicenseCredentialStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _identity: InstallationIdentity?
-    private var _activation: ActivationState?
-    private var _loadFailure: LicenseCredentialStoreError?
-    private var _saveFailure: LicenseCredentialStoreError?
-    private var _clearFailure: LicenseCredentialStoreError?
-    private var _corruptActivation = false
-    private var _saveActivationCount = 0
-    private var _clearCount = 0
+final class InMemoryCredentialStore: LicenseCredentialStore {
+    private struct State: Sendable {
+        var identity: InstallationIdentity?
+        var activation: ActivationState?
+        var loadFailure: LicenseCredentialStoreError?
+        var saveFailure: LicenseCredentialStoreError?
+        var clearFailure: LicenseCredentialStoreError?
+        var corruptActivation = false
+        var saveActivationCount = 0
+        var clearCount = 0
+    }
+
+    private let state: Mutex<State>
 
     init(identity: InstallationIdentity? = nil, activation: ActivationState? = nil) {
-        _identity = identity
-        _activation = activation
+        state = Mutex(State(identity: identity, activation: activation))
     }
 
     var identity: InstallationIdentity? {
-        get { lock.withLock { _identity } }
-        set { lock.withLock { _identity = newValue } }
+        get { state.withLock { $0.identity } }
+        set { state.withLock { $0.identity = newValue } }
     }
 
     var activation: ActivationState? {
-        get { lock.withLock { _activation } }
-        set { lock.withLock { _activation = newValue } }
+        get { state.withLock { $0.activation } }
+        set { state.withLock { $0.activation = newValue } }
     }
 
     var loadFailure: LicenseCredentialStoreError? {
-        get { lock.withLock { _loadFailure } }
-        set { lock.withLock { _loadFailure = newValue } }
+        get { state.withLock { $0.loadFailure } }
+        set { state.withLock { $0.loadFailure = newValue } }
     }
 
     var saveFailure: LicenseCredentialStoreError? {
-        get { lock.withLock { _saveFailure } }
-        set { lock.withLock { _saveFailure = newValue } }
+        get { state.withLock { $0.saveFailure } }
+        set { state.withLock { $0.saveFailure = newValue } }
     }
 
     var clearFailure: LicenseCredentialStoreError? {
-        get { lock.withLock { _clearFailure } }
-        set { lock.withLock { _clearFailure = newValue } }
+        get { state.withLock { $0.clearFailure } }
+        set { state.withLock { $0.clearFailure = newValue } }
     }
 
     var corruptActivation: Bool {
-        get { lock.withLock { _corruptActivation } }
-        set { lock.withLock { _corruptActivation = newValue } }
+        get { state.withLock { $0.corruptActivation } }
+        set { state.withLock { $0.corruptActivation = newValue } }
     }
 
-    var saveActivationCount: Int { lock.withLock { _saveActivationCount } }
-    var clearCount: Int { lock.withLock { _clearCount } }
+    var saveActivationCount: Int { state.withLock { $0.saveActivationCount } }
+    var clearCount: Int { state.withLock { $0.clearCount } }
 
-    func loadInstallationIdentity() throws -> InstallationIdentity? {
-        try lock.withLock {
-            if let failure = _loadFailure { throw failure }
-            return _identity
-        }
+    func loadInstallationIdentity() throws(LicenseCredentialStoreError) -> InstallationIdentity? {
+        let result = state.withLock { ($0.loadFailure, $0.identity) }
+        if let failure = result.0 { throw failure }
+        return result.1
     }
 
-    func saveInstallationIdentity(_ identity: InstallationIdentity) throws {
-        try lock.withLock {
-            if let failure = _saveFailure { throw failure }
-            _identity = identity
+    func saveInstallationIdentity(_ identity: InstallationIdentity) throws(LicenseCredentialStoreError) {
+        let failure = state.withLock { state -> LicenseCredentialStoreError? in
+            guard state.saveFailure == nil else { return state.saveFailure }
+            state.identity = identity
+            return nil
         }
+        if let failure { throw failure }
     }
 
-    func loadActivationState() throws -> ActivationState? {
-        try lock.withLock {
-            if let failure = _loadFailure { throw failure }
-            if _corruptActivation { throw LicenseCredentialStoreError.corruptRecord }
-            return _activation
-        }
+    func loadActivationState() throws(LicenseCredentialStoreError) -> ActivationState? {
+        let result = state.withLock { ($0.loadFailure, $0.corruptActivation, $0.activation) }
+        if let failure = result.0 { throw failure }
+        if result.1 { throw .corruptRecord }
+        return result.2
     }
 
-    func saveActivationState(_ state: ActivationState) throws {
-        try lock.withLock {
-            _saveActivationCount += 1
-            if let failure = _saveFailure { throw failure }
-            _activation = state
+    func saveActivationState(_ activation: ActivationState) throws(LicenseCredentialStoreError) {
+        let failure = state.withLock { state -> LicenseCredentialStoreError? in
+            state.saveActivationCount += 1
+            guard state.saveFailure == nil else { return state.saveFailure }
+            state.activation = activation
+            return nil
         }
+        if let failure { throw failure }
     }
 
-    func clearActivationState() throws {
-        try lock.withLock {
-            _clearCount += 1
-            if let failure = _clearFailure { throw failure }
-            _activation = nil
+    func clearActivationState() throws(LicenseCredentialStoreError) {
+        let failure = state.withLock { state -> LicenseCredentialStoreError? in
+            state.clearCount += 1
+            guard state.clearFailure == nil else { return state.clearFailure }
+            state.activation = nil
+            return nil
         }
+        if let failure { throw failure }
     }
 }
 
-final class ScriptedLicenseService: LicenseServicing, @unchecked Sendable {
+final class ScriptedLicenseService: LicenseServicing {
     enum Call: Equatable, Sendable {
         case activate(licenseKey: String, installationID: UUID, idempotencyKey: UUID)
         case refresh(activationToken: String, installationID: UUID)
@@ -100,65 +107,89 @@ final class ScriptedLicenseService: LicenseServicing, @unchecked Sendable {
     typealias RefreshHandler = @Sendable (String, UUID) async throws -> String
     typealias DeactivateHandler = @Sendable (String) async throws -> Void
 
-    private let lock = NSLock()
-    private var _calls: [Call] = []
-    private var _activate: ActivateHandler = { _, _, _ in throw LicenseServiceError.transport(.other) }
-    private var _refresh: RefreshHandler = { _, _ in throw LicenseServiceError.transport(.other) }
-    private var _deactivate: DeactivateHandler = { _ in throw LicenseServiceError.transport(.other) }
+    private struct State: Sendable {
+        var calls: [Call] = []
+        var activate: ActivateHandler = { _, _, _ in throw LicenseServiceError.transport(.other) }
+        var refresh: RefreshHandler = { _, _ in throw LicenseServiceError.transport(.other) }
+        var deactivate: DeactivateHandler = { _ in throw LicenseServiceError.transport(.other) }
+    }
 
-    var calls: [Call] { lock.withLock { _calls } }
+    private let state = Mutex(State())
+
+    var calls: [Call] { state.withLock { $0.calls } }
     var refreshCallCount: Int {
         calls.filter { if case .refresh = $0 { true } else { false } }.count
     }
 
     func onActivate(_ handler: @escaping ActivateHandler) {
-        lock.withLock { _activate = handler }
+        state.withLock { $0.activate = handler }
     }
 
     func onRefresh(_ handler: @escaping RefreshHandler) {
-        lock.withLock { _refresh = handler }
+        state.withLock { $0.refresh = handler }
     }
 
     func onDeactivate(_ handler: @escaping DeactivateHandler) {
-        lock.withLock { _deactivate = handler }
+        state.withLock { $0.deactivate = handler }
     }
 
-    func activate(licenseKey: String, installationID: UUID, idempotencyKey: UUID) async throws -> ActivationResponse {
-        let handler = lock.withLock {
-            _calls.append(.activate(licenseKey: licenseKey, installationID: installationID, idempotencyKey: idempotencyKey))
-            return _activate
+    func activate(licenseKey: String, installationID: UUID, idempotencyKey: UUID) async throws(LicenseServiceError) -> ActivationResponse {
+        let handler = state.withLock {
+            $0.calls.append(.activate(licenseKey: licenseKey, installationID: installationID, idempotencyKey: idempotencyKey))
+            return $0.activate
         }
-        return try await handler(licenseKey, installationID, idempotencyKey)
+        do {
+            return try await handler(licenseKey, installationID, idempotencyKey)
+        } catch let error as LicenseServiceError {
+            throw error
+        } catch {
+            throw .transport(.other)
+        }
     }
 
-    func refresh(activationToken: String, installationID: UUID) async throws -> String {
-        let handler = lock.withLock {
-            _calls.append(.refresh(activationToken: activationToken, installationID: installationID))
-            return _refresh
+    func refresh(activationToken: String, installationID: UUID) async throws(LicenseServiceError) -> String {
+        let handler = state.withLock {
+            $0.calls.append(.refresh(activationToken: activationToken, installationID: installationID))
+            return $0.refresh
         }
-        return try await handler(activationToken, installationID)
+        do {
+            return try await handler(activationToken, installationID)
+        } catch let error as LicenseServiceError {
+            throw error
+        } catch {
+            throw .transport(.other)
+        }
     }
 
-    func deactivateCurrent(activationToken: String) async throws {
-        let handler = lock.withLock {
-            _calls.append(.deactivate(activationToken: activationToken))
-            return _deactivate
+    func deactivateCurrent(activationToken: String) async throws(LicenseServiceError) {
+        let handler = state.withLock {
+            $0.calls.append(.deactivate(activationToken: activationToken))
+            return $0.deactivate
         }
-        try await handler(activationToken)
+        do {
+            try await handler(activationToken)
+        } catch let error as LicenseServiceError {
+            throw error
+        } catch {
+            throw .transport(.other)
+        }
     }
 }
 
 /// Suspends callers until opened. Used to hold a scripted request in flight.
-final class AsyncGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var isOpen = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+final class AsyncGate: Sendable {
+    private struct State: Sendable {
+        var isOpen = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = Mutex(State())
 
     func wait() async {
         await withCheckedContinuation { continuation in
-            let resumeNow = lock.withLock {
-                if isOpen { return true }
-                waiters.append(continuation)
+            let resumeNow = state.withLock {
+                if $0.isOpen { return true }
+                $0.waiters.append(continuation)
                 return false
             }
             if resumeNow {
@@ -168,10 +199,10 @@ final class AsyncGate: @unchecked Sendable {
     }
 
     func open() {
-        let waiters = lock.withLock {
-            isOpen = true
-            defer { self.waiters.removeAll() }
-            return self.waiters
+        let waiters = state.withLock { state in
+            state.isOpen = true
+            defer { state.waiters.removeAll() }
+            return state.waiters
         }
         for waiter in waiters {
             waiter.resume()
@@ -179,17 +210,16 @@ final class AsyncGate: @unchecked Sendable {
     }
 }
 
-final class TestWallClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _time: Int64
+final class TestWallClock: Sendable {
+    private let value: Mutex<Int64>
 
     init(_ time: Int64) {
-        _time = time
+        value = Mutex(time)
     }
 
     var time: Int64 {
-        get { lock.withLock { _time } }
-        set { lock.withLock { _time = newValue } }
+        get { value.withLock { $0 } }
+        set { value.withLock { $0 = newValue } }
     }
 
     var read: @Sendable () -> Int64 {
@@ -198,52 +228,68 @@ final class TestWallClock: @unchecked Sendable {
 }
 
 /// A manually advanced monotonic clock whose sleepers resume when their deadline is reached.
-final class TestLicensingClock: LicensingClock, @unchecked Sendable {
-    private struct Sleeper {
+final class TestLicensingClock: LicensingClock {
+    private enum Registration {
+        case waiting
+        case due
+        case cancelled
+    }
+
+    private struct Sleeper: Sendable {
         let deadline: Duration
         let continuation: CheckedContinuation<Void, any Error>
     }
 
-    private let lock = NSLock()
-    private var current: Duration = .zero
-    private var sleepers: [UUID: Sleeper] = [:]
-    private var cancelledBeforeRegistration: Set<UUID> = []
-    private var _requestedDeadlines: [Duration] = []
+    private struct State: Sendable {
+        var current: Duration = .zero
+        var sleepers: [UUID: Sleeper] = [:]
+        var cancelledBeforeRegistration: Set<UUID> = []
+        var requestedDeadlines: [Duration] = []
+    }
 
-    var requestedDeadlines: [Duration] { lock.withLock { _requestedDeadlines } }
-    var pendingDeadlines: [Duration] { lock.withLock { sleepers.values.map(\.deadline).sorted() } }
+    private let state = Mutex(State())
+
+    var requestedDeadlines: [Duration] { state.withLock { $0.requestedDeadlines } }
+    var pendingDeadlines: [Duration] { state.withLock { $0.sleepers.values.map(\.deadline).sorted() } }
 
     func now() -> Duration {
-        lock.withLock { current }
+        state.withLock { $0.current }
     }
 
     func sleep(until deadline: Duration) async throws {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                lock.lock()
-                _requestedDeadlines.append(deadline)
-                if cancelledBeforeRegistration.remove(id) != nil {
-                    lock.unlock()
-                    continuation.resume(throwing: CancellationError())
-                    return
+                let registration = state.withLock { state in
+                    state.requestedDeadlines.append(deadline)
+                    if state.cancelledBeforeRegistration.remove(id) != nil {
+                        return Registration.cancelled
+                    }
+                    if state.current >= deadline {
+                        return Registration.due
+                    }
+                    state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
+                    return Registration.waiting
                 }
-                if current >= deadline {
-                    lock.unlock()
+                switch registration {
+                case .waiting:
+                    break
+                case .due:
                     continuation.resume()
-                    return
+                case .cancelled:
+                    continuation.resume(throwing: CancellationError())
                 }
-                sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
-                lock.unlock()
             }
         } onCancel: {
-            lock.lock()
-            if let sleeper = sleepers.removeValue(forKey: id) {
-                lock.unlock()
+            let sleeper = state.withLock { state -> Sleeper? in
+                if let sleeper = state.sleepers.removeValue(forKey: id) {
+                    return sleeper
+                }
+                state.cancelledBeforeRegistration.insert(id)
+                return nil
+            }
+            if let sleeper {
                 sleeper.continuation.resume(throwing: CancellationError())
-            } else {
-                cancelledBeforeRegistration.insert(id)
-                lock.unlock()
             }
         }
     }
@@ -253,14 +299,15 @@ final class TestLicensingClock: LicensingClock, @unchecked Sendable {
     }
 
     func advance(to deadline: Duration) {
-        lock.lock()
-        current = max(current, deadline)
-        let due = sleepers.filter { $0.value.deadline <= current }
-        for key in due.keys {
-            sleepers.removeValue(forKey: key)
+        let due = state.withLock { state -> [Sleeper] in
+            state.current = max(state.current, deadline)
+            let due = state.sleepers.filter { $0.value.deadline <= state.current }
+            for key in due.keys {
+                state.sleepers.removeValue(forKey: key)
+            }
+            return due.values.sorted(by: { $0.deadline < $1.deadline })
         }
-        lock.unlock()
-        for sleeper in due.values.sorted(by: { $0.deadline < $1.deadline }) {
+        for sleeper in due {
             sleeper.continuation.resume()
         }
     }
@@ -288,14 +335,13 @@ final class TestLicensingClock: LicensingClock, @unchecked Sendable {
     }
 }
 
-final class SnapshotRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _snapshots: [LicenseSnapshot] = []
+final class SnapshotRecorder: Sendable {
+    private let storage = Mutex<[LicenseSnapshot]>([])
 
-    var snapshots: [LicenseSnapshot] { lock.withLock { _snapshots } }
+    var snapshots: [LicenseSnapshot] { storage.withLock { $0 } }
 
     var handler: @Sendable (LicenseSnapshot) -> Void {
-        { [self] snapshot in lock.withLock { _snapshots.append(snapshot) } }
+        { [self] snapshot in storage.withLock { $0.append(snapshot) } }
     }
 
     func waitForSnapshot(
@@ -341,8 +387,7 @@ struct ControllerHarness {
         fixture: EntitlementFixture,
         activation: ActivationState? = nil,
         identity: Bool = true,
-        wallTime: Int64? = nil,
-        retryBackoff: [Duration] = [.seconds(60), .seconds(300), .seconds(900)]
+        wallTime: Int64? = nil
     ) {
         self.fixture = fixture
         store = InMemoryCredentialStore(
@@ -356,7 +401,7 @@ struct ControllerHarness {
             verifier: fixture.verifier,
             wallClock: wall.read,
             clock: clock,
-            retryBackoff: retryBackoff
+            retryJitterMultiplier: 1
         )
     }
 

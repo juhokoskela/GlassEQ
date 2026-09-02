@@ -34,12 +34,7 @@ public enum LicenseRefreshFailure: Equatable, Sendable {
 
 public struct LicenseSnapshotContent: Equatable, Sendable {
     public let state: LicenseState
-    public let plan: EntitlementPlan?
-    public let billingState: MonthlyBillingState?
-    public let billingPeriodEnd: Int64?
-    public let recoveryUntil: Int64?
-    public let expiresAt: Int64?
-    public let updateAccess: EntitlementUpdateAccess
+    public let terms: MonthlyTerms?
     public let lastRefreshFailure: LicenseRefreshFailure?
     public let storageFailure: LicenseCredentialStoreError?
 
@@ -47,22 +42,12 @@ public struct LicenseSnapshotContent: Equatable, Sendable {
 
     public init(
         state: LicenseState,
-        plan: EntitlementPlan? = nil,
-        billingState: MonthlyBillingState? = nil,
-        billingPeriodEnd: Int64? = nil,
-        recoveryUntil: Int64? = nil,
-        expiresAt: Int64? = nil,
-        updateAccess: EntitlementUpdateAccess = .none,
+        terms: MonthlyTerms? = nil,
         lastRefreshFailure: LicenseRefreshFailure? = nil,
         storageFailure: LicenseCredentialStoreError? = nil
     ) {
         self.state = state
-        self.plan = plan
-        self.billingState = billingState
-        self.billingPeriodEnd = billingPeriodEnd
-        self.recoveryUntil = recoveryUntil
-        self.expiresAt = expiresAt
-        self.updateAccess = updateAccess
+        self.terms = terms
         self.lastRefreshFailure = lastRefreshFailure
         self.storageFailure = storageFailure
     }
