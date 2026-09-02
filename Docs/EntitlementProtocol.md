@@ -2,7 +2,7 @@
 
 This document defines the v1 protocol for licensing the official GlassEQ distribution. It covers server data, application credentials, signed offline entitlements, Stripe event processing, activation management, and update authorization.
 
-This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state and fades to identity before stopping on expiry, but only in builds that embed entitlement public keys; production keys have not been provisioned. The server, the management and recovery HTTP calls, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for the implemented client behavior.
+This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state and fades to identity before stopping on expiry, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe checkout and webhook processing, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
 
 ## Product invariants
 
@@ -61,7 +61,7 @@ The server checks every cryptographic random-generation result. The display form
 The main app stores two non-synchronizable, device-only Keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
 
 1. The installation identity, containing the installation ID.
-2. One atomically replaced activation-state value containing the activation token, compact entitlement, highest accepted revision, highest trusted server time, and any clock-anomaly state.
+2. One atomically replaced activation-state value containing the activation token, compact entitlement, highest accepted revision, highest trusted time, last authenticated wall-clock reading, and any clock-anomaly, denial, or deactivation state.
 
 The entitlement, replay state, and trusted time must not use separate persistence classes. Clearing the activation-state value removes every cached authority that depends on it. The Settings helper never receives the activation token or direct Keychain access.
 
@@ -79,7 +79,7 @@ The protected header contains exactly these fields:
 }
 ```
 
-The verifier rejects `crit`, unknown or duplicate header fields, an unknown key ID, another algorithm, another type, padded or malformed Base64URL, and a token larger than 8 KiB. It verifies the signature before decoding claims. It never follows `jku`, `x5u`, or another remotely supplied key reference.
+The verifier rejects `crit`, unknown header fields, an unknown key ID, another algorithm, another type, padded or malformed Base64URL, and a token larger than 8 KiB. It verifies the signature before decoding claims. The trusted Go issuer emits each JSON key once; the client uses `Decodable` with exact allowed-key sets rather than maintaining a second JSON parser. It never follows `jku`, `x5u`, or another remotely supplied key reference.
 
 ### Common claims
 
@@ -115,7 +115,7 @@ The verifier rejects `crit`, unknown or duplicate header fields, an unknown key 
 | `release_scope` | `v1` for perpetual v1, `current` for monthly |
 | `security_updates_after_expiry` | Whether an expired monthly installation may use the security feed |
 
-The client accepts `iat` up to five minutes ahead of its effective local time. It rejects a revision lower than the highest revision stored for the activation. Unknown schema versions, plans, release scopes, missing claims, duplicate claim keys, and inconsistent claim combinations fail closed.
+The client accepts `iat` up to five minutes ahead of its effective local time. A larger difference reports that the Mac's date and time may be slow. It rejects a revision lower than the highest revision stored for the activation. Unknown schema versions, plans, release scopes, missing claims, unknown claims, and inconsistent claim combinations fail closed.
 
 Perpetual entitlements set `security_updates_after_expiry` to false because they do not expire. Monthly entitlements set it according to the published security-update policy. This claim controls feed selection only. The download service always decides eligibility from current server state.
 
@@ -177,7 +177,7 @@ If the latest signed `billing_state` is `recovering`, the recovery message asks 
 
 A voluntary cancellation at period end sets `recovery_until` to `billing_period_end`. A monthly refund or chargeback sets `recovery_until` to the event's effective time. For those two states, the client ignores the later `billing_period_end` and enters grace at `recovery_until`. A higher-revision entitlement can shorten an earlier conservative window after the app reconnects. An offline app may keep the longer cached window.
 
-`refresh_after` is the only normal refresh schedule. The server sets it to the earlier of seven days after issuance and `exp`. At launch, the app starts a background refresh only when the timestamp has passed. A running app schedules the next check from the same timestamp. Failed checks use bounded retry backoff without changing `exp`.
+`refresh_after` is the only normal refresh schedule. The server sets it to the earlier of seven days after issuance and `exp`. At launch, the app starts a background refresh only when the timestamp has passed. A running app schedules the next check from the same timestamp. Failed checks use bounded exponential backoff with per-process jitter without changing `exp`.
 
 ### Clock changes
 
@@ -185,7 +185,7 @@ Clock checks apply only to monthly entitlements.
 
 The app permits up to six hours of backward wall-clock movement. A larger rollback requests an immediate background refresh. If the service is unavailable, GlassEQ keeps processing under the cached entitlement and displays verification messaging. A clock anomaly never causes immediate expiry.
 
-For the current process, advance trusted time with a monotonic clock anchored to the latest authenticated `iat`. Persist the advanced value at bounded license-state checkpoints and clean termination, never from the realtime path. While a monthly entitlement is held, the checkpoint runs at least hourly, so a long-running app never relies on clean termination alone. Across launches, use the greater of the current wall clock and the highest trusted time stored in Keychain. A successful refresh may replace an anomalous wall-clock anchor with authenticated server time; after that, only a further six-hour move of the wall clock counts as a new rollback, not its standing distance from the floor. The signed `exp`, evaluated against the trusted-time floor, remains the final cutoff.
+For the current process, advance trusted time with a monotonic clock anchored to the latest authenticated `iat`. Persist the advanced value at bounded license-state checkpoints and clean termination, never from the realtime path. While a monthly entitlement is held, the checkpoint runs at least hourly, so a long-running app never relies on clean termination alone. Across launches, use the greater of the current wall clock and the highest trusted time stored in Keychain. A successful authenticated refresh rebases the floor to the greater of its `iat` and the current wall clock. It also stores that wall-clock reading as the next rollback baseline, so a mistaken forward jump can heal and only a later six-hour backward move is anomalous. The signed `exp`, evaluated against the trusted-time floor, remains the final cutoff.
 
 This is modest replay resistance, not an attempt to defeat a customer who controls an open-source process.
 
@@ -358,7 +358,7 @@ The app localizes known codes instead of displaying server text directly. Suppor
 - `rate_limited`
 - `temporarily_unavailable`
 
-Rate-limited responses use status 429 and a bounded `Retry-After` header. Authentication errors do not reveal whether a license, email, activation, or token exists.
+Rate-limited responses use status 429 and a bounded `Retry-After` header. A 503 `temporarily_unavailable` response may also carry `Retry-After`, notably when a database lock is busy. Authentication errors do not reveal whether a license, email, activation, or token exists.
 
 ## Purchase and activation API
 
@@ -504,6 +504,7 @@ Deactivation releases the server registration and revokes its activation token. 
 
 ```http
 POST /v1/recovery-requests
+Idempotency-Key: 931ea290-c176-4d1e-ab5b-10c107e7d978
 Content-Type: application/json
 ```
 
@@ -527,6 +528,7 @@ Rate limits apply per normalized-email HMAC and per IP address. The email contai
 
 ```http
 POST /v1/recovery-sessions
+Idempotency-Key: 2b1bc1ba-407a-49f2-ad2e-a260a56bcf23
 Content-Type: application/json
 ```
 
@@ -650,7 +652,7 @@ Sparkle still verifies its EdDSA archive signature, and macOS still verifies the
 
 ## Application state and audio behavior
 
-One licensing owner coordinates Keychain state, refresh work, clock handling, and updater authorization. It publishes immutable snapshots to the main app. The main app includes bounded license DTOs in Settings IPC snapshots. Settings never performs license network requests itself.
+One licensing owner coordinates Keychain state, refresh work, and clock handling. It publishes immutable snapshots to the main app. Settings license DTOs and update authorization are not implemented yet; when added, Settings must not perform license network requests itself.
 
 The client-visible states are:
 
@@ -668,15 +670,15 @@ An invalid signature, wrong audience, wrong installation, unknown key, impossibl
 
 A `403 license_not_eligible` answer to a refresh is persisted in the activation-state record as a server denial. After a refund, the server's shortened grace window can end while the cached JWS still carries a later `exp`; the persisted denial keeps the installation in `monthlyExpired` across an offline relaunch. Only a successful refresh or a new activation clears it.
 
-A `403 activation_revoked` or `invalid_credentials` answer to a refresh means the activation token is gone, for example because the slot was released from another Mac. The client records that service access is revoked and stops refreshing, but it does not erase the signed entitlement: a monthly license keeps processing until its signed `exp`, and a perpetual license keeps processing indefinitely, exactly as the management API section promises. The snapshot reports the revoked credential so the UI can offer re-activation, and update access is withdrawn.
+A `403 activation_revoked` or `401 invalid_credentials` answer to a refresh means the activation token is gone, for example because the slot was released from another Mac. The server deliberately returns the same permanent `invalid_credentials` response when the request's installation ID does not match the token. The client therefore records either code as permanent service revocation and stops refreshing, but it does not erase the signed entitlement: a monthly license keeps processing until its signed `exp`, and a perpetual license keeps processing indefinitely, exactly as the management API section promises.
 
-Local deactivation writes a tombstone into the activation-state record before sending the request. From that point the installation is unlicensed even if the request or the Keychain deletion fails; the idempotent request and the deletion are retried on the bounded schedule, including after a relaunch.
+Local deactivation writes a tombstone into the activation-state record before sending the request. From that point the installation is unlicensed even if the request or the Keychain deletion fails; the idempotent request and the deletion are retried on the bounded schedule, including after a relaunch. Activation refuses to replace any existing record, including an unfinished tombstone, so the old server slot cannot become unreachable.
 
 Storage failures and network failures keep separate retry schedules. A recovered Keychain failure never escalates the next refresh retry, and a storage retry never suppresses an earlier `refresh_after`. An overdue trusted-time checkpoint is written immediately after launch rather than waiting for the next signed boundary.
 
-When monthly processing reaches `exp`, the main app requests the normal click-free transition to identity filters and unity preamp. It stops and destroys the tap only after that transition completes. If the app launches in an expired state, it never starts the tap. Profiles, mappings, imports, and calibration records remain available.
+When monthly processing reaches `exp`, the main app requests the normal click-free transition to identity filters and unity preamp. The publication returns an exact transition ID, and the app stops and destroys the tap only when the render thread reports that same ID complete. If the app launches in an expired state, it never starts the tap. Profiles, mappings, imports, and calibration records remain available.
 
-Renewal follows the ordinary startup path. It does not publish state from a network callback to the render thread.
+Renewal follows the ordinary startup path only when the user still wants processing enabled. An explicit user stop remains stopped across license loss and renewal. Licensing does not publish state from a network callback to the render thread.
 
 ## Key and secret management
 
@@ -693,7 +695,7 @@ Logs record opaque request IDs, result codes, and bounded timing. They never rec
 ### Entitlement parser
 
 - Valid perpetual and monthly tokens
-- Unknown, missing, duplicate, and inconsistent claims
+- Unknown, missing, and inconsistent claims
 - Unknown schema, plan, release scope, algorithm, key ID, and type
 - Any `crit` header
 - Invalid signature and modified header or payload
@@ -701,6 +703,7 @@ Logs record opaque request IDs, result codes, and bounded timing. They never rec
 - Five-minute future `iat` boundary
 - Revision rollback
 - Wrong installation, issuer, or audience
+- A fixed token emitted by the Go issuer and verified by the Swift client
 - Every exact second around `billing_period_end`, `recovery_until`, and `exp`
 
 ### Server
@@ -727,7 +730,7 @@ Logs record opaque request IDs, result codes, and bounded timing. They never rec
 - Six-hour clock boundary and larger rollback while offline
 - Long-running refresh scheduling from `refresh_after`
 - Expiry while audio is running, including a verified click-free return to dry playback
-- The DSP transition counters advancing on both audio backends so the identity fade completes before the tap stops
+- Both audio backends reporting completion for the exact identity-bank publication before the tap stops
 - Renewal after expiry
 - Sparkle download authorization to the exact archive origin
 - Token omission and update abortion for another host, port, path, or redirect
