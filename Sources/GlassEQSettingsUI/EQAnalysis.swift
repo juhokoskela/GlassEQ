@@ -325,39 +325,3 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         points.map(\.magnitudeDB).max() ?? 0
     }
 }
-
-// Interpolates a magnitude array so the response curve morphs between analyses.
-struct AnimatableMagnitudes: VectorArithmetic {
-    var values: [Double]
-
-    static var zero: AnimatableMagnitudes { AnimatableMagnitudes(values: []) }
-
-    var magnitudeSquared: Double {
-        values.reduce(0) { $0 + $1 * $1 }
-    }
-
-    mutating func scale(by rhs: Double) {
-        values = values.map { $0 * rhs }
-    }
-
-    static func + (lhs: Self, rhs: Self) -> Self {
-        combine(lhs, rhs, +)
-    }
-
-    static func - (lhs: Self, rhs: Self) -> Self {
-        combine(lhs, rhs, -)
-    }
-
-    // Point counts only differ when the usable bandwidth changes; pad the shorter side with the
-    // other's values so the transition stays a valid curve instead of collapsing.
-    private static func combine(_ lhs: Self, _ rhs: Self, _ operation: (Double, Double) -> Double) -> Self {
-        let count = max(lhs.values.count, rhs.values.count)
-        var values = [Double](repeating: 0, count: count)
-        for index in 0..<count {
-            let left = index < lhs.values.count ? lhs.values[index] : (rhs.values.indices.contains(index) ? rhs.values[index] : 0)
-            let right = index < rhs.values.count ? rhs.values[index] : (lhs.values.indices.contains(index) ? lhs.values[index] : 0)
-            values[index] = operation(left, right)
-        }
-        return AnimatableMagnitudes(values: values)
-    }
-}

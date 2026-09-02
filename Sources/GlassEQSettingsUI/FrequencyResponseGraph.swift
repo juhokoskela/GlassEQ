@@ -38,8 +38,6 @@ struct PlotScale {
 struct FrequencyResponseGraph: View {
     var analysis: EQAnalysisSnapshot
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     var body: some View {
         Canvas { context, size in
             let bounds = CGRect(origin: .zero, size: size)
@@ -66,11 +64,10 @@ struct FrequencyResponseGraph: View {
     private func curve(_ points: [FrequencyResponsePoint], color: Color) -> some View {
         ResponseCurveShape(
             frequencies: points.map(\.frequency),
-            magnitudes: AnimatableMagnitudes(values: points.map(\.magnitudeDB)),
+            magnitudes: points.map(\.magnitudeDB),
             maximumFrequency: analysis.maximumUsableFrequency
         )
         .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineJoin: .round))
-        .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: points)
     }
 
     private func drawGrid(context: GraphicsContext, scale: PlotScale) {
@@ -138,16 +135,11 @@ struct FrequencyResponseGraph: View {
 
 struct ResponseCurveShape: Shape {
     var frequencies: [Double]
-    var magnitudes: AnimatableMagnitudes
+    var magnitudes: [Double]
     var maximumFrequency: Double
 
-    var animatableData: AnimatableMagnitudes {
-        get { magnitudes }
-        set { magnitudes = newValue }
-    }
-
     func path(in rect: CGRect) -> Path {
-        let count = min(frequencies.count, magnitudes.values.count)
+        let count = min(frequencies.count, magnitudes.count)
         guard count > 1 else {
             return Path()
         }
@@ -155,7 +147,7 @@ struct ResponseCurveShape: Shape {
         let range = PlotScale.magnitudeRange
         var path = Path()
         for index in 0..<count {
-            let magnitude = min(max(magnitudes.values[index], range.lowerBound), range.upperBound)
+            let magnitude = min(max(magnitudes[index], range.lowerBound), range.upperBound)
             let position = CGPoint(
                 x: scale.x(for: frequencies[index]),
                 y: scale.y(for: magnitude)

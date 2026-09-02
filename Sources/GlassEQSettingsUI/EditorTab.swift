@@ -104,24 +104,42 @@ extension EQProfile {
         return attenuation
     }
 
-    // True when the profile would leave audio unchanged: unity preamp, zero-gain filters, and no
-    // impulse response or non-flat target curve.
+    // True when the active profile settings would leave audio unchanged.
     var isNeutral: Bool {
-        let preamps = [preampDB, leftPreampDB, rightPreampDB]
-        guard preamps.allSatisfy({ $0 == 0 }) else {
+        switch channelMode {
+        case .linked:
+            channelIsNeutral(.linked)
+        case .stereo:
+            channelIsNeutral(.left) && channelIsNeutral(.right)
+        }
+    }
+
+    private func channelIsNeutral(_ channel: EQProfileChannel) -> Bool {
+        let settings = self[channel: channel]
+        guard settings.preampDB == 0 else {
             return false
         }
-        guard (filters + leftFilters + rightFilters).allSatisfy({ !$0.isEnabled || $0.gainDB == 0 }) else {
-            return false
-        }
-        return [convolution, leftConvolution, rightConvolution].allSatisfy { source in
-            switch source {
+        switch mode {
+        case .parametric, .graphic10, .graphic31:
+            return settings.filters.allSatisfy { filter in
+                guard filter.isEnabled else {
+                    return true
+                }
+                switch filter.kind {
+                case .peak, .lowShelf, .highShelf:
+                    return filter.gainDB == 0
+                case .highPass, .lowPass:
+                    return false
+                }
+            }
+        case .convolution:
+            switch settings.convolution {
             case nil:
-                true
+                return true
             case .magnitudeCurve(let curve):
-                curve.points.allSatisfy { $0.gainDB == 0 }
+                return curve.points.allSatisfy { $0.gainDB == 0 }
             case .impulseResponse:
-                false
+                return false
             }
         }
     }

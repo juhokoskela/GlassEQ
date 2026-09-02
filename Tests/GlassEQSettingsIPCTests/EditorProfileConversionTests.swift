@@ -36,4 +36,40 @@ struct EditorProfileConversionTests {
         #expect(fromLeft.filters == stereo.leftFilters)
         #expect(fromLeft.preampDB == -1)
     }
+
+    @Test(arguments: [FilterKind.highPass, .lowPass])
+    func enabledCutoffFiltersAreNotNeutral(_ kind: FilterKind) {
+        var profile = EQProfile.flatParametric
+        profile.filters = [EQFilter(kind: kind, frequency: 100)]
+
+        #expect(!profile.isNeutral)
+
+        profile.filters[0].isEnabled = false
+        #expect(profile.isNeutral)
+    }
+
+    @Test
+    func neutralCheckIgnoresInactiveChannelStorage() {
+        var profile = EQProfile.flatParametric
+        profile.leftPreampDB = -3
+        profile.rightFilters = [EQFilter(kind: .highPass, frequency: 100)]
+
+        #expect(profile.channelMode == .linked)
+        #expect(profile.isNeutral)
+    }
+
+    @Test
+    func neutralCheckUsesOnlyTheActiveProfileMode() {
+        let profile = EQProfile(
+            name: "Flat response curve",
+            mode: .convolution,
+            filters: [EQFilter(kind: .highPass, frequency: 100)],
+            convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 20_000, gainDB: 0)
+            ]))
+        )
+
+        #expect(profile.isNeutral)
+    }
 }
