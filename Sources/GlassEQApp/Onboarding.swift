@@ -16,21 +16,31 @@ enum OnboardingState {
     }
 }
 
-enum LaunchAtLoginSetting {
-    static var isEnabled: Bool {
-        SMAppService.mainApp.status == .enabled
-    }
+@MainActor
+@Observable
+final class LaunchAtLoginModel {
+    private(set) var errorMessage: String?
+    private var isRegistered = SMAppService.mainApp.status == .enabled
 
-    static func setEnabled(_ enabled: Bool) throws {
-        if enabled {
-            try SMAppService.mainApp.register()
-        } else {
-            try SMAppService.mainApp.unregister()
+    var isEnabled: Bool {
+        get { isRegistered }
+        set {
+            do {
+                if newValue {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+                errorMessage = nil
+            } catch {
+                errorMessage = localized("macOS did not accept the change: \(error.localizedDescription)")
+            }
+            isRegistered = SMAppService.mainApp.status == .enabled
         }
     }
 }
 
-private enum OnboardingStep: Int, CaseIterable {
+enum OnboardingStep: Int, CaseIterable {
     case welcome
     case audioCapture
     case preferences
@@ -48,417 +58,136 @@ private enum OnboardingStep: Int, CaseIterable {
             localized("You're set")
         }
     }
+
+    var previous: OnboardingStep {
+        OnboardingStep(rawValue: rawValue - 1) ?? .welcome
+    }
+
+    var next: OnboardingStep {
+        OnboardingStep(rawValue: rawValue + 1) ?? .done
+    }
+}
+
+enum OnboardingAudioCaptureState: Equatable {
+    case notRequested
+    case waiting
+    case running
+    case permissionDenied
+    case failed
+
+    init(isRunning: Bool, hasRequested: Bool, failureCategory: AudioEngineFailure.Category?) {
+        if isRunning {
+            self = .running
+            return
+        }
+        guard hasRequested else {
+            self = .notRequested
+            return
+        }
+        switch failureCategory {
+        case .systemAudioCapturePermission:
+            self = .permissionDenied
+        case .outputDeviceUnavailable, .deviceFormatUnsupported, .coreAudioOperationFailed:
+            self = .failed
+        case nil:
+            self = .waiting
+        }
+    }
 }
 
 struct OnboardingView: View {
-    @Bindable var model: GlassEQAppModel
-    @Environment(\.dismissWindow) private var dismissWindow
+    let model: GlassEQAppModel
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = OnboardingStep.welcome
+    @State private var scrolledStep: OnboardingStep? = .welcome
     @State private var hasRequestedAudio = false
 
-    private static let windowWidth: CGFloat = 560
+    static let width: CGFloat = 560
 
     var body: some View {
         VStack(spacing: 0) {
-            // All steps sit in one strip and the strip slides, so going back naturally reverses
-            // the motion instead of replaying an insertion transition.
-            HStack(spacing: 0) {
-                ForEach(OnboardingStep.allCases, id: \.rawValue) { candidate in
-                    content(for: candidate)
-                        .frame(maxHeight: .infinity, alignment: .top)
-                        .padding(.horizontal, 36)
-                        .padding(.top, 36)
-                        .frame(width: Self.windowWidth)
-                        .opacity(candidate == step ? 1 : 0)
-                        .accessibilityHidden(candidate != step)
+            // Every step sits in one paging strip, so going back reverses the motion and the strip
+            // follows the layout direction instead of a hand-computed offset.
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(OnboardingStep.allCases, id: \.rawValue) { candidate in
+                        content(for: candidate)
+                            .padding(.horizontal, 36)
+                            .padding(.top, 36)
+                            .frame(width: Self.width)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .accessibilityHidden(candidate != step)
+                            .id(candidate)
+                    }
                 }
+                .scrollTargetLayout()
             }
-            .frame(width: Self.windowWidth, alignment: .leading)
-            .offset(x: -CGFloat(step.rawValue) * Self.windowWidth)
-            .clipped()
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $scrolledStep)
+            .scrollDisabled(true)
+            .scrollIndicators(.hidden)
+            .frame(width: Self.width)
 
-            footer
+            OnboardingFooter(
+                step: step,
+                canSkipAudioCapture: audioCaptureState == .notRequested,
+                back: { step = step.previous },
+                advance: { step = step.next },
+                finish: { dismiss() }
+            )
         }
-        .frame(width: Self.windowWidth, height: 540)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: step)
+        .background(Color.macOSWindowBackground)
         .onAppear {
             hasRequestedAudio = model.hasStartedAudio
         }
+        .onChange(of: step) {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
+                scrolledStep = step
+            }
+        }
     }
 
-    // MARK: Steps
+    private var audioCaptureState: OnboardingAudioCaptureState {
+        OnboardingAudioCaptureState(
+            isRunning: model.isRunning,
+            hasRequested: hasRequestedAudio,
+            failureCategory: model.lastAudioEngineFailureCategory
+        )
+    }
 
     @ViewBuilder
     private func content(for candidate: OnboardingStep) -> some View {
         switch candidate {
         case .welcome:
-            welcome
+            OnboardingWelcomeStep(isCurrent: step == .welcome)
         case .audioCapture:
-            audioCapture
+            OnboardingAudioCaptureStep(
+                state: audioCaptureState,
+                statusMessage: model.statusMessage,
+                outputName: model.currentOutputName,
+                isCurrent: step == .audioCapture,
+                requestAudio: requestAudio,
+                openPrivacySettings: { try? model.openPrivacySettings() }
+            )
         case .preferences:
-            preferences
+            OnboardingPreferencesStep(
+                outputName: model.currentOutputName,
+                profileName: model.activeProfileName,
+                openSettings: { model.openSettings() }
+            )
         case .done:
-            done
+            OnboardingDoneStep(
+                isRunning: model.isRunning,
+                outputName: model.currentOutputName,
+                profileName: model.activeProfileName,
+                isCurrent: step == .done
+            )
         }
-    }
-
-    private var welcome: some View {
-        VStack(spacing: 20) {
-            appIcon
-            Text(OnboardingStep.welcome.title)
-                .font(.largeTitle.weight(.bold))
-                .accessibilityAddTraits(.isHeader)
-            Text(localized("GlassEQ is a system-wide equalizer. It follows whatever output macOS is using and shapes the sound on the way there."))
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            menuBarHint
-                .padding(.top, 8)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var menuBarHint: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 14) {
-                Spacer()
-                Image(systemName: "wifi")
-                Image(systemName: "battery.75percent")
-                Image(systemName: "slider.horizontal.3")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .padding(6)
-                    .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 6))
-                    .symbolEffect(.bounce, options: .repeat(2), value: step)
-                Text("9:41")
-            }
-            .font(.callout)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.regularMaterial, in: .rect(cornerRadius: 10))
-            .accessibilityHidden(true)
-
-            Text(localized("There is no Dock icon once setup is done. Look for this icon in the menu bar to switch profiles, pause processing, or open Settings."))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var audioCapture: some View {
-        VStack(spacing: 18) {
-            stepIcon("speaker.wave.3", tint: .accentColor)
-            Text(OnboardingStep.audioCapture.title)
-                .font(.title.weight(.bold))
-                .accessibilityAddTraits(.isHeader)
-            Text(localized("To equalize your Mac's sound, GlassEQ captures the audio other apps play and writes the corrected version to the same output. macOS asks you to allow that once."))
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                promiseRow("mic.slash", localized("The microphone is never read."))
-                promiseRow("lock", localized("Audio stays on this Mac. Nothing is recorded or sent anywhere."))
-                promiseRow("arrow.uturn.backward", localized("If GlassEQ stops or quits, playback returns to normal by itself."))
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 12))
-
-            audioCaptureStatus
-                .frame(maxWidth: .infinity)
-                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: audioCaptureState)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private enum AudioCaptureState: Equatable {
-        case notRequested
-        case waiting
-        case running
-        case permissionDenied
-        case failed
-    }
-
-    private var audioCaptureState: AudioCaptureState {
-        if model.isRunning {
-            return .running
-        }
-        guard hasRequestedAudio else {
-            return .notRequested
-        }
-        switch model.lastAudioEngineFailureCategory {
-        case .systemAudioCapturePermission:
-            return .permissionDenied
-        case .outputDeviceUnavailable, .deviceFormatUnsupported, .coreAudioOperationFailed:
-            return .failed
-        case nil:
-            return .waiting
-        }
-    }
-
-    @ViewBuilder
-    private var audioCaptureStatus: some View {
-        switch audioCaptureState {
-        case .notRequested:
-            Button {
-                requestAudio()
-            } label: {
-                Label(localized("Allow System Audio Capture"), systemImage: "checkmark.shield")
-                    .frame(minWidth: 240, minHeight: 28)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
-            .accessibilityHint(Text(localized("Starts GlassEQ and shows the macOS permission prompt")))
-        case .waiting:
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(localized("Waiting for macOS…"))
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-        case .running:
-            Label(localized("GlassEQ is processing audio on \(model.currentOutputName)."), systemImage: "checkmark.circle.fill")
-                .foregroundStyle(Color(nsColor: .systemGreen))
-                .font(.body.weight(.medium))
-                .symbolEffect(.bounce, options: .nonRepeating, value: audioCaptureState)
-                .transition(.scale(scale: 0.9).combined(with: .opacity))
-        case .permissionDenied:
-            VStack(spacing: 10) {
-                Label(localized("GlassEQ was not allowed to capture system audio."), systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Color(nsColor: .systemOrange))
-                    .font(.body.weight(.medium))
-                Text(localized("Turn on GlassEQ under System Audio Recording in Privacy & Security, then try again."))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                HStack(spacing: 10) {
-                    Button(localized("Open Privacy Settings")) {
-                        try? model.openPrivacySettings()
-                    }
-                    Button(localized("Try Again")) {
-                        requestAudio()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .controlSize(.large)
-            }
-        case .failed:
-            VStack(spacing: 10) {
-                Text(model.statusMessage)
-                    .font(.callout)
-                    .foregroundStyle(Color(nsColor: .systemOrange))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(localized("Try Again")) {
-                    requestAudio()
-                }
-                .controlSize(.large)
-            }
-        }
-    }
-
-    private var preferences: some View {
-        VStack(spacing: 18) {
-            stepIcon("gearshape", tint: .secondary)
-            Text(OnboardingStep.preferences.title)
-                .font(.title.weight(.bold))
-                .accessibilityAddTraits(.isHeader)
-
-            VStack(spacing: 0) {
-                LaunchAtLoginRow()
-                Divider()
-                summaryRow(localized("Output"), value: model.currentOutputName)
-                Divider()
-                summaryRow(localized("Profile"), value: model.activeProfile.name)
-            }
-            .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08), lineWidth: 1))
-
-            Text(localized("GlassEQ starts with flat profiles. Settings has an AutoEq search that imports a correction for your headphone model."))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button(localized("Open Settings")) {
-                model.openSettings()
-            }
-            .controlSize(.large)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var done: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(Color(nsColor: .systemGreen))
-                .symbolEffect(.bounce, options: .nonRepeating, value: step)
-                .accessibilityHidden(true)
-            Text(OnboardingStep.done.title)
-                .font(.largeTitle.weight(.bold))
-                .accessibilityAddTraits(.isHeader)
-            Text(model.isRunning
-                ? localized("GlassEQ is processing \(model.currentOutputName) with \(model.activeProfile.name). It lives in the menu bar from here on.")
-                : localized("GlassEQ is in the menu bar. It will start processing as soon as it can capture system audio."))
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(localized("You can reopen this guide from the Output tab in Settings."))
-                .font(.callout)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    // MARK: Chrome
-
-    private var footer: some View {
-        HStack {
-            if step != .welcome {
-                Button(localized("Back")) {
-                    step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome
-                }
-            }
-            Spacer()
-            switch step {
-            case .done:
-                Button(localized("Finish")) {
-                    dismissWindow(id: "onboarding")
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-            case .audioCapture where audioCaptureState == .notRequested:
-                Button(localized("Skip for Now")) {
-                    advance()
-                }
-            default:
-                Button(localized("Continue")) {
-                    advance()
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .controlSize(.large)
-        .padding(20)
-        .overlay {
-            stepIndicator
-        }
-    }
-
-    private var stepIndicator: some View {
-        HStack(spacing: 6) {
-            ForEach(OnboardingStep.allCases, id: \.rawValue) { candidate in
-                Capsule()
-                    .fill(candidate == step ? Color.accentColor : Color.primary.opacity(0.15))
-                    .frame(width: candidate == step ? 18 : 6, height: 6)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(localized("Step \(step.rawValue + 1) of \(OnboardingStep.allCases.count)")))
-    }
-
-    private var appIcon: some View {
-        let bundledIcon = Bundle.main.url(forResource: "GlassEQ", withExtension: "icns")
-            .flatMap { NSImage(contentsOf: $0) }
-        return Image(nsImage: bundledIcon ?? NSApplication.shared.applicationIconImage)
-            .resizable()
-            .frame(width: 96, height: 96)
-            .accessibilityHidden(true)
-    }
-
-    private func stepIcon(_ systemName: String, tint: Color) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 30, weight: .medium))
-            .foregroundStyle(tint)
-            .frame(width: 72, height: 72)
-            .background(tint.opacity(0.12), in: .circle)
-            .accessibilityHidden(true)
-    }
-
-    private func promiseRow(_ systemName: String, _ text: String) -> some View {
-        Label {
-            Text(text)
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: systemName)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 20)
-        }
-        .font(.callout)
-    }
-
-    private func summaryRow(_ title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .accessibilityElement(children: .combine)
     }
 
     private func requestAudio() {
         hasRequestedAudio = true
         model.startAudioForOnboarding()
-    }
-
-    private func advance() {
-        step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done
-    }
-}
-
-private struct LaunchAtLoginRow: View {
-    @State private var isEnabled = LaunchAtLoginSetting.isEnabled
-    @State private var errorMessage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: Binding(
-                get: { isEnabled },
-                set: { setEnabled($0) }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(localized("Open GlassEQ at login"))
-                    Text(localized("So your headphones sound right from the first song."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .toggleStyle(.switch)
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(Color(nsColor: .systemOrange))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-    }
-
-    private func setEnabled(_ enabled: Bool) {
-        do {
-            try LaunchAtLoginSetting.setEnabled(enabled)
-            isEnabled = LaunchAtLoginSetting.isEnabled
-            errorMessage = nil
-        } catch {
-            isEnabled = LaunchAtLoginSetting.isEnabled
-            errorMessage = localized("macOS did not accept the change: \(error.localizedDescription)")
-        }
     }
 }
