@@ -946,6 +946,21 @@ struct LicensingControllerTests {
         #expect(harness.service.calls.filter { if case .deactivate = $0 { true } else { false } }.count == 2)
     }
 
+    @Test(arguments: [LicenseServiceErrorCode.rateLimited, .temporarilyUnavailable])
+    func deactivationHonorsRetryAfter(code: LicenseServiceErrorCode) async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        let failure = LicenseServiceError.service(code: code, retryAfterSeconds: 3_600)
+        harness.service.onDeactivate { _ in throw failure }
+        _ = await harness.subscribe()
+
+        await #expect(throws: LicensingError.service(failure)) {
+            try await harness.controller.deactivateCurrent()
+        }
+
+        #expect(try #require(await harness.clock.waitForSleeper()) == .seconds(3_600))
+    }
+
     @Test
     func tombstoneDoesNotScheduleAnImmediateRetryWhileDeactivationIsInFlight() async throws {
         let fixture = try EntitlementFixture()

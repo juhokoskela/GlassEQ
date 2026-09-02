@@ -605,9 +605,14 @@ public actor LicensingController {
                 throw LicensingError.service(error)
             default:
                 if generation == operationGeneration {
+                    let retryAfterSeconds: Int? = switch error {
+                    case let .service(_, retryAfterSeconds): retryAfterSeconds
+                    default: nil
+                    }
                     refreshRetry.recordFailure(
                         now: clock.now(),
-                        jitterMultiplier: retryJitterMultiplier
+                        jitterMultiplier: retryJitterMultiplier,
+                        atLeast: retryAfterSeconds.map { .seconds($0) }
                     )
                     publishAndReschedule()
                 }
