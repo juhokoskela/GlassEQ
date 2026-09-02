@@ -1764,11 +1764,10 @@ private struct EditorTab: View {
         EQAnalysisSignature(profile: draftProfile, sampleRate: sampleRate)
     }
 
+    // The most recent analysis, even while a newer one is still computing. Swapping in a
+    // placeholder on every slider tick would flicker and break the curve animation.
     private var currentAnalysis: EQAnalysisSnapshot? {
-        guard analysis?.signature == analysisSignature else {
-            return nil
-        }
-        return analysis
+        analysis
     }
 
     private func refreshAnalysis() async {
@@ -1972,6 +1971,10 @@ private struct ApplyBar: View {
     var onStopProgrammeComparison: () -> Void
     var onUseForCurrentOutput: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsAppliedConfirmation = false
+    @State private var appliedConfirmationTask: Task<Void, Never>?
+
     var body: some View {
         VStack(spacing: 12) {
             HStack(spacing: 12) {
@@ -2019,11 +2022,24 @@ private struct ApplyBar: View {
             Divider()
 
             HStack {
-                Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel(Text(localized("Profile edit state")))
-                    .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+                Group {
+                    if hasUnsavedDraft {
+                        Text(localized("Unsaved changes"))
+                            .foregroundStyle(.secondary)
+                    } else if showsAppliedConfirmation {
+                        Label(localized("Applied"), systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(Color(nsColor: .systemGreen))
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    } else {
+                        Text(localized("All changes saved"))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption.weight(.medium))
+                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: showsAppliedConfirmation)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: hasUnsavedDraft)
+                .accessibilityLabel(Text(localized("Profile edit state")))
+                .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
                 Spacer()
                 Button(localized("Revert")) {
                     onRevert()
@@ -2033,6 +2049,7 @@ private struct ApplyBar: View {
 
                 Button(localized("Apply")) {
                     onApply()
+                    flashAppliedConfirmation()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(isReadOnly || !hasUnsavedDraft || programmeComparison.isActive)
@@ -2056,6 +2073,18 @@ private struct ApplyBar: View {
                 .buttonStyle(ToolbarButtonStyle())
                 .accessibilityHint(Text(currentOutputUID.isEmpty ? localized("No current output is available") : localized("Maps the selected profile to the current output device")))
             }
+        }
+    }
+
+    private func flashAppliedConfirmation() {
+        appliedConfirmationTask?.cancel()
+        showsAppliedConfirmation = true
+        appliedConfirmationTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else {
+                return
+            }
+            showsAppliedConfirmation = false
         }
     }
 
@@ -2189,16 +2218,36 @@ private struct FrequencyResponseGraph: View {
             drawGrid(context: context, rect: plotRect)
             drawAxisLabels(context: context, rect: plotRect, bounds: bounds)
 
-            switch analysis.channelMode {
-            case .linked:
-                draw(points: analysis.linkedPoints, color: .accentColor, context: context, rect: plotRect)
-            case .stereo:
-                draw(points: analysis.leftPoints, color: .blue, context: context, rect: plotRect)
-                draw(points: analysis.rightPoints, color: .orange, context: context, rect: plotRect)
+        }
+        .overlay {
+            ZStack {
+                switch analysis.channelMode {
+                case .linked:
+                    curve(analysis.linkedPoints, color: .accentColor)
+                case .stereo:
+                    curve(analysis.leftPoints, color: .blue)
+                    curve(analysis.rightPoints, color: .orange)
+                }
             }
+            .padding(Self.plotInsets)
+            .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: analysis)
         }
         .clipShape(.rect(cornerRadius: 14))
         .accessibilityElement(children: .ignore)
+    }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    // Mirrors the Canvas plot rect (insetBy 38/18, offsetBy 4/-3) so the shapes line up with the grid.
+    private static let plotInsets = EdgeInsets(top: 15, leading: 42, bottom: 21, trailing: 34)
+
+    private func curve(_ points: [FrequencyResponsePoint], color: Color) -> some View {
+        ResponseCurveShape(
+            frequencies: points.map(\.frequency),
+            magnitudes: AnimatableMagnitudes(values: points.map(\.magnitudeDB)),
+            maximumFrequency: analysis.maximumUsableFrequency
+        )
+        .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineJoin: .round))
     }
 
     private func drawGrid(context: GraphicsContext, rect: CGRect) {
@@ -2244,23 +2293,6 @@ private struct FrequencyResponseGraph: View {
         }
     }
 
-    private func draw(points: [FrequencyResponsePoint], color: Color, context: GraphicsContext, rect: CGRect) {
-        guard points.count > 1 else {
-            return
-        }
-        let minDB = -24.0
-        let maxDB = 12.0
-        var path = Path()
-        for (index, point) in points.enumerated() {
-            let position = CGPoint(
-                x: xPosition(for: point.frequency, in: rect),
-                y: yPosition(for: min(max(point.magnitudeDB, minDB), maxDB), in: rect)
-            )
-            index == 0 ? path.move(to: position) : path.addLine(to: position)
-        }
-        context.stroke(path, with: .color(color), lineWidth: 2.5)
-    }
-
     private func xPosition(for frequency: Double, in rect: CGRect) -> CGFloat {
         let lower = log10(20.0)
         let upper = log10(max(analysis.maximumUsableFrequency, 20.000_1))
@@ -2291,6 +2323,75 @@ private struct FrequencyResponseGraph: View {
         let maxDB = 12.0
         let fraction = 1 - ((magnitudeDB - minDB) / (maxDB - minDB))
         return rect.minY + rect.height * fraction
+    }
+}
+
+// Interpolates a magnitude array so the response curve morphs between analyses.
+struct AnimatableMagnitudes: VectorArithmetic {
+    var values: [Double]
+
+    static var zero: AnimatableMagnitudes { AnimatableMagnitudes(values: []) }
+
+    var magnitudeSquared: Double {
+        values.reduce(0) { $0 + $1 * $1 }
+    }
+
+    mutating func scale(by rhs: Double) {
+        values = values.map { $0 * rhs }
+    }
+
+    static func + (lhs: Self, rhs: Self) -> Self {
+        combine(lhs, rhs, +)
+    }
+
+    static func - (lhs: Self, rhs: Self) -> Self {
+        combine(lhs, rhs, -)
+    }
+
+    // Point counts only differ when the usable bandwidth changes; pad the shorter side with the
+    // other's values so the transition stays a valid curve instead of collapsing.
+    private static func combine(_ lhs: Self, _ rhs: Self, _ operation: (Double, Double) -> Double) -> Self {
+        let count = max(lhs.values.count, rhs.values.count)
+        var values = [Double](repeating: 0, count: count)
+        for index in 0..<count {
+            let left = index < lhs.values.count ? lhs.values[index] : (rhs.values.indices.contains(index) ? rhs.values[index] : 0)
+            let right = index < rhs.values.count ? rhs.values[index] : (lhs.values.indices.contains(index) ? lhs.values[index] : 0)
+            values[index] = operation(left, right)
+        }
+        return AnimatableMagnitudes(values: values)
+    }
+}
+
+private struct ResponseCurveShape: Shape {
+    var frequencies: [Double]
+    var magnitudes: AnimatableMagnitudes
+    var maximumFrequency: Double
+
+    var animatableData: AnimatableMagnitudes {
+        get { magnitudes }
+        set { magnitudes = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let count = min(frequencies.count, magnitudes.values.count)
+        guard count > 1 else {
+            return Path()
+        }
+        let minDB = -24.0
+        let maxDB = 12.0
+        let lower = log10(20.0)
+        let upper = log10(max(maximumFrequency, 20.000_1))
+        var path = Path()
+        for index in 0..<count {
+            let fraction = (log10(frequencies[index]) - lower) / (upper - lower)
+            let magnitude = min(max(magnitudes.values[index], minDB), maxDB)
+            let position = CGPoint(
+                x: rect.minX + rect.width * fraction,
+                y: rect.minY + rect.height * (1 - ((magnitude - minDB) / (maxDB - minDB)))
+            )
+            index == 0 ? path.move(to: position) : path.addLine(to: position)
+        }
+        return path
     }
 }
 
@@ -2773,6 +2874,7 @@ private struct EditableValueText: View {
     var display: String
     var width: CGFloat = 64
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isEditing = false
     @State private var editText = ""
     @State private var editSession = EditableValueEditSession()
@@ -2815,6 +2917,8 @@ private struct EditableValueText: View {
                 } label: {
                     Text(display)
                         .font(.caption.monospacedDigit())
+                        .contentTransition(.numericText(value: value))
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.15), value: value)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .contentShape(.rect)
                 }
