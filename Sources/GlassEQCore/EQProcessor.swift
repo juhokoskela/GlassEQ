@@ -188,7 +188,11 @@ public struct EQRenderConfiguration: Sendable {
         self.channelStarts = renderLayout.channelStarts
         self.channelFilterCounts = renderLayout.channelFilterCounts
         self.preampLinearGains = renderLayout.preampLinearGains
-        self.convolvers = try Self.makeConvolvers(configuration: configuration)
+        // A bypassed bank renders as identity, so building and prewarming its convolvers would be
+        // wasted work on the path that fades processing out.
+        self.convolvers = configuration.isBypassed
+            ? Array(repeating: nil, count: configuration.channelCount)
+            : try Self.makeConvolvers(configuration: configuration)
         self.preparationSucceeded = true
     }
 
@@ -211,6 +215,7 @@ public struct EQRenderConfiguration: Sendable {
             && preampLinearGains.allSatisfy { $0.isFinite && $0 >= 0 }
             && coefficients.allSatisfy(Self.isNumericallySafe)
             && (!configuration.usesConvolution
+                || configuration.isBypassed
                 || convolvers.count == configuration.channelCount
                     && convolvers.allSatisfy { $0 != nil })
     }
