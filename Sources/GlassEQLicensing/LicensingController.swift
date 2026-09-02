@@ -436,6 +436,7 @@ public actor LicensingController {
            state.deactivationRequestedAt == nil,
            state.clockAnomalyDetectedAt == nil {
             state.clockAnomalyDetectedAt = trustedTime.highestTrustedTime
+            state.highestTrustedTime = trustedTime.highestTrustedTime
             refreshRetry.reset()
             persist(state)
         }

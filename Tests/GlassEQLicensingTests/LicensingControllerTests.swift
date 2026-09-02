@@ -1095,6 +1095,23 @@ struct LicensingControllerTests {
     }
 
     @Test
+    func rollbackMarkerPersistsTheAdvancedTrustedTimeFloor() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        harness.serveRefreshFailure(.transport(.offline))
+        _ = await harness.subscribe()
+
+        harness.advance(seconds: 100)
+        _ = await harness.controller.currentSnapshot()
+        #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt)
+
+        harness.wall.time = fixture.issuedAt - TrustedTimeState.rollbackToleranceSeconds - 1
+        _ = await harness.controller.currentSnapshot()
+
+        #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt + 100)
+    }
+
+    @Test
     func checkpointPersistsTheAdvancedFloorAndALaterLaunchKeepsIt() async throws {
         let fixture = try EntitlementFixture()
         let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
