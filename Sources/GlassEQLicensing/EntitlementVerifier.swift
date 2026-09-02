@@ -32,7 +32,7 @@ public struct EntitlementVerifier: Sendable {
         var parsedKeys: [String: Curve25519.Signing.PublicKey] = [:]
         parsedKeys.reserveCapacity(publicKeys.count)
         for (keyID, rawRepresentation) in publicKeys {
-            guard !keyID.isEmpty, keyID.utf8.count <= 128 else {
+            guard !keyID.isEmpty else {
                 throw EntitlementVerificationError.unknownKeyID
             }
             do {
@@ -88,23 +88,25 @@ public struct EntitlementVerifier: Sendable {
     }
 
     private func parseHeader(_ data: Data) throws -> String {
-        let object: [String: StrictJSONValue]
+        let header: EntitlementHeader
         do {
-            var parser = StrictJSONObjectParser(data: data)
-            object = try parser.parse()
+            header = try decodeExactJSONObject(
+                EntitlementHeader.self,
+                from: data,
+                expectedKeys: ["alg", "kid", "typ"]
+            )
+        } catch EntitlementJSONError.unsupportedFields {
+            throw EntitlementVerificationError.unsupportedHeader
         } catch {
             throw EntitlementVerificationError.malformedHeader
         }
 
-        guard Set(object.keys) == ["alg", "kid", "typ"],
-              object["alg"] == .string("EdDSA"),
-              object["typ"] == .string(Self.type),
-              case let .string(keyID)? = object["kid"],
-              !keyID.isEmpty,
-              keyID.utf8.count <= 128 else {
+        guard header.algorithm == "EdDSA",
+              header.type == Self.type,
+              !header.keyID.isEmpty else {
             throw EntitlementVerificationError.unsupportedHeader
         }
-        return keyID
+        return header.keyID
     }
 
     private func parseClaims(
@@ -113,133 +115,105 @@ public struct EntitlementVerifier: Sendable {
         highestAcceptedRevision: Int64?,
         effectiveTime: Int64
     ) throws -> EntitlementClaims {
-        let object: [String: StrictJSONValue]
+        let payload: EntitlementPayload
         do {
-            var parser = StrictJSONObjectParser(data: data)
-            object = try parser.parse()
+            let fields = try jsonObjectFields(data)
+            guard let rawPlan = fields["plan"] as? String,
+                  let plan = EntitlementPlan(rawValue: rawPlan) else {
+                throw EntitlementJSONError.unsupportedFields
+            }
+            let commonKeys: Set<String> = [
+                "iss", "aud", "sub", "jti", "iat", "schema", "plan", "activation_id",
+                "installation_id", "revision", "release_scope", "security_updates_after_expiry"
+            ]
+            let monthlyKeys: Set<String> = [
+                "billing_state", "billing_period_end", "recovery_until", "refresh_after", "exp"
+            ]
+            payload = try decodeExactJSONObject(
+                EntitlementPayload.self,
+                from: data,
+                fields: fields,
+                expectedKeys: plan == .monthly ? commonKeys.union(monthlyKeys) : commonKeys
+            )
+        } catch EntitlementJSONError.unsupportedFields {
+            throw EntitlementVerificationError.unsupportedClaims
         } catch {
             throw EntitlementVerificationError.malformedClaims
         }
 
-        let commonKeys: Set<String> = [
-            "iss", "aud", "sub", "jti", "iat", "schema", "plan", "activation_id",
-            "installation_id", "revision", "release_scope", "security_updates_after_expiry"
-        ]
-        guard case let .string(planValue)? = object["plan"],
-              let plan = EntitlementPlan(rawValue: planValue) else {
+        guard let plan = EntitlementPlan(rawValue: payload.plan) else {
             throw EntitlementVerificationError.unsupportedClaims
         }
-
-        let requiredKeys: Set<String>
-        switch plan {
-        case .perpetualV1:
-            requiredKeys = commonKeys
-        case .monthly:
-            requiredKeys = commonKeys.union([
-                "billing_state", "billing_period_end", "recovery_until", "refresh_after", "exp"
-            ])
-        }
-        guard Set(object.keys) == requiredKeys else {
-            throw EntitlementVerificationError.unsupportedClaims
-        }
-
-        guard case let .string(issuer)? = object["iss"],
-              case let .string(audience)? = object["aud"],
-              case let .string(licenseID)? = object["sub"],
-              case let .string(entitlementID)? = object["jti"],
-              case let .integer(issuedAt)? = object["iat"],
-              case let .integer(schema)? = object["schema"],
-              case let .string(activationID)? = object["activation_id"],
-              case let .string(installationIDValue)? = object["installation_id"],
-              let claimedInstallationID = UUID(uuidString: installationIDValue),
-              case let .integer(revision)? = object["revision"],
-              case let .string(releaseScopeValue)? = object["release_scope"],
-              let releaseScope = EntitlementReleaseScope(rawValue: releaseScopeValue),
-              case let .boolean(securityUpdatesAfterExpiry)? = object["security_updates_after_expiry"],
-              issuer == Self.issuer,
-              audience == Self.audience,
-              schema == 1,
-              revision > 0,
-              isValidOpaqueID(licenseID),
-              isValidOpaqueID(entitlementID),
-              isValidOpaqueID(activationID),
-              issuedAt >= 0 else {
+        guard let claimedInstallationID = UUID(uuidString: payload.installationID),
+              let releaseScope = EntitlementReleaseScope(rawValue: payload.releaseScope),
+              payload.issuer == Self.issuer,
+              payload.audience == Self.audience,
+              payload.schema == 1,
+              payload.revision > 0,
+              !payload.licenseID.isEmpty,
+              !payload.entitlementID.isEmpty,
+              !payload.activationID.isEmpty,
+              payload.issuedAt >= 0 else {
             throw EntitlementVerificationError.unsupportedClaims
         }
 
         guard claimedInstallationID == installationID else {
             throw EntitlementVerificationError.installationMismatch
         }
-        if let highestAcceptedRevision, revision < highestAcceptedRevision {
+        if let highestAcceptedRevision, payload.revision < highestAcceptedRevision {
             throw EntitlementVerificationError.staleRevision
         }
         let (latestAcceptedIssueTime, overflow) = effectiveTime.addingReportingOverflow(
             Self.maximumFutureSkewSeconds
         )
-        guard !overflow, issuedAt <= latestAcceptedIssueTime else {
+        guard !overflow, payload.issuedAt <= latestAcceptedIssueTime else {
             throw EntitlementVerificationError.issuedInFuture
         }
 
         switch plan {
         case .perpetualV1:
-            guard releaseScope == .v1, !securityUpdatesAfterExpiry else {
+            guard releaseScope == .v1, !payload.securityUpdatesAfterExpiry else {
                 throw EntitlementVerificationError.unsupportedClaims
             }
             return EntitlementClaims(
-                issuer: issuer,
-                audience: audience,
-                licenseID: licenseID,
-                entitlementID: entitlementID,
-                issuedAt: issuedAt,
-                schema: schema,
-                activationID: activationID,
+                issuer: payload.issuer,
+                audience: payload.audience,
+                licenseID: payload.licenseID,
+                entitlementID: payload.entitlementID,
+                issuedAt: payload.issuedAt,
+                schema: payload.schema,
+                activationID: payload.activationID,
                 installationID: claimedInstallationID,
-                revision: revision,
+                revision: payload.revision,
                 releaseScope: releaseScope,
-                securityUpdatesAfterExpiry: securityUpdatesAfterExpiry,
+                securityUpdatesAfterExpiry: payload.securityUpdatesAfterExpiry,
                 terms: .perpetualV1
             )
         case .monthly:
             return try parseMonthlyClaims(
-                object,
-                issuer: issuer,
-                audience: audience,
-                licenseID: licenseID,
-                entitlementID: entitlementID,
-                issuedAt: issuedAt,
-                schema: schema,
-                activationID: activationID,
+                payload,
                 installationID: claimedInstallationID,
-                revision: revision,
                 releaseScope: releaseScope,
-                securityUpdatesAfterExpiry: securityUpdatesAfterExpiry
+                securityUpdatesAfterExpiry: payload.securityUpdatesAfterExpiry
             )
         }
     }
 
     private func parseMonthlyClaims(
-        _ object: [String: StrictJSONValue],
-        issuer: String,
-        audience: String,
-        licenseID: String,
-        entitlementID: String,
-        issuedAt: Int64,
-        schema: Int64,
-        activationID: String,
+        _ payload: EntitlementPayload,
         installationID: UUID,
-        revision: Int64,
         releaseScope: EntitlementReleaseScope,
         securityUpdatesAfterExpiry: Bool
     ) throws -> EntitlementClaims {
         guard releaseScope == .current,
-              case let .string(billingStateValue)? = object["billing_state"],
+              let billingStateValue = payload.billingState,
               let billingState = MonthlyBillingState(rawValue: billingStateValue),
-              case let .integer(billingPeriodEnd)? = object["billing_period_end"],
-              case let .integer(recoveryUntil)? = object["recovery_until"],
-              case let .integer(refreshAfter)? = object["refresh_after"],
-              case let .integer(expiresAt)? = object["exp"],
+              let billingPeriodEnd = payload.billingPeriodEnd,
+              let recoveryUntil = payload.recoveryUntil,
+              let refreshAfter = payload.refreshAfter,
+              let expiresAt = payload.expiresAt,
               billingPeriodEnd >= 0,
-              issuedAt <= refreshAfter,
+              payload.issuedAt <= refreshAfter,
               refreshAfter <= expiresAt,
               recoveryUntil < expiresAt else {
             throw EntitlementVerificationError.invalidTimeline
@@ -260,15 +234,15 @@ public struct EntitlementVerifier: Sendable {
         }
 
         return EntitlementClaims(
-            issuer: issuer,
-            audience: audience,
-            licenseID: licenseID,
-            entitlementID: entitlementID,
-            issuedAt: issuedAt,
-            schema: schema,
-            activationID: activationID,
+            issuer: payload.issuer,
+            audience: payload.audience,
+            licenseID: payload.licenseID,
+            entitlementID: payload.entitlementID,
+            issuedAt: payload.issuedAt,
+            schema: payload.schema,
+            activationID: payload.activationID,
             installationID: installationID,
-            revision: revision,
+            revision: payload.revision,
             releaseScope: releaseScope,
             securityUpdatesAfterExpiry: securityUpdatesAfterExpiry,
             terms: .monthly(MonthlyTerms(
@@ -279,10 +253,6 @@ public struct EntitlementVerifier: Sendable {
                 expiresAt: expiresAt
             ))
         )
-    }
-
-    private func isValidOpaqueID(_ value: String) -> Bool {
-        !value.isEmpty && value.utf8.count <= 256
     }
 
     private func decodeBase64URL(_ value: Substring) throws -> Data {
@@ -302,19 +272,86 @@ public struct EntitlementVerifier: Sendable {
             .replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         encoded.append(String(repeating: "=", count: (4 - encoded.count % 4) % 4))
-        guard let data = Data(base64Encoded: encoded),
-              encodeBase64URL(data) == value else {
+        guard let data = Data(base64Encoded: encoded) else {
             throw EntitlementVerificationError.invalidBase64URL
         }
         return data
     }
+}
 
-    private func encodeBase64URL(_ data: Data) -> Substring {
-        Substring(
-            data.base64EncodedString()
-                .replacingOccurrences(of: "+", with: "-")
-                .replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: "=", with: "")
-        )
+private enum EntitlementJSONError: Error {
+    case malformed
+    case unsupportedFields
+}
+
+private struct EntitlementHeader: Decodable {
+    let algorithm: String
+    let keyID: String
+    let type: String
+
+    private enum CodingKeys: String, CodingKey {
+        case algorithm = "alg"
+        case keyID = "kid"
+        case type = "typ"
     }
+}
+
+private struct EntitlementPayload: Decodable {
+    let issuer: String
+    let audience: String
+    let licenseID: String
+    let entitlementID: String
+    let issuedAt: Int64
+    let schema: Int64
+    let plan: String
+    let activationID: String
+    let installationID: String
+    let revision: Int64
+    let releaseScope: String
+    let securityUpdatesAfterExpiry: Bool
+    let billingState: String?
+    let billingPeriodEnd: Int64?
+    let recoveryUntil: Int64?
+    let refreshAfter: Int64?
+    let expiresAt: Int64?
+
+    private enum CodingKeys: String, CodingKey {
+        case issuer = "iss"
+        case audience = "aud"
+        case licenseID = "sub"
+        case entitlementID = "jti"
+        case issuedAt = "iat"
+        case schema
+        case plan
+        case activationID = "activation_id"
+        case installationID = "installation_id"
+        case revision
+        case releaseScope = "release_scope"
+        case securityUpdatesAfterExpiry = "security_updates_after_expiry"
+        case billingState = "billing_state"
+        case billingPeriodEnd = "billing_period_end"
+        case recoveryUntil = "recovery_until"
+        case refreshAfter = "refresh_after"
+        case expiresAt = "exp"
+    }
+}
+
+private func jsonObjectFields(_ data: Data) throws -> [String: Any] {
+    guard let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw EntitlementJSONError.malformed
+    }
+    return fields
+}
+
+private func decodeExactJSONObject<Value: Decodable>(
+    _ type: Value.Type,
+    from data: Data,
+    fields: [String: Any]? = nil,
+    expectedKeys: Set<String>
+) throws -> Value {
+    let fields = try fields ?? jsonObjectFields(data)
+    guard Set(fields.keys) == expectedKeys else {
+        throw EntitlementJSONError.unsupportedFields
+    }
+    return try JSONDecoder().decode(type, from: data)
 }
