@@ -36,7 +36,7 @@ private let settingsResourcesBundle: Bundle = {
     return Bundle.main
 }()
 
-func localized(_ value: String.LocalizationValue) -> String {
+public func localized(_ value: String.LocalizationValue) -> String {
     String(localized: value, bundle: settingsResourcesBundle)
 }
 
