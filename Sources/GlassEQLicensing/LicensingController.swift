@@ -377,6 +377,7 @@ public actor LicensingController {
             trustedTime.markPersisted()
             storageFailure = nil
             persistencePending = false
+            clearPending = false
             storageRetry.reset()
         } catch let error {
             persistencePending = true

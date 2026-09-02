@@ -1018,6 +1018,45 @@ struct LicensingControllerTests {
         #expect(await harness.controller.currentSnapshot().content.storageFailure == nil)
     }
 
+    @Test
+    func aSavedReplacementCancelsTheStaleDeletionRetry() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        harness.service.onDeactivate { token in
+            if token == "gea_new" {
+                throw LicenseServiceError.transport(.offline)
+            }
+        }
+        _ = await harness.subscribe()
+        harness.store.clearFailure = .keychain(-25_291)
+
+        await #expect(throws: LicensingError.storage(.keychain(-25_291))) {
+            try await harness.controller.deactivateCurrent()
+        }
+
+        harness.store.clearFailure = nil
+        harness.store.failNextActivationSave(with: .keychain(-25_291))
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_new",
+                entitlement: try fixture.sign(payload: fixture.monthlyPayload(installationID: installationID))
+            )
+        }
+        await #expect(throws: LicensingError.storage(.keychain(-25_291))) {
+            try await harness.controller.activate(licenseKey: "GEQ1-NEW")
+        }
+
+        #expect(harness.store.activation?.activationToken == "gea_new")
+        #expect(try #require(await harness.clock.waitForSleeper()) == .seconds(60))
+
+        harness.service.onDeactivate { _ in }
+        harness.advance(seconds: 60)
+        #expect(await waitUntil { harness.store.activation == nil })
+        #expect(harness.service.calls.filter {
+            $0 == .deactivate(activationToken: "gea_new")
+        }.count == 2)
+    }
+
     // MARK: Trusted time
 
     @Test
