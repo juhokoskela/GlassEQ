@@ -410,6 +410,7 @@ public actor LicensingController {
     /// the failure, and retries on the storage schedule; it does not change processing authority.
     private func persist(_ state: ActivationState) {
         activation = .state(state)
+        clearPending = false
         do {
             try store.saveActivationState(state)
             trustedTime.markPersisted()
