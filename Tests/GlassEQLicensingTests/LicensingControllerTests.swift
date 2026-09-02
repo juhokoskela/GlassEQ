@@ -481,7 +481,7 @@ struct LicensingControllerTests {
     }
 
     @Test(arguments: [LicenseServiceErrorCode.activationRevoked, .invalidCredentials])
-    func revokedCredentialsClearTheActivation(code: LicenseServiceErrorCode) async throws {
+    func revokedCredentialsKeepOfflineAuthorityUntilTheSignedExpiry(code: LicenseServiceErrorCode) async throws {
         let fixture = try EntitlementFixture()
         let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
         harness.serveRefreshFailure(.service(code: code, retryable: false, requestID: nil, retryAfterSeconds: nil))
@@ -489,10 +489,173 @@ struct LicensingControllerTests {
 
         await harness.controller.refreshNow()
 
-        #expect(await harness.controller.currentSnapshot().content.state == .unlicensed)
-        #expect(harness.store.activation == nil)
-        #expect(harness.store.clearCount == 1)
-        #expect(harness.store.identity != nil)
+        let revoked = await harness.controller.currentSnapshot()
+        #expect(revoked.content.state == .monthlyActive)
+        #expect(revoked.content.permitsProcessing)
+        #expect(revoked.content.lastRefreshFailure == .rejected(.activationRevoked))
+        #expect(revoked.content.updateAccess == .none)
+        #expect(harness.store.activation?.serviceRevokedAt == fixture.issuedAt)
+        #expect(harness.store.clearCount == 0)
+
+        // No credential is left to refresh with, so the schedule follows the signed boundaries only.
+        harness.advance(seconds: fixture.recoveryUntil - fixture.issuedAt - 1)
+        let grace = await harness.controller.currentSnapshot()
+        #expect(grace.content.state == .monthlyRecovery || grace.content.state == .verificationNeeded)
+        for _ in 0 ..< 20 { await Task.yield() }
+        #expect(harness.service.refreshCallCount == 1)
+        let deadline = try #require(await harness.clock.waitForSleeper())
+        #expect(deadline == harness.clock.now() + .seconds(1))
+
+        let relaunch = ControllerHarness(
+            fixture: fixture,
+            activation: harness.store.activation,
+            wallTime: fixture.expiresAt
+        )
+        #expect(await relaunch.subscribe().content.state == .monthlyExpired)
+        #expect(relaunch.service.calls.isEmpty)
+    }
+
+    @Test
+    func aRevokedPerpetualLicenseKeepsProcessing() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.perpetualActivationState())
+        harness.serveRefreshFailure(.service(code: .activationRevoked, retryable: false, requestID: nil, retryAfterSeconds: nil))
+        _ = await harness.subscribe()
+
+        await harness.controller.refreshNow()
+
+        #expect(harness.service.calls.isEmpty)
+        #expect(await harness.controller.currentSnapshot().content.state == .perpetual)
+    }
+
+    @Test
+    func aFailedExclusiveOperationDoesNotStrandTheScheduler() async throws {
+        let fixture = try EntitlementFixture()
+        let start = fixture.refreshAfter - 10
+        let harness = ControllerHarness(
+            fixture: fixture,
+            activation: try fixture.monthlyActivationState(highestTrustedTime: start),
+            wallTime: start
+        )
+        let refreshGate = AsyncGate()
+        let activateGate = AsyncGate()
+        harness.service.onRefresh { _, installationID in
+            await refreshGate.wait()
+            return try fixture.sign(payload: fixture.monthlyPayload(revision: 8, installationID: installationID))
+        }
+        harness.service.onActivate { _, _, _ in
+            await activateGate.wait()
+            throw LicenseServiceError.service(code: .activationLimit, retryable: false, requestID: nil, retryAfterSeconds: nil)
+        }
+        _ = await harness.subscribe()
+
+        await harness.clock.fireNextDeadline()
+        #expect(await waitUntil { harness.service.refreshCallCount == 1 })
+        #expect(harness.clock.pendingDeadlines.isEmpty)
+
+        let activation = Task { try await harness.controller.activate(licenseKey: "GEQ1-KEY") }
+        #expect(await waitUntil { harness.service.calls.count == 2 })
+        refreshGate.open()
+        let rescheduled = await harness.clock.waitForSleeper()
+        #expect(rescheduled != nil)
+        #expect(harness.service.refreshCallCount == 1)
+        activateGate.open()
+        await #expect(throws: LicensingError.self) {
+            try await activation.value
+        }
+
+        // The failed activation left the old activation in place, so the overdue refresh runs.
+        #expect(await waitUntil { harness.store.activation?.highestAcceptedRevision == 8 })
+        #expect(harness.service.refreshCallCount == 2)
+        #expect(await harness.clock.waitForSleeper() != nil)
+    }
+
+    @Test
+    func anOverdueCheckpointRunsImmediatelyAfterRelaunch() async throws {
+        let fixture = try EntitlementFixture()
+        let twoDays: Int64 = 2 * 24 * 60 * 60
+        let harness = ControllerHarness(
+            fixture: fixture,
+            activation: try fixture.monthlyActivationState(highestTrustedTime: fixture.issuedAt),
+            wallTime: fixture.issuedAt + twoDays
+        )
+
+        _ = await harness.subscribe()
+
+        #expect(await waitUntil { harness.store.saveActivationCount == 1 })
+        #expect(harness.clock.requestedDeadlines.first == .zero)
+        #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt + twoDays)
+    }
+
+    @Test
+    func aReplacementLicenseStartsItsOwnTrustedTimeFloor() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(
+            fixture: fixture,
+            activation: try fixture.monthlyActivationState(highestTrustedTime: fixture.expiresAt + 1_000),
+            wallTime: fixture.issuedAt
+        )
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_replacement",
+                entitlement: try fixture.sign(payload: fixture.monthlyPayload(revision: 1, installationID: installationID))
+            )
+        }
+        #expect(await harness.subscribe().content.state == .monthlyExpired)
+
+        try await harness.controller.activate(licenseKey: "GEQ1-NEW")
+
+        let snapshot = await harness.controller.currentSnapshot()
+        #expect(snapshot.content.state == .monthlyActive)
+        #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt)
+        #expect(harness.store.activation?.activationToken == "gea_replacement")
+    }
+
+    @Test
+    func mutationsFailWhenTheStoreCannotBeRead() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        harness.store.loadFailure = .keychain(-25_300)
+        harness.service.onActivate { _, _, _ in
+            ActivationResponse(activationToken: "gea_new", entitlement: try fixture.sign(payload: fixture.monthlyPayload()))
+        }
+        harness.service.onDeactivate { _ in }
+
+        await #expect(throws: LicensingError.storage(.keychain(-25_300))) {
+            try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        }
+        await #expect(throws: LicensingError.storage(.keychain(-25_300))) {
+            try await harness.controller.deactivateCurrent()
+        }
+
+        #expect(harness.service.calls.isEmpty)
+        #expect(harness.store.activation != nil)
+    }
+
+    @Test
+    func storageAndRefreshRetriesKeepSeparateSchedules() async throws {
+        let fixture = try EntitlementFixture()
+        let start = fixture.refreshAfter - 10
+        let harness = ControllerHarness(
+            fixture: fixture,
+            activation: try fixture.monthlyActivationState(highestTrustedTime: start),
+            wallTime: start
+        )
+        harness.store.loadFailure = .keychain(-25_300)
+        harness.serveRefreshFailure(.transport(.offline))
+        _ = await harness.subscribe()
+
+        // Two storage failures escalate the storage schedule only.
+        await harness.clock.fireNextDeadline()
+        #expect(await waitUntil { harness.clock.pendingDeadlines.first == .seconds(60 + 300) })
+        harness.store.loadFailure = nil
+        harness.advance(seconds: 300)
+
+        // The load succeeds and the overdue refresh runs at once and fails. Its first failure
+        // waits the first interval, not the third.
+        _ = try #require(await harness.recorder.waitForSnapshot(state: .verificationNeeded))
+        let deadline = try #require(await harness.clock.waitForSleeper())
+        #expect(deadline == harness.clock.now() + .seconds(60))
     }
 
     @Test
@@ -559,7 +722,7 @@ struct LicensingControllerTests {
     }
 
     @Test
-    func deactivationTransportFailureKeepsTheActivation() async throws {
+    func deactivationFailsClosedBeforeTheRequestAndRetriesIt() async throws {
         let fixture = try EntitlementFixture()
         let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
         harness.service.onDeactivate { _ in throw LicenseServiceError.transport(.offline) }
@@ -569,8 +732,53 @@ struct LicensingControllerTests {
             try await harness.controller.deactivateCurrent()
         }
 
-        #expect(harness.store.activation != nil)
-        #expect(await harness.controller.currentSnapshot().content.state == .monthlyActive)
+        #expect(harness.store.activation?.deactivationRequestedAt == fixture.issuedAt)
+        #expect(await harness.controller.currentSnapshot().content.state == .unlicensed)
+        let retry = try #require(await harness.clock.waitForSleeper())
+        #expect(retry == .seconds(60))
+
+        harness.service.onDeactivate { _ in }
+        harness.advance(seconds: 60)
+        #expect(await waitUntil { harness.store.activation == nil })
+        #expect(harness.service.calls.filter { if case .deactivate = $0 { true } else { false } }.count == 2)
+    }
+
+    @Test
+    func aTombstonedRecordCompletesItsDeactivationOnRelaunch() async throws {
+        let fixture = try EntitlementFixture()
+        var tombstoned = try fixture.monthlyActivationState()
+        tombstoned.deactivationRequestedAt = fixture.issuedAt
+        let harness = ControllerHarness(fixture: fixture, activation: tombstoned)
+        harness.service.onDeactivate { _ in }
+
+        let snapshot = await harness.subscribe()
+
+        #expect(snapshot.content.state == .unlicensed)
+        #expect(!snapshot.content.permitsProcessing)
+        #expect(await waitUntil { harness.store.activation == nil })
+        #expect(harness.service.calls == [.deactivate(activationToken: "gea_test")])
+    }
+
+    @Test
+    func aFailedDeletionAfterServerSuccessStaysUnlicensedAndRetries() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        harness.service.onDeactivate { _ in }
+        _ = await harness.subscribe()
+        harness.store.clearFailure = .keychain(-25_291)
+
+        await #expect(throws: LicensingError.storage(.keychain(-25_291))) {
+            try await harness.controller.deactivateCurrent()
+        }
+
+        let snapshot = await harness.controller.currentSnapshot()
+        #expect(snapshot.content.state == .unlicensed)
+        #expect(snapshot.content.storageFailure == .keychain(-25_291))
+        #expect(harness.store.activation?.deactivationRequestedAt != nil)
+        harness.store.clearFailure = nil
+        harness.advance(seconds: 60)
+        #expect(await waitUntil { harness.store.activation == nil })
+        #expect(await harness.controller.currentSnapshot().content.storageFailure == nil)
     }
 
     // MARK: Trusted time

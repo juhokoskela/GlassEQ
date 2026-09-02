@@ -19,7 +19,7 @@ struct EntitlementVerifierTests {
 
         #expect(entitlement.keyID == fixture.keyID)
         #expect(entitlement.claims.plan == .monthly)
-        #expect(entitlement.claims.billingState == .active)
+        #expect(entitlement.claims.monthlyTerms?.billingState == .active)
         #expect(entitlement.claims.revision == 7)
         #expect(entitlement.evaluate(atUnixTime: fixture.billingPeriodEnd - 1) == EntitlementEvaluation(
             processingState: .active,
@@ -60,7 +60,7 @@ struct EntitlementVerifierTests {
         )
 
         #expect(entitlement.claims.plan == .perpetualV1)
-        #expect(entitlement.claims.expiresAt == nil)
+        #expect(entitlement.claims.monthlyTerms == nil)
         #expect(entitlement.evaluate(atUnixTime: .max) == EntitlementEvaluation(
             processingState: .perpetual,
             permitsProcessing: true,

@@ -192,12 +192,12 @@ public struct EntitlementVerifier: Sendable {
                 entitlementID: entitlementID,
                 issuedAt: issuedAt,
                 schema: schema,
-                plan: plan,
                 activationID: activationID,
                 installationID: claimedInstallationID,
                 revision: revision,
                 releaseScope: releaseScope,
-                securityUpdatesAfterExpiry: securityUpdatesAfterExpiry
+                securityUpdatesAfterExpiry: securityUpdatesAfterExpiry,
+                terms: .perpetualV1
             )
         case .monthly:
             return try parseMonthlyClaims(
@@ -266,17 +266,18 @@ public struct EntitlementVerifier: Sendable {
             entitlementID: entitlementID,
             issuedAt: issuedAt,
             schema: schema,
-            plan: .monthly,
             activationID: activationID,
             installationID: installationID,
             revision: revision,
             releaseScope: releaseScope,
             securityUpdatesAfterExpiry: securityUpdatesAfterExpiry,
-            billingState: billingState,
-            billingPeriodEnd: billingPeriodEnd,
-            recoveryUntil: recoveryUntil,
-            refreshAfter: refreshAfter,
-            expiresAt: expiresAt
+            terms: .monthly(MonthlyTerms(
+                billingState: billingState,
+                billingPeriodEnd: billingPeriodEnd,
+                recoveryUntil: recoveryUntil,
+                refreshAfter: refreshAfter,
+                expiresAt: expiresAt
+            ))
         )
     }
 

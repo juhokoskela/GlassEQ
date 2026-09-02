@@ -7,6 +7,7 @@ final class InMemoryCredentialStore: LicenseCredentialStore, @unchecked Sendable
     private var _activation: ActivationState?
     private var _loadFailure: LicenseCredentialStoreError?
     private var _saveFailure: LicenseCredentialStoreError?
+    private var _clearFailure: LicenseCredentialStoreError?
     private var _corruptActivation = false
     private var _saveActivationCount = 0
     private var _clearCount = 0
@@ -34,6 +35,11 @@ final class InMemoryCredentialStore: LicenseCredentialStore, @unchecked Sendable
     var saveFailure: LicenseCredentialStoreError? {
         get { lock.withLock { _saveFailure } }
         set { lock.withLock { _saveFailure = newValue } }
+    }
+
+    var clearFailure: LicenseCredentialStoreError? {
+        get { lock.withLock { _clearFailure } }
+        set { lock.withLock { _clearFailure = newValue } }
     }
 
     var corruptActivation: Bool {
@@ -77,7 +83,7 @@ final class InMemoryCredentialStore: LicenseCredentialStore, @unchecked Sendable
     func clearActivationState() throws {
         try lock.withLock {
             _clearCount += 1
-            if let failure = _saveFailure { throw failure }
+            if let failure = _clearFailure { throw failure }
             _activation = nil
         }
     }

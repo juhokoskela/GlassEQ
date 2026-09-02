@@ -22,6 +22,13 @@ public struct ActivationState: Codable, Equatable, Sendable {
     /// may still carry a later `exp` than the server's shortened window, so the denial has to
     /// survive an offline relaunch. Cleared only by a successful refresh or a new activation.
     public var serverDeniedAt: Int64?
+    /// Set when the service no longer recognizes the activation token, for example after the slot
+    /// was released from another Mac. Service access is gone, but the signed entitlement keeps its
+    /// offline authority until `exp`, and forever for a perpetual license.
+    public var serviceRevokedAt: Int64?
+    /// Set before the deactivation request is sent. From then on the installation is unlicensed
+    /// locally even if the request or the Keychain deletion fails; both are retried.
+    public var deactivationRequestedAt: Int64?
 
     public init(
         activationToken: String,
@@ -29,7 +36,9 @@ public struct ActivationState: Codable, Equatable, Sendable {
         highestAcceptedRevision: Int64,
         highestTrustedTime: Int64,
         clockAnomalyDetectedAt: Int64? = nil,
-        serverDeniedAt: Int64? = nil
+        serverDeniedAt: Int64? = nil,
+        serviceRevokedAt: Int64? = nil,
+        deactivationRequestedAt: Int64? = nil
     ) {
         self.activationToken = activationToken
         self.entitlement = entitlement
@@ -37,6 +46,8 @@ public struct ActivationState: Codable, Equatable, Sendable {
         self.highestTrustedTime = highestTrustedTime
         self.clockAnomalyDetectedAt = clockAnomalyDetectedAt
         self.serverDeniedAt = serverDeniedAt
+        self.serviceRevokedAt = serviceRevokedAt
+        self.deactivationRequestedAt = deactivationRequestedAt
     }
 }
 

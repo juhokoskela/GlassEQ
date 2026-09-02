@@ -80,12 +80,6 @@ public struct LicenseServiceClient: LicenseServicing {
     static let minimumRetryAfterSeconds = 1
     static let maximumRetryAfterSeconds = 60 * 60
 
-    private struct HTTPResult {
-        let status: Int
-        let data: Data
-        let headers: [AnyHashable: Any]
-    }
-
     private let session: URLSession
 
     public init(session: URLSession = .shared) {
@@ -109,8 +103,8 @@ public struct LicenseServiceClient: LicenseServicing {
             )
         )
         request.setValue(idempotencyKey.uuidString, forHTTPHeaderField: "Idempotency-Key")
-        let result = try await perform(request, accepting: [200, 201])
-        let body = try Self.decode(ActivationResponseBody.self, from: result.data)
+        let data = try await perform(request, accepting: [200, 201])
+        let body = try Self.decode(ActivationResponseBody.self, from: data)
         guard Self.isBoundedCredential(body.activationToken),
               Self.isBoundedEntitlement(body.entitlement) else {
             throw LicenseServiceError.malformedResponse
@@ -125,8 +119,8 @@ public struct LicenseServiceClient: LicenseServicing {
             body: try JSONEncoder().encode(RefreshRequestBody(installationID: installationID.uuidString))
         )
         request.setValue("Bearer \(activationToken)", forHTTPHeaderField: "Authorization")
-        let result = try await perform(request, accepting: [200])
-        let body = try Self.decode(RefreshResponseBody.self, from: result.data)
+        let data = try await perform(request, accepting: [200])
+        let body = try Self.decode(RefreshResponseBody.self, from: data)
         guard Self.isBoundedEntitlement(body.entitlement) else {
             throw LicenseServiceError.malformedResponse
         }
@@ -154,7 +148,7 @@ public struct LicenseServiceClient: LicenseServicing {
         return request
     }
 
-    private func perform(_ request: URLRequest, accepting statuses: Set<Int>) async throws -> HTTPResult {
+    private func perform(_ request: URLRequest, accepting statuses: Set<Int>) async throws -> Data {
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
@@ -190,7 +184,7 @@ public struct LicenseServiceClient: LicenseServicing {
         guard statuses.contains(http.statusCode) else {
             throw Self.error(status: http.statusCode, data: data, headers: http.allHeaderFields)
         }
-        return HTTPResult(status: http.statusCode, data: data, headers: http.allHeaderFields)
+        return data
     }
 
     private static func error(status: Int, data: Data, headers: [AnyHashable: Any]) -> LicenseServiceError {
