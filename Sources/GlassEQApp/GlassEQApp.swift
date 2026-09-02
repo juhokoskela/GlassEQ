@@ -197,7 +197,7 @@ private enum PendingOutputTransitionAction {
     case stopped
 }
 
-let appResourcesBundle: Bundle = {
+private let appResourcesBundle: Bundle = {
     let resourceBundleName = "GlassEQ_GlassEQApp.bundle"
     let candidates = [
         Bundle.main.resourceURL?.appendingPathComponent(resourceBundleName),

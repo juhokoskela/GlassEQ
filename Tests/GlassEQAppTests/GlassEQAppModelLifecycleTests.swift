@@ -7,12 +7,6 @@ import GlassEQSettingsUI
 import Testing
 @testable import GlassEQApp
 
-// GlassEQSettingsUI exports its own localized(_:); this shadows both so the tests resolve
-// strings from the same bundle as the app model.
-private func localized(_ value: String.LocalizationValue) -> String {
-    String(localized: value, bundle: appResourcesBundle)
-}
-
 @MainActor
 @Suite
 struct GlassEQAppModelLifecycleTests {

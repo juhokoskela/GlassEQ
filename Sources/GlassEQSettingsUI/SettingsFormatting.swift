@@ -20,8 +20,13 @@ private let settingsResourcesBundle: Bundle = {
     return Bundle.main
 }()
 
-public func localized(_ value: String.LocalizationValue) -> String {
+func localized(_ value: String.LocalizationValue) -> String {
     String(localized: value, bundle: settingsResourcesBundle)
+}
+
+// The bundled Settings helper has no string catalog of its own and localizes against this one.
+public enum SettingsUIResources {
+    public static var bundle: Bundle { settingsResourcesBundle }
 }
 
 func localizedDecimal(

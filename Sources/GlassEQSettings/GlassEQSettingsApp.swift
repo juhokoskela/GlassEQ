@@ -6,6 +6,10 @@ import GlassEQSettingsIPC
 import GlassEQSettingsUI
 import SwiftUI
 
+private func localized(_ value: String.LocalizationValue) -> String {
+    String(localized: value, bundle: SettingsUIResources.bundle)
+}
+
 @main
 struct GlassEQSettingsApp: App {
     @NSApplicationDelegateAdaptor(SettingsAppDelegate.self) private var appDelegate
