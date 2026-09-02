@@ -37,6 +37,7 @@ public actor LicensingController {
         case notLoaded
         case none
         case corrupt
+        case unsupportedSchemaVersion(Int)
         case state(ActivationState)
     }
 
@@ -183,6 +184,9 @@ public actor LicensingController {
         try beginExclusiveOperation()
         defer { endExclusiveOperation() }
         try loadForMutation()
+        if activation == .corrupt {
+            try clearCorruptActivation()
+        }
         guard case .state = activation else {
             return try await activateNewLicense(licenseKey: licenseKey)
         }
@@ -263,6 +267,10 @@ public actor LicensingController {
         try beginExclusiveOperation()
         defer { endExclusiveOperation() }
         try loadForMutation()
+        if activation == .corrupt {
+            try clearCorruptActivation()
+            return
+        }
         guard case var .state(state) = activation else {
             return
         }
@@ -338,6 +346,12 @@ public actor LicensingController {
             storageFailure = nil
             storageRetry.reset()
             return nil
+        } catch LicenseCredentialStoreError.unsupportedSchemaVersion(let version) {
+            activation = .unsupportedSchemaVersion(version)
+            verifiedEntitlement = nil
+            storageFailure = .unsupportedSchemaVersion(version)
+            storageRetry.reset()
+            return nil
         } catch let error {
             recordStorageFailure(error)
             return error
@@ -349,9 +363,33 @@ public actor LicensingController {
         if let error = loadIfNeeded() {
             throw LicensingError.storage(error)
         }
-        if activation == .corrupt {
-            throw LicensingError.storage(.corruptRecord)
+        if case let .unsupportedSchemaVersion(version) = activation {
+            throw LicensingError.storage(.unsupportedSchemaVersion(version))
         }
+    }
+
+    /// A user-requested activation or deactivation may discard a malformed record. A future
+    /// schema never reaches this path, so downgrading cannot erase state owned by a newer build.
+    private func clearCorruptActivation() throws {
+        do {
+            try store.clearActivationState()
+        } catch let error {
+            clearPending = true
+            recordStorageFailure(error)
+            throw LicensingError.storage(error)
+        }
+        activation = .none
+        verifiedEntitlement = nil
+        trustedTime = TrustedTimeState(
+            persistedTrustedTime: nil,
+            wallClock: wallClock(),
+            now: clock.now()
+        )
+        storageFailure = nil
+        persistencePending = false
+        clearPending = false
+        storageRetry.reset()
+        resetRefreshFailures()
     }
 
     private func ensureIdentity() throws -> InstallationIdentity {
@@ -473,6 +511,8 @@ public actor LicensingController {
         case .none:
             return simple(.unlicensed)
         case .corrupt:
+            return simple(.invalidEntitlement)
+        case .unsupportedSchemaVersion:
             return simple(.invalidEntitlement)
         case let .state(state) where state.deactivationRequestedAt != nil:
             return simple(.unlicensed)

@@ -10,7 +10,7 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
         var saveFailure: LicenseCredentialStoreError?
         var nextActivationSaveFailure: LicenseCredentialStoreError?
         var clearFailure: LicenseCredentialStoreError?
-        var corruptActivation = false
+        var activationLoadFailure: LicenseCredentialStoreError?
         var saveActivationCount = 0
         var clearCount = 0
     }
@@ -50,9 +50,9 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
         set { state.withLock { $0.clearFailure = newValue } }
     }
 
-    var corruptActivation: Bool {
-        get { state.withLock { $0.corruptActivation } }
-        set { state.withLock { $0.corruptActivation = newValue } }
+    var activationLoadFailure: LicenseCredentialStoreError? {
+        get { state.withLock { $0.activationLoadFailure } }
+        set { state.withLock { $0.activationLoadFailure = newValue } }
     }
 
     var saveActivationCount: Int { state.withLock { $0.saveActivationCount } }
@@ -74,9 +74,9 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
     }
 
     func loadActivationState() throws(LicenseCredentialStoreError) -> ActivationState? {
-        let result = state.withLock { ($0.loadFailure, $0.corruptActivation, $0.activation) }
+        let result = state.withLock { ($0.loadFailure, $0.activationLoadFailure, $0.activation) }
         if let failure = result.0 { throw failure }
-        if result.1 { throw .corruptRecord }
+        if let failure = result.1 { throw failure }
         return result.2
     }
 
@@ -99,6 +99,7 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
             state.clearCount += 1
             guard state.clearFailure == nil else { return state.clearFailure }
             state.activation = nil
+            state.activationLoadFailure = nil
             return nil
         }
         if let failure { throw failure }

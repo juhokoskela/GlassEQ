@@ -61,7 +61,7 @@ The server checks every cryptographic random-generation result. The display form
 The main app stores two non-synchronizable, device-only Keychain items with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`:
 
 1. The installation identity, containing the installation ID.
-2. One versioned, atomically replaced activation-state value containing the activation token, compact entitlement, highest accepted revision, highest trusted time, last authenticated wall-clock reading, and any clock-anomaly, denial, or deactivation state. A client rejects schema versions newer than it understands.
+2. One versioned, atomically replaced activation-state value containing the activation token, compact entitlement, highest accepted revision, highest trusted time, last authenticated wall-clock reading, and any clock-anomaly, denial, or deactivation state. A client leaves schema versions newer than it understands intact. An explicit activation or deactivation may clear a malformed record from the current schema.
 
 The entitlement, replay state, and trusted time must not use separate persistence classes. Clearing the activation-state value removes every cached authority that depends on it. The Settings helper never receives the activation token or direct Keychain access.
 

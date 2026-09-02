@@ -92,21 +92,10 @@ struct ActivationStateTests {
     }
 
     @Test
-    func rejectsFutureActivationStateSchemas() throws {
-        let state = ActivationState(
-            activationToken: "gea_token",
-            entitlement: "a.b.c",
-            highestAcceptedRevision: 9,
-            highestTrustedTime: 1_234
-        )
-        let data = try LicenseRecordCodec.encode(state)
-        var object = try #require(
-            JSONSerialization.jsonObject(with: data) as? [String: Any]
-        )
-        object["schemaVersion"] = ActivationState.currentSchemaVersion + 1
-        let futureData = try JSONSerialization.data(withJSONObject: object)
+    func rejectsFutureActivationStateSchemas() {
+        let futureData = Data(#"{"schemaVersion":2}"#.utf8)
 
-        #expect(throws: LicenseCredentialStoreError.corruptRecord) {
+        #expect(throws: LicenseCredentialStoreError.unsupportedSchemaVersion(2)) {
             try LicenseRecordCodec.decodeActivationState(from: futureData)
         }
     }

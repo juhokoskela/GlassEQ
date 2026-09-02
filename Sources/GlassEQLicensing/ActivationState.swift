@@ -75,6 +75,9 @@ public struct ActivationState: Codable, Equatable, Sendable {
     }
 
     func validate() throws(LicenseCredentialStoreError) {
+        if schemaVersion > Self.currentSchemaVersion {
+            throw .unsupportedSchemaVersion(schemaVersion)
+        }
         guard schemaVersion == Self.currentSchemaVersion,
               !activationToken.isEmpty,
               activationToken.utf8.count <= 256,
@@ -102,6 +105,10 @@ public struct ActivationState: Codable, Equatable, Sendable {
 }
 
 enum LicenseRecordCodec {
+    private struct SchemaHeader: Decodable {
+        let schemaVersion: Int
+    }
+
     static func encode<Value: Encodable>(_ value: Value) throws(LicenseCredentialStoreError) -> Data {
         do {
             let encoder = JSONEncoder()
@@ -124,6 +131,13 @@ enum LicenseRecordCodec {
     }
 
     static func decodeActivationState(from data: Data) throws(LicenseCredentialStoreError) -> ActivationState {
+        let schemaVersion = try decode(SchemaHeader.self, from: data).schemaVersion
+        if schemaVersion > ActivationState.currentSchemaVersion {
+            throw .unsupportedSchemaVersion(schemaVersion)
+        }
+        guard schemaVersion == ActivationState.currentSchemaVersion else {
+            throw .corruptRecord
+        }
         let state = try decode(ActivationState.self, from: data)
         try state.validate()
         return state

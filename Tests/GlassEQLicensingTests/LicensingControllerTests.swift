@@ -107,7 +107,7 @@ struct LicensingControllerTests {
     func corruptRecordAndForeignInstallationAreInvalidEntitlements() async throws {
         let fixture = try EntitlementFixture()
         let corrupt = ControllerHarness(fixture: fixture)
-        corrupt.store.corruptActivation = true
+        corrupt.store.activationLoadFailure = .corruptRecord
         let foreign = ControllerHarness(
             fixture: fixture,
             activation: try fixture.monthlyActivationState(installationID: UUID())
@@ -803,15 +803,52 @@ struct LicensingControllerTests {
     }
 
     @Test
-    func activationCannotOverwriteACorruptRecord() async throws {
-        let harness = ControllerHarness(fixture: try EntitlementFixture())
-        harness.store.corruptActivation = true
+    func activationReplacesACorruptRecord() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture)
+        harness.store.activationLoadFailure = .corruptRecord
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_recovered",
+                entitlement: try fixture.sign(payload: fixture.monthlyPayload(
+                    installationID: installationID
+                ))
+            )
+        }
 
-        await #expect(throws: LicensingError.storage(.corruptRecord)) {
+        #expect(await harness.subscribe().content.state == .invalidEntitlement)
+
+        try await harness.controller.activate(licenseKey: "GEQ1-NEW")
+
+        #expect(harness.store.clearCount == 1)
+        #expect(harness.store.activation?.activationToken == "gea_recovered")
+        #expect(await harness.controller.currentSnapshot().content.state == .monthlyActive)
+    }
+
+    @Test
+    func activationDoesNotReplaceAFutureActivationSchema() async throws {
+        let harness = ControllerHarness(fixture: try EntitlementFixture())
+        harness.store.activationLoadFailure = .unsupportedSchemaVersion(2)
+
+        #expect(await harness.subscribe().content.state == .invalidEntitlement)
+        await #expect(throws: LicensingError.storage(.unsupportedSchemaVersion(2))) {
             try await harness.controller.activate(licenseKey: "GEQ1-NEW")
         }
 
+        #expect(harness.store.clearCount == 0)
         #expect(harness.service.calls.isEmpty)
+    }
+
+    @Test
+    func deactivationClearsACorruptRecordWithoutCallingTheService() async throws {
+        let harness = ControllerHarness(fixture: try EntitlementFixture())
+        harness.store.activationLoadFailure = .corruptRecord
+
+        try await harness.controller.deactivateCurrent()
+
+        #expect(harness.store.clearCount == 1)
+        #expect(harness.service.calls.isEmpty)
+        #expect(await harness.controller.currentSnapshot().content.state == .unlicensed)
     }
 
     @Test

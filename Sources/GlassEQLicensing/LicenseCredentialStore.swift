@@ -4,6 +4,8 @@ import Security
 public enum LicenseCredentialStoreError: Error, Equatable, Sendable {
     /// The store itself failed. The cached state is unknown, so callers fail closed and retry.
     case keychain(OSStatus)
+    /// A newer build owns this record. An older build must leave it intact.
+    case unsupportedSchemaVersion(Int)
     /// The store answered, but the record cannot be decoded. The entitlement material is unusable
     /// and a new activation replaces it.
     case corruptRecord
