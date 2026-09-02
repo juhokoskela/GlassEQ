@@ -55,6 +55,7 @@ struct OnboardingView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = OnboardingStep.welcome
+    @State private var isMovingBackward = false
     @State private var hasRequestedAudio = false
 
     var body: some View {
@@ -75,8 +76,8 @@ struct OnboardingView: View {
             .padding(.horizontal, 36)
             .padding(.top, 36)
             .transition(reduceMotion ? .opacity : .asymmetric(
-                insertion: .move(edge: .trailing).combined(with: .opacity),
-                removal: .move(edge: .leading).combined(with: .opacity)
+                insertion: .move(edge: isMovingBackward ? .leading : .trailing).combined(with: .opacity),
+                removal: .move(edge: isMovingBackward ? .trailing : .leading).combined(with: .opacity)
             ))
             .id(step)
 
@@ -315,6 +316,7 @@ struct OnboardingView: View {
         HStack {
             if step != .welcome {
                 Button(localized("Back")) {
+                    isMovingBackward = true
                     step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome
                 }
             }
@@ -406,6 +408,7 @@ struct OnboardingView: View {
     }
 
     private func advance() {
+        isMovingBackward = false
         step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done
     }
 }
