@@ -55,35 +55,32 @@ struct OnboardingView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = OnboardingStep.welcome
-    @State private var isMovingBackward = false
     @State private var hasRequestedAudio = false
+
+    private static let windowWidth: CGFloat = 560
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                switch step {
-                case .welcome:
-                    welcome
-                case .audioCapture:
-                    audioCapture
-                case .preferences:
-                    preferences
-                case .done:
-                    done
+            // All steps sit in one strip and the strip slides, so going back naturally reverses
+            // the motion instead of replaying an insertion transition.
+            HStack(spacing: 0) {
+                ForEach(OnboardingStep.allCases, id: \.rawValue) { candidate in
+                    content(for: candidate)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .padding(.horizontal, 36)
+                        .padding(.top, 36)
+                        .frame(width: Self.windowWidth)
+                        .opacity(candidate == step ? 1 : 0)
+                        .accessibilityHidden(candidate != step)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.horizontal, 36)
-            .padding(.top, 36)
-            .transition(reduceMotion ? .opacity : .asymmetric(
-                insertion: .move(edge: isMovingBackward ? .leading : .trailing).combined(with: .opacity),
-                removal: .move(edge: isMovingBackward ? .trailing : .leading).combined(with: .opacity)
-            ))
-            .id(step)
+            .frame(width: Self.windowWidth, alignment: .leading)
+            .offset(x: -CGFloat(step.rawValue) * Self.windowWidth)
+            .clipped()
 
             footer
         }
-        .frame(width: 560, height: 540)
+        .frame(width: Self.windowWidth, height: 540)
         .background(Color(nsColor: .windowBackgroundColor))
         .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: step)
         .onAppear {
@@ -92,6 +89,20 @@ struct OnboardingView: View {
     }
 
     // MARK: Steps
+
+    @ViewBuilder
+    private func content(for candidate: OnboardingStep) -> some View {
+        switch candidate {
+        case .welcome:
+            welcome
+        case .audioCapture:
+            audioCapture
+        case .preferences:
+            preferences
+        case .done:
+            done
+        }
+    }
 
     private var welcome: some View {
         VStack(spacing: 20) {
@@ -316,7 +327,6 @@ struct OnboardingView: View {
         HStack {
             if step != .welcome {
                 Button(localized("Back")) {
-                    isMovingBackward = true
                     step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome
                 }
             }
@@ -408,7 +418,6 @@ struct OnboardingView: View {
     }
 
     private func advance() {
-        isMovingBackward = false
         step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done
     }
 }
