@@ -3,7 +3,7 @@ import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
 import Testing
-@testable import GlassEQSettingsUI
+import GlassEQProfileImport
 
 @Suite
 struct ImpulseResponseWAVImporterTests {
@@ -16,7 +16,7 @@ struct ImpulseResponseWAVImporterTests {
             try? FileManager.default.removeItem(at: wavURL)
         }
 
-        let textSelection = try SettingsFileImportPicker.loadSelection(
+        let textSelection = try SettingsFileImportLoader.load(
             mode: .single,
             urls: [textURL]
         )
@@ -28,7 +28,7 @@ struct ImpulseResponseWAVImporterTests {
         #expect(filename == textURL.lastPathComponent)
         #expect(text == "Preamp: -3 dB")
 
-        let wavSelection = try SettingsFileImportPicker.loadSelection(
+        let wavSelection = try SettingsFileImportLoader.load(
             mode: .single,
             urls: [wavURL]
         )
@@ -48,7 +48,12 @@ struct ImpulseResponseWAVImporterTests {
 
         let imported = try ImpulseResponseWAVImporter.load(from: url)
 
-        #expect(imported.channelCount == 1)
+        guard case .mono(let channel) = imported.channels else {
+            Issue.record("Expected a mono channel")
+            return
+        }
+        #expect(channel.filename == url.lastPathComponent)
+        #expect(channel.frameCount == 3)
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .linked)
         guard case .impulseResponse(let source) = imported.profile.convolution else {
@@ -69,7 +74,7 @@ struct ImpulseResponseWAVImporterTests {
 
         let imported = try ImpulseResponseWAVImporter.load(from: url)
 
-        #expect(imported.channelCount == 2)
+        #expect(imported.channels.count == 2)
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .stereo)
         guard case .impulseResponse(let left) = imported.profile.leftConvolution,
@@ -95,12 +100,15 @@ struct ImpulseResponseWAVImporterTests {
             rightURL: rightURL
         )
 
-        #expect(imported.channelCount == 2)
         #expect(imported.sourceFileCount == 2)
-        #expect(imported.channels[0].filename == leftURL.lastPathComponent)
-        #expect(imported.channels[0].frameCount == 3)
-        #expect(imported.channels[1].filename == rightURL.lastPathComponent)
-        #expect(imported.channels[1].frameCount == 2)
+        guard case let .stereo(leftChannel, rightChannel) = imported.channels else {
+            Issue.record("Expected separate left and right channels")
+            return
+        }
+        #expect(leftChannel.filename == leftURL.lastPathComponent)
+        #expect(leftChannel.frameCount == 3)
+        #expect(rightChannel.filename == rightURL.lastPathComponent)
+        #expect(rightChannel.frameCount == 2)
         guard case .impulseResponse(let left) = imported.profile.leftConvolution,
               case .impulseResponse(let right) = imported.profile.rightConvolution else {
             Issue.record("Expected separate left and right impulse responses")
@@ -111,8 +119,7 @@ struct ImpulseResponseWAVImporterTests {
 
         imported.swapStereoChannels()
 
-        #expect(imported.channels[0].filename == rightURL.lastPathComponent)
-        #expect(imported.channels[1].filename == leftURL.lastPathComponent)
+        #expect(imported.channels == .stereo(left: rightChannel, right: leftChannel))
         guard case .impulseResponse(let swappedLeft) = imported.profile.leftConvolution,
               case .impulseResponse(let swappedRight) = imported.profile.rightConvolution else {
             Issue.record("Expected swapped left and right impulse responses")

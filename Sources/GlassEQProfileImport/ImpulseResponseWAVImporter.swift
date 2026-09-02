@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import GlassEQCore
 
-enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
+public enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     case empty
     case unsupportedChannelCount(Int)
     case tooManyFrames(count: Int, maximum: Int)
@@ -12,7 +12,7 @@ enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
     case unreadableSamples
     case nonFiniteSample(channel: Int, frame: Int)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .empty:
             "The WAV file does not contain an impulse response."
@@ -25,55 +25,91 @@ enum ImpulseResponseWAVImportError: Error, Equatable, LocalizedError {
         case let .separateFilesMustBeMono(leftChannels, rightChannels):
             "Separate left and right imports require two mono WAV files. The selected files have \(leftChannels) and \(rightChannels) channels."
         case let .channelSampleRateMismatch(left, right):
-            "The left and right files use different sample rates: \(Self.rateLabel(left)) and \(Self.rateLabel(right))."
+            "The left and right files use different sample rates: \(ImportedImpulseResponse.sampleRateLabel(left)) and \(ImportedImpulseResponse.sampleRateLabel(right))."
         case .unreadableSamples:
             "GlassEQ could not read PCM samples from the WAV file."
         case let .nonFiniteSample(channel, frame):
             "The WAV file contains an invalid sample in channel \(channel + 1) at frame \(frame)."
         }
     }
-
-    private static func rateLabel(_ sampleRate: Double) -> String {
-        if sampleRate >= 1_000 {
-            return String(format: "%.1f kHz", sampleRate / 1_000)
-        }
-        return String(format: "%.0f Hz", sampleRate)
-    }
 }
 
-struct ImportedImpulseResponse: Equatable, Sendable {
-    struct Channel: Equatable, Sendable {
-        var filename: String
-        var frameCount: Int
-        var sampleRate: Double
+public struct ImportedImpulseResponse: Equatable, Sendable {
+    public struct Channel: Equatable, Sendable {
+        public var filename: String
+        public var frameCount: Int
+        public var sampleRate: Double
+
+        public init(filename: String, frameCount: Int, sampleRate: Double) {
+            self.filename = filename
+            self.frameCount = frameCount
+            self.sampleRate = sampleRate
+        }
     }
 
-    var profile: EQProfile
-    var channels: [Channel]
-    var sourceFileCount: Int
+    public enum Channels: Equatable, Sendable {
+        case mono(Channel)
+        case stereo(left: Channel, right: Channel)
 
-    var channelCount: Int {
-        channels.count
+        public var count: Int {
+            switch self {
+            case .mono:
+                1
+            case .stereo:
+                2
+            }
+        }
+
+        public var first: Channel {
+            switch self {
+            case .mono(let channel), .stereo(let channel, _):
+                channel
+            }
+        }
     }
 
-    var sampleRate: Double {
-        channels.first?.sampleRate ?? 0
+    public var profile: EQProfile
+    public var channels: Channels
+    public var sourceFileCount: Int
+
+    public init(profile: EQProfile, channels: Channels, sourceFileCount: Int) {
+        self.profile = profile
+        self.channels = channels
+        self.sourceFileCount = sourceFileCount
     }
 
-    mutating func swapStereoChannels() {
-        guard profile.channelMode == .stereo,
-              channels.count == 2 else {
+    public var sampleRate: Double {
+        channels.first.sampleRate
+    }
+
+    public mutating func swapStereoChannels() {
+        guard case let .stereo(left, right) = channels else {
             return
         }
-        let left = profile.leftConvolution
-        profile.leftConvolution = profile.rightConvolution
-        profile.rightConvolution = left
-        channels.swapAt(0, 1)
+        profile.swapStereoChannels()
+        channels = .stereo(left: right, right: left)
+    }
+
+    public static func sampleRateLabel(_ sampleRate: Double) -> String {
+        if sampleRate >= 1_000 {
+            return Measurement(value: sampleRate / 1_000, unit: UnitFrequency.kilohertz)
+                .formatted(.measurement(
+                    width: .abbreviated,
+                    usage: .asProvided,
+                    numberFormatStyle: .number.precision(.fractionLength(1))
+                ))
+        }
+        return Measurement(value: sampleRate, unit: UnitFrequency.hertz)
+            .formatted(.measurement(
+                width: .abbreviated,
+                usage: .asProvided,
+                numberFormatStyle: .number.precision(.fractionLength(0))
+            ))
     }
 }
 
-enum ImpulseResponseWAVImporter {
-    static func load(from url: URL) throws -> ImportedImpulseResponse {
+public enum ImpulseResponseWAVImporter {
+    public static func load(from url: URL) throws -> ImportedImpulseResponse {
         let hasAccess = url.startAccessingSecurityScopedResource()
         defer {
             if hasAccess {
@@ -120,7 +156,7 @@ enum ImpulseResponseWAVImporter {
         guard frameCount > 0 else {
             throw ImpulseResponseWAVImportError.empty
         }
-        guard let channels = buffer.floatChannelData else {
+        guard let channelData = buffer.floatChannelData else {
             throw ImpulseResponseWAVImportError.unreadableSamples
         }
 
@@ -128,7 +164,7 @@ enum ImpulseResponseWAVImporter {
         sources.reserveCapacity(channelCount)
         for channel in 0..<channelCount {
             let samples = Array(UnsafeBufferPointer(
-                start: channels[channel],
+                start: channelData[channel],
                 count: frameCount
             ))
             if let frame = samples.firstIndex(where: { !$0.isFinite }) {
@@ -144,50 +180,49 @@ enum ImpulseResponseWAVImporter {
         }
 
         let name = url.deletingPathExtension().lastPathComponent
-        let profile: EQProfile
-        if channelCount == 1 {
-            profile = EQProfile(
+        let channel = ImportedImpulseResponse.Channel(
+            filename: url.lastPathComponent,
+            frameCount: frameCount,
+            sampleRate: sampleRate
+        )
+        if sources.count == 2 {
+            return ImportedImpulseResponse(
+                profile: EQProfile(
+                    name: name,
+                    mode: .convolution,
+                    channelMode: .stereo,
+                    filters: [],
+                    convolution: nil,
+                    leftConvolution: .impulseResponse(sources[0]),
+                    rightConvolution: .impulseResponse(sources[1])
+                ),
+                channels: .stereo(left: channel, right: channel),
+                sourceFileCount: 1
+            )
+        }
+        return ImportedImpulseResponse(
+            profile: EQProfile(
                 name: name,
                 mode: .convolution,
                 filters: [],
                 convolution: .impulseResponse(sources[0])
-            )
-        } else {
-            profile = EQProfile(
-                name: name,
-                mode: .convolution,
-                channelMode: .stereo,
-                filters: [],
-                convolution: nil,
-                leftConvolution: .impulseResponse(sources[0]),
-                rightConvolution: .impulseResponse(sources[1])
-            )
-        }
-
-        return ImportedImpulseResponse(
-            profile: profile,
-            channels: (0..<channelCount).map { _ in
-                ImportedImpulseResponse.Channel(
-                    filename: url.lastPathComponent,
-                    frameCount: frameCount,
-                    sampleRate: sampleRate
-                )
-            },
+            ),
+            channels: .mono(channel),
             sourceFileCount: 1
         )
     }
 
-    static func loadStereoPair(
+    public static func loadStereoPair(
         leftURL: URL,
         rightURL: URL
     ) throws -> ImportedImpulseResponse {
         let left = try load(from: leftURL)
         let right = try load(from: rightURL)
-        guard left.channelCount == 1,
-              right.channelCount == 1 else {
+        guard case .mono(let leftChannel) = left.channels,
+              case .mono(let rightChannel) = right.channels else {
             throw ImpulseResponseWAVImportError.separateFilesMustBeMono(
-                leftChannels: left.channelCount,
-                rightChannels: right.channelCount
+                leftChannels: left.channels.count,
+                rightChannels: right.channels.count
             )
         }
         guard abs(left.sampleRate - right.sampleRate) < 0.5 else {
@@ -202,7 +237,7 @@ enum ImpulseResponseWAVImporter {
         }
 
         let profile = EQProfile(
-            name: inferredStereoProfileName(
+            name: EQProfile.inferredStereoImportName(
                 leftURL: leftURL,
                 rightURL: rightURL,
                 fallback: "Imported Stereo IR"
@@ -216,36 +251,8 @@ enum ImpulseResponseWAVImporter {
         )
         return ImportedImpulseResponse(
             profile: profile,
-            channels: [left.channels[0], right.channels[0]],
+            channels: .stereo(left: leftChannel, right: rightChannel),
             sourceFileCount: 2
         )
     }
-
-}
-
-func inferredStereoProfileName(
-    leftURL: URL,
-    rightURL: URL,
-    fallback: String
-) -> String {
-    let left = removingChannelSuffix(leftURL.deletingPathExtension().lastPathComponent)
-    let right = removingChannelSuffix(rightURL.deletingPathExtension().lastPathComponent)
-    if !left.isEmpty,
-       left.caseInsensitiveCompare(right) == .orderedSame {
-        return left
-    }
-    return fallback
-}
-
-private func removingChannelSuffix(_ name: String) -> String {
-    let suffixes = [
-        " left", "-left", "_left", " l", "-l", "_l",
-        " right", "-right", "_right", " r", "-r", "_r"
-    ]
-    let lowercased = name.lowercased()
-    for suffix in suffixes where lowercased.hasSuffix(suffix) {
-        return String(name.dropLast(suffix.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    return name
 }

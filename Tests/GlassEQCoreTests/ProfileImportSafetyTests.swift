@@ -1,7 +1,6 @@
 import Foundation
 import GlassEQCore
 import Testing
-@testable import GlassEQSettingsUI
 
 @Suite
 struct ProfileImportSafetyTests {
@@ -23,7 +22,7 @@ struct ProfileImportSafetyTests {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
-        let text = try readBoundedImportedText(
+        let text = try ProfileTextFileReader.readBounded(
             from: handle,
             knownFileSize: nil,
             maximumBytes: 8
@@ -40,7 +39,7 @@ struct ProfileImportSafetyTests {
         defer { try? handle.close() }
 
         #expect(throws: ProfileImportError.inputTooLarge(byteCount: 8, maximum: 7)) {
-            try readBoundedImportedText(
+            try ProfileTextFileReader.readBounded(
                 from: handle,
                 knownFileSize: 3,
                 maximumBytes: 7
@@ -58,7 +57,7 @@ struct ProfileImportSafetyTests {
             withUnsafeCurrentTask { task in
                 task?.cancel()
             }
-            return try readBoundedImportedText(
+            return try ProfileTextFileReader.readBounded(
                 from: handle,
                 knownFileSize: nil,
                 maximumBytes: 32

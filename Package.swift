@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "GlassEQCore", targets: ["GlassEQCore"]),
         .library(name: "GlassEQAudio", targets: ["GlassEQAudio"]),
         .library(name: "GlassEQSettingsIPC", targets: ["GlassEQSettingsIPC"]),
+        .library(name: "GlassEQProfileImport", targets: ["GlassEQProfileImport"]),
         .library(name: "GlassEQSettingsUI", targets: ["GlassEQSettingsUI"]),
         .executable(name: "GlassEQ", targets: ["GlassEQApp"]),
         .executable(name: "GlassEQSettings", targets: ["GlassEQSettings"]),
@@ -37,10 +38,21 @@ let package = Package(
             dependencies: ["GlassEQCore"]
         ),
         .target(
-            name: "GlassEQSettingsUI",
+            name: "GlassEQProfileImport",
             dependencies: [
                 "GlassEQCore",
                 "GlassEQSettingsIPC"
+            ],
+            linkerSettings: [
+                .linkedFramework("AVFoundation")
+            ]
+        ),
+        .target(
+            name: "GlassEQSettingsUI",
+            dependencies: [
+                "GlassEQCore",
+                "GlassEQSettingsIPC",
+                "GlassEQProfileImport"
             ],
             resources: [
                 .process("Resources")
@@ -48,7 +60,6 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("AVFoundation"),
                 .linkedFramework("Security")
             ]
         ),
@@ -113,6 +124,14 @@ let package = Package(
                 "GlassEQCore",
                 "GlassEQSettingsIPC",
                 "GlassEQSettingsUI"
+            ]
+        ),
+        .testTarget(
+            name: "GlassEQProfileImportTests",
+            dependencies: [
+                "GlassEQCore",
+                "GlassEQProfileImport",
+                "GlassEQSettingsIPC"
             ]
         ),
         .testTarget(
