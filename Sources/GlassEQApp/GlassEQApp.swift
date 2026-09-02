@@ -2,6 +2,7 @@ import AppKit
 import CoreAudio
 import GlassEQAudio
 import GlassEQCore
+import GlassEQLicensing
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
 import SwiftUI
@@ -16,7 +17,10 @@ struct GlassEQApp: App {
     @NSApplicationDelegateAdaptor(GlassEQAppDelegate.self) private var appDelegate
     // A first launch waits for the onboarding permission step before touching Core Audio, so the
     // system audio capture prompt appears after GlassEQ has explained it.
-    @State private var model = GlassEQAppModel(autoStart: OnboardingState.isComplete)
+    @State private var model = GlassEQAppModel(
+        autoStart: OnboardingState.isComplete,
+        licensing: LicensingBootstrap.makeSource()
+    )
 
     var body: some Scene {
         MenuBarExtra {
@@ -297,6 +301,51 @@ extension AudioEngineControlling {
 }
 
 extension SystemTapAudioEngine: AudioEngineControlling {}
+
+protocol LicenseSnapshotProviding: Sendable {
+    func subscribe(_ handler: @escaping @Sendable (LicenseSnapshot) -> Void) async -> LicenseSnapshot
+    func checkpoint() async
+    func shutdown() async
+}
+
+extension LicensingController: LicenseSnapshotProviding {}
+
+/// Licensing is enforced only in builds that embed entitlement public keys. A build without the
+/// key dictionary is a source build and runs unrestricted; a dictionary that is present but unusable
+/// is a packaging mistake and fails closed.
+enum LicensingSource {
+    case disabled
+    case provider(any LicenseSnapshotProviding)
+    case invalidConfiguration
+}
+
+private enum LicensingBootstrap {
+    static let publicKeysInfoKey = "GlassEQEntitlementPublicKeys"
+
+    static func makeSource(bundle: Bundle = .main) -> LicensingSource {
+        guard let raw = bundle.object(forInfoDictionaryKey: publicKeysInfoKey) else {
+            return .disabled
+        }
+        guard let encodedKeys = raw as? [String: String], !encodedKeys.isEmpty else {
+            return .invalidConfiguration
+        }
+        var publicKeys: [String: Data] = [:]
+        for (keyID, encoded) in encodedKeys {
+            guard let key = Data(base64Encoded: encoded), key.count == 32 else {
+                return .invalidConfiguration
+            }
+            publicKeys[keyID] = key
+        }
+        guard let verifier = try? EntitlementVerifier(publicKeys: publicKeys) else {
+            return .invalidConfiguration
+        }
+        return .provider(LicensingController(
+            store: KeychainCredentialStore(),
+            service: LicenseServiceClient(),
+            verifier: verifier
+        ))
+    }
+}
 
 protocol DefaultOutputLookingUp: Sendable {
     func defaultOutputDevice() throws -> AudioOutputDevice
@@ -631,6 +680,11 @@ final class GlassEQAppModel {
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
     private(set) var onboardingAudioCaptureState = OnboardingAudioCaptureState.idle
+    private let licensing: LicensingSource
+    private let licenseStopTransitionTimeout: Duration
+    private(set) var licenseSnapshot: LicenseSnapshot?
+    @ObservationIgnored private var lastAppliedLicenseSequence: UInt64 = 0
+    @ObservationIgnored private var licenseStopTask: Task<Void, Never>?
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
@@ -923,7 +977,9 @@ final class GlassEQAppModel {
         renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
         renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
         renderWatchdogPollInterval: Duration = .milliseconds(500),
-        aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil
+        aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
+        licensing: LicensingSource = .disabled,
+        licenseStopTransitionTimeout: Duration = .milliseconds(500)
     ) {
         let loadResult: ProfileStoreLoadResult?
         let loadedStore: ProfileStore
@@ -982,6 +1038,8 @@ final class GlassEQAppModel {
             repeatedFailureWindow: renderWatchdogRepeatedFailureWindow
         )
         self.renderWatchdogPollInterval = renderWatchdogPollInterval
+        self.licensing = licensing
+        self.licenseStopTransitionTimeout = licenseStopTransitionTimeout
         self.aggregateBufferNotifier = aggregateBufferNotifier
             ?? (registerAppDelegate
                 ? AggregateBufferNotifier.shared
@@ -1029,9 +1087,25 @@ final class GlassEQAppModel {
             }
         }
 
-        if autoStart {
-            Task { @MainActor [weak self] in
-                self?.start()
+        // The first license snapshot arrives before any tap start so a launch in a non-permitting
+        // state never touches Core Audio. `hasStartedAudio` covers onboarding asking to start while
+        // that snapshot was still loading.
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            if case let .provider(provider) = licensing {
+                let initial = await provider.subscribe { [weak self] snapshot in
+                    Task { @MainActor in
+                        self?.applyLicenseSnapshot(snapshot)
+                    }
+                }
+                recordLicenseSnapshot(initial)
+                if autoStart || hasStartedAudio {
+                    start()
+                }
+            } else if autoStart {
+                start()
             }
         }
     }
@@ -1342,8 +1416,205 @@ final class GlassEQAppModel {
             return
         }
         hasStartedAudio = true
+        if refuseProcessingIfUnlicensed() {
+            return
+        }
         onboardingAudioCaptureState = .pending
         startObserver(sendInitialValue: true)
+    }
+
+    // MARK: Licensing
+
+    /// True when no licensing applies to this build or the current snapshot permits processing.
+    /// With a provider and no snapshot yet, processing is not licensed.
+    private var processingIsLicensed: Bool {
+        switch licensing {
+        case .disabled:
+            return true
+        case .invalidConfiguration:
+            return false
+        case .provider:
+            return licenseSnapshot?.content.permitsProcessing == true
+        }
+    }
+
+    /// Refuses a tap start when licensing forbids it and leaves the model in a coherent stopped
+    /// state with the reason visible. Returns true when the caller must not proceed.
+    private func refuseProcessingIfUnlicensed() -> Bool {
+        guard !processingIsLicensed else {
+            return false
+        }
+        if lifecycleState != .sleeping, lifecycleState != .terminating {
+            lifecycleState = .stopped
+        }
+        isRunning = false
+        statusMessage = licenseBlockedStatusMessage()
+        if case .provider = licensing, licenseSnapshot == nil {
+            onboardingAudioCaptureState = .pending
+        } else {
+            onboardingAudioCaptureState = .failed(message: statusMessage)
+        }
+        notifyModelDidChange()
+        return true
+    }
+
+    private func recordLicenseSnapshot(_ snapshot: LicenseSnapshot) {
+        licenseSnapshot = snapshot
+        lastAppliedLicenseSequence = snapshot.sequence
+    }
+
+    private func applyLicenseSnapshot(_ snapshot: LicenseSnapshot) {
+        guard snapshot.sequence > lastAppliedLicenseSequence else {
+            return
+        }
+        let wasLicensed = processingIsLicensed
+        recordLicenseSnapshot(snapshot)
+        if snapshot.content.permitsProcessing {
+            if !wasLicensed,
+               hasStartedAudio,
+               licenseStopTask == nil,
+               lifecycleState == .stopped,
+               engineStartTask == nil {
+                start()
+            } else {
+                notifyModelDidChange()
+            }
+        } else if licenseStopTask != nil {
+            notifyModelDidChange()
+        } else if isRunning
+                    || engineStartTask != nil
+                    || lifecycleState == .waking
+                    || engineStateNeedsStop {
+            licenseStopTask = Task { @MainActor [weak self] in
+                await self?.stopProcessingForLicense()
+                self?.licenseStopTask = nil
+                self?.resumeProcessingIfLicenseAllows()
+            }
+        } else {
+            _ = refuseProcessingIfUnlicensed()
+        }
+    }
+
+    private func resumeProcessingIfLicenseAllows() {
+        guard processingIsLicensed,
+              hasStartedAudio,
+              lifecycleState == .stopped,
+              engineStartTask == nil else {
+            return
+        }
+        start()
+    }
+
+    /// Expiry while processing. The active bank fades to identity filters and unity preamp through
+    /// the normal click-free transition, and the tap is torn down only after that transition has
+    /// completed. `stop()` does not fade, so stopping earlier would cut the blend. Dry playback
+    /// restoration still outranks the fade: a transition that never completes is stopped anyway.
+    private func stopProcessingForLicense() async {
+        guard lifecycleState != .terminating,
+              lifecycleState != .sleeping else {
+            return
+        }
+        stopObserver()
+        invalidatePendingOutputChange()
+        invalidatePendingEngineStart()
+        metricsTask?.cancel()
+        metricsTask = nil
+        renderWatchdog.reset()
+        previewReturnProfile = nil
+        clearProgrammeComparisonSession()
+        // Marks a stop in flight so profile changes and a cancelled start's cleanup do not stop or
+        // restart the engine before the fade has finished.
+        pendingOutputTransitionAction = .stopped
+        lifecycleState = .stopped
+        isRunning = false
+        wasRunningBeforeSleep = false
+        wakeReconnectAttempts = 0
+        statusMessage = localized("Subscription ended. Restoring unprocessed playback...")
+        notifyModelDidChange()
+
+        var identityProfile = activeProfile
+        identityProfile.isBypassed = true
+        let identity = identityProfile
+        let engine = engine
+        let fadeTask = engineWorkExecutor.enqueue(priority: .userInitiated) { () -> UInt64? in
+            let began = engine.dspTransitionProgress().began
+            return engine.updateDSP(profile: identity) ? began &+ 1 : nil
+        }
+        if let target = await fadeTask.value {
+            await waitForDSPTransition(reaching: target)
+        }
+
+        guard lifecycleState != .terminating,
+              lifecycleState != .sleeping else {
+            return
+        }
+        pendingOutputTransitionAction = .none
+        scheduleEngineStop(updateMetrics: true)
+        statusMessage = licenseBlockedStatusMessage()
+        onboardingAudioCaptureState = .idle
+        notifyModelDidChange()
+    }
+
+    private func waitForDSPTransition(reaching target: UInt64) async {
+        let deadline = ContinuousClock.now + licenseStopTransitionTimeout
+        while engine.dspTransitionProgress().completed < target,
+              ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    private func licenseBlockedStatusMessage() -> String {
+        switch licensing {
+        case .disabled:
+            return statusMessage
+        case .invalidConfiguration:
+            return localized("This build's license configuration is invalid")
+        case .provider:
+            break
+        }
+        guard let content = licenseSnapshot?.content else {
+            return localized("Checking license...")
+        }
+        switch content.state {
+        case .unlicensed:
+            return localized("Activate a license to start processing")
+        case .monthlyExpired:
+            return localized("Subscription ended. GlassEQ has returned to unprocessed playback.")
+        case .invalidEntitlement:
+            return localized("The stored license is invalid. Activate again to continue.")
+        case .storageUnavailable:
+            return localized("The license could not be read from Keychain")
+        case .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .verificationNeeded:
+            return statusMessage
+        }
+    }
+
+    /// A secondary line for states that still process but need the user's attention. Stopped
+    /// states already carry their reason in `statusMessage`.
+    var licenseStatusMessage: String? {
+        guard case .provider = licensing, let content = licenseSnapshot?.content else {
+            return nil
+        }
+        switch content.state {
+        case .monthlyRecovery:
+            // Only an authenticated recovering state may say a payment failed.
+            if content.billingState == .recovering {
+                return localized("Payment needs attention. Update your payment details to keep processing.")
+            }
+            return localized("Subscription renewal could not be verified yet")
+        case .monthlyGrace:
+            guard let expiresAt = content.expiresAt else {
+                return localized("Subscription ended. Processing stops soon.")
+            }
+            let deadline = Date(timeIntervalSince1970: TimeInterval(expiresAt))
+                .formatted(date: .abbreviated, time: .shortened)
+            return localized("Subscription ended. Processing stops on \(deadline).")
+        case .verificationNeeded:
+            return localized("License could not be verified. Processing continues under the cached license.")
+        case .perpetual, .monthlyActive, .unlicensed, .monthlyExpired, .invalidEntitlement,
+             .storageUnavailable:
+            return nil
+        }
     }
 
     func requestOnboardingPresentation() {
@@ -2379,6 +2650,11 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        // Every tap start passes through here, so this alone guarantees a non-permitting license
+        // never starts the tap. The earlier gates exist to leave coherent status behind.
+        if refuseProcessingIfUnlicensed() {
+            return
+        }
 
         engineStartGeneration += 1
         let generation = engineStartGeneration
@@ -2499,6 +2775,10 @@ final class GlassEQAppModel {
                 updateMetrics: true,
                 onboardingState: .bypassed
             )
+            return
+        }
+
+        if refuseProcessingIfUnlicensed() {
             return
         }
 
@@ -3706,6 +3986,9 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        if refuseProcessingIfUnlicensed() {
+            return
+        }
         onboardingAudioCaptureState = .pending
         guard !activeProfile.isBypassed else {
             synchronizeActiveProfileProcessing()
@@ -4107,6 +4390,13 @@ final class GlassEQAppModel {
     }
 
     private func beginAudioReconnect(status: String, initialDelay: Duration) {
+        if refuseProcessingIfUnlicensed() {
+            // Waking is a legitimate exit from sleep even when licensing refuses the reconnect.
+            lifecycleState = .stopped
+            wasRunningBeforeSleep = false
+            notifyModelDidChange()
+            return
+        }
         guard lifecycleState != .waking else {
             statusMessage = status
             notifyModelDidChange()
@@ -4151,7 +4441,16 @@ final class GlassEQAppModel {
             return
         }
         await settingsCoordinator.shutdownAndWait()
-        _ = await stopEngineOffMain()
+        // The engine stop is queued before the Keychain checkpoint so a slow Security call can
+        // never delay the return to dry playback.
+        let stopTask = enqueueEngineStop()
+        if case let .provider(provider) = licensing {
+            await provider.checkpoint()
+        }
+        _ = await stopTask.value
+        if case let .provider(provider) = licensing {
+            await provider.shutdown()
+        }
     }
 
     private func prepareForTermination(shutdownSettings: Bool) -> Bool {
@@ -4368,6 +4667,15 @@ private struct MenuBarView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityLabel(Text(localized("Status")))
                 .accessibilityValue(Text(model.statusMessage))
+
+            if let licenseStatusMessage = model.licenseStatusMessage {
+                Text(licenseStatusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(Text(localized("License")))
+                    .accessibilityValue(Text(licenseStatusMessage))
+            }
         }
         .padding()
         .background { PopoverGlassConfigurator() }

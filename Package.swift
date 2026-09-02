@@ -74,6 +74,7 @@ let package = Package(
             dependencies: [
                 "GlassEQCore",
                 "GlassEQAudio",
+                "GlassEQLicensing",
                 "GlassEQSettingsIPC",
                 "GlassEQSettingsUI"
             ],
@@ -132,6 +133,7 @@ let package = Package(
                 "GlassEQApp",
                 "GlassEQAudio",
                 "GlassEQCore",
+                "GlassEQLicensing",
                 "GlassEQSettingsIPC",
                 "GlassEQSettingsUI"
             ]
