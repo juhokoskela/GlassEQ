@@ -924,7 +924,7 @@ private func complexStereoProfile() -> EQProfile {
 
 private func benchmarkConvolutionProfile() -> EQProfile {
     EQProfile(
-        name: "Benchmark Response Curve",
+        name: "Benchmark Convolution",
         mode: .convolution,
         preampDB: -6,
         filters: [],

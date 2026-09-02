@@ -260,7 +260,7 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
     )
 
     public static let flatConvolution = EQProfile(
-        name: "Flat Response Curve",
+        name: "Flat Convolution",
         mode: .convolution,
         filters: [],
         convolution: .magnitudeCurve(MagnitudeCurveSource(points: [

@@ -33,6 +33,7 @@ This is a permanently open-source project. Code should be reviewable by someone 
 - `Sources/GlassEQAudio`: Core Audio ownership, device discovery, taps, aggregate devices, render callbacks, fallback clock bridging, and diagnostics.
 - `Sources/GlassEQApp`: menu bar application, lifecycle coordination, policy, and the main side of Settings IPC.
 - `Sources/GlassEQSettingsIPC`: bounded messages shared by the app and Settings helper.
+- `Sources/GlassEQProfileImport`: AutoEq catalogue access, WAV impulse-response decoding, and file import loading shared by the settings UI.
 - `Sources/GlassEQSettingsUI`: reusable SwiftUI settings and import UI.
 - `Sources/GlassEQSettings`: bundled Settings helper lifecycle.
 - `Sources/GlassEQDiagnostics`: command-line hardware probes and release DSP benchmarks.

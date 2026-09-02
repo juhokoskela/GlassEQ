@@ -24,200 +24,6 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func autoEQCatalogueParserReadsRecommendedResults() throws {
-        let markdown = """
-        # Recommended Results
-        - [Sennheiser HD 58X](./oratory1990/over-ear/Sennheiser%20HD%2058X)
-        - [7Hz Salnotes Zero](./crinacle/711%20in-ear/7Hz%20Salnotes%20Zero)
-        """
-
-        let entries = try AutoEQCatalogueParser.parse(markdown)
-
-        #expect(entries == [
-            AutoEQCatalogueEntry(
-                name: "Sennheiser HD 58X",
-                encodedResultPath: "oratory1990/over-ear/Sennheiser%20HD%2058X",
-                source: "oratory1990",
-                form: "Over-ear"
-            ),
-            AutoEQCatalogueEntry(
-                name: "7Hz Salnotes Zero",
-                encodedResultPath: "crinacle/711%20in-ear/7Hz%20Salnotes%20Zero",
-                source: "crinacle",
-                form: "In-ear"
-            )
-        ])
-    }
-
-    @Test
-    func autoEQCatalogueParserDeduplicatesResultPaths() throws {
-        let markdown = """
-        - [First](./source/over-ear/model)
-        - [Duplicate](./source/over-ear/model)
-        """
-
-        let entries = try AutoEQCatalogueParser.parse(markdown)
-
-        #expect(entries.map(\.name) == ["First"])
-    }
-
-    @Test
-    func autoEQCatalogueParserRejectsEntryCountAmplification() {
-        let markdown = """
-        - [One](./source/over-ear/one)
-        - [Two](./source/over-ear/two)
-        - [Three](./source/over-ear/three)
-        """
-
-        #expect(throws: AutoEQRepositoryError.catalogueTooLarge) {
-            _ = try AutoEQCatalogueParser.parse(markdown, maximumEntryCount: 2)
-        }
-    }
-
-    @Test
-    func autoEQCatalogueParserSkipsOversizedAndEncodedSeparatorComponents() throws {
-        let longName = String(repeating: "x", count: 513)
-        let markdown = """
-        - [\(longName)](./source/over-ear/long-name)
-        - [Encoded separator](./source%2Fother/over-ear/model)
-        - [Valid](./source/over-ear/valid)
-        """
-
-        let entries = try AutoEQCatalogueParser.parse(markdown)
-
-        #expect(entries.map(\.name) == ["Valid"])
-    }
-
-    @Test
-    func autoEQProfileURLPreservesResultPathAndEncodesFilename() throws {
-        let entry = AutoEQCatalogueEntry(
-            name: "Sennheiser HD 58X",
-            encodedResultPath: "oratory1990/over-ear/Sennheiser%20HD%2058X",
-            source: "oratory1990",
-            form: "Over-ear"
-        )
-
-        let responseCurveURL = try AutoEQRepositoryClient.profileURL(
-            for: entry,
-            kind: .responseCurve
-        )
-        let parametricURL = try AutoEQRepositoryClient.profileURL(
-            for: entry,
-            kind: .parametric
-        )
-
-        #expect(responseCurveURL.absoluteString.hasSuffix(
-            "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20GraphicEQ.txt"
-        ))
-        #expect(parametricURL.absoluteString.hasSuffix(
-            "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20ParametricEQ.txt"
-        ))
-    }
-
-    @Test
-    func autoEQProfileDownloadAcceptsTheExactByteLimit() async throws {
-        let entry = autoEQNetworkTestEntry(named: "At Limit")
-        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .responseCurve)
-        let body = Data(repeating: 0x78, count: 32)
-        AutoEQTestURLProtocol.register(statusCode: 200, body: body, for: url)
-        defer { AutoEQTestURLProtocol.unregister(url) }
-        let session = autoEQTestSession()
-        defer { session.invalidateAndCancel() }
-        let client = AutoEQRepositoryClient(
-            session: session,
-            maximumProfileBytes: body.count
-        )
-
-        let text = try await client.profileText(for: entry, kind: .responseCurve)
-
-        #expect(text == String(repeating: "x", count: body.count))
-    }
-
-    @Test
-    func autoEQProfileDownloadRejectsTheFirstByteBeyondTheLimit() async throws {
-        let entry = autoEQNetworkTestEntry(named: "Too Large")
-        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .parametric)
-        AutoEQTestURLProtocol.register(
-            statusCode: 200,
-            body: Data(repeating: 0x78, count: 33),
-            for: url
-        )
-        defer { AutoEQTestURLProtocol.unregister(url) }
-        let session = autoEQTestSession()
-        defer { session.invalidateAndCancel() }
-        let client = AutoEQRepositoryClient(
-            session: session,
-            maximumProfileBytes: 32
-        )
-
-        await #expect(throws: AutoEQRepositoryError.profileTooLarge) {
-            try await client.profileText(for: entry, kind: .parametric)
-        }
-    }
-
-    @Test
-    func autoEQProfileDownloadBoundsResponsesWithoutAContentLength() async throws {
-        let entry = autoEQNetworkTestEntry(named: "Unknown Length")
-        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .parametric)
-        AutoEQTestURLProtocol.register(
-            statusCode: 200,
-            body: Data(repeating: 0x78, count: 33),
-            includesContentLength: false,
-            chunkSize: 8,
-            for: url
-        )
-        defer { AutoEQTestURLProtocol.unregister(url) }
-        let session = autoEQTestSession()
-        defer { session.invalidateAndCancel() }
-        let client = AutoEQRepositoryClient(
-            session: session,
-            maximumProfileBytes: 32
-        )
-
-        await #expect(throws: AutoEQRepositoryError.profileTooLarge) {
-            try await client.profileText(for: entry, kind: .parametric)
-        }
-    }
-
-    @Test
-    func autoEQCatalogueDownloadUsesItsOwnSizeError() async {
-        let url = URL(
-            string: "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/README.md"
-        )!
-        AutoEQTestURLProtocol.register(
-            statusCode: 200,
-            body: Data(repeating: 0x78, count: 9),
-            for: url
-        )
-        defer { AutoEQTestURLProtocol.unregister(url) }
-        let session = autoEQTestSession()
-        defer { session.invalidateAndCancel() }
-        let client = AutoEQRepositoryClient(
-            session: session,
-            maximumCatalogueBytes: 8
-        )
-
-        await #expect(throws: AutoEQRepositoryError.catalogueTooLarge) {
-            try await client.catalogue()
-        }
-    }
-
-    @Test
-    func autoEQDownloadRejectsAnUnsuccessfulHTTPResponse() async throws {
-        let entry = autoEQNetworkTestEntry(named: "Unavailable")
-        let url = try AutoEQRepositoryClient.profileURL(for: entry, kind: .responseCurve)
-        AutoEQTestURLProtocol.register(statusCode: 503, body: Data(), for: url)
-        defer { AutoEQTestURLProtocol.unregister(url) }
-        let session = autoEQTestSession()
-        defer { session.invalidateAndCancel() }
-        let client = AutoEQRepositoryClient(session: session)
-
-        await #expect(throws: AutoEQRepositoryError.invalidResponse) {
-            try await client.profileText(for: entry, kind: .responseCurve)
-        }
-    }
-
-    @Test
     func importedEQTextDetectorRecognizesREWHeaders() {
         #expect(ImportedEQTextDetector.format(for: "* Filter Settings file") == .rew)
         #expect(ImportedEQTextDetector.format(for: "Filter Settings file") == .rew)
@@ -265,13 +71,13 @@ struct SettingsIPCTests {
         snapshot.activeProfileID = previewProfile.id
         snapshot.isPreviewing = true
 
-        #expect(!settingsCanDeleteSelectedProfile(snapshot))
+        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
 
         snapshot.isPreviewing = false
-        #expect(settingsCanDeleteSelectedProfile(snapshot))
+        #expect(settingsCanDeleteProfile(snapshot, id: returnProfile.id))
 
         snapshot.programmeComparison.isActive = true
-        #expect(!settingsCanDeleteSelectedProfile(snapshot))
+        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
     }
 
     @Test
@@ -345,29 +151,58 @@ struct SettingsIPCTests {
     }
 
     @Test
+    @MainActor
     func delayedSnapshotPreservesNewerLocalDraftAndSelection() {
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
         let second = EQProfile(name: "Second", mode: .parametric, filters: [])
         var editedSecond = second
         editedSecond.preampDB = -3.25
-        var current = SettingsSnapshotDTO.disconnected
-        current.profiles = [first, second]
-        current.selectedProfileID = second.id
-        current.draftProfile = editedSecond
-        var latest = current
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [first, second]
+        initial.selectedProfileID = second.id
+        initial.draftProfile = second
+        let model = GlassEQSettingsViewModel(snapshot: initial)
+        let controller = SettingsController(model: model)
+        controller.draftProfile = editedSecond
+        var latest = initial
         latest.selectedProfileID = first.id
         latest.draftProfile = first
         latest.statusMessage = "Command completed"
 
-        let merged = settingsSnapshotPreservingLocalDraft(current: current, latest: latest)
+        model.accept(snapshot: latest)
+        controller.reconcileWithSnapshot()
 
-        #expect(merged.selectedProfileID == second.id)
-        #expect(merged.draftProfile == editedSecond)
-        #expect(merged.statusMessage == "Command completed")
+        #expect(controller.selectedProfileID == second.id)
+        #expect(controller.draftProfile == editedSecond)
+        #expect(controller.hasUnsavedDraft)
+        #expect(controller.snapshot.statusMessage == "Command completed")
     }
 
     @Test
-    func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() {
+    @MainActor
+    func delayedSnapshotRefreshesAnUneditedDraftFromTheStore() {
+        let profile = EQProfile(name: "Profile", mode: .parametric, filters: [])
+        var renamed = profile
+        renamed.name = "Renamed"
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let model = GlassEQSettingsViewModel(snapshot: initial)
+        let controller = SettingsController(model: model)
+        var latest = initial
+        latest.profiles = [renamed]
+
+        model.accept(snapshot: latest)
+        controller.reconcileWithSnapshot()
+
+        #expect(controller.draftProfile == renamed)
+        #expect(!controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
+    func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() async {
         let original = EQProfile(name: "Original", mode: .parametric, filters: [])
         let duplicate = EQProfile(name: "Duplicate", mode: .parametric, filters: [])
         var dispatched = SettingsSnapshotDTO.disconnected
@@ -378,40 +213,134 @@ struct SettingsIPCTests {
         latest.profiles = [original, duplicate]
         latest.selectedProfileID = duplicate.id
         latest.draftProfile = duplicate
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: latest))
+        let model = GlassEQSettingsViewModel(snapshot: dispatched, client: client)
+        let controller = SettingsController(model: model)
 
-        let merged = settingsSnapshotAfterCommand(
-            current: dispatched,
-            dispatched: dispatched,
-            latest: latest
-        )
+        await controller.dispatch(.duplicateProfile(original.id))
 
-        #expect(merged.selectedProfileID == duplicate.id)
-        #expect(merged.draftProfile == duplicate)
+        #expect(controller.selectedProfileID == duplicate.id)
+        #expect(controller.draftProfile == duplicate)
+        #expect(!controller.hasUnsavedDraft)
     }
 
     @Test
-    func commandSnapshotPreservesEditsMadeWhileCommandWasPending() {
+    @MainActor
+    func commandSnapshotPreservesEditsMadeWhileCommandWasPending() async {
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
         let second = EQProfile(name: "Second", mode: .parametric, filters: [])
         var dispatched = SettingsSnapshotDTO.disconnected
         dispatched.profiles = [first, second]
         dispatched.selectedProfileID = first.id
         dispatched.draftProfile = first
-        var current = dispatched
-        current.selectedProfileID = second.id
-        current.draftProfile = second
         var latest = dispatched
         latest.statusMessage = "Command completed"
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: latest))
+        let model = GlassEQSettingsViewModel(snapshot: dispatched, client: client)
+        let controller = SettingsController(model: model)
+        client.onPerform = {
+            controller.selectProfile(second.id)
+        }
 
-        let merged = settingsSnapshotAfterCommand(
-            current: current,
-            dispatched: dispatched,
-            latest: latest
+        await controller.dispatch(.applyProfile(first))
+
+        #expect(controller.selectedProfileID == second.id)
+        #expect(controller.draftProfile == second)
+        #expect(controller.snapshot.statusMessage == "Command completed")
+    }
+
+    @Test
+    @MainActor
+    func snapshotlessCommandPreservesUnsavedDraft() async {
+        let profile = EQProfile(name: "Profile", mode: .parametric, filters: [])
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse())
+        let model = GlassEQSettingsViewModel(snapshot: initial, client: client)
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4.5
+
+        let response = await controller.dispatch(.showSetupGuide)
+
+        #expect(response?.snapshot == nil)
+        #expect(controller.draftProfile.preampDB == -4.5)
+        #expect(controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
+    func failedCommandPreservesUnsavedDraft() async {
+        let profile = EQProfile(name: "Profile", mode: .parametric, filters: [])
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let model = GlassEQSettingsViewModel(
+            snapshot: initial,
+            client: FailingSettingsCommandClient()
         )
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4.5
 
-        #expect(merged.selectedProfileID == second.id)
-        #expect(merged.draftProfile == second)
-        #expect(merged.statusMessage == "Command completed")
+        let response = await controller.dispatch(.applyProfile(controller.draftProfile))
+
+        #expect(response == nil)
+        #expect(controller.draftProfile.preampDB == -4.5)
+        #expect(controller.hasUnsavedDraft)
+        #expect(model.commandErrorMessage == "Command failed")
+    }
+
+    @Test
+    @MainActor
+    func metricsDoNotAdvanceProfileSnapshotRevision() {
+        let model = GlassEQSettingsViewModel()
+        let initialRevision = model.profileSnapshotRevision
+        var metrics = SettingsAudioMetricsDTO()
+        metrics.capturedFrames = 42
+
+        model.accept(metrics: metrics)
+        model.accept(patch: SettingsSnapshotPatchDTO(isRunning: true))
+
+        #expect(model.snapshot.metrics.capturedFrames == 42)
+        #expect(model.profileSnapshotRevision == initialRevision)
+
+        model.accept(snapshot: model.snapshot)
+
+        #expect(model.profileSnapshotRevision == initialRevision + 1)
+    }
+
+    @Test
+    @MainActor
+    func overlappingFilePickerIsIgnoredWithoutMaskingCancellation() async {
+        let client = ReentrantCancellingSettingsCommandClient()
+        let model = GlassEQSettingsViewModel(client: client)
+        client.model = model
+
+        let response = await model.chooseImportFiles(mode: .single)
+
+        #expect(response == nil)
+        #expect(client.callCount == 1)
+        #expect(client.reentrantResponse == nil)
+        #expect(model.commandErrorMessage == nil)
+    }
+
+    @Test
+    @MainActor
+    func newProfileSheetPresentsTheRequestedImportRouteAfterDismissing() {
+        for route in ProfileImportRoute.allCases {
+            let controller = SettingsController(model: GlassEQSettingsViewModel())
+
+            controller.requestImportFromNewProfileSheet(route)
+
+            #expect(!controller.isImportSheetPresented)
+
+            controller.newProfileSheetDidDismiss()
+
+            #expect(controller.isImportSheetPresented)
+            #expect(controller.importRoute == route)
+        }
     }
 
     @Test
@@ -1387,30 +1316,13 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
-    func settingsLaunchConnectsWhenModelAttachesBeforeArgumentsAreParsed() async {
+    func settingsLaunchConnectsAfterArgumentsAreParsed() async {
         let factory = FakeSettingsPipeClientFactory()
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
         let model = GlassEQSettingsViewModel()
+        let coordinator = SettingsLaunchCoordinator(model: model, clientFactory: factory)
 
-        coordinator.attach(model: model)
         #expect(model.commandErrorMessage == nil)
         coordinator.finishLaunching(arguments: launchArguments())
-        await coordinator.waitForConnectionTask()
-
-        #expect(model.isConnected)
-        #expect(model.commandErrorMessage == nil)
-        #expect(factory.launchInfos.map(\.mainProcessIdentifier) == [123])
-    }
-
-    @Test
-    @MainActor
-    func settingsLaunchConnectsWhenArgumentsAreParsedBeforeModelAttaches() async {
-        let factory = FakeSettingsPipeClientFactory()
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
-        let model = GlassEQSettingsViewModel()
-
-        coordinator.finishLaunching(arguments: launchArguments())
-        coordinator.attach(model: model)
         await coordinator.waitForConnectionTask()
 
         #expect(model.isConnected)
@@ -1422,10 +1334,9 @@ struct SettingsIPCTests {
     @MainActor
     func settingsLaunchWithoutGlassEQArgumentsShowsDirectLaunchWarning() {
         let factory = FakeSettingsPipeClientFactory()
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
         let model = GlassEQSettingsViewModel()
+        let coordinator = SettingsLaunchCoordinator(model: model, clientFactory: factory)
 
-        coordinator.attach(model: model)
         coordinator.finishLaunching(arguments: ["GlassEQSettings"])
 
         #expect(!model.isConnected)
@@ -1439,124 +1350,15 @@ struct SettingsIPCTests {
         let factory = FakeSettingsPipeClientFactory(
             makeError: SettingsCommandFailure(message: "Settings was launched by an unexpected host application.")
         )
-        let coordinator = SettingsLaunchCoordinator(clientFactory: factory)
         let model = GlassEQSettingsViewModel()
+        let coordinator = SettingsLaunchCoordinator(model: model, clientFactory: factory)
 
         coordinator.finishLaunching(arguments: launchArguments())
-        coordinator.attach(model: model)
         await coordinator.waitForConnectionTask()
 
         #expect(!model.isConnected)
         #expect(model.commandErrorMessage == "Settings was launched by an unexpected host application.")
     }
-}
-
-private func autoEQNetworkTestEntry(named name: String) -> AutoEQCatalogueEntry {
-    AutoEQCatalogueEntry(
-        name: name,
-        encodedResultPath: "test/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)",
-        source: "test",
-        form: nil
-    )
-}
-
-private func autoEQTestSession() -> URLSession {
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.protocolClasses = [AutoEQTestURLProtocol.self]
-    return URLSession(configuration: configuration)
-}
-
-private struct AutoEQTestURLResponse: Sendable {
-    let statusCode: Int
-    let body: Data
-    let includesContentLength: Bool
-    let chunkSize: Int?
-}
-
-private final class AutoEQTestURLResponseStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var responses: [URL: AutoEQTestURLResponse] = [:]
-
-    func register(_ response: AutoEQTestURLResponse, for url: URL) {
-        lock.lock()
-        responses[url] = response
-        lock.unlock()
-    }
-
-    func unregister(_ url: URL) {
-        lock.lock()
-        responses[url] = nil
-        lock.unlock()
-    }
-
-    func response(for url: URL) -> AutoEQTestURLResponse? {
-        lock.lock()
-        defer { lock.unlock() }
-        return responses[url]
-    }
-}
-
-private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
-    private static let responseStore = AutoEQTestURLResponseStore()
-
-    static func register(
-        statusCode: Int,
-        body: Data,
-        includesContentLength: Bool = true,
-        chunkSize: Int? = nil,
-        for url: URL
-    ) {
-        responseStore.register(
-            AutoEQTestURLResponse(
-                statusCode: statusCode,
-                body: body,
-                includesContentLength: includesContentLength,
-                chunkSize: chunkSize
-            ),
-            for: url
-        )
-    }
-
-    static func unregister(_ url: URL) {
-        responseStore.unregister(url)
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool {
-        true
-    }
-
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
-        request
-    }
-
-    override func startLoading() {
-        guard let url = request.url,
-              let stub = Self.responseStore.response(for: url),
-              let response = HTTPURLResponse(
-                  url: url,
-                  statusCode: stub.statusCode,
-                  httpVersion: "HTTP/1.1",
-                  headerFields: stub.includesContentLength
-                      ? ["Content-Length": String(stub.body.count)]
-                      : nil
-              ) else {
-            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
-            return
-        }
-
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if let chunkSize = stub.chunkSize {
-            for start in stride(from: 0, to: stub.body.count, by: chunkSize) {
-                let end = min(start + chunkSize, stub.body.count)
-                client?.urlProtocol(self, didLoad: stub.body[start..<end])
-            }
-        } else {
-            client?.urlProtocol(self, didLoad: stub.body)
-        }
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
 }
 
 private struct FakeHostProcessResolver: SettingsHostProcessResolving {
@@ -1607,8 +1409,44 @@ private final class CancellingSettingsCommandClient: SettingsCommanding {
 }
 
 @MainActor
+private final class FailingSettingsCommandClient: SettingsCommanding {
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        throw SettingsCommandFailure(message: "Command failed")
+    }
+}
+
+@MainActor
+private final class ReentrantCancellingSettingsCommandClient: SettingsCommanding {
+    weak var model: GlassEQSettingsViewModel?
+    private(set) var callCount = 0
+    private(set) var reentrantResponse: SettingsCommandResponse?
+
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        callCount += 1
+        if callCount == 1 {
+            reentrantResponse = await model?.chooseImportFiles(mode: .stereoPair)
+        }
+        throw CancellationError()
+    }
+}
+
+@MainActor
+private final class ScriptedSettingsCommandClient: SettingsCommanding {
+    let response: SettingsCommandResponse
+    var onPerform: () -> Void = {}
+
+    init(response: SettingsCommandResponse) {
+        self.response = response
+    }
+
+    func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        onPerform()
+        return response
+    }
+}
+
+@MainActor
 private final class FakeSettingsPipeClient: SettingsPipeClientConnection, @unchecked Sendable {
-    let token: String? = "fake-token"
     private let snapshot: SettingsSnapshotDTO
     private let connectError: (any Error)?
     private(set) var didDisconnect = false

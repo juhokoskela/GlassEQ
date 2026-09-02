@@ -114,11 +114,12 @@ public enum CoreAudioDeviceQuery {
             selector: kAudioDevicePropertyDeviceUID,
             scope: kAudioObjectPropertyScopeGlobal
         )
+        // Some devices report names with trailing spaces, which show up as gaps before punctuation.
         let name = try getStringProperty(
             objectID: id,
             selector: kAudioObjectPropertyName,
             scope: kAudioObjectPropertyScopeGlobal
-        )
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
         let sampleRate = try validatedSampleRate(
             getFloat64Property(
                 objectID: id,

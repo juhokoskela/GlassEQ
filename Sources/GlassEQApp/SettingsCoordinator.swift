@@ -1218,6 +1218,10 @@ extension GlassEQAppModel {
         case .resetUnsupportedProfileStore:
             try await resetUnsupportedProfileStore()
             return SettingsCommandResponse(snapshot: settingsSnapshot())
+
+        case .showSetupGuide:
+            requestOnboardingPresentation()
+            return SettingsCommandResponse()
         }
     }
 

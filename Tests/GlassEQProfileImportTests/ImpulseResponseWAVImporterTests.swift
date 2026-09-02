@@ -1,14 +1,14 @@
 import AVFoundation
 import Foundation
 import GlassEQCore
+import GlassEQProfileImport
 import GlassEQSettingsIPC
 import Testing
-@testable import GlassEQSettingsUI
 
 @Suite
 struct ImpulseResponseWAVImporterTests {
     @Test
-    func mainProcessFileLoaderPackagesTextAndImpulseResponseSelections() throws {
+    func fileLoaderPackagesSingleTextAndImpulseResponseSelections() throws {
         let textURL = try writeText("Preamp: -3 dB")
         let wavURL = try writeWAV(channels: [[1, 0.25]])
         defer {
@@ -16,10 +16,7 @@ struct ImpulseResponseWAVImporterTests {
             try? FileManager.default.removeItem(at: wavURL)
         }
 
-        let textSelection = try SettingsFileImportPicker.loadSelection(
-            mode: .single,
-            urls: [textURL]
-        )
+        let textSelection = try SettingsFileImportLoader.load(from: textURL)
         guard case let .text(suggestedName, filename, text) = textSelection else {
             Issue.record("Expected a text-file selection")
             return
@@ -28,10 +25,7 @@ struct ImpulseResponseWAVImporterTests {
         #expect(filename == textURL.lastPathComponent)
         #expect(text == "Preamp: -3 dB")
 
-        let wavSelection = try SettingsFileImportPicker.loadSelection(
-            mode: .single,
-            urls: [wavURL]
-        )
+        let wavSelection = try SettingsFileImportLoader.load(from: wavURL)
         guard case let .impulseResponse(profile, channels, sourceFileCount) = wavSelection else {
             Issue.record("Expected an impulse-response selection")
             return
@@ -42,13 +36,60 @@ struct ImpulseResponseWAVImporterTests {
     }
 
     @Test
+    func fileLoaderPackagesStereoTextSelection() throws {
+        let leftURL = try writeText("Preamp: -2 dB")
+        let rightURL = try writeText("Preamp: -4 dB")
+        defer {
+            try? FileManager.default.removeItem(at: leftURL)
+            try? FileManager.default.removeItem(at: rightURL)
+        }
+
+        let selection = try SettingsFileImportLoader.loadStereoPair(
+            leftURL: leftURL,
+            rightURL: rightURL
+        )
+
+        guard case let .stereoText(profile, leftFilename, rightFilename) = selection else {
+            Issue.record("Expected a stereo text selection")
+            return
+        }
+        #expect(profile.channelMode == .stereo)
+        #expect(profile.leftPreampDB == -2)
+        #expect(profile.rightPreampDB == -4)
+        #expect(leftFilename == leftURL.lastPathComponent)
+        #expect(rightFilename == rightURL.lastPathComponent)
+    }
+
+    @Test
+    func fileLoaderRejectsMixedStereoFileTypes() throws {
+        let leftURL = try writeText("Preamp: -2 dB")
+        let rightURL = try writeWAV(channels: [[1]])
+        defer {
+            try? FileManager.default.removeItem(at: leftURL)
+            try? FileManager.default.removeItem(at: rightURL)
+        }
+
+        #expect(throws: StereoTextPairImportError.filesMustUseSameFormat) {
+            _ = try SettingsFileImportLoader.loadStereoPair(
+                leftURL: leftURL,
+                rightURL: rightURL
+            )
+        }
+    }
+
+    @Test
     func importsMonoWAVAsLinkedImpulseResponse() throws {
         let url = try writeWAV(channels: [[1, 0.25, -0.125]])
         defer { try? FileManager.default.removeItem(at: url) }
 
         let imported = try ImpulseResponseWAVImporter.load(from: url)
 
-        #expect(imported.channelCount == 1)
+        guard case .mono(let channel) = imported.channels else {
+            Issue.record("Expected a mono channel")
+            return
+        }
+        #expect(channel.filename == url.lastPathComponent)
+        #expect(channel.frameCount == 3)
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .linked)
         guard case .impulseResponse(let source) = imported.profile.convolution else {
@@ -69,7 +110,7 @@ struct ImpulseResponseWAVImporterTests {
 
         let imported = try ImpulseResponseWAVImporter.load(from: url)
 
-        #expect(imported.channelCount == 2)
+        #expect(imported.channels.count == 2)
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .stereo)
         guard case .impulseResponse(let left) = imported.profile.leftConvolution,
@@ -95,12 +136,15 @@ struct ImpulseResponseWAVImporterTests {
             rightURL: rightURL
         )
 
-        #expect(imported.channelCount == 2)
         #expect(imported.sourceFileCount == 2)
-        #expect(imported.channels[0].filename == leftURL.lastPathComponent)
-        #expect(imported.channels[0].frameCount == 3)
-        #expect(imported.channels[1].filename == rightURL.lastPathComponent)
-        #expect(imported.channels[1].frameCount == 2)
+        guard case let .stereo(leftChannel, rightChannel) = imported.channels else {
+            Issue.record("Expected separate left and right channels")
+            return
+        }
+        #expect(leftChannel.filename == leftURL.lastPathComponent)
+        #expect(leftChannel.frameCount == 3)
+        #expect(rightChannel.filename == rightURL.lastPathComponent)
+        #expect(rightChannel.frameCount == 2)
         guard case .impulseResponse(let left) = imported.profile.leftConvolution,
               case .impulseResponse(let right) = imported.profile.rightConvolution else {
             Issue.record("Expected separate left and right impulse responses")
@@ -111,8 +155,7 @@ struct ImpulseResponseWAVImporterTests {
 
         imported.swapStereoChannels()
 
-        #expect(imported.channels[0].filename == rightURL.lastPathComponent)
-        #expect(imported.channels[1].filename == leftURL.lastPathComponent)
+        #expect(imported.channels == .stereo(left: rightChannel, right: leftChannel))
         guard case .impulseResponse(let swappedLeft) = imported.profile.leftConvolution,
               case .impulseResponse(let swappedRight) = imported.profile.rightConvolution else {
             Issue.record("Expected swapped left and right impulse responses")

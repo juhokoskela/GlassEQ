@@ -1,15 +1,21 @@
 import Foundation
-import GlassEQSettingsIPC
 
-struct AutoEQCatalogueEntry: Equatable, Hashable, Identifiable, Sendable {
-    let name: String
-    let encodedResultPath: String
-    let source: String
-    let form: String?
+package struct AutoEQCatalogueEntry: Hashable, Identifiable, Sendable {
+    package let name: String
+    package let encodedResultPath: String
+    package let source: String
+    package let form: String?
 
-    var id: String { encodedResultPath }
+    package init(name: String, encodedResultPath: String, source: String, form: String?) {
+        self.name = name
+        self.encodedResultPath = encodedResultPath
+        self.source = source
+        self.form = form
+    }
 
-    var detail: String {
+    package var id: String { encodedResultPath }
+
+    package var detail: String {
         if let form {
             return "\(source) · \(form)"
         }
@@ -17,11 +23,9 @@ struct AutoEQCatalogueEntry: Equatable, Hashable, Identifiable, Sendable {
     }
 }
 
-enum AutoEQProfileKind: String, CaseIterable, Identifiable, Sendable {
+package enum AutoEQProfileKind: Sendable {
     case responseCurve
     case parametric
-
-    var id: String { rawValue }
 
     var fileSuffix: String {
         switch self {
@@ -33,7 +37,7 @@ enum AutoEQProfileKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
+package enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
     case invalidResponse
     case catalogueTooLarge
     case profileTooLarge
@@ -41,7 +45,7 @@ enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
     case invalidResultPath(String)
     case unreadableText
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .invalidResponse:
             "AutoEq returned an unexpected response. Try again in a moment."
@@ -59,13 +63,13 @@ enum AutoEQRepositoryError: Error, LocalizedError, Equatable {
     }
 }
 
-enum AutoEQCatalogueParser {
-    static let maximumEntryCount = 10_000
+package enum AutoEQCatalogueParser {
+    package static let maximumEntryCount = 10_000
     private static let maximumNameUTF8Bytes = 512
     private static let maximumPathUTF8Bytes = 2_048
     private static let maximumPathComponentUTF8Bytes = 512
 
-    static func parse(
+    package static func parse(
         _ markdown: String,
         maximumEntryCount: Int = Self.maximumEntryCount
     ) throws -> [AutoEQCatalogueEntry] {
@@ -151,20 +155,20 @@ enum AutoEQCatalogueParser {
     }
 }
 
-struct AutoEQRepositoryClient: Sendable {
+package struct AutoEQRepositoryClient: Sendable {
     private static let catalogueURL = URL(
         string: "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/README.md"
     )!
     private static let resultRoot =
         "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
-    private static let defaultMaximumCatalogueBytes = 2_000_000
-    private static let defaultMaximumProfileBytes = 1_048_576
+    package static let defaultMaximumCatalogueBytes = 2_000_000
+    package static let defaultMaximumProfileBytes = 1_048_576
 
     private let session: URLSession
     private let maximumCatalogueBytes: Int
     private let maximumProfileBytes: Int
 
-    init(
+    package init(
         session: URLSession = .shared,
         maximumCatalogueBytes: Int = Self.defaultMaximumCatalogueBytes,
         maximumProfileBytes: Int = Self.defaultMaximumProfileBytes
@@ -174,7 +178,7 @@ struct AutoEQRepositoryClient: Sendable {
         self.maximumProfileBytes = maximumProfileBytes
     }
 
-    func catalogue() async throws -> [AutoEQCatalogueEntry] {
+    package func catalogue() async throws -> [AutoEQCatalogueEntry] {
         let data = try await download(
             Self.catalogueURL,
             maximumBytes: maximumCatalogueBytes,
@@ -186,7 +190,7 @@ struct AutoEQRepositoryClient: Sendable {
         return try AutoEQCatalogueParser.parse(markdown)
     }
 
-    func profileText(
+    package func profileText(
         for entry: AutoEQCatalogueEntry,
         kind: AutoEQProfileKind
     ) async throws -> String {
@@ -202,7 +206,7 @@ struct AutoEQRepositoryClient: Sendable {
         return text
     }
 
-    static func profileURL(
+    package static func profileURL(
         for entry: AutoEQCatalogueEntry,
         kind: AutoEQProfileKind
     ) throws -> URL {
@@ -241,159 +245,24 @@ struct AutoEQRepositoryClient: Sendable {
             timeoutInterval: 20
         )
         request.setValue("text/plain, text/markdown", forHTTPHeaderField: "Accept")
-        let delegate = AutoEQBoundedDownloadDelegate(
-            maximumBytes: maximumBytes,
-            tooLargeError: tooLargeError
-        )
-        let boundedSession = URLSession(
-            configuration: session.configuration,
-            delegate: delegate,
-            delegateQueue: nil
-        )
-        defer { boundedSession.finishTasksAndInvalidate() }
-        return try await delegate.download(request, using: boundedSession)
-    }
-}
 
-private final class AutoEQBoundedDownloadDelegate: NSObject,
-    URLSessionDataDelegate,
-    @unchecked Sendable {
-    private struct State {
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let response = response as? HTTPURLResponse,
+              response.statusCode == 200 else {
+            throw AutoEQRepositoryError.invalidResponse
+        }
+        guard response.expectedContentLength <= Int64(maximumBytes) else {
+            throw tooLargeError
+        }
+
         var data = Data()
-        var continuation: CheckedContinuation<Data, Error>?
-        var task: URLSessionDataTask?
-        var terminalError: Error?
-        var acceptedResponse = false
-        var cancelled = false
-    }
-
-    private let maximumBytes: Int
-    private let tooLargeError: AutoEQRepositoryError
-    private let lock = NSLock()
-    private var state = State()
-
-    init(maximumBytes: Int, tooLargeError: AutoEQRepositoryError) {
-        self.maximumBytes = maximumBytes
-        self.tooLargeError = tooLargeError
-    }
-
-    func download(_ request: URLRequest, using session: URLSession) async throws -> Data {
-        try Task.checkCancellation()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                lock.lock()
-                guard !state.cancelled else {
-                    lock.unlock()
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                let task = session.dataTask(with: request)
-                state.continuation = continuation
-                state.task = task
-                lock.unlock()
-                task.resume()
+        data.reserveCapacity(Int(max(response.expectedContentLength, 0)))
+        for try await byte in bytes {
+            guard data.count < maximumBytes else {
+                throw tooLargeError
             }
-        } onCancel: {
-            cancel()
+            data.append(byte)
         }
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        dataTask: URLSessionDataTask,
-        didReceive response: URLResponse,
-        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
-    ) {
-        lock.lock()
-        let disposition: URLSession.ResponseDisposition
-        if let response = response as? HTTPURLResponse,
-           response.statusCode == 200 {
-            if response.expectedContentLength > Int64(maximumBytes) {
-                state.terminalError = tooLargeError
-                disposition = .cancel
-            } else {
-                state.acceptedResponse = true
-                if response.expectedContentLength > 0 {
-                    state.data.reserveCapacity(Int(response.expectedContentLength))
-                }
-                disposition = .allow
-            }
-        } else {
-            state.terminalError = AutoEQRepositoryError.invalidResponse
-            disposition = .cancel
-        }
-        lock.unlock()
-        completionHandler(disposition)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        dataTask: URLSessionDataTask,
-        didReceive data: Data
-    ) {
-        lock.lock()
-        let shouldCancel: Bool
-        if state.terminalError == nil,
-           data.count <= maximumBytes - state.data.count {
-            state.data.append(data)
-            shouldCancel = false
-        } else {
-            if state.terminalError == nil {
-                state.terminalError = tooLargeError
-            }
-            shouldCancel = true
-        }
-        lock.unlock()
-        if shouldCancel {
-            dataTask.cancel()
-        }
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didCompleteWithError error: Error?
-    ) {
-        lock.lock()
-        guard let continuation = state.continuation else {
-            lock.unlock()
-            return
-        }
-        state.continuation = nil
-        let result: Result<Data, Error>
-        if let terminalError = state.terminalError {
-            result = .failure(terminalError)
-        } else if state.cancelled {
-            result = .failure(CancellationError())
-        } else if let error {
-            result = .failure(error)
-        } else if !state.acceptedResponse {
-            result = .failure(AutoEQRepositoryError.invalidResponse)
-        } else {
-            result = .success(state.data)
-        }
-        lock.unlock()
-        continuation.resume(with: result)
-    }
-
-    private func cancel() {
-        lock.lock()
-        state.cancelled = true
-        let task = state.task
-        lock.unlock()
-        task?.cancel()
-    }
-}
-
-enum ImportedEQTextDetector {
-    static func format(for text: String) -> SettingsImportFormat {
-        let lowercased = text.lowercased()
-        if lowercased.contains("room eq wizard")
-            || lowercased.contains("equaliser: generic")
-            || lowercased.contains("filter settings file")
-            || lowercased.contains(" on modal ") {
-            return .rew
-        }
-        return .autoEQ
+        return data
     }
 }

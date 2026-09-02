@@ -8,12 +8,15 @@ import SwiftUI
 
 private enum GlassEQWindowID {
     static let inProcessSettings = "in-process-settings"
+    static let onboarding = "onboarding"
 }
 
 @main
 struct GlassEQApp: App {
     @NSApplicationDelegateAdaptor(GlassEQAppDelegate.self) private var appDelegate
-    @State private var model = GlassEQAppModel()
+    // A first launch waits for the onboarding permission step before touching Core Audio, so the
+    // system audio capture prompt appears after GlassEQ has explained it.
+    @State private var model = GlassEQAppModel(autoStart: OnboardingState.isComplete)
 
     var body: some Scene {
         MenuBarExtra {
@@ -24,22 +27,45 @@ struct GlassEQApp: App {
                 .accessibilityLabel(Text(model.menuBarAccessibilityLabel))
                 .accessibilityValue(Text(model.statusMessage))
                 .accessibilityHint(Text(localized("Opens GlassEQ controls")))
+                // The menu bar label is the only view that exists for the whole process lifetime,
+                // so it hosts the side-effect views that turn model requests into window openings.
                 .background {
-                    InProcessSettingsPresenter(model: model)
+                    WindowPresenter(
+                        generation: model.inProcessSettingsPresentationGeneration,
+                        windowID: GlassEQWindowID.inProcessSettings
+                    )
+                    WindowPresenter(
+                        generation: model.onboardingPresentationGeneration,
+                        windowID: GlassEQWindowID.onboarding
+                    )
                 }
         }
         .menuBarExtraStyle(.window)
 
+        Window(localized("Welcome to GlassEQ"), id: GlassEQWindowID.onboarding) {
+            OnboardingView(model: model)
+                .onAppear {
+                    model.foregroundWindowDidAppear()
+                }
+                .onDisappear {
+                    model.finishOnboarding()
+                    model.foregroundWindowDidDisappear()
+                }
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(OnboardingState.isComplete ? .suppressed : .presented)
+        .restorationBehavior(.disabled)
+
         Window(localized("Configure GlassEQ"), id: GlassEQWindowID.inProcessSettings) {
-            SettingsView(model: model.inProcessSettingsViewModel())
+            InProcessSettingsWindowContent(model: model)
                 .frame(minWidth: 760, minHeight: 500)
                 .onAppear {
-                    NSApplication.shared.setActivationPolicy(.regular)
+                    model.foregroundWindowDidAppear()
                     model.inProcessSettingsDidAppear()
                 }
                 .onDisappear {
                     model.inProcessSettingsDidDisappear()
-                    NSApplication.shared.setActivationPolicy(.accessory)
+                    model.foregroundWindowDidDisappear()
                 }
         }
         .defaultSize(width: 1180, height: 720)
@@ -50,18 +76,32 @@ struct GlassEQApp: App {
     }
 }
 
-private struct InProcessSettingsPresenter: View {
-    let model: GlassEQAppModel
+private struct WindowPresenter: View {
+    let generation: Int
+    let windowID: String
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Color.clear
-            .frame(width: 0, height: 0)
-            .onChange(of: model.inProcessSettingsPresentationGeneration) {
-                NSApplication.shared.setActivationPolicy(.regular)
-                openWindow(id: GlassEQWindowID.inProcessSettings)
-                NSApplication.shared.activate(ignoringOtherApps: true)
+            .onChange(of: generation) {
+                openWindow(id: windowID)
             }
+    }
+}
+
+private struct InProcessSettingsWindowContent: View {
+    let model: GlassEQAppModel
+    @State private var settingsModel: GlassEQSettingsViewModel?
+
+    var body: some View {
+        if let settingsModel {
+            SettingsView(model: settingsModel)
+        } else {
+            Color.clear
+                .task {
+                    settingsModel = model.inProcessSettingsViewModel()
+                }
+        }
     }
 }
 
@@ -178,64 +218,6 @@ private let appResourcesBundle: Bundle = {
 
 func localized(_ value: String.LocalizationValue) -> String {
     String(localized: value, bundle: appResourcesBundle)
-}
-
-private func localizedDecimal(
-    _ value: Double,
-    minimumFractionDigits: Int,
-    maximumFractionDigits: Int,
-    signed: Bool = false
-) -> String {
-    let formatter = NumberFormatter()
-    formatter.locale = .autoupdatingCurrent
-    formatter.numberStyle = .decimal
-    formatter.minimumFractionDigits = minimumFractionDigits
-    formatter.maximumFractionDigits = maximumFractionDigits
-    if signed {
-        formatter.positivePrefix = formatter.plusSign
-    }
-    return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
-}
-
-private func localizedInteger(_ value: Int) -> String {
-    value.formatted(.number.locale(.autoupdatingCurrent))
-}
-
-private func localizedInteger(_ value: UInt32) -> String {
-    UInt64(value).formatted(.number.locale(.autoupdatingCurrent))
-}
-
-private func localizedInteger(_ value: UInt64) -> String {
-    value.formatted(.number.locale(.autoupdatingCurrent))
-}
-
-private func localizedDecibels(_ value: Double, fractionDigits: Int = 1) -> String {
-    let number = localizedDecimal(
-        value,
-        minimumFractionDigits: fractionDigits,
-        maximumFractionDigits: fractionDigits,
-        signed: true
-    )
-    return localized("\(number) dB")
-}
-
-private func localizedFrequency(_ value: Double) -> String {
-    if value >= 1_000 {
-        let number = localizedDecimal(value / 1_000, minimumFractionDigits: 1, maximumFractionDigits: 1)
-        return localized("\(number) kHz")
-    }
-    let number = localizedDecimal(value, minimumFractionDigits: 0, maximumFractionDigits: 0)
-    return localized("\(number) Hz")
-}
-
-private func localizedFrameCount(_ value: Int) -> String {
-    let number = localizedInteger(value)
-    return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
-}
-
-private func localizedFrameCount(_ value: UInt32) -> String {
-    let number = localizedInteger(value)
-    return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
 }
 
 private var noOutputName: String {
@@ -549,7 +531,18 @@ final class GlassEQAppModel {
     var currentOutputBufferFrameSize: UInt32 = 0
     var statusMessage = localized("Stopped")
     var isRunning = false
-    var activeProfile: EQProfile
+    var activeProfile: EQProfile {
+        didSet {
+            activeProfileName = activeProfile.name
+            activeProfileIsBypassed = activeProfile.isBypassed
+        }
+    }
+    private(set) var activeProfileName: String
+    private(set) var activeProfileIsBypassed: Bool
+    var activeProfileID: UUID {
+        get { activeProfile.id }
+        set { activateProfile(newValue) }
+    }
     var profileStore: ProfileStore
     var selectedProfileID: UUID
     var draftProfile: EQProfile
@@ -633,6 +626,10 @@ final class GlassEQAppModel {
     @ObservationIgnored var inProcessSettingsIsPresented = false
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0
+    var onboardingPresentationGeneration = 0
+    @ObservationIgnored private var visibleForegroundWindowCount = 0
+    private var hasStartedAudio = false
+    private(set) var onboardingAudioCaptureState = OnboardingAudioCaptureState.idle
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
@@ -948,6 +945,8 @@ final class GlassEQAppModel {
         let initialProfile = loadedStore.profile(forOutputUID: nil)
         self.profileStore = loadedStore
         self.activeProfile = initialProfile
+        self.activeProfileName = initialProfile.name
+        self.activeProfileIsBypassed = initialProfile.isBypassed
         self.selectedProfileID = initialProfile.id
         self.draftProfile = initialProfile
         self.engine = engine
@@ -999,7 +998,9 @@ final class GlassEQAppModel {
         }
         if registerAppDelegate {
             GlassEQAppDelegate.model = self
-            AggregateBufferNotifier.shared.start()
+            if OnboardingState.isComplete {
+                AggregateBufferNotifier.shared.start()
+            }
             lifecycleObserverTokens.append(
                 NotificationCenter.default.addObserver(
                     forName: .glassEQOpenOutputSettingsRequest,
@@ -1339,7 +1340,52 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        hasStartedAudio = true
+        onboardingAudioCaptureState = .pending
         startObserver(sendInitialValue: true)
+    }
+
+    func requestOnboardingPresentation() {
+        onboardingPresentationGeneration &+= 1
+    }
+
+    // GlassEQ runs as an accessory and only shows a Dock icon while a regular window is open.
+    // Windows count themselves in and out here so closing one while another is still open
+    // keeps the icon.
+    func foregroundWindowDidAppear() {
+        visibleForegroundWindowCount += 1
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func foregroundWindowDidDisappear() {
+        visibleForegroundWindowCount -= 1
+        if visibleForegroundWindowCount == 0 {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
+    }
+
+    // Onboarding's permission step. The first call starts audio for the first time, which is
+    // what triggers the macOS capture prompt; later calls retry after a denial or failure.
+    func startAudioForOnboarding() {
+        if hasStartedAudio {
+            retryAudioEngine()
+        } else {
+            start()
+        }
+    }
+
+    // Called when the onboarding window closes, finished or not. Audio must never stay parked
+    // because someone dismissed the guide early.
+    func finishOnboarding() {
+        let wasComplete = OnboardingState.isComplete
+        OnboardingState.markComplete()
+        if !hasStartedAudio {
+            start()
+        }
+        if !wasComplete, GlassEQAppDelegate.model === self {
+            AggregateBufferNotifier.shared.start()
+        }
     }
 
     private func startObserver(sendInitialValue: Bool) {
@@ -1394,6 +1440,7 @@ final class GlassEQAppModel {
                 } else {
                     lifecycleState = .stopped
                     isRunning = false
+                    onboardingAudioCaptureState = .failed(message: statusMessage)
                 }
             }
             guard self.observer === observer,
@@ -1422,6 +1469,7 @@ final class GlassEQAppModel {
         clearProgrammeComparisonSession()
         lifecycleState = .stopped
         isRunning = false
+        onboardingAudioCaptureState = .idle
         statusMessage = localized("Stopped")
         notifyModelDidChange()
     }
@@ -1439,6 +1487,18 @@ final class GlassEQAppModel {
     func applyDraft() {
         do {
             try apply(profile: draftProfile)
+        } catch {
+            reportProfileActionFailure(error)
+        }
+    }
+
+    func activateProfile(_ id: UUID) {
+        guard let profile = profileStore.profiles.first(where: { $0.id == id }),
+              profile.id != activeProfile.id else {
+            return
+        }
+        do {
+            try apply(profile: profile)
         } catch {
             reportProfileActionFailure(error)
         }
@@ -1641,7 +1701,10 @@ final class GlassEQAppModel {
             return
         }
         if activeProfile.isBypassed {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .bypassed
+            )
         } else if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
         } else if engine.updateDSP(profile: profile) {
@@ -1673,7 +1736,10 @@ final class GlassEQAppModel {
             return
         }
         if activeProfile.isBypassed {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .bypassed
+            )
         } else if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
         } else if engine.updateDSP(profile: profile) {
@@ -1893,8 +1959,8 @@ final class GlassEQAppModel {
         case .convolution:
             try addProfile(
                 .flatConvolution,
-                name: localized("New Response Curve"),
-                status: localized("Created New Response Curve")
+                name: localized("New Convolution"),
+                status: localized("Created New Convolution")
             )
         }
     }
@@ -2077,7 +2143,10 @@ final class GlassEQAppModel {
             processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .failed(message: message)
+            )
             statusMessage = message
             notifyModelDidChange()
             return
@@ -2115,6 +2184,7 @@ final class GlassEQAppModel {
                         scheduleEngineResumeAfterCancelledTransition()
                     }
                     statusMessage = runningEngineStatusMessage(for: output)
+                    onboardingAudioCaptureState = .running(outputName: output.name)
                     startAggregateStabilityMonitoring()
                     startColdStartupAggregatePromotionIfNeeded()
                     startHeadsetAggregatePromotionIfNeeded()
@@ -2136,10 +2206,12 @@ final class GlassEQAppModel {
             pendingOutputTransitionAction = .stopped
             lifecycleState = .stopped
             isRunning = false
+            onboardingAudioCaptureState = .pending
             invalidatePendingEngineStart()
             scheduleEngineStop(updateMetrics: false)
         } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
             pendingOutputTransitionAction = .muted
+            onboardingAudioCaptureState = .pending
             scheduleEngineMuteForTransition()
         }
         let settlingDelay = outputChangeSettlingDelay(
@@ -2265,13 +2337,19 @@ final class GlassEQAppModel {
             draftProfile = activeProfile
 
             if activeProfile.isBypassed {
-                disableActiveProfileProcessing(updateMetrics: false)
+                disableActiveProfileProcessing(
+                    updateMetrics: false,
+                    onboardingState: .bypassed
+                )
             } else if let message = impulseResponseCompatibilityFailureMessage(
                 profile: activeProfile,
                 processingSampleRate: processingSampleRateForSettings(),
                 outputChannelCount: output.outputChannelCount
             ) {
-                disableActiveProfileProcessing(updateMetrics: false)
+                disableActiveProfileProcessing(
+                    updateMetrics: false,
+                    onboardingState: .failed(message: message)
+                )
                 statusMessage = message
             } else {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
@@ -2290,6 +2368,7 @@ final class GlassEQAppModel {
             lifecycleState = .stopped
             isRunning = false
             statusMessage = localized("Default output unavailable: \(error.localizedDescription)")
+            onboardingAudioCaptureState = .failed(message: statusMessage)
         }
         notifyModelDidChange()
     }
@@ -2302,6 +2381,7 @@ final class GlassEQAppModel {
 
         engineStartGeneration += 1
         let generation = engineStartGeneration
+        onboardingAudioCaptureState = .pending
         pauseEngineMonitoring()
         engineStartTask?.cancel()
         switch work {
@@ -2414,7 +2494,10 @@ final class GlassEQAppModel {
         }
 
         guard !activeProfile.isBypassed else {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .bypassed
+            )
             return
         }
 
@@ -2424,7 +2507,10 @@ final class GlassEQAppModel {
             processingSampleRate: processingSampleRate,
             outputChannelCount: currentOutputChannelCount
         ) {
-            disableActiveProfileProcessing(updateMetrics: true)
+            disableActiveProfileProcessing(
+                updateMetrics: true,
+                onboardingState: .failed(message: message)
+            )
             statusMessage = message
             return
         }
@@ -2444,6 +2530,7 @@ final class GlassEQAppModel {
             if engine.updateDSP(profile: activeProfile) {
                 confirmedEngineProfileState.confirm(EngineProfileConfirmation(profileRollback()))
                 statusMessage = processingStatus(outputName: currentOutputName, profileName: activeProfile.name)
+                onboardingAudioCaptureState = .running(outputName: currentOutputName)
             } else {
                 restartEngineWithActiveProfile(rollback: rollback)
             }
@@ -2452,7 +2539,10 @@ final class GlassEQAppModel {
         }
     }
 
-    private func disableActiveProfileProcessing(updateMetrics: Bool) {
+    private func disableActiveProfileProcessing(
+        updateMetrics: Bool,
+        onboardingState: OnboardingAudioCaptureState
+    ) {
         clearProgrammeComparisonSession()
         let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
         invalidatePendingOutputChange()
@@ -2463,6 +2553,7 @@ final class GlassEQAppModel {
         }
         lifecycleState = .stopped
         isRunning = false
+        onboardingAudioCaptureState = onboardingState
         wakeReconnectAttempts = 0
         wasRunningBeforeSleep = false
         statusMessage = disabledStatus(outputName: currentOutputName)
@@ -2703,6 +2794,7 @@ final class GlassEQAppModel {
             clearFixedBufferRecoveryIfRouteChanged()
             lifecycleState = .running
             isRunning = true
+            onboardingAudioCaptureState = .running(outputName: output.name)
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
             statusMessage = runningEngineStatusMessage(for: output)
@@ -2723,6 +2815,7 @@ final class GlassEQAppModel {
             }
             lifecycleState = .running
             isRunning = true
+            onboardingAudioCaptureState = .running(outputName: output.name)
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
             pendingAggregateBufferIncrease = nil
@@ -2743,6 +2836,10 @@ final class GlassEQAppModel {
             activeAggregateRoute = nil
             pendingAggregateBufferIncrease = nil
             statusMessage = audioEngineStatusMessage(error)
+            onboardingAudioCaptureState = onboardingAudioFailureState(
+                for: error,
+                message: statusMessage
+            )
         case .cancelled:
             return
         }
@@ -2964,6 +3061,7 @@ final class GlassEQAppModel {
                 outputName: output.name,
                 profileName: activeProfile.name
             )
+            onboardingAudioCaptureState = .running(outputName: output.name)
             startAggregateStabilityMonitoring()
         case .success(.clientsActive, _):
             return
@@ -2990,6 +3088,7 @@ final class GlassEQAppModel {
                 lifecycleState = .stopped
                 isRunning = false
                 statusMessage = localized("Audio engine failed: \(message)")
+                onboardingAudioCaptureState = .failed(message: statusMessage)
             }
         }
         notifyModelDidChange()
@@ -3078,6 +3177,7 @@ final class GlassEQAppModel {
             statusMessage = localized(
                 "Processing \(output.name) with \(activeProfile.name) on the low-latency headset path"
             )
+            onboardingAudioCaptureState = .running(outputName: output.name)
             startAggregateStabilityMonitoring()
         case .success(.clockUnstable, _):
             statusMessage = localized(
@@ -3103,6 +3203,7 @@ final class GlassEQAppModel {
                 lifecycleState = .stopped
                 isRunning = false
                 statusMessage = localized("Audio engine failed: \(message)")
+                onboardingAudioCaptureState = .failed(message: statusMessage)
             }
         }
         notifyModelDidChange()
@@ -3204,6 +3305,7 @@ final class GlassEQAppModel {
             statusMessage = localized(
                 "64-frame processing missed audio deadlines again, so GlassEQ stopped processing. Retry the audio engine when ready."
             )
+            onboardingAudioCaptureState = .failed(message: statusMessage)
             notifyModelDidChange()
         }
         return true
@@ -3459,6 +3561,7 @@ final class GlassEQAppModel {
             lifecycleState = .stopped
             isRunning = false
             statusMessage = status
+            onboardingAudioCaptureState = .failed(message: status)
             notifyModelDidChange()
             return
         }
@@ -3602,6 +3705,7 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
+        onboardingAudioCaptureState = .pending
         guard !activeProfile.isBypassed else {
             synchronizeActiveProfileProcessing()
             notifyModelDidChange()
@@ -3694,6 +3798,20 @@ final class GlassEQAppModel {
         throw SettingsCommandFailure(
             message: localized("Could not open System Settings. Open Privacy & Security manually and enable system audio capture for GlassEQ.")
         )
+    }
+
+    func openPrivacySettingsForOnboarding() {
+        do {
+            try openPrivacySettings()
+            if case .permissionDenied = onboardingAudioCaptureState {
+                onboardingAudioCaptureState = .permissionDenied(settingsError: nil)
+            }
+        } catch {
+            onboardingAudioCaptureState = .permissionDenied(
+                settingsError: error.localizedDescription
+            )
+            notifyModelDidChange()
+        }
     }
 
     private func processingStatus(outputName: String, profileName: String) -> String {
@@ -3845,6 +3963,7 @@ final class GlassEQAppModel {
             statusMessage = localized(
                 "Audio rendering stalled again, so GlassEQ stopped processing. Retry the audio engine when ready."
             )
+            onboardingAudioCaptureState = .failed(message: statusMessage)
             notifyModelDidChange()
         }
     }
@@ -3941,6 +4060,7 @@ final class GlassEQAppModel {
         clearProgrammeComparisonSession()
         lifecycleState = .sleeping
         isRunning = false
+        onboardingAudioCaptureState = wasRunningBeforeSleep ? .pending : .idle
         statusMessage = localized("Paused for system sleep")
         notifyModelDidChange()
     }
@@ -3957,6 +4077,7 @@ final class GlassEQAppModel {
             wasRunningBeforeSleep = false
             lifecycleState = .stopped
             isRunning = false
+            onboardingAudioCaptureState = .idle
             statusMessage = localized("Stopped")
             notifyModelDidChange()
             return
@@ -3994,6 +4115,7 @@ final class GlassEQAppModel {
         let generation = outputChangeGeneration
         wakeReconnectAttempts = 0
         lifecycleState = .waking
+        onboardingAudioCaptureState = .pending
         statusMessage = status
         notifyModelDidChange()
         outputChangeTask = Task { @MainActor [weak self] in
@@ -4047,11 +4169,35 @@ final class GlassEQAppModel {
         previewReturnProfile = nil
         clearProgrammeComparisonSession()
         isRunning = false
+        onboardingAudioCaptureState = .idle
         if shutdownSettings {
             settingsCoordinator.shutdown()
         }
         notifyModelDidChange()
         return true
+    }
+
+    private func audioEngineFailureCategory(_ error: Error) -> AudioEngineFailure.Category? {
+        if let failure = error as? AudioEngineFailure {
+            return failure.category
+        }
+        if let coreAudioError = error as? CoreAudioError {
+            return classifyCoreAudioError(coreAudioError).category
+        }
+        if error is AudioDeviceAvailabilityError {
+            return .outputDeviceUnavailable
+        }
+        return nil
+    }
+
+    private func onboardingAudioFailureState(
+        for error: Error,
+        message: String
+    ) -> OnboardingAudioCaptureState {
+        if audioEngineFailureCategory(error) == .systemAudioCapturePermission {
+            return .permissionDenied(settingsError: nil)
+        }
+        return .failed(message: message)
     }
 
     private func audioEngineStatusMessage(_ error: Error) -> String {
@@ -4097,6 +4243,9 @@ final class GlassEQAppModel {
         lifecycleState = .stopped
         isRunning = false
         statusMessage = audioEngineStatusMessage(failure)
+        onboardingAudioCaptureState = failure.category == .systemAudioCapturePermission
+            ? .permissionDenied(settingsError: nil)
+            : .failed(message: statusMessage)
         notifyModelDidChange()
     }
 
@@ -4152,27 +4301,24 @@ private struct MenuBarView: View {
                 Text(localized("Profile"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Picker(localized("Profile"), selection: Binding(
-                    get: { model.selectedProfileID },
-                    set: { model.selectProfile($0) }
-                )) {
+                Picker(localized("Profile"), selection: $model.activeProfileID) {
                     ForEach(model.profileStore.profiles) { profile in
                         Text(profile.name).tag(profile.id)
                     }
                 }
                 .labelsHidden()
                 .accessibilityLabel(Text(localized("Profile")))
-                .accessibilityValue(Text(model.selectedProfile.name))
-                .accessibilityHint(Text(localized("Chooses a profile for editing")))
+                .accessibilityValue(Text(model.activeProfileName))
+                .accessibilityHint(Text(localized("Switches the profile that is processing audio")))
             }
 
             HStack(spacing: 10) {
                 Button {
-                    model.setBypass(!model.activeProfile.isBypassed)
+                    model.setBypass(!model.activeProfileIsBypassed)
                 } label: {
                     Label(
-                        model.activeProfile.isBypassed ? localized("Enable") : localized("Disable"),
-                        systemImage: model.activeProfile.isBypassed ? "speaker.wave.2" : "speaker.slash"
+                        model.activeProfileIsBypassed ? localized("Enable") : localized("Disable"),
+                        systemImage: model.activeProfileIsBypassed ? "speaker.wave.2" : "speaker.slash"
                     )
                         .frame(minWidth: 82, minHeight: 28)
                         .contentShape(.rect)
@@ -4180,7 +4326,7 @@ private struct MenuBarView: View {
                 .controlSize(.large)
                 .buttonStyle(.glass)
                 .tint(popoverControlsAreActive ? enableButtonTint : nil)
-                .accessibilityLabel(Text(model.activeProfile.isBypassed ? localized("Enable equalizer") : localized("Disable equalizer")))
+                .accessibilityLabel(Text(model.activeProfileIsBypassed ? localized("Enable equalizer") : localized("Disable equalizer")))
                 .accessibilityValue(Text(statusBadgeTitle))
                 .accessibilityHint(Text(localized("Starts or stops system audio processing for the active profile")))
 
@@ -4211,7 +4357,7 @@ private struct MenuBarView: View {
             Button(localized("Test render watchdog")) {
                 model.simulateRenderStallForTesting()
             }
-            .disabled(!model.isRunning || model.activeProfile.isBypassed)
+            .disabled(!model.isRunning || model.activeProfileIsBypassed)
             .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
             #endif
 
@@ -4251,18 +4397,18 @@ private struct MenuBarView: View {
     }
 
     private var statusBadgeTitle: String {
-        if model.activeProfile.isBypassed {
+        if model.activeProfileIsBypassed {
             return localized("Disabled")
         }
         return model.isRunning ? localized("Active") : localized("Stopped")
     }
 
     private var statusBadgeColor: Color {
-        model.isRunning && !model.activeProfile.isBypassed ? .macOSSystemGreen : .macOSSystemRed
+        model.isRunning && !model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemRed
     }
 
     private var enableButtonTint: Color {
-        model.activeProfile.isBypassed ? .macOSSystemGreen : .macOSSystemYellow
+        model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemYellow
     }
 
     private var popoverControlsAreActive: Bool {
@@ -4284,7 +4430,6 @@ private struct MenuBarView: View {
         .accessibilityValue(Text(value))
     }
 }
-
 
 private enum PopoverGlassAppearance {
     /// Opacity applied to the popover's system Liquid Glass backing (NSGlassView).
@@ -4319,10 +4464,4 @@ private struct PopoverGlassConfigurator: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: PopoverGlassConfiguringView, context: Context) {}
-}
-
-private extension Color {
-    static let macOSSystemGreen = Color(nsColor: .systemGreen)
-    static let macOSSystemRed = Color(nsColor: .systemRed)
-    static let macOSSystemYellow = Color(nsColor: .systemYellow)
 }

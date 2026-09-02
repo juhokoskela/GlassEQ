@@ -1,44 +1,54 @@
 import AppKit
+import CoreServices
 import Darwin
 import Foundation
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
 import SwiftUI
 
+private func localized(_ value: String.LocalizationValue) -> String {
+    String(localized: value, bundle: SettingsUIResources.bundle)
+}
+
 @main
 struct GlassEQSettingsApp: App {
     @NSApplicationDelegateAdaptor(SettingsAppDelegate.self) private var appDelegate
-    @State private var model = GlassEQSettingsViewModel()
 
     var body: some Scene {
-        WindowGroup(String(localized: "Configure GlassEQ")) {
-            SettingsView(model: model)
+        Window(localized("Configure GlassEQ"), id: "settings") {
+            SettingsView(model: appDelegate.model)
                 .frame(minWidth: 760, minHeight: 500)
-                .onAppear {
-                    appDelegate.attach(model: model)
-                }
         }
         .defaultSize(width: 1180, height: 720)
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
+        .restorationBehavior(.disabled)
     }
 }
 
 @MainActor
 final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
-    private let launchCoordinator = SettingsLaunchCoordinator()
+    let model: GlassEQSettingsViewModel
+    private let launchCoordinator: SettingsLaunchCoordinator
+
+    override init() {
+        let model = GlassEQSettingsViewModel()
+        self.model = model
+        launchCoordinator = SettingsLaunchCoordinator(model: model)
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // GlassEQ spawns this helper by path, so Launch Services may not know its bundle. Without
+        // registration the Dock and Cmd-Tab fall back to the executable name.
+        LSRegisterURL(Bundle.main.bundleURL as CFURL, false)
         // Promote from the LSUIElement/agent launch state to a regular app so the Settings window
         // appears in the Cmd-Tab task switcher (and the Dock) while it's open. The helper
         // terminates when the window closes, so both go away with it.
         NSApplication.shared.setActivationPolicy(.regular)
-        // The helper is launched as a piped subprocess, so set the Dock/Cmd-Tab icon explicitly
-        // from the bundled icns (CFBundleIconFile covers the static bundle icon as well).
-        if let iconURL = Bundle.main.url(forResource: "GlassEQ", withExtension: "icns"),
-           let icon = NSImage(contentsOf: iconURL) {
-            NSApplication.shared.applicationIconImage = icon
-        }
+        // Use the icon exactly as the system draws it for GlassEQ.app. Loading the icns directly
+        // skips the standard icon margins, which made the Dock tile oversized.
+        NSApplication.shared.applicationIconImage = NSWorkspace.shared.icon(forFile: Self.iconSourceBundleURL.path)
         NSApplication.shared.activate(ignoringOtherApps: true)
         launchCoordinator.finishLaunching(arguments: CommandLine.arguments)
     }
@@ -47,19 +57,22 @@ final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        launchCoordinator.disconnect()
+    private static var iconSourceBundleURL: URL {
+        let helperURL = Bundle.main.bundleURL
+        let enclosing = helperURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return enclosing.pathExtension == "app" ? enclosing : helperURL
     }
 
-    func attach(model: GlassEQSettingsViewModel) {
-        launchCoordinator.attach(model: model)
+    func applicationWillTerminate(_ notification: Notification) {
+        launchCoordinator.disconnect()
     }
 }
 
 @MainActor
 protocol SettingsPipeClientConnection: SettingsCommanding {
-    var token: String? { get }
-
     func connect() async throws -> SettingsSnapshotDTO
     func acknowledgeReady() async throws
     func disconnect()
@@ -85,28 +98,35 @@ struct LiveSettingsPipeClientFactory: SettingsPipeClientMaking {
 
 @MainActor
 final class SettingsLaunchCoordinator {
-    private weak var model: GlassEQSettingsViewModel?
+    private let model: GlassEQSettingsViewModel
     private var client: (any SettingsPipeClientConnection)?
-    private var pendingLaunchInfo: SettingsLaunchInfo?
-    private var connectedToken: String?
     private var connectedMainProcessIdentifier: pid_t?
-    private var didFinishLaunching = false
     private var connectionTask: Task<Void, Never>?
     private let clientFactory: any SettingsPipeClientMaking
 
-    init(clientFactory: any SettingsPipeClientMaking = LiveSettingsPipeClientFactory()) {
+    init(
+        model: GlassEQSettingsViewModel,
+        clientFactory: any SettingsPipeClientMaking = LiveSettingsPipeClientFactory()
+    ) {
+        self.model = model
         self.clientFactory = clientFactory
     }
 
     func finishLaunching(arguments: [String]) {
-        didFinishLaunching = true
-        pendingLaunchInfo = SettingsLaunchInfo(commandLineArguments: arguments)
-        connectIfReady()
-    }
-
-    func attach(model: GlassEQSettingsViewModel) {
-        self.model = model
-        connectIfReady()
+        guard let launchInfo = SettingsLaunchInfo(commandLineArguments: arguments) else {
+            guard !model.isConnected else {
+                return
+            }
+            model.commandErrorMessage = localized("Settings was not launched by GlassEQ.")
+            return
+        }
+        guard launchInfo.mainProcessIdentifier != connectedMainProcessIdentifier else {
+            return
+        }
+        connectionTask?.cancel()
+        connectionTask = Task { @MainActor [weak self] in
+            await self?.connect(launchInfo: launchInfo)
+        }
     }
 
     func disconnect() {
@@ -114,7 +134,6 @@ final class SettingsLaunchCoordinator {
         connectionTask = nil
         client?.disconnect()
         client = nil
-        connectedToken = nil
         connectedMainProcessIdentifier = nil
     }
 
@@ -122,36 +141,7 @@ final class SettingsLaunchCoordinator {
         await connectionTask?.value
     }
 
-    private func connectIfReady() {
-        guard let model else {
-            return
-        }
-        guard didFinishLaunching else {
-            return
-        }
-        guard let pendingLaunchInfo else {
-            guard !model.isConnected else {
-                return
-            }
-            model.commandErrorMessage = "Settings was not launched by GlassEQ."
-            return
-        }
-        guard pendingLaunchInfo.mainProcessIdentifier != connectedMainProcessIdentifier else {
-            return
-        }
-
-        self.pendingLaunchInfo = nil
-        connectionTask?.cancel()
-        connectionTask = Task { @MainActor [weak self, weak model] in
-            guard let self,
-                  let model else {
-                return
-            }
-            await self.connect(launchInfo: pendingLaunchInfo, model: model)
-        }
-    }
-
-    private func connect(launchInfo: SettingsLaunchInfo, model: GlassEQSettingsViewModel) async {
+    private func connect(launchInfo: SettingsLaunchInfo) async {
         do {
             guard launchInfo.mainProcessIdentifier != connectedMainProcessIdentifier else {
                 return
@@ -163,7 +153,6 @@ final class SettingsLaunchCoordinator {
                 return
             }
             self.client = client
-            connectedToken = client.token
             connectedMainProcessIdentifier = launchInfo.mainProcessIdentifier
             model.attach(client: client, snapshot: snapshot)
             try await client.acknowledgeReady()
@@ -241,7 +230,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         token = try await waitForBootstrapToken()
         let response = try await send(kind: .connect, timeout: requestTimeout)
         guard let snapshot = response.snapshot else {
-            throw SettingsCommandFailure(message: "GlassEQ returned an empty settings snapshot.")
+            throw SettingsCommandFailure(message: localized("GlassEQ returned an empty settings snapshot."))
         }
         return snapshot
     }
@@ -268,7 +257,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         if let token {
             writePipeMessage(.request(sessionToken: token, id: UUID().uuidString, kind: .disconnect, command: nil))
         }
-        let error = SettingsCommandFailure(message: "Settings disconnected from GlassEQ.")
+        let error = SettingsCommandFailure(message: localized("Settings disconnected from GlassEQ."))
         bootstrapContinuation?.resume(throwing: error)
         bootstrapContinuation = nil
         bootstrapTimeoutTask?.cancel()
@@ -333,7 +322,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         timeout: Duration?
     ) async throws -> SettingsCommandResponse {
         guard let token else {
-            throw SettingsCommandFailure(message: "Settings IPC session was not initialized.")
+            throw SettingsCommandFailure(message: localized("Settings IPC session was not initialized."))
         }
         try Task.checkCancellation()
         let requestID = UUID().uuidString
@@ -350,7 +339,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                             self.cancelPendingRequest(
                                 requestID,
                                 token: token,
-                                error: SettingsCommandFailure(message: "Settings IPC request timed out."),
+                                error: SettingsCommandFailure(message: localized("Settings IPC request timed out.")),
                                 notifyMainProcess: true
                             )
                         }
@@ -370,7 +359,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                         }
                         self.requestTimeoutTasks.removeValue(forKey: requestID)?.cancel()
                         continuation.resume(throwing: SettingsCommandFailure(
-                            message: "Settings IPC write failed: \(error.localizedDescription)"
+                            message: localized("Settings IPC write failed: \(error.localizedDescription)")
                         ))
                     }
                 }
@@ -453,7 +442,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                 return
             }
             guard let response else {
-                continuation.resume(throwing: SettingsCommandFailure(message: "GlassEQ returned an empty settings response."))
+                continuation.resume(throwing: SettingsCommandFailure(message: localized("GlassEQ returned an empty settings response.")))
                 return
             }
             continuation.resume(returning: response)
@@ -520,7 +509,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                         return
                     }
                     self.bootstrapContinuation = nil
-                    continuation.resume(throwing: SettingsCommandFailure(message: "Settings IPC bootstrap timed out."))
+                    continuation.resume(throwing: SettingsCommandFailure(message: localized("Settings IPC bootstrap timed out.")))
                 }
             }
         }
@@ -570,17 +559,17 @@ enum SettingsHostValidator {
     ) throws {
         let snapshot = resolver.snapshot(for: launchInfo.mainProcessIdentifier)
         guard snapshot.exists else {
-            throw SettingsCommandFailure(message: "GlassEQ is no longer running.")
+            throw SettingsCommandFailure(message: localized("GlassEQ is no longer running."))
         }
         if let parentProcessIdentifier = snapshot.parentProcessIdentifier,
            parentProcessIdentifier > 1,
            parentProcessIdentifier != launchInfo.mainProcessIdentifier {
-            throw SettingsCommandFailure(message: "Settings was not launched by the current GlassEQ process.")
+            throw SettingsCommandFailure(message: localized("Settings was not launched by the current GlassEQ process."))
         }
         if let bundleIdentifier = snapshot.bundleIdentifier,
            !bundleIdentifier.isEmpty,
            bundleIdentifier != hostBundleIdentifier {
-            throw SettingsCommandFailure(message: "Settings was launched by an unexpected host application.")
+            throw SettingsCommandFailure(message: localized("Settings was launched by an unexpected host application."))
         }
     }
 }
