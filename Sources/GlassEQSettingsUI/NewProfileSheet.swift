@@ -2,7 +2,7 @@ import GlassEQCore
 import GlassEQSettingsIPC
 import SwiftUI
 
-enum NewProfileChoice: Hashable, CaseIterable, Identifiable {
+enum NewProfileChoice: Hashable, Identifiable {
     case create(SettingsProfileKind)
     case importProfile
 
@@ -12,8 +12,6 @@ enum NewProfileChoice: Hashable, CaseIterable, Identifiable {
         .create(.graphic31),
         .create(.convolution)
     ]
-
-    static let allCases = createChoices + [.importProfile]
 
     var id: Self { self }
 
@@ -76,8 +74,8 @@ extension SettingsProfileKind {
 }
 
 struct NewProfileSheet: View {
-    var onCreate: (SettingsProfileKind) -> Void
-    var onImport: () -> Void
+    let onCreate: (SettingsProfileKind) -> Void
+    let onImport: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -98,10 +96,10 @@ struct NewProfileSheet: View {
             VStack(spacing: 12) {
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(NewProfileChoice.createChoices) { option in
-                        card(for: option)
+                        NewProfileChoiceCard(option: option, choice: $choice, onConfirm: confirm)
                     }
                 }
-                card(for: .importProfile)
+                NewProfileChoiceCard(option: .importProfile, choice: $choice, onConfirm: confirm)
             }
             .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: choice)
 
@@ -123,15 +121,6 @@ struct NewProfileSheet: View {
         .frame(width: 560)
     }
 
-    private func card(for option: NewProfileChoice) -> some View {
-        NewProfileChoiceCard(
-            option: option,
-            isSelected: option == choice,
-            onSelect: { choice = option },
-            onConfirm: confirm
-        )
-    }
-
     private func confirm() {
         dismiss()
         switch choice {
@@ -144,26 +133,30 @@ struct NewProfileSheet: View {
 }
 
 private struct NewProfileChoiceCard: View {
-    var option: NewProfileChoice
-    var isSelected: Bool
-    var onSelect: () -> Void
-    var onConfirm: () -> Void
+    let option: NewProfileChoice
+    @Binding var choice: NewProfileChoice
+    let onConfirm: () -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
+    private var isSelected: Bool {
+        option == choice
+    }
+
     var body: some View {
-        Button(action: onSelect) {
+        Button {
+            choice = option
+        } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: option.symbol)
                     .font(.title3.weight(.medium))
                     .frame(width: 34, height: 34)
-                    .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+                    .foregroundStyle(isSelected ? Color(nsColor: .alternateSelectedControlTextColor) : Color.accentColor)
                     .background(
                         isSelected ? Color.accentColor : Color.accentColor.opacity(0.12),
                         in: .rect(cornerRadius: 9)
                     )
-                    .symbolEffect(.bounce, options: .nonRepeating, value: isSelected && !reduceMotion)
+                    .symbolEffect(.bounce, options: .nonRepeating, value: isSelected)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(option.title)
@@ -183,13 +176,13 @@ private struct NewProfileChoiceCard: View {
                 isSelected ? Color.accentColor.opacity(0.1) : Color.primary.opacity(isHovering ? 0.06 : 0.035),
                 in: .rect(cornerRadius: 12)
             )
-            .overlay(
+            .overlay {
                 RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(
                         isSelected ? Color.accentColor : Color.primary.opacity(0.08),
                         lineWidth: isSelected ? 1.5 : 1
                     )
-            )
+            }
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
@@ -198,6 +191,10 @@ private struct NewProfileChoiceCard: View {
         .accessibilityValue(Text(option.summary))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityHint(Text(localized("Selects this profile type")))
+        .accessibilityAction(named: Text(option.actionTitle)) {
+            choice = option
+            onConfirm()
+        }
     }
 }
 
