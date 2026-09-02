@@ -29,7 +29,7 @@ public enum SettingsUIResources {
     public static var bundle: Bundle { settingsResourcesBundle }
 }
 
-func localizedDecimal(
+public func localizedDecimal(
     _ value: Double,
     minimumFractionDigits: Int,
     maximumFractionDigits: Int,
@@ -136,19 +136,19 @@ func playbackFramesToMilliseconds(
     return frames / sampleRate * 1_000
 }
 
-func localizedInteger(_ value: Int) -> String {
+public func localizedInteger(_ value: Int) -> String {
     value.formatted(.number.locale(.autoupdatingCurrent))
 }
 
-func localizedInteger(_ value: UInt32) -> String {
+public func localizedInteger(_ value: UInt32) -> String {
     UInt64(value).formatted(.number.locale(.autoupdatingCurrent))
 }
 
-func localizedInteger(_ value: UInt64) -> String {
+public func localizedInteger(_ value: UInt64) -> String {
     value.formatted(.number.locale(.autoupdatingCurrent))
 }
 
-func localizedDecibels(_ value: Double, fractionDigits: Int = 1) -> String {
+public func localizedDecibels(_ value: Double, fractionDigits: Int = 1) -> String {
     let number = localizedDecimal(
         value,
         minimumFractionDigits: fractionDigits,
@@ -158,7 +158,7 @@ func localizedDecibels(_ value: Double, fractionDigits: Int = 1) -> String {
     return localized("\(number) dB")
 }
 
-func localizedFrequency(_ value: Double) -> String {
+public func localizedFrequency(_ value: Double) -> String {
     if value >= 1_000 {
         let number = localizedDecimal(value / 1_000, minimumFractionDigits: 1, maximumFractionDigits: 1)
         return localized("\(number) kHz")
@@ -167,12 +167,12 @@ func localizedFrequency(_ value: Double) -> String {
     return localized("\(number) Hz")
 }
 
-func localizedFrameCount(_ value: Int) -> String {
+public func localizedFrameCount(_ value: Int) -> String {
     let number = localizedInteger(value)
     return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
 }
 
-func localizedFrameCount(_ value: UInt32) -> String {
+public func localizedFrameCount(_ value: UInt32) -> String {
     let number = localizedInteger(value)
     return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
 }

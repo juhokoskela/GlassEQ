@@ -1,8 +1,16 @@
 import AppKit
 import SwiftUI
 
-extension Color {
+public extension Color {
+    static let macOSSystemGreen = Color(nsColor: .systemGreen)
     static let macOSSystemRed = Color(nsColor: .systemRed)
+    static let macOSSystemYellow = Color(nsColor: .systemYellow)
+    static let macOSSystemOrange = Color(nsColor: .systemOrange)
+    static let macOSWindowBackground = Color(nsColor: .windowBackgroundColor)
+    static let macOSControlBackground = Color(nsColor: .controlBackgroundColor)
+}
+
+extension Color {
     static let cardBorder = Color.primary.opacity(0.08)
 }
 

@@ -220,64 +220,6 @@ func localized(_ value: String.LocalizationValue) -> String {
     String(localized: value, bundle: appResourcesBundle)
 }
 
-private func localizedDecimal(
-    _ value: Double,
-    minimumFractionDigits: Int,
-    maximumFractionDigits: Int,
-    signed: Bool = false
-) -> String {
-    let formatter = NumberFormatter()
-    formatter.locale = .autoupdatingCurrent
-    formatter.numberStyle = .decimal
-    formatter.minimumFractionDigits = minimumFractionDigits
-    formatter.maximumFractionDigits = maximumFractionDigits
-    if signed {
-        formatter.positivePrefix = formatter.plusSign
-    }
-    return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
-}
-
-private func localizedInteger(_ value: Int) -> String {
-    value.formatted(.number.locale(.autoupdatingCurrent))
-}
-
-private func localizedInteger(_ value: UInt32) -> String {
-    UInt64(value).formatted(.number.locale(.autoupdatingCurrent))
-}
-
-private func localizedInteger(_ value: UInt64) -> String {
-    value.formatted(.number.locale(.autoupdatingCurrent))
-}
-
-private func localizedDecibels(_ value: Double, fractionDigits: Int = 1) -> String {
-    let number = localizedDecimal(
-        value,
-        minimumFractionDigits: fractionDigits,
-        maximumFractionDigits: fractionDigits,
-        signed: true
-    )
-    return localized("\(number) dB")
-}
-
-private func localizedFrequency(_ value: Double) -> String {
-    if value >= 1_000 {
-        let number = localizedDecimal(value / 1_000, minimumFractionDigits: 1, maximumFractionDigits: 1)
-        return localized("\(number) kHz")
-    }
-    let number = localizedDecimal(value, minimumFractionDigits: 0, maximumFractionDigits: 0)
-    return localized("\(number) Hz")
-}
-
-private func localizedFrameCount(_ value: Int) -> String {
-    let number = localizedInteger(value)
-    return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
-}
-
-private func localizedFrameCount(_ value: UInt32) -> String {
-    let number = localizedInteger(value)
-    return value == 1 ? localized("\(number) frame") : localized("\(number) frames")
-}
-
 private var noOutputName: String {
     localized("No output")
 }
@@ -4410,7 +4352,6 @@ private struct MenuBarView: View {
     }
 }
 
-
 private enum PopoverGlassAppearance {
     /// Opacity applied to the popover's system Liquid Glass backing (NSGlassView).
     /// 1.0 keeps the full system frost; lower values thin it so more of the desktop shows
@@ -4444,13 +4385,4 @@ private struct PopoverGlassConfigurator: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: PopoverGlassConfiguringView, context: Context) {}
-}
-
-extension Color {
-    static let macOSSystemGreen = Color(nsColor: .systemGreen)
-    static let macOSSystemRed = Color(nsColor: .systemRed)
-    static let macOSSystemYellow = Color(nsColor: .systemYellow)
-    static let macOSSystemOrange = Color(nsColor: .systemOrange)
-    static let macOSWindowBackground = Color(nsColor: .windowBackgroundColor)
-    static let macOSControlBackground = Color(nsColor: .controlBackgroundColor)
 }
