@@ -1,4 +1,5 @@
 import AppKit
+import CoreServices
 import Darwin
 import Foundation
 import GlassEQSettingsIPC
@@ -29,22 +30,33 @@ final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
     private let launchCoordinator = SettingsLaunchCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // GlassEQ spawns this helper by path, so Launch Services may not know its bundle. Without
+        // registration the Dock and Cmd-Tab fall back to the executable name.
+        LSRegisterURL(Bundle.main.bundleURL as CFURL, false)
         // Promote from the LSUIElement/agent launch state to a regular app so the Settings window
         // appears in the Cmd-Tab task switcher (and the Dock) while it's open. The helper
         // terminates when the window closes, so both go away with it.
         NSApplication.shared.setActivationPolicy(.regular)
-        // The helper is launched as a piped subprocess, so set the Dock/Cmd-Tab icon explicitly
-        // from the bundled icns (CFBundleIconFile covers the static bundle icon as well).
-        if let iconURL = Bundle.main.url(forResource: "GlassEQ", withExtension: "icns"),
-           let icon = NSImage(contentsOf: iconURL) {
-            NSApplication.shared.applicationIconImage = icon
-        }
+        // Use the icon exactly as the system draws it for GlassEQ.app. Loading the icns directly
+        // skips the standard icon margins, which made the Dock tile oversized.
+        NSApplication.shared.applicationIconImage = NSWorkspace.shared.icon(forFile: Self.iconSourceBundleURL.path)
         NSApplication.shared.activate(ignoringOtherApps: true)
         launchCoordinator.finishLaunching(arguments: CommandLine.arguments)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    // The enclosing GlassEQ.app when bundled (Contents/Helpers/GlassEQSettings.app), otherwise
+    // this bundle itself.
+    private static var iconSourceBundleURL: URL {
+        let helperURL = Bundle.main.bundleURL
+        let enclosing = helperURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return enclosing.pathExtension == "app" ? enclosing : helperURL
     }
 
     func applicationWillTerminate(_ notification: Notification) {
