@@ -249,20 +249,24 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     private final class PreparedDSPConfigBox: @unchecked Sendable {
+        let transitionID: UInt64
         var processor: EQProcessor?
         var comparisonReferenceProcessor: EQProcessor?
         var retiredProcessor: EQProcessor?
         var secondRetiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
-        init(config: EQRenderConfiguration) {
+        init(config: EQRenderConfiguration, transitionID: UInt64) {
+            self.transitionID = transitionID
             self.processor = EQProcessor(renderConfiguration: config)
         }
 
         init(
             equalizedConfig: EQRenderConfiguration,
-            referenceConfig: EQRenderConfiguration
+            referenceConfig: EQRenderConfiguration,
+            transitionID: UInt64
         ) {
+            self.transitionID = transitionID
             self.processor = EQProcessor(renderConfiguration: equalizedConfig)
             self.comparisonReferenceProcessor = EQProcessor(
                 renderConfiguration: referenceConfig
@@ -336,7 +340,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
-        private let beganDSPTransitions = Atomic<UInt64>(0)
+        private var nextDSPTransitionID: UInt64 = 0
+        private let publishedDSPTransition = Atomic<UInt64>(0)
         private let completedDSPTransitions = Atomic<UInt64>(0)
         private let programmeComparisonSelection = Atomic<UInt>(
             UInt(EQProgrammeComparisonSelection.equalized.rawValue)
@@ -593,20 +598,27 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             )
         }
 
-        func publishPendingDSPConfig(_ config: EQRenderConfiguration) {
-            let box = PreparedDSPConfigBox(config: config)
+        @discardableResult
+        func publishPendingDSPConfig(_ config: EQRenderConfiguration) -> DSPTransitionProgress.Target {
+            let target = nextDSPTransitionTarget()
+            let box = PreparedDSPConfigBox(config: config, transitionID: target.id)
             publishPendingDSPConfigBox(box)
+            return target
         }
 
+        @discardableResult
         func publishPendingProgrammeComparison(
             equalizedConfig: EQRenderConfiguration,
             referenceConfig: EQRenderConfiguration
-        ) {
+        ) -> DSPTransitionProgress.Target {
+            let target = nextDSPTransitionTarget()
             let box = PreparedDSPConfigBox(
                 equalizedConfig: equalizedConfig,
-                referenceConfig: referenceConfig
+                referenceConfig: referenceConfig,
+                transitionID: target.id
             )
             publishPendingDSPConfigBox(box)
+            return target
         }
 
         func setProgrammeComparisonSelection(
@@ -620,7 +632,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
         func dspTransitionProgress() -> DSPTransitionProgress {
             DSPTransitionProgress(
-                began: beganDSPTransitions.load(ordering: .acquiring),
+                published: publishedDSPTransition.load(ordering: .acquiring),
                 completed: completedDSPTransitions.load(ordering: .acquiring)
             )
         }
@@ -642,7 +654,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private func publishPendingDSPConfigBox(_ box: PreparedDSPConfigBox) {
             let rawPointer = UInt(bitPattern: Unmanaged.passRetained(box).toOpaque())
             let oldPointer = pendingDSPConfigPointer.exchange(rawPointer, ordering: .acquiringAndReleasing)
+            publishedDSPTransition.store(box.transitionID, ordering: .releasing)
             releaseDSPConfigBox(oldPointer)
+        }
+
+        private func nextDSPTransitionTarget() -> DSPTransitionProgress.Target {
+            nextDSPTransitionID &+= 1
+            return DSPTransitionProgress.Target(id: nextDSPTransitionID)
         }
 
         func drainDSPConfigBoxes() {
@@ -1215,7 +1233,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             box.processor = nil
             box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
-            beganDSPTransitions.wrappingAdd(1, ordering: .releasing)
         }
 
         private func finishDSPTransition(_ result: EQTransitionRenderResult) {
@@ -1226,8 +1243,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
             let rawPointer = activeDSPConfigPointer
             activeDSPConfigPointer = 0
-            completedDSPTransitions.wrappingAdd(1, ordering: .releasing)
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
+            completedDSPTransitions.store(box.transitionID, ordering: .releasing)
             box.retiredProcessor = result.retiredProcessor
             box.secondRetiredProcessor = result.secondRetiredProcessor
             pushRetiredDSPConfigBox(rawPointer)
@@ -1810,7 +1827,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     public func update(profile: EQProfile) throws {
         // Prefer a lock-free hot-swap that leaves the persistent tap untouched.
-        if updateDSP(profile: profile) {
+        if updateDSP(profile: profile) != nil {
             return
         }
         // Topology-incompatible change: rebuild around the persistent tap (the tap rate is
@@ -1829,7 +1846,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     @discardableResult
-    public func updateDSP(profile: EQProfile) -> Bool {
+    public func updateDSP(
+        profile: EQProfile
+    ) -> DSPTransitionProgress.Target? {
         guard let preparation = control.withLock({ state -> (AudioRuntime, EQProfile, UInt64, Double)? in
             guard let runtime = state.runtime,
                   let activeProfile = state.activeProfile else {
@@ -1840,7 +1859,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             )
             return (runtime, activeProfile, state.profileRevision, maximumUsableFrequency)
         }) else {
-            return false
+            return nil
         }
         let (runtime, activeProfile, profileRevision, maximumUsableFrequency) = preparation
         guard let preparedConfig = try? EQRenderConfiguration.prepare(
@@ -1849,13 +1868,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
         ) else {
-            return false
+            return nil
         }
         return control.withLock { state in
             guard state.runtime === runtime,
                   state.activeProfile == activeProfile,
                   state.profileRevision == profileRevision else {
-                return false
+                return nil
             }
             return updateDSPLocked(
                 &state,
@@ -1933,10 +1952,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         profile: EQProfile,
         preparedConfig: EQRenderConfiguration? = nil,
         incrementsProfileRevision: Bool = true
-    ) -> Bool {
+    ) -> DSPTransitionProgress.Target? {
         guard let runtime = state.runtime,
               let activeProfile = state.activeProfile else {
-            return false
+            return nil
         }
         let maximumUsableFrequency = EQRouteFrequencyPolicy.maximumUsableFrequency(
             sampleRate: state.activeOutput?.nominalSampleRate ?? runtime.sampleRate
@@ -1956,16 +1975,16 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             maximumUsableFrequency: maximumUsableFrequency,
             preparedConfiguration: preparedConfig
         ) else {
-            return false
+            return nil
         }
         runtime.setProgrammeComparisonSelection(.equalized)
         runtime.drainDSPConfigBoxes()
-        runtime.publishPendingDSPConfig(preparedConfig)
+        let target = runtime.publishPendingDSPConfig(preparedConfig)
         state.activeProfile = profile
         if incrementsProfileRevision {
             state.profileRevision &+= 1
         }
-        return true
+        return target
     }
 
     static func canHotSwapDSP(
@@ -2083,7 +2102,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 output: output
             )
             if !shouldRefreshCapture,
-               updateDSPLocked(&state, profile: profile, incrementsProfileRevision: false) {
+               updateDSPLocked(&state, profile: profile, incrementsProfileRevision: false) != nil {
                 return
             }
             // Hold a second global muted tap while capture is recreated, so HAL-level muting

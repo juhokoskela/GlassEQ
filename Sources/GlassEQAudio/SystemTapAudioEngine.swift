@@ -176,30 +176,32 @@ public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Send
     }
 }
 
-/// Counts of box-driven DSP bank transitions the render thread has begun and completed. A caller
-/// that is about to publish a bank takes `nextTransitionTarget` first and later asks
-/// `hasCompleted(_:)`, so a transition already in flight cannot satisfy the wait early. Both
-/// counters reset with the runtime, which makes a stale target time out rather than match.
+/// Identifies the latest published and completed DSP banks. The target returned by publication is
+/// stored in that exact prepared bank, so an older in-flight transition cannot satisfy its wait.
+/// Values reset with the runtime, which makes a stale target time out rather than match.
 public struct DSPTransitionProgress: Equatable, Sendable {
     public struct Target: Equatable, Sendable {
-        fileprivate let completedCount: UInt64
+        let id: UInt64
+
+        init(id: UInt64) {
+            self.id = id
+        }
     }
 
-    public var began: UInt64
+    public var published: UInt64
     public var completed: UInt64
 
-    public init(began: UInt64 = 0, completed: UInt64 = 0) {
-        self.began = began
+    public init(published: UInt64 = 0, completed: UInt64 = 0) {
+        self.published = published
         self.completed = completed
     }
 
-    /// The target the next published transition will satisfy once it completes.
-    public var nextTransitionTarget: Target {
-        Target(completedCount: began &+ 1)
+    public var latestPublishedTarget: Target? {
+        published == 0 ? nil : Target(id: published)
     }
 
     public func hasCompleted(_ target: Target) -> Bool {
-        completed >= target.completedCount
+        completed == target.id
     }
 }
 
@@ -1173,6 +1175,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private final class PreparedDSPConfigBox: @unchecked Sendable {
+        let transitionID: UInt64
         var processor: EQProcessor?
         var comparisonReferenceProcessor: EQProcessor?
         let systemSoundPreampGains: (left: Float, right: Float)
@@ -1180,7 +1183,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var secondRetiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
-        init(config: EQRenderConfiguration) {
+        init(config: EQRenderConfiguration, transitionID: UInt64) {
+            self.transitionID = transitionID
             self.processor = EQProcessor(renderConfiguration: config)
             self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: config
@@ -1189,8 +1193,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         init(
             equalizedConfig: EQRenderConfiguration,
-            referenceConfig: EQRenderConfiguration
+            referenceConfig: EQRenderConfiguration,
+            transitionID: UInt64
         ) {
+            self.transitionID = transitionID
             self.processor = EQProcessor(renderConfiguration: equalizedConfig)
             self.comparisonReferenceProcessor = EQProcessor(
                 renderConfiguration: referenceConfig
@@ -1300,7 +1306,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
-        private let beganDSPTransitions = Atomic<UInt64>(0)
+        private var nextDSPTransitionID: UInt64 = 0
+        private let publishedDSPTransition = Atomic<UInt64>(0)
         private let completedDSPTransitions = Atomic<UInt64>(0)
         private let stopping = Atomic<Bool>(false)
         private let inCallback = Atomic<Bool>(false)
@@ -1905,20 +1912,27 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
         }
 
-        func publishPendingDSPConfig(_ config: EQRenderConfiguration) {
-            let box = PreparedDSPConfigBox(config: config)
+        @discardableResult
+        func publishPendingDSPConfig(_ config: EQRenderConfiguration) -> DSPTransitionProgress.Target {
+            let target = nextDSPTransitionTarget()
+            let box = PreparedDSPConfigBox(config: config, transitionID: target.id)
             publishPendingDSPConfigBox(box)
+            return target
         }
 
+        @discardableResult
         func publishPendingProgrammeComparison(
             equalizedConfig: EQRenderConfiguration,
             referenceConfig: EQRenderConfiguration
-        ) {
+        ) -> DSPTransitionProgress.Target {
+            let target = nextDSPTransitionTarget()
             let box = PreparedDSPConfigBox(
                 equalizedConfig: equalizedConfig,
-                referenceConfig: referenceConfig
+                referenceConfig: referenceConfig,
+                transitionID: target.id
             )
             publishPendingDSPConfigBox(box)
+            return target
         }
 
         func setProgrammeComparisonSelection(
@@ -1932,7 +1946,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         func dspTransitionProgress() -> DSPTransitionProgress {
             DSPTransitionProgress(
-                began: beganDSPTransitions.load(ordering: .acquiring),
+                published: publishedDSPTransition.load(ordering: .acquiring),
                 completed: completedDSPTransitions.load(ordering: .acquiring)
             )
         }
@@ -1957,7 +1971,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 rawPointer,
                 ordering: .acquiringAndReleasing
             )
+            publishedDSPTransition.store(box.transitionID, ordering: .releasing)
             releaseDSPConfigBox(oldPointer)
+        }
+
+        private func nextDSPTransitionTarget() -> DSPTransitionProgress.Target {
+            nextDSPTransitionID &+= 1
+            return DSPTransitionProgress.Target(id: nextDSPTransitionID)
         }
 
         func drainDSPConfigBoxes() {
@@ -2019,7 +2039,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             box.processor = nil
             box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
-            beganDSPTransitions.wrappingAdd(1, ordering: .releasing)
         }
 
         private func finishDSPTransition(_ result: EQTransitionRenderResult) {
@@ -2030,10 +2049,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             let rawPointer = activeDSPConfigPointer
             activeDSPConfigPointer = 0
-            completedDSPTransitions.wrappingAdd(1, ordering: .releasing)
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
+            completedDSPTransitions.store(box.transitionID, ordering: .releasing)
             box.retiredProcessor = result.retiredProcessor
             box.secondRetiredProcessor = result.secondRetiredProcessor
             activeSystemSoundPreampGains = box.systemSoundPreampGains
@@ -3794,7 +3813,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 try separateClockBackend.update(profile: profile)
                 return
             }
-            if updateDSP(profile: profile) {
+            if updateDSP(profile: profile) != nil {
                 return
             }
             let output = try Self.profileUpdateOutput(
@@ -3808,7 +3827,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     @discardableResult
-    public func updateDSP(profile: EQProfile) -> Bool {
+    public func updateDSP(
+        profile: EQProfile
+    ) -> DSPTransitionProgress.Target? {
         if activeBackend.withLock({ $0 }) == .separateClock {
             return separateClockBackend.updateDSP(profile: profile)
         }
@@ -3822,7 +3843,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
             return (runtime, activeProfile, maximumUsableFrequency)
         }) else {
-            return false
+            return nil
         }
         let (runtime, activeProfile, maximumUsableFrequency) = preparation
         guard let preparedConfig = try? EQRenderConfiguration.prepare(
@@ -3831,12 +3852,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency
         ) else {
-            return false
+            return nil
         }
         return control.withLock { state in
             guard state.runtime === runtime,
                   state.activeProfile == activeProfile else {
-                return false
+                return nil
             }
             guard Self.canHotSwapDSP(
                 from: activeProfile,
@@ -3846,13 +3867,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 maximumUsableFrequency: maximumUsableFrequency,
                 preparedConfiguration: preparedConfig
             ) else {
-                return false
+                return nil
             }
             runtime.setProgrammeComparisonSelection(.equalized)
             runtime.drainDSPConfigBoxes()
-            runtime.publishPendingDSPConfig(preparedConfig)
+            let target = runtime.publishPendingDSPConfig(preparedConfig)
             state.activeProfile = profile
-            return true
+            return target
         }
     }
 

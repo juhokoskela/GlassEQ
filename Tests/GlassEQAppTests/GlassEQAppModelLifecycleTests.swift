@@ -6251,6 +6251,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _dspTransitionProgress = DSPTransitionProgress()
+    private var _pendingDSPTransitionIDs: [UInt64] = []
     private var _deferDSPTransitionCompletion = false
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
@@ -6718,17 +6719,20 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _deferDSPTransitionCompletion = newValue } }
     }
 
-    func updateDSP(profile: EQProfile) -> Bool {
+    func updateDSP(
+        profile: EQProfile
+    ) -> DSPTransitionProgress.Target? {
         withLock {
             _events.append("updateDSP:\(profile.id)")
             _updateDSPCalls.append(profile)
             if _updateDSPResult {
-                _dspTransitionProgress.began += 1
+                _dspTransitionProgress.published += 1
+                _pendingDSPTransitionIDs.append(_dspTransitionProgress.published)
                 if !_deferDSPTransitionCompletion {
-                    _dspTransitionProgress.completed = _dspTransitionProgress.began
+                    _dspTransitionProgress.completed = _pendingDSPTransitionIDs.removeFirst()
                 }
             }
-            return _updateDSPResult
+            return _updateDSPResult ? _dspTransitionProgress.latestPublishedTarget : nil
         }
     }
 
@@ -6740,7 +6744,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     func completeDSPTransition() {
         withLock {
             _events.append("transitionCompleted")
-            _dspTransitionProgress.completed = _dspTransitionProgress.began
+            if !_pendingDSPTransitionIDs.isEmpty {
+                _dspTransitionProgress.completed = _pendingDSPTransitionIDs.removeFirst()
+            }
         }
     }
 
@@ -7115,6 +7121,26 @@ struct LicenseEnforcementTests {
     }
 
     @Test
+    func anEarlierTransitionCannotCompleteTheIdentityFade() async {
+        let running = await makeRunningModel { $0.deferDSPTransitionCompletion = true }
+        var earlierProfile = running.model.activeProfile
+        earlierProfile.preampDB -= 1
+        _ = running.engine.updateDSP(profile: earlierProfile)
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 2 }
+
+        running.engine.completeDSPTransition()
+        let stoppedAfterEarlierTransition = await waitUntil(maxAttempts: 10) {
+            running.engine.stopCallCount > 0
+        }
+        #expect(!stoppedAfterEarlierTransition)
+
+        running.engine.completeDSPTransition()
+        await waitUntil { running.engine.stopCallCount == 1 }
+    }
+
+    @Test
     func expiryStopsAnywayWhenTheTransitionNeverCompletes() async {
         let running = await makeRunningModel(licenseStopTransitionTimeout: .milliseconds(50)) {
             $0.deferDSPTransitionCompletion = true
@@ -7291,6 +7317,22 @@ struct LicenseEnforcementTests {
         #expect(running.model.isRunning)
         #expect(running.model.licenseStatusMessage == nil)
         #expect(running.engine.events.suffix(2) == ["stop", "start:\(running.output.uid)"])
+    }
+
+    @Test
+    func renewalDoesNotRestartAudioAfterTheUserStoppedIt() async {
+        let running = await makeRunningModel()
+
+        running.model.stop()
+        await waitUntil { running.engine.stopCallCount == 1 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 2 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        await settleAsyncWork()
+
+        #expect(running.engine.startCalls.count == 1)
+        #expect(running.observers.observers.count == 1)
+        #expect(running.model.lifecycleState == .stopped)
     }
 
     @Test

@@ -254,7 +254,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     ) throws -> AggregateAudioRouteFingerprint?
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32)
     func update(profile: EQProfile) throws
-    @discardableResult func updateDSP(profile: EQProfile) -> Bool
+    @discardableResult func updateDSP(profile: EQProfile) -> DSPTransitionProgress.Target?
     @discardableResult func beginProgrammeComparison(profile: EQProfile) -> Bool
     func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
@@ -679,6 +679,9 @@ final class GlassEQAppModel {
     var onboardingPresentationGeneration = 0
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
+    /// The user's current processing intent. Unlike `hasStartedAudio`, an explicit stop clears it,
+    /// so a later license renewal does not reverse the user's last action.
+    private var processingRequested = false
     private(set) var onboardingAudioCaptureState = OnboardingAudioCaptureState.idle
     private let licensing: LicensingSource
     private let licenseStopTransitionTimeout: Duration
@@ -1418,6 +1421,7 @@ final class GlassEQAppModel {
             return
         }
         hasStartedAudio = true
+        processingRequested = true
         guard processingIsLicensed else {
             blockProcessingForLicense()
             return
@@ -1468,7 +1472,7 @@ final class GlassEQAppModel {
         lastAppliedLicenseSequence = snapshot.sequence
         if snapshot.content.permitsProcessing {
             if !wasLicensed,
-               hasStartedAudio,
+               processingRequested,
                licenseStopTask == nil,
                lifecycleState == .stopped,
                engineStartTask == nil {
@@ -1494,7 +1498,7 @@ final class GlassEQAppModel {
 
     private func resumeProcessingIfLicenseAllows() {
         guard processingIsLicensed,
-              hasStartedAudio,
+              processingRequested,
               lifecycleState == .stopped,
               engineStartTask == nil else {
             return
@@ -1534,8 +1538,7 @@ final class GlassEQAppModel {
         let identity = identityProfile
         let engine = engine
         let fadeTask = engineWorkExecutor.enqueue(priority: .userInitiated) { () -> DSPTransitionProgress.Target? in
-            let target = engine.dspTransitionProgress().nextTransitionTarget
-            return engine.updateDSP(profile: identity) ? target : nil
+            engine.updateDSP(profile: identity)
         }
         if let target = await fadeTask.value {
             await waitForDSPTransition(reaching: target)
@@ -1725,6 +1728,7 @@ final class GlassEQAppModel {
             return
         }
         wasRunningBeforeSleep = false
+        processingRequested = false
         stopObserver()
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
@@ -1976,7 +1980,7 @@ final class GlassEQAppModel {
             )
         } else if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
-        } else if engine.updateDSP(profile: profile) {
+        } else if engine.updateDSP(profile: profile) != nil {
             confirmedEngineProfileState.confirm(EngineProfileConfirmation(profileRollback()))
             statusMessage = localized("Previewing settings for \(profile.name)")
         } else {
@@ -2011,7 +2015,7 @@ final class GlassEQAppModel {
             )
         } else if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
-        } else if engine.updateDSP(profile: profile) {
+        } else if engine.updateDSP(profile: profile) != nil {
             confirmedEngineProfileState.confirm(EngineProfileConfirmation(profileRollback()))
             statusMessage = processingStatus(outputName: currentOutputName, profileName: profile.name)
         } else {
@@ -2079,7 +2083,7 @@ final class GlassEQAppModel {
         if lifecycleState == .running,
            isRunning,
            engineStartTask == nil {
-            if engine.updateDSP(profile: returnProfile) {
+            if engine.updateDSP(profile: returnProfile) != nil {
                 statusMessage = processingStatus(
                     outputName: currentOutputName,
                     profileName: returnProfile.name
@@ -2807,7 +2811,7 @@ final class GlassEQAppModel {
 
         startObserver(sendInitialValue: false)
         if isRunning {
-            if engine.updateDSP(profile: activeProfile) {
+            if engine.updateDSP(profile: activeProfile) != nil {
                 confirmedEngineProfileState.confirm(EngineProfileConfirmation(profileRollback()))
                 statusMessage = processingStatus(outputName: currentOutputName, profileName: activeProfile.name)
                 onboardingAudioCaptureState = .running(outputName: currentOutputName)
@@ -2891,10 +2895,6 @@ final class GlassEQAppModel {
         engineWorkExecutor.enqueue(priority: .userInitiated) {
             engine.resumeOutputAfterCancelledTransition()
         }
-    }
-
-    private func stopEngineOffMain() async -> AudioEngineMetrics {
-        await enqueueEngineStop().value
     }
 
     private func enqueueEngineStop() -> Task<AudioEngineMetrics, Never> {
