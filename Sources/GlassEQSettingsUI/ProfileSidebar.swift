@@ -7,9 +7,6 @@ private let sidebarCardCornerRadius: CGFloat = 14
 struct ProfileSidebar: View {
     var controller: SettingsController
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var selectionNamespace
-
     var body: some View {
         let selectedProfileID = controller.selectedProfileID
         let isReadOnly = controller.isEditingLocked
@@ -21,7 +18,6 @@ struct ProfileSidebar: View {
                         row(for: profile)
                     }
                 }
-                .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: selectedProfileID)
                 // Align the row text (which sits 10pt inside the selection capsule) with the
                 // sidebar's content leading.
                 .padding(.horizontal, sidebarContentLeading - sidebarCardInset - 10)
@@ -118,7 +114,6 @@ struct ProfileSidebar: View {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "selection", in: selectionNamespace)
                 }
             }
         }
