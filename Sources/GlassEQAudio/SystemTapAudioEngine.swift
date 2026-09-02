@@ -177,15 +177,29 @@ public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Send
 }
 
 /// Counts of box-driven DSP bank transitions the render thread has begun and completed. A caller
-/// that publishes a bank reads `began` first and waits for `completed` to reach `began + 1`, so a
-/// transition already in flight cannot satisfy the wait early. Both reset with the runtime.
+/// that is about to publish a bank takes `nextTransitionTarget` first and later asks
+/// `hasCompleted(_:)`, so a transition already in flight cannot satisfy the wait early. Both
+/// counters reset with the runtime, which makes a stale target time out rather than match.
 public struct DSPTransitionProgress: Equatable, Sendable {
+    public struct Target: Equatable, Sendable {
+        fileprivate let completedCount: UInt64
+    }
+
     public var began: UInt64
     public var completed: UInt64
 
     public init(began: UInt64 = 0, completed: UInt64 = 0) {
         self.began = began
         self.completed = completed
+    }
+
+    /// The target the next published transition will satisfy once it completes.
+    public var nextTransitionTarget: Target {
+        Target(completedCount: began &+ 1)
+    }
+
+    public func hasCompleted(_ target: Target) -> Bool {
+        completed >= target.completedCount
     }
 }
 

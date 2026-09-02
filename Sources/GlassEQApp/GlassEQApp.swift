@@ -1100,8 +1100,10 @@ final class GlassEQAppModel {
                         self?.applyLicenseSnapshot(snapshot)
                     }
                 }
-                recordLicenseSnapshot(initial)
-                if autoStart || hasStartedAudio {
+                // The returned snapshot goes through the same sequence guard as callbacks: a
+                // change published while this actor was still resuming must not be rewound.
+                applyLicenseSnapshot(initial)
+                if autoStart, !hasStartedAudio {
                     start()
                 }
             } else if autoStart {
@@ -1416,7 +1418,8 @@ final class GlassEQAppModel {
             return
         }
         hasStartedAudio = true
-        if refuseProcessingIfUnlicensed() {
+        guard processingIsLicensed else {
+            blockProcessingForLicense()
             return
         }
         onboardingAudioCaptureState = .pending
@@ -1438,12 +1441,9 @@ final class GlassEQAppModel {
         }
     }
 
-    /// Refuses a tap start when licensing forbids it and leaves the model in a coherent stopped
-    /// state with the reason visible. Returns true when the caller must not proceed.
-    private func refuseProcessingIfUnlicensed() -> Bool {
-        guard !processingIsLicensed else {
-            return false
-        }
+    /// Leaves the model in a coherent stopped state with the licensing reason visible. Callers
+    /// check `processingIsLicensed` first; this only performs the transition.
+    private func blockProcessingForLicense() {
         if lifecycleState != .sleeping, lifecycleState != .terminating {
             lifecycleState = .stopped
         }
@@ -1455,20 +1455,17 @@ final class GlassEQAppModel {
             onboardingAudioCaptureState = .failed(message: statusMessage)
         }
         notifyModelDidChange()
-        return true
     }
 
-    private func recordLicenseSnapshot(_ snapshot: LicenseSnapshot) {
-        licenseSnapshot = snapshot
-        lastAppliedLicenseSequence = snapshot.sequence
-    }
-
+    /// The one ingestion point for snapshots, whether returned by `subscribe` or delivered
+    /// through its callback. Sequences only move forward.
     private func applyLicenseSnapshot(_ snapshot: LicenseSnapshot) {
         guard snapshot.sequence > lastAppliedLicenseSequence else {
             return
         }
         let wasLicensed = processingIsLicensed
-        recordLicenseSnapshot(snapshot)
+        licenseSnapshot = snapshot
+        lastAppliedLicenseSequence = snapshot.sequence
         if snapshot.content.permitsProcessing {
             if !wasLicensed,
                hasStartedAudio,
@@ -1491,7 +1488,7 @@ final class GlassEQAppModel {
                 self?.resumeProcessingIfLicenseAllows()
             }
         } else {
-            _ = refuseProcessingIfUnlicensed()
+            blockProcessingForLicense()
         }
     }
 
@@ -1536,9 +1533,9 @@ final class GlassEQAppModel {
         identityProfile.isBypassed = true
         let identity = identityProfile
         let engine = engine
-        let fadeTask = engineWorkExecutor.enqueue(priority: .userInitiated) { () -> UInt64? in
-            let began = engine.dspTransitionProgress().began
-            return engine.updateDSP(profile: identity) ? began &+ 1 : nil
+        let fadeTask = engineWorkExecutor.enqueue(priority: .userInitiated) { () -> DSPTransitionProgress.Target? in
+            let target = engine.dspTransitionProgress().nextTransitionTarget
+            return engine.updateDSP(profile: identity) ? target : nil
         }
         if let target = await fadeTask.value {
             await waitForDSPTransition(reaching: target)
@@ -1555,9 +1552,9 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    private func waitForDSPTransition(reaching target: UInt64) async {
+    private func waitForDSPTransition(reaching target: DSPTransitionProgress.Target) async {
         let deadline = ContinuousClock.now + licenseStopTransitionTimeout
-        while engine.dspTransitionProgress().completed < target,
+        while !engine.dspTransitionProgress().hasCompleted(target),
               ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(20))
         }
@@ -2652,7 +2649,8 @@ final class GlassEQAppModel {
         }
         // Every tap start passes through here, so this alone guarantees a non-permitting license
         // never starts the tap. The earlier gates exist to leave coherent status behind.
-        if refuseProcessingIfUnlicensed() {
+        guard processingIsLicensed else {
+            blockProcessingForLicense()
             return
         }
 
@@ -2770,15 +2768,16 @@ final class GlassEQAppModel {
             return
         }
 
+        guard processingIsLicensed else {
+            blockProcessingForLicense()
+            return
+        }
+
         guard !activeProfile.isBypassed else {
             disableActiveProfileProcessing(
                 updateMetrics: true,
                 onboardingState: .bypassed
             )
-            return
-        }
-
-        if refuseProcessingIfUnlicensed() {
             return
         }
 
@@ -3986,7 +3985,8 @@ final class GlassEQAppModel {
               lifecycleState != .sleeping else {
             return
         }
-        if refuseProcessingIfUnlicensed() {
+        guard processingIsLicensed else {
+            blockProcessingForLicense()
             return
         }
         onboardingAudioCaptureState = .pending
@@ -4362,7 +4362,7 @@ final class GlassEQAppModel {
             lifecycleState = .stopped
             isRunning = false
             onboardingAudioCaptureState = .idle
-            statusMessage = localized("Stopped")
+            statusMessage = processingIsLicensed ? localized("Stopped") : licenseBlockedStatusMessage()
             notifyModelDidChange()
             return
         }
@@ -4390,8 +4390,9 @@ final class GlassEQAppModel {
     }
 
     private func beginAudioReconnect(status: String, initialDelay: Duration) {
-        if refuseProcessingIfUnlicensed() {
+        guard processingIsLicensed else {
             // Waking is a legitimate exit from sleep even when licensing refuses the reconnect.
+            blockProcessingForLicense()
             lifecycleState = .stopped
             wasRunningBeforeSleep = false
             notifyModelDidChange()

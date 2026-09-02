@@ -5567,7 +5567,8 @@ private func makeModel(
     renderWatchdogPollInterval: Duration = .milliseconds(500),
     aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
     licensing: LicensingSource = .disabled,
-    licenseStopTransitionTimeout: Duration = .milliseconds(500)
+    licenseStopTransitionTimeout: Duration = .milliseconds(500),
+    autoStart: Bool = false
 ) -> GlassEQAppModel {
     let store = normalizedStore(store ?? ProfileStore(profiles: [makeProfile(name: "Fallback")]))
     return GlassEQAppModel(
@@ -5576,7 +5577,7 @@ private func makeModel(
         engine: engine,
         defaultOutputLookup: lookup,
         observerFactory: observers,
-        autoStart: false,
+        autoStart: autoStart,
         installLifecycleObservers: false,
         registerAppDelegate: false,
         workspaceOpener: workspaceOpener,
@@ -7343,6 +7344,71 @@ struct LicenseEnforcementTests {
         #expect(running.model.licenseStatusMessage != nil)
     }
 
+    @Test(arguments: [false, true])
+    func aRevocationPublishedBeforeTheInitialSnapshotIsNotRewound(autoStart: Bool) async {
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .monthlyActive, sequence: 1),
+            emittingBeforeReturning: makeLicenseSnapshot(state: .monthlyExpired, sequence: 2)
+        )
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            licensing: .provider(source),
+            autoStart: autoStart
+        )
+        if !autoStart {
+            model.start()
+        }
+        await waitUntil { model.licenseSnapshot != nil }
+        await settleAsyncWork()
+
+        #expect(model.licenseSnapshot?.sequence == 2)
+        #expect(model.licenseSnapshot?.content.state == .monthlyExpired)
+        #expect(engine.startCalls.isEmpty)
+        #expect(observers.observers.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage == expiredText())
+    }
+
+    @Test
+    func bypassTogglesWhileUnlicensedKeepTheLicensingReason() async {
+        let engine = FakeAudioEngine()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        let model = makeModel(engine: engine, outputDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.start()
+
+        model.setBypass(true)
+        await settleAsyncWork()
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+        model.setBypass(false)
+        await settleAsyncWork()
+
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+        #expect(engine.startCalls.isEmpty)
+    }
+
+    @Test
+    func aLicenseStopBeforeSleepKeepsItsReasonAfterWake() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        let model = makeModel(outputDelay: .zero, wakeDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.start()
+
+        model.handleWillSleep()
+        #expect(model.statusMessage == localized("Paused for system sleep"))
+        model.handleDidWake()
+        await settleAsyncWork()
+
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+    }
+
     @Test
     func invalidConfigurationNeverStartsAndNamesTheProblem() async {
         let engine = FakeAudioEngine()
@@ -7390,10 +7456,14 @@ private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchec
     private var gateWaiters: [CheckedContinuation<Void, Never>] = []
     private var _checkpointCount = 0
     private var _onShutdown: (@Sendable () -> Void)?
+    /// Delivered through the handler before `subscribe` returns, as a refresh that completes
+    /// while the subscriber is still resuming would be.
+    private let emittedBeforeReturning: LicenseSnapshot?
 
-    init(initial: LicenseSnapshot, gated: Bool = false) {
+    init(initial: LicenseSnapshot, gated: Bool = false, emittingBeforeReturning: LicenseSnapshot? = nil) {
         self.initial = initial
         gateIsOpen = !gated
+        emittedBeforeReturning = emittingBeforeReturning
     }
 
     var checkpointCount: Int { lock.withLock { _checkpointCount } }
@@ -7413,6 +7483,9 @@ private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchec
             if resumeNow { continuation.resume() }
         }
         lock.withLock { self.handler = handler }
+        if let emittedBeforeReturning {
+            handler(emittedBeforeReturning)
+        }
         return initial
     }
 
