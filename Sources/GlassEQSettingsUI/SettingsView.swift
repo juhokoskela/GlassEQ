@@ -320,6 +320,7 @@ public struct SettingsView: View {
                 onUseForCurrentOutput: useDraftForCurrentOutput,
                 onSetFallback: setFallbackToDraft,
                 onShowImporter: { isImportSheetPresented = true },
+                onCreateProfile: { isNewProfileSheetPresented = true },
                 onPreview: previewDraft,
                 onStopPreview: stopPreview,
                 onStartProgrammeComparison: startProgrammeComparison,
@@ -1321,6 +1322,7 @@ private struct ProfileDetail: View {
     var onUseForCurrentOutput: () -> Void
     var onSetFallback: () -> Void
     var onShowImporter: () -> Void
+    var onCreateProfile: () -> Void
     var onPreview: () -> Void
     var onStopPreview: () -> Void
     var onStartProgrammeComparison: () -> Void
@@ -1361,6 +1363,13 @@ private struct ProfileDetail: View {
                     Group {
                         switch tab {
                         case .editor:
+                            if snapshot.profiles.allSatisfy(\.isNeutral) {
+                                StartingPointHint(
+                                    onImport: onShowImporter,
+                                    onCreate: onCreateProfile
+                                )
+                                .padding(.bottom, 12)
+                            }
                             EditorTab(
                                 draftProfile: $draftProfile,
                                 sampleRate: snapshot.currentProcessingSampleRate > 0
@@ -1553,6 +1562,46 @@ private struct ProfileHeader: View {
             chips.append(StatusChip(title: localized("Fallback"), color: .secondary))
         }
         return chips
+    }
+}
+
+// Shown while every profile in the library is still flat, so a new install has a next step.
+private struct StartingPointHint: View {
+    var onImport: () -> Void
+    var onCreate: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "headphones")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 36, height: 36)
+                .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 10))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(localized("Start with a profile for your headphones"))
+                    .font(.headline)
+                Text(localized("Every profile here is still flat, so GlassEQ is not changing the sound yet. Search AutoEq for your headphone model and import a ready correction, or build one by hand."))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button {
+                        onImport()
+                    } label: {
+                        Label(localized("Search AutoEq"), systemImage: "magnifyingglass")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button(localized("New Profile")) {
+                        onCreate()
+                    }
+                }
+                .controlSize(.large)
+                .padding(.top, 4)
+            }
+            Spacer(minLength: 0)
+        }
+        .cardPanel(padding: 16)
     }
 }
 
@@ -1887,6 +1936,30 @@ private struct EditorTab: View {
         draftProfile = draftProfile.convertedToChannelMode(mode, editedChannel: editChannel)
         if mode == .stereo {
             editChannel = .left
+        }
+    }
+}
+
+extension EQProfile {
+    // True when the profile would leave audio unchanged: unity preamp, zero-gain filters, and no
+    // impulse response or non-flat target curve.
+    var isNeutral: Bool {
+        let preamps = [preampDB, leftPreampDB, rightPreampDB]
+        guard preamps.allSatisfy({ $0 == 0 }) else {
+            return false
+        }
+        guard (filters + leftFilters + rightFilters).allSatisfy({ !$0.isEnabled || $0.gainDB == 0 }) else {
+            return false
+        }
+        return [convolution, leftConvolution, rightConvolution].allSatisfy { source in
+            switch source {
+            case nil:
+                true
+            case .magnitudeCurve(let curve):
+                curve.points.allSatisfy { $0.gainDB == 0 }
+            case .impulseResponse:
+                false
+            }
         }
     }
 }
