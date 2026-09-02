@@ -211,7 +211,7 @@ extension EQMode {
         case .graphic31:
             localized("31-Band")
         case .convolution:
-            localized("Response Curve")
+            localized("Convolution")
         }
     }
 

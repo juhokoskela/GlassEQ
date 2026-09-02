@@ -18,7 +18,7 @@ GlassEQ takes a different route. It uses **Core Audio process taps**, Apple's mo
 - **No virtual device, no driver, no system extension.** GlassEQ's tap and its aggregate device are both private, so nothing new ever shows up in your Sound settings. It's an ordinary sandboxed app that asks for one thing: audio-capture permission.
 - **macOS stays in charge of routing.** GlassEQ observes the default output and follows it. You never pick an output inside the app.
 - **Per-output profiles.** Each device gets its own EQ curve, matched automatically by its Core Audio UID. Plug in your studio monitors and the monitor profile loads, switch to AirPods and their profile takes over.
-- **Light and real-time-safe.** Ordinary filters use a hand-written biquad cascade; response curves use partitioned minimum-phase convolution without adding fixed buffering. The audio render path never allocates, locks, or touches disk, and profile edits hot-swap without dropping a sample.
+- **Light and real-time-safe.** Ordinary filters use a hand-written biquad cascade; convolution profiles use partitioned minimum-phase FIR filtering without adding fixed buffering. The audio render path never allocates, locks, or touches disk, and profile edits hot-swap without dropping a sample.
 - **Native to macOS 26.** A menu bar app built on the system's Liquid Glass styling with a separate settings window for editing.
 
 ![GlassEQ menu bar popover, showing the active output and its mapped profile](Docs/Screenshots/menu-bar.png)
@@ -56,11 +56,11 @@ The current low-latency path requires the output's preferred pair to occupy one 
 
 ## Features
 
-- **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and minimum-phase response curves.
+- **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and convolution (a minimum-phase FIR built from a response curve or impulse response).
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
 - **Live frequency-response graph** and instant preview while you edit.
 - **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
-- **Built-in AutoEq search** that imports a recommended headphone result as either a full response curve or editable parametric filters.
+- **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
 - **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.

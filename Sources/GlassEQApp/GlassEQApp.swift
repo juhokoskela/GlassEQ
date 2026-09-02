@@ -1893,8 +1893,8 @@ final class GlassEQAppModel {
         case .convolution:
             try addProfile(
                 .flatConvolution,
-                name: localized("New Response Curve"),
-                status: localized("Created New Response Curve")
+                name: localized("New Convolution"),
+                status: localized("Created New Convolution")
             )
         }
     }

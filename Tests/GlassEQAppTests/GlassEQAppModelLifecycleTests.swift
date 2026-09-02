@@ -4590,7 +4590,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(loaded.profiles.count == 4)
         #expect(loaded.profiles.contains { $0.name == "New Parametric" })
         #expect(loaded.profiles.contains { $0.name == "New 10-Band" })
-        #expect(loaded.profiles.contains { $0.name == "New Response Curve" })
+        #expect(loaded.profiles.contains { $0.name == "New Convolution" })
     }
 
     @Test

@@ -184,7 +184,7 @@ private struct AutoEQImportPane: View {
 
                         Picker(localized("Profile type"), selection: $profileKind) {
                             VStack(alignment: .leading) {
-                                Text(localized("Response curve"))
+                                Text(localized("Convolution"))
                                 Text(localized("Full minimum-phase correction"))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -1023,7 +1023,7 @@ private extension EQMode {
         case .graphic31:
             localized("31-band")
         case .convolution:
-            localized("Response curve")
+            localized("Convolution")
         }
     }
 }
