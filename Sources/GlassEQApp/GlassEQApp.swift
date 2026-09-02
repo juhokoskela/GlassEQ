@@ -27,9 +27,17 @@ struct GlassEQApp: App {
                 .accessibilityLabel(Text(model.menuBarAccessibilityLabel))
                 .accessibilityValue(Text(model.statusMessage))
                 .accessibilityHint(Text(localized("Opens GlassEQ controls")))
+                // The menu bar label is the only view that exists for the whole process lifetime,
+                // so it hosts the side-effect views that turn model requests into window openings.
                 .background {
-                    InProcessSettingsPresenter(model: model)
-                    OnboardingPresenter(model: model)
+                    WindowPresenter(
+                        generation: model.inProcessSettingsPresentationGeneration,
+                        windowID: GlassEQWindowID.inProcessSettings
+                    )
+                    WindowPresenter(
+                        generation: model.onboardingPresentationGeneration,
+                        windowID: GlassEQWindowID.onboarding
+                    )
                 }
         }
         .menuBarExtraStyle(.window)
@@ -37,12 +45,11 @@ struct GlassEQApp: App {
         Window(localized("Welcome to GlassEQ"), id: GlassEQWindowID.onboarding) {
             OnboardingView(model: model)
                 .onAppear {
-                    NSApplication.shared.setActivationPolicy(.regular)
-                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    model.foregroundWindowDidAppear()
                 }
                 .onDisappear {
                     model.finishOnboarding()
-                    NSApplication.shared.setActivationPolicy(.accessory)
+                    model.foregroundWindowDidDisappear()
                 }
         }
         .windowResizability(.contentSize)
@@ -50,15 +57,15 @@ struct GlassEQApp: App {
         .restorationBehavior(.disabled)
 
         Window(localized("Configure GlassEQ"), id: GlassEQWindowID.inProcessSettings) {
-            SettingsView(model: model.inProcessSettingsViewModel())
+            InProcessSettingsWindowContent(model: model)
                 .frame(minWidth: 760, minHeight: 500)
                 .onAppear {
-                    NSApplication.shared.setActivationPolicy(.regular)
+                    model.foregroundWindowDidAppear()
                     model.inProcessSettingsDidAppear()
                 }
                 .onDisappear {
                     model.inProcessSettingsDidDisappear()
-                    NSApplication.shared.setActivationPolicy(.accessory)
+                    model.foregroundWindowDidDisappear()
                 }
         }
         .defaultSize(width: 1180, height: 720)
@@ -69,33 +76,32 @@ struct GlassEQApp: App {
     }
 }
 
-private struct OnboardingPresenter: View {
-    let model: GlassEQAppModel
+private struct WindowPresenter: View {
+    let generation: Int
+    let windowID: String
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Color.clear
-            .frame(width: 0, height: 0)
-            .onChange(of: model.onboardingPresentationGeneration) {
-                NSApplication.shared.setActivationPolicy(.regular)
-                openWindow(id: GlassEQWindowID.onboarding)
-                NSApplication.shared.activate(ignoringOtherApps: true)
+            .onChange(of: generation) {
+                openWindow(id: windowID)
             }
     }
 }
 
-private struct InProcessSettingsPresenter: View {
+private struct InProcessSettingsWindowContent: View {
     let model: GlassEQAppModel
-    @Environment(\.openWindow) private var openWindow
+    @State private var settingsModel: GlassEQSettingsViewModel?
 
     var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onChange(of: model.inProcessSettingsPresentationGeneration) {
-                NSApplication.shared.setActivationPolicy(.regular)
-                openWindow(id: GlassEQWindowID.inProcessSettings)
-                NSApplication.shared.activate(ignoringOtherApps: true)
-            }
+        if let settingsModel {
+            SettingsView(model: settingsModel)
+        } else {
+            Color.clear
+                .task {
+                    settingsModel = model.inProcessSettingsViewModel()
+                }
+        }
     }
 }
 
@@ -191,7 +197,7 @@ private enum PendingOutputTransitionAction {
     case stopped
 }
 
-private let appResourcesBundle: Bundle = {
+let appResourcesBundle: Bundle = {
     let resourceBundleName = "GlassEQ_GlassEQApp.bundle"
     let candidates = [
         Bundle.main.resourceURL?.appendingPathComponent(resourceBundleName),
@@ -583,7 +589,18 @@ final class GlassEQAppModel {
     var currentOutputBufferFrameSize: UInt32 = 0
     var statusMessage = localized("Stopped")
     var isRunning = false
-    var activeProfile: EQProfile
+    var activeProfile: EQProfile {
+        didSet {
+            activeProfileName = activeProfile.name
+            activeProfileIsBypassed = activeProfile.isBypassed
+        }
+    }
+    private(set) var activeProfileName: String
+    private(set) var activeProfileIsBypassed: Bool
+    var activeProfileID: UUID {
+        get { activeProfile.id }
+        set { activateProfile(newValue) }
+    }
     var profileStore: ProfileStore
     var selectedProfileID: UUID
     var draftProfile: EQProfile
@@ -668,6 +685,7 @@ final class GlassEQAppModel {
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0
     var onboardingPresentationGeneration = 0
+    @ObservationIgnored private var visibleForegroundWindowCount = 0
     private(set) var hasStartedAudio = false
     private(set) var lastAudioEngineFailureCategory: AudioEngineFailure.Category?
 
@@ -985,6 +1003,8 @@ final class GlassEQAppModel {
         let initialProfile = loadedStore.profile(forOutputUID: nil)
         self.profileStore = loadedStore
         self.activeProfile = initialProfile
+        self.activeProfileName = initialProfile.name
+        self.activeProfileIsBypassed = initialProfile.isBypassed
         self.selectedProfileID = initialProfile.id
         self.draftProfile = initialProfile
         self.engine = engine
@@ -1384,6 +1404,22 @@ final class GlassEQAppModel {
 
     func requestOnboardingPresentation() {
         onboardingPresentationGeneration &+= 1
+    }
+
+    // GlassEQ runs as an accessory and only shows a Dock icon while a regular window is open.
+    // Windows count themselves in and out here so closing one while another is still open
+    // keeps the icon.
+    func foregroundWindowDidAppear() {
+        visibleForegroundWindowCount += 1
+        NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func foregroundWindowDidDisappear() {
+        visibleForegroundWindowCount -= 1
+        if visibleForegroundWindowCount == 0 {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
     }
 
     // Onboarding's permission step. The first call starts audio for the first time, which is
@@ -4244,27 +4280,24 @@ private struct MenuBarView: View {
                 Text(localized("Profile"))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Picker(localized("Profile"), selection: Binding(
-                    get: { model.activeProfile.id },
-                    set: { model.activateProfile($0) }
-                )) {
+                Picker(localized("Profile"), selection: $model.activeProfileID) {
                     ForEach(model.profileStore.profiles) { profile in
                         Text(profile.name).tag(profile.id)
                     }
                 }
                 .labelsHidden()
                 .accessibilityLabel(Text(localized("Profile")))
-                .accessibilityValue(Text(model.activeProfile.name))
+                .accessibilityValue(Text(model.activeProfileName))
                 .accessibilityHint(Text(localized("Switches the profile that is processing audio")))
             }
 
             HStack(spacing: 10) {
                 Button {
-                    model.setBypass(!model.activeProfile.isBypassed)
+                    model.setBypass(!model.activeProfileIsBypassed)
                 } label: {
                     Label(
-                        model.activeProfile.isBypassed ? localized("Enable") : localized("Disable"),
-                        systemImage: model.activeProfile.isBypassed ? "speaker.wave.2" : "speaker.slash"
+                        model.activeProfileIsBypassed ? localized("Enable") : localized("Disable"),
+                        systemImage: model.activeProfileIsBypassed ? "speaker.wave.2" : "speaker.slash"
                     )
                         .frame(minWidth: 82, minHeight: 28)
                         .contentShape(.rect)
@@ -4272,7 +4305,7 @@ private struct MenuBarView: View {
                 .controlSize(.large)
                 .buttonStyle(.glass)
                 .tint(popoverControlsAreActive ? enableButtonTint : nil)
-                .accessibilityLabel(Text(model.activeProfile.isBypassed ? localized("Enable equalizer") : localized("Disable equalizer")))
+                .accessibilityLabel(Text(model.activeProfileIsBypassed ? localized("Enable equalizer") : localized("Disable equalizer")))
                 .accessibilityValue(Text(statusBadgeTitle))
                 .accessibilityHint(Text(localized("Starts or stops system audio processing for the active profile")))
 
@@ -4303,7 +4336,7 @@ private struct MenuBarView: View {
             Button(localized("Test render watchdog")) {
                 model.simulateRenderStallForTesting()
             }
-            .disabled(!model.isRunning || model.activeProfile.isBypassed)
+            .disabled(!model.isRunning || model.activeProfileIsBypassed)
             .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
             #endif
 
@@ -4343,18 +4376,18 @@ private struct MenuBarView: View {
     }
 
     private var statusBadgeTitle: String {
-        if model.activeProfile.isBypassed {
+        if model.activeProfileIsBypassed {
             return localized("Disabled")
         }
         return model.isRunning ? localized("Active") : localized("Stopped")
     }
 
     private var statusBadgeColor: Color {
-        model.isRunning && !model.activeProfile.isBypassed ? .macOSSystemGreen : .macOSSystemRed
+        model.isRunning && !model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemRed
     }
 
     private var enableButtonTint: Color {
-        model.activeProfile.isBypassed ? .macOSSystemGreen : .macOSSystemYellow
+        model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemYellow
     }
 
     private var popoverControlsAreActive: Bool {
@@ -4413,8 +4446,11 @@ private struct PopoverGlassConfigurator: NSViewRepresentable {
     func updateNSView(_ nsView: PopoverGlassConfiguringView, context: Context) {}
 }
 
-private extension Color {
+extension Color {
     static let macOSSystemGreen = Color(nsColor: .systemGreen)
     static let macOSSystemRed = Color(nsColor: .systemRed)
     static let macOSSystemYellow = Color(nsColor: .systemYellow)
+    static let macOSSystemOrange = Color(nsColor: .systemOrange)
+    static let macOSWindowBackground = Color(nsColor: .windowBackgroundColor)
+    static let macOSControlBackground = Color(nsColor: .controlBackgroundColor)
 }
