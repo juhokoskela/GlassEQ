@@ -254,6 +254,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         var comparisonReferenceProcessor: EQProcessor?
         var retiredProcessor: EQProcessor?
         var secondRetiredProcessor: EQProcessor?
+        var playbackCompletionFrameOffset: Int?
         var nextRetiredPointer: UInt = 0
 
         init(config: EQRenderConfiguration, transitionID: UInt64) {
@@ -280,7 +281,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         case failed
     }
 
-    private final class AudioRuntime: @unchecked Sendable {
+    final class AudioRuntime: @unchecked Sendable {
+        // The cubic playback resampler reads at most four source frames beyond the output
+        // position it just rendered. AudioConverter latency is added when conversion is active.
+        private static let playbackTransitionReadAheadFrames = 4
+
         let ringBuffer: RealtimeAudioRingBuffer
         let channelCount: Int
         let sampleRate: Double
@@ -340,6 +345,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
+        private let pendingPlaybackDSPTransitionID = Atomic<UInt64>(0)
+        private let pendingPlaybackDSPCompletionSequence = Atomic<UInt64>(0)
+        private let playbackTransitionLatencyFrames = Atomic<Int>(
+            AudioRuntime.playbackTransitionReadAheadFrames
+        )
         private var nextDSPTransitionID: UInt64 = 0
         private let publishedDSPTransition = Atomic<UInt64>(0)
         private let completedDSPTransitions = Atomic<UInt64>(0)
@@ -467,6 +477,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRateConverterInputSamples = inputSamples
             playbackSampleRateConverter = sampleRateConverter
             playbackSampleRatePlan = sampleRatePlan
+            playbackTransitionLatencyFrames.store(
+                Self.playbackTransitionReadAheadFrames
+                    + (sampleRateConverter?.latencyFrames ?? 0),
+                ordering: .releasing
+            )
             sampleRateConversionActive.store(sampleRateConverter != nil, ordering: .releasing)
             adaptivePlaybackRenderFailureActive.store(false, ordering: .releasing)
             playbackPrimeFrames.store(targetFrames, ordering: .releasing)
@@ -734,14 +749,21 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                             transitionResult.programmeComparison
                         )
                     }
-                    finishDSPTransition(transitionResult)
                     saturatedSampleCount += transitionResult.saturatedSamples
-                    recordWriteResult(
-                        ringBuffer.writeInterleaved(
-                            UnsafeBufferPointer(chunkSamples),
-                            frameCount: chunkFrames,
-                            sourceChannelCount: channelCount
-                        )
+                    prepareCompletedDSPTransition(
+                        transitionResult,
+                        renderedFrameCount: chunkFrames
+                    )
+                    let firstWrittenSequence = ringBuffer.nextWriteSequence()
+                    let writeResult = ringBuffer.writeInterleaved(
+                        UnsafeBufferPointer(chunkSamples),
+                        frameCount: chunkFrames,
+                        sourceChannelCount: channelCount
+                    )
+                    recordWriteResult(writeResult)
+                    armCompletedDSPTransitionForPlayback(
+                        writeResult: writeResult,
+                        firstWrittenSequence: firstWrittenSequence
                     )
                     frameOffset += chunkFrames
                 }
@@ -881,6 +903,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             case .rendered:
                 adaptivePlaybackRenderFailureActive.store(false, ordering: .releasing)
                 adaptivePlaybackRenderHealthGeneration.wrappingAdd(1, ordering: .releasing)
+                completeDSPTransitionAfterPlayback()
             case .underrun(let frames):
                 adaptivePlaybackRenderFailureActive.store(false, ordering: .releasing)
                 adaptivePlaybackRenderHealthGeneration.wrappingAdd(1, ordering: .releasing)
@@ -1203,6 +1226,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
         private func beginPendingDSPTransitionIfPossible() {
             guard activeDSPConfigPointer == 0,
+                  pendingPlaybackDSPTransitionID.load(ordering: .acquiring) == 0,
                   !dspTransition.isTransitioning else {
                 return
             }
@@ -1235,19 +1259,86 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             activeDSPConfigPointer = rawPointer
         }
 
-        private func finishDSPTransition(_ result: EQTransitionRenderResult) {
+        private func prepareCompletedDSPTransition(
+            _ result: EQTransitionRenderResult,
+            renderedFrameCount: Int
+        ) {
             guard result.completedTransition,
                   activeDSPConfigPointer != 0,
+                  let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer),
+                  let blendStartFrame = result.blendStartFrame,
+                  result.blendFrameCount > 0,
+                  renderedFrameCount > 0 else {
+                return
+            }
+            let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
+            box.retiredProcessor = result.retiredProcessor
+            box.secondRetiredProcessor = result.secondRetiredProcessor
+            box.playbackCompletionFrameOffset = min(
+                max(result.blendFrameCount - blendStartFrame - 1, 0),
+                renderedFrameCount - 1
+            )
+        }
+
+        private func armCompletedDSPTransitionForPlayback(
+            writeResult: RingBufferWriteResult,
+            firstWrittenSequence: UInt64
+        ) {
+            guard activeDSPConfigPointer != 0,
                   let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer) else {
                 return
             }
+            let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
+            guard let completionFrameOffset = box.playbackCompletionFrameOffset else {
+                return
+            }
+            guard writeResult.writtenFrames > 0 else {
+                box.playbackCompletionFrameOffset = 0
+                return
+            }
+
+            let retainedCompletionOffset = max(
+                completionFrameOffset - writeResult.droppedInputFrames,
+                0
+            )
+            guard retainedCompletionOffset < writeResult.writtenFrames else {
+                box.playbackCompletionFrameOffset = 0
+                return
+            }
+            box.playbackCompletionFrameOffset = nil
+            pendingPlaybackDSPCompletionSequence.store(
+                firstWrittenSequence &+ UInt64(retainedCompletionOffset) &+ 1,
+                ordering: .releasing
+            )
+
             let rawPointer = activeDSPConfigPointer
             activeDSPConfigPointer = 0
-            let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
-            completedDSPTransitions.store(box.transitionID, ordering: .releasing)
-            box.retiredProcessor = result.retiredProcessor
-            box.secondRetiredProcessor = result.secondRetiredProcessor
+            pendingPlaybackDSPTransitionID.store(box.transitionID, ordering: .releasing)
             pushRetiredDSPConfigBox(rawPointer)
+        }
+
+        private func completeDSPTransitionAfterPlayback() {
+            let transitionID = pendingPlaybackDSPTransitionID.load(ordering: .acquiring)
+            guard transitionID != 0 else {
+                return
+            }
+            let latencyFrames = UInt64(max(
+                playbackTransitionLatencyFrames.load(ordering: .acquiring),
+                0
+            ))
+            let requiredSequence = pendingPlaybackDSPCompletionSequence.load(ordering: .acquiring)
+                &+ latencyFrames
+            guard ringBuffer.nextReadSequence() >= requiredSequence else {
+                return
+            }
+            guard pendingPlaybackDSPTransitionID.compareExchange(
+                expected: transitionID,
+                desired: 0,
+                ordering: .acquiringAndReleasing
+            ).exchanged else {
+                return
+            }
+            completedDSPTransitions.store(transitionID, ordering: .releasing)
         }
 
         private func selectedProgrammeComparisonBranch() -> EQProgrammeComparisonSelection {

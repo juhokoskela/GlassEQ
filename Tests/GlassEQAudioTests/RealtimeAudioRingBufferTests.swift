@@ -6,6 +6,35 @@ import Testing
 @Suite
 struct RealtimeAudioRingBufferTests {
     @Test
+    func frameSequencesIncludeConsumedAndDiscardedBufferedFrames() {
+        let ring = RealtimeAudioRingBuffer(channelCount: 1, capacityFrames: 4)
+        let fourFrames: [Float] = [1, 2, 3, 4]
+        _ = fourFrames.withUnsafeBufferPointer {
+            ring.writeInterleaved($0, frameCount: 4, sourceChannelCount: 1)
+        }
+        #expect(ring.nextReadSequence() == 0)
+        #expect(ring.nextWriteSequence() == 4)
+
+        let twoFrames: [Float] = [5, 6]
+        _ = twoFrames.withUnsafeBufferPointer {
+            ring.writeInterleaved($0, frameCount: 2, sourceChannelCount: 1)
+        }
+        #expect(ring.nextReadSequence() == 2)
+        #expect(ring.nextWriteSequence() == 6)
+
+        var output = [Float](repeating: 0, count: 1)
+        output.withUnsafeMutableBufferPointer {
+            _ = ring.readInterleaved(into: $0, frameCount: 1, destinationChannelCount: 1)
+        }
+        #expect(ring.nextReadSequence() == 3)
+
+        #expect(ring.trimToLatestFrames(1))
+        #expect(ring.nextReadSequence() == 5)
+        #expect(ring.reset())
+        #expect(ring.nextReadSequence() == 6)
+    }
+
+    @Test
     func boundsHostileAllocationDimensions() {
         let ring = RealtimeAudioRingBuffer(
             channelCount: Int.max,

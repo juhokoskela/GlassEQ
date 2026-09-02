@@ -5,6 +5,7 @@ final class RealtimePCMRateConverter {
     let inputSampleRate: Double
     let outputSampleRate: Double
     let channelCount: Int
+    let latencyFrames: Int
 
     private let converter: AudioConverterRef
 
@@ -33,6 +34,7 @@ final class RealtimePCMRateConverter {
             )
         }
 
+        let latencyFrames: Int
         do {
             var quality = UInt32(kAudioConverterQuality_Max)
             try withUnsafePointer(to: &quality) { value in
@@ -60,12 +62,28 @@ final class RealtimePCMRateConverter {
                     operation: "AudioConverterSetProperty(prime method)"
                 )
             }
+
+            var primeInfo = AudioConverterPrimeInfo()
+            var primeInfoSize = UInt32(MemoryLayout<AudioConverterPrimeInfo>.size)
+            try withUnsafeMutablePointer(to: &primeInfo) { value in
+                try checkOSStatus(
+                    AudioConverterGetProperty(
+                        converter,
+                        kAudioConverterPrimeInfo,
+                        &primeInfoSize,
+                        value
+                    ),
+                    operation: "AudioConverterGetProperty(prime info)"
+                )
+            }
+            latencyFrames = Int(primeInfo.trailingFrames)
         } catch {
             AudioConverterDispose(converter)
             throw error
         }
 
         self.converter = converter
+        self.latencyFrames = latencyFrames
     }
 
     deinit {
