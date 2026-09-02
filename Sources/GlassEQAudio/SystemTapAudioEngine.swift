@@ -176,6 +176,19 @@ public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Send
     }
 }
 
+/// Counts of box-driven DSP bank transitions the render thread has begun and completed. A caller
+/// that publishes a bank reads `began` first and waits for `completed` to reach `began + 1`, so a
+/// transition already in flight cannot satisfy the wait early. Both reset with the runtime.
+public struct DSPTransitionProgress: Equatable, Sendable {
+    public var began: UInt64
+    public var completed: UInt64
+
+    public init(began: UInt64 = 0, completed: UInt64 = 0) {
+        self.began = began
+        self.completed = completed
+    }
+}
+
 public struct AudioEngineMetrics: Equatable, Sendable {
     public var capturedFrames: UInt64
     public var playedFrames: UInt64
@@ -1273,6 +1286,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
+        private let beganDSPTransitions = Atomic<UInt64>(0)
+        private let completedDSPTransitions = Atomic<UInt64>(0)
         private let stopping = Atomic<Bool>(false)
         private let inCallback = Atomic<Bool>(false)
         private let playbackChannelPair = Atomic<UInt64>(
@@ -1901,6 +1916,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
         }
 
+        func dspTransitionProgress() -> DSPTransitionProgress {
+            DSPTransitionProgress(
+                began: beganDSPTransitions.load(ordering: .acquiring),
+                completed: completedDSPTransitions.load(ordering: .acquiring)
+            )
+        }
+
         func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
             EQProgrammeComparisonSnapshot(
                 isActive: programmeComparisonActive.load(ordering: .acquiring),
@@ -1983,6 +2005,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             box.processor = nil
             box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
+            beganDSPTransitions.wrappingAdd(1, ordering: .releasing)
         }
 
         private func finishDSPTransition(_ result: EQTransitionRenderResult) {
@@ -1993,6 +2016,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             let rawPointer = activeDSPConfigPointer
             activeDSPConfigPointer = 0
+            completedDSPTransitions.wrappingAdd(1, ordering: .releasing)
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
@@ -3886,6 +3910,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
         return control.withLock { $0.runtime }?.snapshotProgrammeComparison()
             ?? EQProgrammeComparisonSnapshot()
+    }
+
+    public func dspTransitionProgress() -> DSPTransitionProgress {
+        if activeBackend.withLock({ $0 }) == .separateClock {
+            return separateClockBackend.dspTransitionProgress()
+        }
+        return control.withLock { $0.runtime }?.dspTransitionProgress() ?? DSPTransitionProgress()
     }
 
     public func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32) {

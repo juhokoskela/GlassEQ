@@ -254,6 +254,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     @discardableResult func beginProgrammeComparison(profile: EQProfile) -> Bool
     func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
+    func dspTransitionProgress() -> DSPTransitionProgress
     func muteOutputForTransition()
     func resumeOutputAfterCancelledTransition()
     func stop()

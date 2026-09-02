@@ -6244,6 +6244,8 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonCalls: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
+    private var _dspTransitionProgress = DSPTransitionProgress()
+    private var _deferDSPTransitionCompletion = false
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
     private var _resumeOutputCallCount = 0
@@ -6705,11 +6707,34 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
+    var deferDSPTransitionCompletion: Bool {
+        get { withLock { _deferDSPTransitionCompletion } }
+        set { withLock { _deferDSPTransitionCompletion = newValue } }
+    }
+
     func updateDSP(profile: EQProfile) -> Bool {
         withLock {
             _events.append("updateDSP:\(profile.id)")
             _updateDSPCalls.append(profile)
+            if _updateDSPResult {
+                _dspTransitionProgress.began += 1
+                if !_deferDSPTransitionCompletion {
+                    _dspTransitionProgress.completed = _dspTransitionProgress.began
+                }
+            }
             return _updateDSPResult
+        }
+    }
+
+    func dspTransitionProgress() -> DSPTransitionProgress {
+        withLock { _dspTransitionProgress }
+    }
+
+    /// Lets a deferred bank transition finish, as the render thread would after the blend.
+    func completeDSPTransition() {
+        withLock {
+            _events.append("transitionCompleted")
+            _dspTransitionProgress.completed = _dspTransitionProgress.began
         }
     }
 

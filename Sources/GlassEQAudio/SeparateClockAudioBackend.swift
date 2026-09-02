@@ -336,6 +336,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
+        private let beganDSPTransitions = Atomic<UInt64>(0)
+        private let completedDSPTransitions = Atomic<UInt64>(0)
         private let programmeComparisonSelection = Atomic<UInt>(
             UInt(EQProgrammeComparisonSelection.equalized.rawValue)
         )
@@ -613,6 +615,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             programmeComparisonSelection.store(
                 UInt(selection.rawValue),
                 ordering: .releasing
+            )
+        }
+
+        func dspTransitionProgress() -> DSPTransitionProgress {
+            DSPTransitionProgress(
+                began: beganDSPTransitions.load(ordering: .acquiring),
+                completed: completedDSPTransitions.load(ordering: .acquiring)
             )
         }
 
@@ -1206,6 +1215,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             box.processor = nil
             box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
+            beganDSPTransitions.wrappingAdd(1, ordering: .releasing)
         }
 
         private func finishDSPTransition(_ result: EQTransitionRenderResult) {
@@ -1216,6 +1226,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
             let rawPointer = activeDSPConfigPointer
             activeDSPConfigPointer = 0
+            completedDSPTransitions.wrappingAdd(1, ordering: .releasing)
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
             box.retiredProcessor = result.retiredProcessor
             box.secondRetiredProcessor = result.secondRetiredProcessor
@@ -1911,6 +1922,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     public func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
         control.withLock { $0.runtime }?.snapshotProgrammeComparison()
             ?? EQProgrammeComparisonSnapshot()
+    }
+
+    public func dspTransitionProgress() -> DSPTransitionProgress {
+        control.withLock { $0.runtime }?.dspTransitionProgress() ?? DSPTransitionProgress()
     }
 
     private func updateDSPLocked(
