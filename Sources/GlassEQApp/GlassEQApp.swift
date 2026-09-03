@@ -1706,7 +1706,8 @@ final class GlassEQAppModel {
             return .unavailable(message: message, failure: failure)
         case .renew?:
             return .expired(
-                detail: localized("Renew the subscription, then relaunch GlassEQ. Your profiles are kept either way.")
+                detail: localized("Renew the subscription, then relaunch GlassEQ. To use a different license instead, remove this one first. Your profiles are kept either way."),
+                failure: failure
             )
         case nil:
             return .activated(detail: licenseSummary(for: content))

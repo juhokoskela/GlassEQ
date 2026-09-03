@@ -634,7 +634,7 @@ public actor LicensingController {
                 terms: claims.monthlyTerms,
                 lastRefreshFailure: refreshFailure,
                 storageFailure: storageFailure,
-                activation: .activated
+                activation: state.serviceRevokedAt == nil ? .activated : .revoked
             ),
             claims: claims,
             effectiveTime: effectiveTime

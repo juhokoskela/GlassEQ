@@ -7772,6 +7772,39 @@ struct LicenseActivationOnboardingTests {
     }
 
     @Test
+    func expiryOffersRenewalUnlessTheSlotWasReleasedElsewhere() async {
+        let expired = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyExpired))
+        let revoked = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyExpired, activation: .revoked))
+        revoked.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
+        let expiredModel = makeModel(licensing: .provider(expired))
+        let revokedModel = makeModel(licensing: .provider(revoked))
+        await waitUntil { expiredModel.licenseSnapshot != nil && revokedModel.licenseSnapshot != nil }
+
+        guard case let .expired(detail, nil)? = expiredModel.onboardingLicenseState else {
+            Issue.record("expected the renewal state, got \(String(describing: expiredModel.onboardingLicenseState))")
+            return
+        }
+        #expect(detail.contains("Renew"))
+        #expect(expiredModel.onboardingLicenseState?.isSettled == true)
+
+        guard case let .replaceable(notice, nil)? = revokedModel.onboardingLicenseState else {
+            Issue.record("expected the removal offer, got \(String(describing: revokedModel.onboardingLicenseState))")
+            return
+        }
+        #expect(notice.contains("released"))
+        #expect(!notice.contains("Renew"))
+
+        revokedModel.removeStoredLicense()
+        await waitUntil { revokedModel.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil) }
+        #expect(revoked.deactivationCount == 1)
+
+        // An ordinary expired record can also make way for a different key.
+        expired.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
+        expiredModel.removeStoredLicense()
+        await waitUntil { expiredModel.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil) }
+    }
+
+    @Test
     func aPendingReleaseAndAnUnreadableKeychainShowNoForm() async {
         let releasing = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed, activation: .releasingPreviousActivation))
         let unreadable = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .storageUnavailable))
@@ -7796,7 +7829,8 @@ struct LicenseActivationOnboardingTests {
             (.needsRemoval, .invalidEntitlement),
             (.needsAppUpdate, .invalidEntitlement),
             (.releasingPreviousActivation, .unlicensed),
-            (.storageUnavailable, .storageUnavailable)
+            (.storageUnavailable, .storageUnavailable),
+            (.revoked, .monthlyExpired)
         ]
         for (availability, state) in cases {
             let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: state, activation: availability))

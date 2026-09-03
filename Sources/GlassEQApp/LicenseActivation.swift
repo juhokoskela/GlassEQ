@@ -22,6 +22,8 @@ enum LicenseRecovery: Equatable {
         switch content.activation {
         case .activated:
             self = .renew
+        case .revoked:
+            self = .remove(notice: localized("This Mac's place on the license was released, and the subscription has ended. Remove the stored license, then activate again."))
         case .available:
             self = .activate(notice: content.state == .invalidEntitlement
                 ? localized("The stored license is invalid. Activate again to continue.")
@@ -62,7 +64,9 @@ enum OnboardingLicenseState: Equatable {
     case unavailable(message: String, failure: String?)
     case working(String)
     case activated(detail: String)
-    case expired(detail: String)
+    /// Renewal is possible through the controller's refresh; removal is offered for a license
+    /// that will not come back. `failure` is a failed removal.
+    case expired(detail: String, failure: String?)
 
     /// The step has nothing left to ask for, so the footer offers Continue instead of Skip.
     var isSettled: Bool {

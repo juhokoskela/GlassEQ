@@ -176,21 +176,7 @@ private struct OnboardingLicenseStatus: View {
         case .replaceable(let notice, let failure):
             VStack(spacing: 10) {
                 OnboardingLicenseNote(text: notice)
-                // Deliberately not the default action: this drops local authority and releases
-                // the server slot, so it takes a click and a confirmation.
-                Button(localized("Remove Stored License"), role: .destructive) {
-                    isConfirmingRemoval = true
-                }
-                .controlSize(.large)
-                .confirmationDialog(
-                    localized("Remove the stored license from this Mac?"),
-                    isPresented: $isConfirmingRemoval,
-                    titleVisibility: .visible
-                ) {
-                    Button(localized("Remove License"), role: .destructive, action: removeStoredLicense)
-                } message: {
-                    Text(localized("This Mac stops being licensed right away, and its place on the license is released so another Mac can use it. You can activate a key again afterwards."))
-                }
+                OnboardingLicenseRemovalButton(isConfirming: $isConfirmingRemoval, remove: removeStoredLicense)
                 if let failure {
                     OnboardingLicenseNote(text: failure)
                 }
@@ -221,17 +207,48 @@ private struct OnboardingLicenseStatus: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .transition(.scale(scale: 0.9).combined(with: .opacity))
-        case .expired(let detail):
-            VStack(spacing: 6) {
-                Label(localized("This Mac's subscription has ended."), systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Color.macOSSystemOrange)
-                    .font(.body.weight(.medium))
-                Text(detail)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+        case .expired(let detail, let failure):
+            VStack(spacing: 10) {
+                VStack(spacing: 6) {
+                    Label(localized("This Mac's subscription has ended."), systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color.macOSSystemOrange)
+                        .font(.body.weight(.medium))
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // A refunded or replaced license never refreshes back to life, so a different key
+                // needs the old record out of the way first.
+                OnboardingLicenseRemovalButton(isConfirming: $isConfirmingRemoval, remove: removeStoredLicense)
+                if let failure {
+                    OnboardingLicenseNote(text: failure)
+                }
             }
+        }
+    }
+}
+
+/// Deliberately not the default action: removal drops local authority and releases the server
+/// slot, so it takes a click and a confirmation that names both.
+private struct OnboardingLicenseRemovalButton: View {
+    @Binding var isConfirming: Bool
+    let remove: () -> Void
+
+    var body: some View {
+        Button(localized("Remove Stored License"), role: .destructive) {
+            isConfirming = true
+        }
+        .controlSize(.large)
+        .confirmationDialog(
+            localized("Remove the stored license from this Mac?"),
+            isPresented: $isConfirming,
+            titleVisibility: .visible
+        ) {
+            Button(localized("Remove License"), role: .destructive, action: remove)
+        } message: {
+            Text(localized("This Mac stops being licensed right away, and its place on the license is released so another Mac can use it. You can activate a key again afterwards."))
         }
     }
 }

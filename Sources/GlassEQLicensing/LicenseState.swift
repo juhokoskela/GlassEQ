@@ -39,6 +39,10 @@ public enum ActivationAvailability: Equatable, Sendable {
     case available
     /// A verified record is stored. `activate` throws `activationAlreadyExists`.
     case activated
+    /// A verified record whose service access is gone: the slot was released elsewhere or the
+    /// token stopped being recognized. It keeps its signed offline authority until `exp`, but no
+    /// refresh can ever renew it, so once it stops permitting processing only removal helps.
+    case revoked
     /// A deactivation is still releasing its server slot. Its cleanup is retried, and activation
     /// waits so the old slot cannot become unreachable.
     case releasingPreviousActivation

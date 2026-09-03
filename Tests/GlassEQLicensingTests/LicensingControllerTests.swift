@@ -189,6 +189,36 @@ struct LicensingControllerTests {
     }
 
     @Test
+    func anExpiredRevokedRecordIsRemovableSoTheMacCanActivateAgain() async throws {
+        let fixture = try EntitlementFixture()
+        var revoked = try fixture.monthlyActivationState()
+        revoked.serviceRevokedAt = fixture.issuedAt
+        let harness = ControllerHarness(fixture: fixture, activation: revoked, wallTime: fixture.expiresAt)
+        harness.service.onDeactivate { _ in
+            throw LicenseServiceError.service(code: .invalidCredentials, retryAfterSeconds: nil)
+        }
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_new",
+                entitlement: try fixture.sign(payload: fixture.perpetualPayload(installationID: installationID))
+            )
+        }
+
+        let expired = await harness.controller.currentSnapshot()
+        #expect(expired.content.state == .monthlyExpired)
+        #expect(expired.content.activation == .revoked)
+        for _ in 0 ..< 20 { await Task.yield() }
+        #expect(harness.service.refreshCallCount == 0)
+
+        // The server no longer knows the token; that counts as released.
+        let released = try await harness.controller.deactivateCurrent()
+        #expect(released.content.activation == .available)
+
+        let activated = try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        #expect(activated.content.state == .perpetual)
+    }
+
+    @Test
     func aCorruptIdentityKeepsTheActivationUntilItsTokenReleasesTheSlot() async throws {
         let fixture = try EntitlementFixture()
         let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
