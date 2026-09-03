@@ -51,7 +51,7 @@ public struct EntitlementVerifier: Sendable {
         installationID: UUID,
         highestAcceptedRevision: Int64?,
         effectiveTime: Int64
-    ) throws -> VerifiedEntitlement {
+    ) throws(EntitlementVerificationError) -> VerifiedEntitlement {
         guard compactJWS.utf8.count <= Self.maximumTokenBytes else {
             throw EntitlementVerificationError.tokenTooLarge
         }
@@ -87,7 +87,7 @@ public struct EntitlementVerifier: Sendable {
         return VerifiedEntitlement(compactJWS: compactJWS, keyID: keyID, claims: claims)
     }
 
-    private func parseHeader(_ data: Data) throws -> String {
+    private func parseHeader(_ data: Data) throws(EntitlementVerificationError) -> String {
         let header: EntitlementHeader
         do {
             header = try decodeExactJSONObject(
@@ -114,7 +114,7 @@ public struct EntitlementVerifier: Sendable {
         installationID: UUID,
         highestAcceptedRevision: Int64?,
         effectiveTime: Int64
-    ) throws -> EntitlementClaims {
+    ) throws(EntitlementVerificationError) -> EntitlementClaims {
         let payload: EntitlementPayload
         do {
             let fields = try jsonObjectFields(data)
@@ -204,7 +204,7 @@ public struct EntitlementVerifier: Sendable {
         installationID: UUID,
         releaseScope: EntitlementReleaseScope,
         securityUpdatesAfterExpiry: Bool
-    ) throws -> EntitlementClaims {
+    ) throws(EntitlementVerificationError) -> EntitlementClaims {
         guard releaseScope == .current,
               let billingStateValue = payload.billingState,
               let billingState = MonthlyBillingState(rawValue: billingStateValue),
@@ -255,7 +255,7 @@ public struct EntitlementVerifier: Sendable {
         )
     }
 
-    private func decodeBase64URL(_ value: Substring) throws -> Data {
+    private func decodeBase64URL(_ value: Substring) throws(EntitlementVerificationError) -> Data {
         guard !value.contains("="),
               value.utf8.allSatisfy({ byte in
                   (0x41 ... 0x5A).contains(byte)

@@ -7496,7 +7496,8 @@ private func makeLicenseSnapshot(
     state: LicenseState,
     sequence: UInt64 = 1,
     billingState: MonthlyBillingState? = nil,
-    expiresAt: Int64? = nil
+    expiresAt: Int64? = nil,
+    activation: ActivationAvailability? = nil
 ) -> LicenseSnapshot {
     let terms: MonthlyTerms? = switch state {
     case .perpetual: nil
@@ -7514,9 +7515,18 @@ private func makeLicenseSnapshot(
         sequence: sequence,
         content: LicenseSnapshotContent(
             state: state,
-            terms: terms
+            terms: terms,
+            activation: activation ?? defaultAvailability(for: state)
         )
     )
+}
+
+private func defaultAvailability(for state: LicenseState) -> ActivationAvailability {
+    switch state {
+    case .unlicensed, .invalidEntitlement: .available
+    case .storageUnavailable: .storageUnavailable
+    case .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded: .activated
+    }
 }
 
 private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchecked Sendable {

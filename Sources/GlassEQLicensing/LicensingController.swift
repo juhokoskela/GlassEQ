@@ -3,6 +3,8 @@ import Foundation
 public enum LicensingError: Error, Equatable, LocalizedError, Sendable {
     case operationInProgress
     case activationAlreadyExists
+    /// `shutdown()` has run. Nothing may mutate the store afterwards.
+    case shutDown
     case storage(LicenseCredentialStoreError)
     case service(LicenseServiceError)
     case entitlement(EntitlementVerificationError)
@@ -13,6 +15,8 @@ public enum LicensingError: Error, Equatable, LocalizedError, Sendable {
             "Another licensing operation is already in progress."
         case .activationAlreadyExists:
             "Deactivate the current license before activating another one."
+        case .shutDown:
+            "Licensing has shut down."
         case .storage:
             "The license could not be read from or saved to Keychain."
         case .service:
@@ -180,20 +184,28 @@ public actor LicensingController {
         return snapshot
     }
 
-    public func activate(licenseKey: String) async throws {
+    /// Returns the snapshot published after the activation, so a caller can apply it without a
+    /// second actor round trip racing the subscription handler.
+    @discardableResult
+    public func activate(licenseKey: String) async throws(LicensingError) -> LicenseSnapshot {
         try beginExclusiveOperation()
-        defer { endExclusiveOperation() }
-        try loadForMutation()
-        if activation == .corrupt {
-            try clearCorruptActivation()
+        do throws(LicensingError) {
+            try loadForMutation()
+            if activation == .corrupt {
+                try clearCorruptActivation()
+            }
+            guard case .state = activation else {
+                try await activateNewLicense(licenseKey: licenseKey)
+                return endExclusiveOperation()
+            }
+            throw LicensingError.activationAlreadyExists
+        } catch {
+            endExclusiveOperation()
+            throw error
         }
-        guard case .state = activation else {
-            return try await activateNewLicense(licenseKey: licenseKey)
-        }
-        throw LicensingError.activationAlreadyExists
     }
 
-    private func activateNewLicense(licenseKey: String) async throws {
+    private func activateNewLicense(licenseKey: String) async throws(LicensingError) {
         let identity = try ensureIdentity()
         let idempotencyKey = UUID()
 
@@ -220,7 +232,7 @@ public actor LicensingController {
                 highestAcceptedRevision: nil,
                 effectiveTime: fresh.effectiveTime(wallClock: wallClock(), now: now)
             )
-        } catch let error as EntitlementVerificationError {
+        } catch let error {
             await retireUnusableActivation(response.activationToken)
             throw LicensingError.entitlement(error)
         }
@@ -263,30 +275,36 @@ public actor LicensingController {
     /// Releases this installation's server registration and its local authority. The record is
     /// tombstoned before the request, so the installation is unlicensed from here on even if the
     /// request or the Keychain deletion fails; both are retried.
-    public func deactivateCurrent() async throws {
+    @discardableResult
+    public func deactivateCurrent() async throws(LicensingError) -> LicenseSnapshot {
         try beginExclusiveOperation()
-        defer { endExclusiveOperation() }
-        try loadForMutation()
-        if activation == .corrupt {
-            try clearCorruptActivation()
-            return
-        }
-        guard case var .state(state) = activation else {
-            return
-        }
-        if state.deactivationRequestedAt == nil {
-            state.deactivationRequestedAt = wallClock()
-            do {
-                try store.saveActivationState(state)
-            } catch let error {
-                throw LicensingError.storage(error)
+        do throws(LicensingError) {
+            try loadForMutation()
+            if activation == .corrupt {
+                try clearCorruptActivation()
+                return endExclusiveOperation()
             }
-            activation = .state(state)
-            inFlightRefresh?.cancel()
-            resetRefreshFailures()
-            publishAndReschedule()
+            guard case var .state(state) = activation else {
+                return endExclusiveOperation()
+            }
+            if state.deactivationRequestedAt == nil {
+                state.deactivationRequestedAt = wallClock()
+                do {
+                    try store.saveActivationState(state)
+                } catch let error {
+                    throw LicensingError.storage(error)
+                }
+                activation = .state(state)
+                inFlightRefresh?.cancel()
+                resetRefreshFailures()
+                publishAndReschedule()
+            }
+            try await completeDeactivation(state)
+            return endExclusiveOperation()
+        } catch {
+            endExclusiveOperation()
+            throw error
         }
-        try await completeDeactivation(state)
     }
 
     /// Performs one refresh, coalescing onto an in-flight one.
@@ -325,6 +343,16 @@ public actor LicensingController {
         }
         do {
             identity = try store.loadInstallationIdentity()
+        } catch LicenseCredentialStoreError.corruptRecord {
+            // A malformed identity is rewritten by the next activation. It must not take the
+            // activation record with it: that record's token is what releases the server slot, so
+            // the record is reported as needing removal instead of being replaced outright.
+            identity = nil
+        } catch let error {
+            recordStorageFailure(error)
+            return error
+        }
+        do {
             if let state = try store.loadActivationState() {
                 activation = .state(state)
                 verifiedEntitlement = nil
@@ -359,7 +387,7 @@ public actor LicensingController {
     }
 
     /// Mutating operations must know the stored state before they change it.
-    private func loadForMutation() throws {
+    private func loadForMutation() throws(LicensingError) {
         if let error = loadIfNeeded() {
             throw LicensingError.storage(error)
         }
@@ -370,7 +398,7 @@ public actor LicensingController {
 
     /// A user-requested activation or deactivation may discard a malformed record. A future
     /// schema never reaches this path, so downgrading cannot erase state owned by a newer build.
-    private func clearCorruptActivation() throws {
+    private func clearCorruptActivation() throws(LicensingError) {
         do {
             try store.clearActivationState()
         } catch let error {
@@ -392,7 +420,7 @@ public actor LicensingController {
         resetRefreshFailures()
     }
 
-    private func ensureIdentity() throws -> InstallationIdentity {
+    private func ensureIdentity() throws(LicensingError) -> InstallationIdentity {
         if let identity {
             return identity
         }
@@ -499,37 +527,60 @@ public actor LicensingController {
 
     private func evaluate() -> Evaluation {
         let effectiveTime = observeTime()
-        func simple(_ state: LicenseState) -> Evaluation {
+        func simple(_ state: LicenseState, _ availability: ActivationAvailability) -> Evaluation {
             Evaluation(
-                content: LicenseSnapshotContent(state: state, storageFailure: storageFailure),
+                content: LicenseSnapshotContent(
+                    state: state,
+                    storageFailure: storageFailure,
+                    activation: availability
+                ),
                 claims: nil,
                 effectiveTime: effectiveTime
             )
         }
         switch activation {
         case .notLoaded:
-            return simple(.storageUnavailable)
+            return simple(.storageUnavailable, .storageUnavailable)
         case .none:
-            return simple(.unlicensed)
+            return simple(.unlicensed, .available)
         case .corrupt:
-            return simple(.invalidEntitlement)
+            return simple(.invalidEntitlement, .available)
         case .unsupportedSchemaVersion:
-            return simple(.invalidEntitlement)
+            return simple(.invalidEntitlement, .needsAppUpdate)
         case let .state(state) where state.deactivationRequestedAt != nil:
-            return simple(.unlicensed)
+            return simple(.unlicensed, .releasingPreviousActivation)
         case let .state(state):
             return evaluate(state, effectiveTime: effectiveTime)
         }
     }
 
+    /// Unknown keys, headers, and claims are what a newer server emits for a newer app, so the
+    /// record is kept. Everything else means the record cannot be used on this Mac.
+    private static func availability(after error: EntitlementVerificationError) -> ActivationAvailability {
+        switch error {
+        case .unknownKeyID, .unsupportedHeader, .unsupportedClaims:
+            .needsAppUpdate
+        case .tokenTooLarge, .malformedCompactSerialization, .invalidBase64URL, .malformedHeader,
+             .invalidSignature, .malformedClaims, .installationMismatch, .staleRevision,
+             .issuedInFuture, .invalidTimeline:
+            .needsRemoval
+        }
+    }
+
     private func evaluate(_ state: ActivationState, effectiveTime: Int64) -> Evaluation {
-        let invalid = Evaluation(
-            content: LicenseSnapshotContent(state: .invalidEntitlement, storageFailure: storageFailure),
-            claims: nil,
-            effectiveTime: effectiveTime
-        )
+        func invalid(_ availability: ActivationAvailability) -> Evaluation {
+            Evaluation(
+                content: LicenseSnapshotContent(
+                    state: .invalidEntitlement,
+                    storageFailure: storageFailure,
+                    activation: availability
+                ),
+                claims: nil,
+                effectiveTime: effectiveTime
+            )
+        }
         guard let identity else {
-            return invalid
+            return invalid(.needsRemoval)
         }
         let verified: VerifiedEntitlement
         if let cached = verifiedEntitlement,
@@ -537,16 +588,18 @@ public actor LicensingController {
            cached.claims.revision == state.highestAcceptedRevision {
             verified = cached
         } else {
-            guard let fresh = try? verifier.verify(
-                state.entitlement,
-                installationID: identity.installationID,
-                highestAcceptedRevision: state.highestAcceptedRevision,
-                effectiveTime: effectiveTime
-            ) else {
-                return invalid
+            do {
+                let fresh = try verifier.verify(
+                    state.entitlement,
+                    installationID: identity.installationID,
+                    highestAcceptedRevision: state.highestAcceptedRevision,
+                    effectiveTime: effectiveTime
+                )
+                verifiedEntitlement = fresh
+                verified = fresh
+            } catch let error {
+                return invalid(Self.availability(after: error))
             }
-            verifiedEntitlement = fresh
-            verified = fresh
         }
         let claims = verified.claims
         let refreshFailure = state.serviceRevokedAt != nil
@@ -580,7 +633,8 @@ public actor LicensingController {
                 state: licenseState,
                 terms: claims.monthlyTerms,
                 lastRefreshFailure: refreshFailure,
-                storageFailure: storageFailure
+                storageFailure: storageFailure,
+                activation: .activated
             ),
             claims: claims,
             effectiveTime: effectiveTime
@@ -603,10 +657,12 @@ public actor LicensingController {
         return snapshot
     }
 
-    private func publishAndReschedule(_ evaluation: Evaluation? = nil) {
+    @discardableResult
+    private func publishAndReschedule(_ evaluation: Evaluation? = nil) -> LicenseSnapshot {
         let evaluation = evaluation ?? evaluate()
-        publish(evaluation.content)
+        let snapshot = publish(evaluation.content)
         reschedule(evaluation)
+        return snapshot
     }
 
     // MARK: Activation and refresh requests
@@ -635,7 +691,7 @@ public actor LicensingController {
 
     /// Sends the idempotent deactivation for a tombstoned record and clears it once the server
     /// has no registration left for the token.
-    private func completeDeactivation(_ state: ActivationState) async throws {
+    private func completeDeactivation(_ state: ActivationState) async throws(LicensingError) {
         let generation = operationGeneration
         let token = state.activationToken
         do {
@@ -803,7 +859,10 @@ public actor LicensingController {
         refreshRetry.reset()
     }
 
-    private func beginExclusiveOperation() throws {
+    private func beginExclusiveOperation() throws(LicensingError) {
+        guard !isShutdown else {
+            throw LicensingError.shutDown
+        }
         guard !exclusiveOperationInProgress else {
             throw LicensingError.operationInProgress
         }
@@ -813,9 +872,10 @@ public actor LicensingController {
 
     /// Runs on every exit from an exclusive operation, including failures, so the schedule is
     /// rebuilt from whatever state the operation left behind.
-    private func endExclusiveOperation() {
+    @discardableResult
+    private func endExclusiveOperation() -> LicenseSnapshot {
         exclusiveOperationInProgress = false
-        publishAndReschedule()
+        return publishAndReschedule()
     }
 
     // MARK: Scheduling

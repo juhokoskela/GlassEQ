@@ -7,6 +7,7 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
         var identity: InstallationIdentity?
         var activation: ActivationState?
         var loadFailure: LicenseCredentialStoreError?
+        var identityLoadFailure: LicenseCredentialStoreError?
         var saveFailure: LicenseCredentialStoreError?
         var nextActivationSaveFailures: [LicenseCredentialStoreError] = []
         var clearFailure: LicenseCredentialStoreError?
@@ -36,6 +37,11 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
         set { state.withLock { $0.loadFailure = newValue } }
     }
 
+    var identityLoadFailure: LicenseCredentialStoreError? {
+        get { state.withLock { $0.identityLoadFailure } }
+        set { state.withLock { $0.identityLoadFailure = newValue } }
+    }
+
     var saveFailure: LicenseCredentialStoreError? {
         get { state.withLock { $0.saveFailure } }
         set { state.withLock { $0.saveFailure = newValue } }
@@ -59,15 +65,17 @@ final class InMemoryCredentialStore: LicenseCredentialStore {
     var clearCount: Int { state.withLock { $0.clearCount } }
 
     func loadInstallationIdentity() throws(LicenseCredentialStoreError) -> InstallationIdentity? {
-        let result = state.withLock { ($0.loadFailure, $0.identity) }
+        let result = state.withLock { ($0.loadFailure, $0.identityLoadFailure, $0.identity) }
         if let failure = result.0 { throw failure }
-        return result.1
+        if let failure = result.1 { throw failure }
+        return result.2
     }
 
     func saveInstallationIdentity(_ identity: InstallationIdentity) throws(LicenseCredentialStoreError) {
         let failure = state.withLock { state -> LicenseCredentialStoreError? in
             guard state.saveFailure == nil else { return state.saveFailure }
             state.identity = identity
+            state.identityLoadFailure = nil
             return nil
         }
         if let failure { throw failure }
