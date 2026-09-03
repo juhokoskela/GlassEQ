@@ -372,6 +372,23 @@ struct ConvolutionTests {
         }
         return 20 * log10(max(hypot(real, imaginary), .leastNonzeroMagnitude))
     }
+
+    @Test
+    func bypassedConvolutionProfilePreparesWithoutBuildingConvolvers() throws {
+        var profile = EQProfile.flatConvolution
+        profile.isBypassed = true
+
+        let configuration = try EQRenderConfiguration.prepare(
+            profile: profile,
+            sampleRate: 48_000,
+            channelCount: 2
+        )
+
+        #expect(configuration.isNumericallySafe)
+        #expect(configuration.convolvers.count == 2)
+        #expect(configuration.convolvers.allSatisfy { $0 == nil })
+    }
+
 }
 
 private enum FIRAnalysisCancellation: Error {

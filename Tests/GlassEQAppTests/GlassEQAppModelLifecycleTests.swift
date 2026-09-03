@@ -2,6 +2,7 @@ import CoreAudio
 import Foundation
 import GlassEQAudio
 import GlassEQCore
+import GlassEQLicensing
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
 import Testing
@@ -5564,7 +5565,10 @@ private func makeModel(
     renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
     renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
     renderWatchdogPollInterval: Duration = .milliseconds(500),
-    aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil
+    aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
+    licensing: LicensingSource = .disabled,
+    licenseStopTransitionTimeout: Duration = .milliseconds(500),
+    autoStart: Bool = false
 ) -> GlassEQAppModel {
     let store = normalizedStore(store ?? ProfileStore(profiles: [makeProfile(name: "Fallback")]))
     return GlassEQAppModel(
@@ -5573,7 +5577,7 @@ private func makeModel(
         engine: engine,
         defaultOutputLookup: lookup,
         observerFactory: observers,
-        autoStart: false,
+        autoStart: autoStart,
         installLifecycleObservers: false,
         registerAppDelegate: false,
         workspaceOpener: workspaceOpener,
@@ -5590,7 +5594,9 @@ private func makeModel(
         renderWatchdogStallThreshold: renderWatchdogStallThreshold,
         renderWatchdogRepeatedFailureWindow: renderWatchdogRepeatedFailureWindow,
         renderWatchdogPollInterval: renderWatchdogPollInterval,
-        aggregateBufferNotifier: aggregateBufferNotifier
+        aggregateBufferNotifier: aggregateBufferNotifier,
+        licensing: licensing,
+        licenseStopTransitionTimeout: licenseStopTransitionTimeout
     )
 }
 
@@ -6244,6 +6250,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonCalls: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
+    private var _dspTransitionProgress = DSPTransitionProgress()
+    private var _pendingDSPTransitionIDs: [UInt64] = []
+    private var _deferDSPTransitionCompletion = false
     private var _stopCallCount = 0
     private var _muteOutputCallCount = 0
     private var _resumeOutputCallCount = 0
@@ -6705,11 +6714,39 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func updateDSP(profile: EQProfile) -> Bool {
+    var deferDSPTransitionCompletion: Bool {
+        get { withLock { _deferDSPTransitionCompletion } }
+        set { withLock { _deferDSPTransitionCompletion = newValue } }
+    }
+
+    func updateDSP(
+        profile: EQProfile
+    ) -> DSPTransitionProgress.Target? {
         withLock {
             _events.append("updateDSP:\(profile.id)")
             _updateDSPCalls.append(profile)
-            return _updateDSPResult
+            if _updateDSPResult {
+                _dspTransitionProgress.published += 1
+                _pendingDSPTransitionIDs.append(_dspTransitionProgress.published)
+                if !_deferDSPTransitionCompletion {
+                    _dspTransitionProgress.completed = _pendingDSPTransitionIDs.removeFirst()
+                }
+            }
+            return _updateDSPResult ? _dspTransitionProgress.latestPublishedTarget : nil
+        }
+    }
+
+    func dspTransitionProgress() -> DSPTransitionProgress {
+        withLock { _dspTransitionProgress }
+    }
+
+    /// Lets a deferred bank transition finish, as the render thread would after the blend.
+    func completeDSPTransition() {
+        withLock {
+            _events.append("transitionCompleted")
+            if !_pendingDSPTransitionIDs.isEmpty {
+                _dspTransitionProgress.completed = _pendingDSPTransitionIDs.removeFirst()
+            }
         }
     }
 
@@ -6896,5 +6933,662 @@ private final class FakeStartBlocker: @unchecked Sendable {
 
     func unblock() {
         release.signal()
+    }
+}
+
+// MARK: - License enforcement
+
+private let nonPermittingLicenseStates: [LicenseState] = [
+    .unlicensed, .monthlyExpired, .invalidEntitlement, .storageUnavailable
+]
+private let permittingLicenseStates: [LicenseState] = [
+    .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .verificationNeeded
+]
+
+@MainActor
+@Suite
+struct LicenseEnforcementTests {
+
+    private struct RunningModel {
+        let output: AudioOutputDevice
+        let engine: FakeAudioEngine
+        let observers: FakeDefaultOutputObserverFactory
+        let source: FakeLicenseSnapshotSource
+        let model: GlassEQAppModel
+    }
+
+    private func makeRunningModel(
+        initialState: LicenseState = .monthlyActive,
+        outputDelay: Duration = .zero,
+        licenseStopTransitionTimeout: Duration = .milliseconds(500),
+        configureEngine: (FakeAudioEngine) -> Void = { _ in }
+    ) async -> RunningModel {
+        let output = makeOutput(uid: "licensed-output", name: "Licensed Output")
+        let engine = FakeAudioEngine()
+        configureEngine(engine)
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: initialState))
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: outputDelay,
+            wakeDelay: .zero,
+            licensing: .provider(source),
+            licenseStopTransitionTimeout: licenseStopTransitionTimeout
+        )
+        await waitUntil { model.licenseSnapshot != nil }
+        model.start()
+        await waitUntil { observers.observers.count == 1 }
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running && engine.startCalls.count == 1 }
+        return RunningModel(output: output, engine: engine, observers: observers, source: source, model: model)
+    }
+
+    private func expiredText() -> String {
+        localized("Subscription ended. GlassEQ has returned to unprocessed playback.")
+    }
+
+    @Test
+    func licensingDisabledStartsAsBefore() async {
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running }
+
+        #expect(engine.startCalls.count == 1)
+        #expect(model.licenseSnapshot == nil)
+        #expect(model.licenseStatusMessage == nil)
+    }
+
+    @Test(arguments: nonPermittingLicenseStates)
+    func initialNonPermittingSnapshotNeverStartsTheTap(state: LicenseState) async {
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: state))
+        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        model.start()
+        await settleAsyncWork()
+
+        #expect(engine.startCalls.isEmpty)
+        #expect(observers.observers.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+        #expect(!model.isRunning)
+        #expect(model.statusMessage != localized("Stopped"))
+        #expect(model.onboardingAudioCaptureState == .failed(message: model.statusMessage))
+        #expect(model.licenseStatusMessage == nil)
+    }
+
+    @Test(arguments: permittingLicenseStates)
+    func permittingSnapshotsStartNormally(state: LicenseState) async {
+        let running = await makeRunningModel(initialState: state)
+
+        #expect(running.model.isRunning)
+        #expect(running.engine.startCalls.count == 1)
+        let expectsSecondaryLine = [.monthlyRecovery, .monthlyGrace, .verificationNeeded].contains(state)
+        #expect((running.model.licenseStatusMessage != nil) == expectsSecondaryLine)
+    }
+
+    @Test
+    func recoveryMessagingClaimsAPaymentProblemOnlyWhenTheServerSaidSo() async {
+        let recovering = await makeRunningModel(initialState: .monthlyRecovery)
+        let unverified = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyRecovery))
+
+        recovering.source.emit(makeLicenseSnapshot(state: .monthlyRecovery, sequence: 2, billingState: .recovering))
+        await waitUntil { recovering.model.licenseSnapshot?.sequence == 2 }
+
+        #expect(recovering.model.licenseStatusMessage?.contains("payment details") == true)
+        let model = makeModel(licensing: .provider(unverified))
+        await waitUntil { model.licenseSnapshot != nil }
+        #expect(model.licenseStatusMessage?.contains("payment") == false)
+        #expect(model.licenseStatusMessage?.contains("verified") == true)
+    }
+
+    @Test
+    func startWaitsForTheInitialSnapshot() async {
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive), gated: true)
+        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero, licensing: .provider(source))
+
+        model.start()
+        await settleAsyncWork()
+        #expect(observers.observers.isEmpty)
+        #expect(model.statusMessage == localized("Checking license..."))
+        #expect(model.onboardingAudioCaptureState == .pending)
+
+        source.release()
+        await waitUntil { observers.observers.count == 1 }
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running }
+        #expect(engine.startCalls.count == 1)
+
+        let blockedEngine = FakeAudioEngine()
+        let blockedObservers = FakeDefaultOutputObserverFactory()
+        let blockedSource = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed), gated: true)
+        let blocked = makeModel(engine: blockedEngine, observers: blockedObservers, outputDelay: .zero, licensing: .provider(blockedSource))
+        blocked.start()
+        blockedSource.release()
+        await waitUntil { blocked.licenseSnapshot != nil }
+        await settleAsyncWork()
+        #expect(blockedObservers.observers.isEmpty)
+        #expect(blockedEngine.startCalls.isEmpty)
+        #expect(blocked.statusMessage == localized("Activate a license to start processing"))
+    }
+
+    @Test
+    func expiryWhileRunningFadesToIdentityBeforeStopping() async {
+        let running = await makeRunningModel()
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.stopCallCount >= 1 }
+
+        let identity = running.engine.updateDSPCalls.last
+        #expect(identity?.id == running.model.activeProfile.id)
+        #expect(identity?.isBypassed == true)
+        #expect(identity?.filters == running.model.activeProfile.filters)
+        let events = running.engine.events
+        let fadeIndex = events.firstIndex(of: "updateDSP:\(running.model.activeProfile.id)")
+        let stopIndex = events.firstIndex(of: "stop")
+        #expect(fadeIndex != nil && stopIndex != nil && fadeIndex! < stopIndex!)
+        #expect(running.engine.muteOutputCallCount == 0)
+        #expect(running.engine.resumeOutputCallCount == 0)
+        await waitUntil { running.model.statusMessage == expiredText() }
+        #expect(running.model.lifecycleState == .stopped)
+        #expect(!running.model.isRunning)
+        #expect(running.model.statusMessage == expiredText())
+    }
+
+    @Test
+    func expiryWaitsForTheTransitionToCompleteBeforeStopping() async {
+        let running = await makeRunningModel { $0.deferDSPTransitionCompletion = true }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 1 }
+
+        let stoppedEarly = await waitUntil(maxAttempts: 10) { running.engine.stopCallCount > 0 }
+        #expect(!stoppedEarly)
+        running.engine.completeDSPTransition()
+        await waitUntil { running.engine.stopCallCount == 1 }
+        #expect(running.engine.events.suffix(2) == ["transitionCompleted", "stop"])
+    }
+
+    @Test
+    func anEarlierTransitionCannotCompleteTheIdentityFade() async {
+        let running = await makeRunningModel { $0.deferDSPTransitionCompletion = true }
+        var earlierProfile = running.model.activeProfile
+        earlierProfile.preampDB -= 1
+        _ = running.engine.updateDSP(profile: earlierProfile)
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 2 }
+
+        running.engine.completeDSPTransition()
+        let stoppedAfterEarlierTransition = await waitUntil(maxAttempts: 10) {
+            running.engine.stopCallCount > 0
+        }
+        #expect(!stoppedAfterEarlierTransition)
+
+        running.engine.completeDSPTransition()
+        await waitUntil { running.engine.stopCallCount == 1 }
+    }
+
+    @Test
+    func expiryStopsAnywayWhenTheTransitionNeverCompletes() async {
+        let running = await makeRunningModel(licenseStopTransitionTimeout: .milliseconds(50)) {
+            $0.deferDSPTransitionCompletion = true
+        }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.stopCallCount == 1 }
+
+        #expect(running.engine.updateDSPCalls.count == 1)
+        await waitUntil { running.model.statusMessage == expiredText() }
+        #expect(running.model.statusMessage == expiredText())
+    }
+
+    @Test
+    func expiryFallsBackToAPlainStopWhenTheHotSwapIsRefused() async {
+        let running = await makeRunningModel { $0.updateDSPResult = false }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil(maxAttempts: 20) { running.engine.stopCallCount == 1 }
+
+        #expect(running.engine.stopCallCount == 1)
+        #expect(running.engine.events.suffix(2) == ["updateDSP:\(running.model.activeProfile.id)", "stop"])
+    }
+
+    @Test
+    func expiryDuringABlockedStartDoesNotLeaveTheEngineRunning() async {
+        let output = makeOutput(uid: "blocked-output", name: "Blocked Output")
+        let engine = FakeAudioEngine()
+        engine.blockStart(for: output.uid)
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.start()
+        await waitUntil { observers.observers.count == 1 }
+        observers.observers[0].emit(.success(output))
+        await waitUntil { engine.startCalls.count == 1 }
+        #expect(engine.waitUntilStartIsBlocked(for: output.uid, timeout: .now() + 1))
+
+        source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await settleAsyncWork()
+        engine.unblockStart(for: output.uid)
+        await waitUntil { engine.stopCallCount >= 1 }
+        await settleAsyncWork()
+
+        #expect(engine.state == .stopped)
+        #expect(engine.startCalls.count == 1)
+        #expect(engine.events.last == "stop")
+        let events = engine.events
+        if let fadeIndex = events.firstIndex(of: "updateDSP:\(model.activeProfile.id)") {
+            #expect(fadeIndex < events.firstIndex(of: "stop")!)
+        }
+        #expect(model.lifecycleState == .stopped)
+    }
+
+    @Test
+    func expiryDuringAMutedOutputChangeDoesNotResumeOrRestart() async {
+        let running = await makeRunningModel(outputDelay: .milliseconds(400))
+        let other = makeOutput(uid: "other-output", name: "Other Output", id: 300)
+
+        running.observers.observers[0].emit(.success(other))
+        await waitUntil { running.engine.muteOutputCallCount == 1 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.stopCallCount >= 1 }
+        await settleAsyncWork()
+
+        #expect(running.engine.resumeOutputCallCount == 0)
+        #expect(running.engine.startCalls.count == 1)
+        #expect(running.model.lifecycleState == .stopped)
+    }
+
+    @Test
+    func expiryDuringAStoppedOutputChangeDoesNotRestartAfterSettling() async {
+        let running = await makeRunningModel(outputDelay: .milliseconds(100))
+        let changed = makeOutput(uid: running.output.uid, name: running.output.name, nominalSampleRate: 44_100, bufferFrameSize: 512)
+
+        running.observers.observers[0].emit(.success(changed))
+        await waitUntil { running.engine.stopCallCount == 1 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        try? await Task.sleep(for: .milliseconds(300))
+
+        #expect(running.engine.startCalls.count == 1)
+        #expect(running.model.lifecycleState == .stopped)
+        #expect(running.model.statusMessage == expiredText())
+    }
+
+    @Test
+    func expiryWhileSleepingKeepsTheEngineStoppedThroughWake() async {
+        let running = await makeRunningModel()
+
+        running.model.handleWillSleep()
+        await waitUntil { running.engine.stopCallCount == 1 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 2 }
+        #expect(running.model.lifecycleState == .sleeping)
+        running.model.handleDidWake()
+        await settleAsyncWork()
+
+        #expect(running.engine.startCalls.count == 1)
+        #expect(running.observers.observers.count == 1)
+        #expect(running.model.lifecycleState == .stopped)
+        #expect(running.model.statusMessage == expiredText())
+    }
+
+    @Test
+    func renewalDuringSleepAfterAnExpiryFadeResumesOnWake() async throws {
+        let running = await makeRunningModel { $0.deferDSPTransitionCompletion = true }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 1 }
+        running.model.handleWillSleep()
+        await waitUntil { running.engine.stopCallCount == 1 }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 3 }
+        #expect(running.model.lifecycleState == .sleeping)
+
+        running.model.handleDidWake()
+        try #require(running.model.lifecycleState == .waking)
+        running.engine.completeDSPTransition()
+        await settleAsyncWork()
+        await waitUntil { running.observers.observers.count == 2 }
+        try #require(running.observers.observers.count == 2)
+        running.observers.observers[1].emit(.success(running.output))
+        await waitUntil {
+            running.model.lifecycleState == .running && running.engine.startCalls.count == 2
+        }
+    }
+
+    @Test
+    func expiryDuringTerminationLeavesTerminationToStopTheEngine() async {
+        let running = await makeRunningModel()
+        let stopCountAtShutdown = StopCountRecorder()
+        running.source.onShutdown = { [engine = running.engine] in
+            stopCountAtShutdown.record(engine.stopCallCount)
+        }
+
+        let termination = Task { await running.model.cleanupForTerminationAndWait() }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await termination.value
+        await settleAsyncWork()
+
+        #expect(running.model.lifecycleState == .terminating)
+        #expect(running.engine.state == .stopped)
+        #expect(running.engine.startCalls.count == 1)
+        #expect(running.source.checkpointCount == 1)
+        #expect(stopCountAtShutdown.value == 1)
+    }
+
+    @Test
+    func runtimeFailureDuringTheFadeStillRestoresDryPlayback() async {
+        let running = await makeRunningModel(licenseStopTransitionTimeout: .milliseconds(50)) {
+            $0.deferDSPTransitionCompletion = true
+        }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 1 }
+        running.engine.emitRuntimeFailure(adaptiveRenderFailure)
+        await waitUntil { running.engine.stopCallCount == 1 }
+        await waitUntil { running.model.statusMessage == expiredText() }
+
+        #expect(running.model.statusMessage == expiredText())
+        #expect(running.model.lifecycleState == .stopped)
+    }
+
+    @Test
+    func restartRequestsWhileUnlicensedNeverStartTheTap() async {
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero, wakeDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        model.start()
+        model.retryAudioEngine()
+        model.setBypass(true)
+        model.setBypass(false)
+        model.startAudioForOnboarding()
+        model.handleSessionDidBecomeActive()
+        await settleAsyncWork()
+
+        #expect(engine.startCalls.isEmpty)
+        #expect(observers.observers.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+    }
+
+    @Test
+    func renewalAfterExpiryResumesThroughTheNormalStartPath() async {
+        let running = await makeRunningModel()
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.stopCallCount == 1 && running.model.statusMessage == expiredText() }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        await waitUntil { running.observers.observers.count == 2 }
+        running.observers.observers[1].emit(.success(running.output))
+        await waitUntil { running.model.lifecycleState == .running && running.engine.startCalls.count == 2 }
+
+        #expect(running.model.isRunning)
+        #expect(running.model.licenseStatusMessage == nil)
+        #expect(running.engine.events.suffix(2) == ["stop", "start:\(running.output.uid)"])
+    }
+
+    @Test
+    func renewalDoesNotRestartAudioAfterTheUserStoppedIt() async {
+        let running = await makeRunningModel()
+
+        running.model.stop()
+        await waitUntil { running.engine.stopCallCount == 1 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 2 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        await settleAsyncWork()
+
+        #expect(running.engine.startCalls.count == 1)
+        #expect(running.observers.observers.count == 1)
+        #expect(running.model.lifecycleState == .stopped)
+    }
+
+    @Test
+    func renewalArrivingDuringTheFadeStartsOnlyAfterTheStop() async {
+        let running = await makeRunningModel { $0.deferDSPTransitionCompletion = true }
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        await waitUntil { running.engine.updateDSPCalls.count == 1 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        await settleAsyncWork()
+        #expect(running.engine.stopCallCount == 0)
+        running.engine.completeDSPTransition()
+        await waitUntil { running.observers.observers.count == 2 }
+        running.observers.observers[1].emit(.success(running.output))
+        await waitUntil { running.engine.startCalls.count == 2 }
+
+        let events = running.engine.events
+        let fade = events.firstIndex(of: "updateDSP:\(running.model.activeProfile.id)")!
+        let stop = events.firstIndex(of: "stop")!
+        let restart = events.lastIndex(of: "start:\(running.output.uid)")!
+        #expect(fade < stop && stop < restart)
+    }
+
+    @Test
+    func staleSnapshotSequencesAreIgnored() async {
+        let running = await makeRunningModel()
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 3))
+        await waitUntil { running.engine.stopCallCount == 1 && running.model.statusMessage == expiredText() }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 2))
+        await settleAsyncWork()
+
+        #expect(running.model.lifecycleState == .stopped)
+        #expect(running.observers.observers.count == 1)
+        #expect(running.model.licenseSnapshot?.sequence == 3)
+    }
+
+    @Test
+    func graceAndRecoverySnapshotsKeepProcessing() async {
+        let running = await makeRunningModel()
+
+        running.source.emit(makeLicenseSnapshot(state: .monthlyGrace, sequence: 2, expiresAt: 1_800_000_000))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 2 }
+        running.source.emit(makeLicenseSnapshot(state: .monthlyRecovery, sequence: 3))
+        await waitUntil { running.model.licenseSnapshot?.sequence == 3 }
+        await settleAsyncWork()
+
+        #expect(running.model.isRunning)
+        #expect(running.engine.updateDSPCalls.isEmpty)
+        #expect(running.engine.stopCallCount == 0)
+        #expect(running.model.licenseStatusMessage != nil)
+    }
+
+    @Test(arguments: [false, true])
+    func aRevocationPublishedBeforeTheInitialSnapshotIsNotRewound(autoStart: Bool) async {
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .monthlyActive, sequence: 1),
+            emittingBeforeReturning: makeLicenseSnapshot(state: .monthlyExpired, sequence: 2)
+        )
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            licensing: .provider(source),
+            autoStart: autoStart
+        )
+        if !autoStart {
+            model.start()
+        }
+        await waitUntil { model.licenseSnapshot != nil }
+        await settleAsyncWork()
+
+        #expect(model.licenseSnapshot?.sequence == 2)
+        #expect(model.licenseSnapshot?.content.state == .monthlyExpired)
+        #expect(engine.startCalls.isEmpty)
+        #expect(observers.observers.isEmpty)
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage == expiredText())
+    }
+
+    @Test
+    func bypassTogglesWhileUnlicensedKeepTheLicensingReason() async {
+        let engine = FakeAudioEngine()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        let model = makeModel(engine: engine, outputDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.start()
+
+        model.setBypass(true)
+        await settleAsyncWork()
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+        model.setBypass(false)
+        await settleAsyncWork()
+
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+        #expect(engine.startCalls.isEmpty)
+    }
+
+    @Test
+    func aLicenseStopBeforeSleepKeepsItsReasonAfterWake() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        let model = makeModel(outputDelay: .zero, wakeDelay: .zero, licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.start()
+
+        model.handleWillSleep()
+        #expect(model.statusMessage == localized("Paused for system sleep"))
+        model.handleDidWake()
+        await settleAsyncWork()
+
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+    }
+
+    @Test
+    func invalidConfigurationNeverStartsAndNamesTheProblem() async {
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero, licensing: .invalidConfiguration)
+
+        model.start()
+        await settleAsyncWork()
+
+        #expect(engine.startCalls.isEmpty)
+        #expect(observers.observers.isEmpty)
+        #expect(model.statusMessage == localized("This build's license configuration is invalid"))
+        #expect(model.onboardingAudioCaptureState == .failed(message: model.statusMessage))
+    }
+}
+
+private func makeLicenseSnapshot(
+    state: LicenseState,
+    sequence: UInt64 = 1,
+    billingState: MonthlyBillingState? = nil,
+    expiresAt: Int64? = nil
+) -> LicenseSnapshot {
+    let terms: MonthlyTerms? = switch state {
+    case .perpetual: nil
+    case .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded:
+        MonthlyTerms(
+            billingState: billingState ?? .active,
+            billingPeriodEnd: 0,
+            recoveryUntil: 0,
+            refreshAfter: 0,
+            expiresAt: expiresAt ?? 0
+        )
+    case .unlicensed, .invalidEntitlement, .storageUnavailable: nil
+    }
+    return LicenseSnapshot(
+        sequence: sequence,
+        content: LicenseSnapshotContent(
+            state: state,
+            terms: terms
+        )
+    )
+}
+
+private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private let initial: LicenseSnapshot
+    private var handler: (@Sendable (LicenseSnapshot) -> Void)?
+    private var gateIsOpen: Bool
+    private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var _checkpointCount = 0
+    private var _onShutdown: (@Sendable () -> Void)?
+    /// Delivered through the handler before `subscribe` returns, as a refresh that completes
+    /// while the subscriber is still resuming would be.
+    private let emittedBeforeReturning: LicenseSnapshot?
+
+    init(initial: LicenseSnapshot, gated: Bool = false, emittingBeforeReturning: LicenseSnapshot? = nil) {
+        self.initial = initial
+        gateIsOpen = !gated
+        emittedBeforeReturning = emittingBeforeReturning
+    }
+
+    var checkpointCount: Int { lock.withLock { _checkpointCount } }
+
+    var onShutdown: (@Sendable () -> Void)? {
+        get { lock.withLock { _onShutdown } }
+        set { lock.withLock { _onShutdown = newValue } }
+    }
+
+    func subscribe(_ handler: @escaping @Sendable (LicenseSnapshot) -> Void) async -> LicenseSnapshot {
+        await withCheckedContinuation { continuation in
+            let resumeNow = lock.withLock {
+                if gateIsOpen { return true }
+                gateWaiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+        lock.withLock { self.handler = handler }
+        if let emittedBeforeReturning {
+            handler(emittedBeforeReturning)
+        }
+        return initial
+    }
+
+    func release() {
+        let waiters = lock.withLock {
+            gateIsOpen = true
+            defer { gateWaiters.removeAll() }
+            return gateWaiters
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func emit(_ snapshot: LicenseSnapshot) {
+        lock.withLock { handler }?(snapshot)
+    }
+
+    func checkpoint() async {
+        lock.withLock { _checkpointCount += 1 }
+    }
+
+    func shutdown() async {
+        onShutdown?()
+    }
+}
+
+private final class StopCountRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Int?
+
+    var value: Int? { lock.withLock { _value } }
+
+    func record(_ count: Int) {
+        lock.withLock { _value = count }
     }
 }

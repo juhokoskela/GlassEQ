@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "GlassEQCore", targets: ["GlassEQCore"]),
         .library(name: "GlassEQAudio", targets: ["GlassEQAudio"]),
+        .library(name: "GlassEQLicensing", targets: ["GlassEQLicensing"]),
         .library(name: "GlassEQSettingsIPC", targets: ["GlassEQSettingsIPC"]),
         .library(name: "GlassEQSettingsUI", targets: ["GlassEQSettingsUI"]),
         .executable(name: "GlassEQ", targets: ["GlassEQApp"]),
@@ -30,6 +31,12 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("AudioToolbox")
+            ]
+        ),
+        .target(
+            name: "GlassEQLicensing",
+            linkerSettings: [
+                .linkedFramework("Security")
             ]
         ),
         .target(
@@ -67,6 +74,7 @@ let package = Package(
             dependencies: [
                 "GlassEQCore",
                 "GlassEQAudio",
+                "GlassEQLicensing",
                 "GlassEQSettingsIPC",
                 "GlassEQSettingsUI"
             ],
@@ -116,11 +124,16 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "GlassEQLicensingTests",
+            dependencies: ["GlassEQLicensing"]
+        ),
+        .testTarget(
             name: "GlassEQAppTests",
             dependencies: [
                 "GlassEQApp",
                 "GlassEQAudio",
                 "GlassEQCore",
+                "GlassEQLicensing",
                 "GlassEQSettingsIPC",
                 "GlassEQSettingsUI"
             ]

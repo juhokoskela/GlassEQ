@@ -18,6 +18,10 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
     private let storage: UnsafeMutableBufferPointer<Float>
     private let readFrame = Atomic<Int>(0)
     private let writeFrame = Atomic<Int>(0)
+    // These monotonic positions count frames committed to storage. Reads, overwrites, trims, and
+    // resets advance the read side, so a consumer can tell when a captured frame has left the ring.
+    private let nextReadFrameSequence = Atomic<UInt64>(0)
+    private let nextWriteFrameSequence = Atomic<UInt64>(0)
     private let overwriteGate = Atomic<Bool>(false)
     private let overwriteGateContentionFailures = Atomic<UInt64>(0)
 
@@ -43,7 +47,12 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         defer {
             leaveOverwriteGate()
         }
+        let read = readFrame.load(ordering: .acquiring)
         let write = writeFrame.load(ordering: .acquiring)
+        nextReadFrameSequence.wrappingAdd(
+            UInt64(occupancyFrames(read: read, write: write)),
+            ordering: .releasing
+        )
         readFrame.store(write, ordering: .releasing)
         return true
     }
@@ -92,6 +101,10 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
             droppedFrames = max(0, occupancyFrames(read: gatedRead, write: write) - retainedFrames)
             if droppedFrames > 0 {
                 readFrame.store(advance(gatedRead, by: droppedFrames), ordering: .releasing)
+                nextReadFrameSequence.wrappingAdd(
+                    UInt64(droppedFrames),
+                    ordering: .releasing
+                )
             }
         }
 
@@ -117,6 +130,7 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         }
 
         writeFrame.store(advance(write, by: framesToWrite), ordering: .releasing)
+        nextWriteFrameSequence.wrappingAdd(UInt64(framesToWrite), ordering: .releasing)
         return RingBufferWriteResult(
             writtenFrames: framesToWrite,
             droppedInputFrames: firstSourceFrame,
@@ -178,7 +192,16 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         }
 
         readFrame.store(advance(read, by: framesToRead), ordering: .releasing)
+        nextReadFrameSequence.wrappingAdd(UInt64(framesToRead), ordering: .releasing)
         return framesToRead
+    }
+
+    func nextReadSequence() -> UInt64 {
+        nextReadFrameSequence.load(ordering: .acquiring)
+    }
+
+    func nextWriteSequence() -> UInt64 {
+        nextWriteFrameSequence.load(ordering: .acquiring)
     }
 
     public func occupancyFrames() -> Int {
@@ -215,7 +238,9 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
             return true
         }
 
-        readFrame.store(advance(read, by: occupancy - targetFrames), ordering: .releasing)
+        let droppedFrames = occupancy - targetFrames
+        readFrame.store(advance(read, by: droppedFrames), ordering: .releasing)
+        nextReadFrameSequence.wrappingAdd(UInt64(droppedFrames), ordering: .releasing)
         return true
     }
 
