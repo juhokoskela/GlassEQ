@@ -111,6 +111,66 @@ struct EntitlementVerifierTests {
     }
 
     @Test
+    func separatesHeadersAFutureAppMightAcceptFromHeadersNoAppShould() throws {
+        let fixture = try EntitlementFixture()
+        let payload = fixture.perpetualPayload()
+
+        for invalidHeader in [
+            """
+            {"alg":"HS256","kid":"\(fixture.keyID)","typ":"glasseq-entitlement+jwt"}
+            """,
+            """
+            {"alg":"EdDSA","kid":"\(fixture.keyID)","typ":"JWT"}
+            """,
+            """
+            {"alg":"EdDSA","kid":"","typ":"glasseq-entitlement+jwt"}
+            """
+        ] {
+            #expect(throws: EntitlementVerificationError.invalidHeader) {
+                try fixture.verify(try fixture.sign(header: invalidHeader, payload: payload))
+            }
+        }
+
+        for malformedPlan in [
+            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\",", with: ""),
+            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\"", with: "\"plan\":1")
+        ] {
+            #expect(throws: EntitlementVerificationError.malformedClaims) {
+                try fixture.verify(try fixture.sign(payload: malformedPlan))
+            }
+        }
+    }
+
+    @Test
+    func separatesClaimsAFutureAppMightAcceptFromClaimsNoAppShould() throws {
+        let fixture = try EntitlementFixture()
+        let payload = fixture.perpetualPayload()
+
+        for future in [
+            payload.replacingOccurrences(of: "\"schema\":1", with: "\"schema\":2"),
+            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\"", with: "\"plan\":\"lifetime\""),
+            payload.replacingOccurrences(of: "\"release_scope\":\"v1\"", with: "\"release_scope\":\"v2\"")
+        ] {
+            #expect(throws: EntitlementVerificationError.unsupportedClaims) {
+                try fixture.verify(try fixture.sign(payload: future))
+            }
+        }
+
+        for invalid in [
+            payload.replacingOccurrences(of: "https://license.glasseq.app", with: "https://example.com"),
+            payload.replacingOccurrences(of: "\"aud\":\"com.glasseq.app\"", with: "\"aud\":\"com.example\""),
+            payload.replacingOccurrences(of: fixture.installationID.uuidString, with: "not-a-uuid"),
+            payload.replacingOccurrences(of: "\"revision\":7", with: "\"revision\":0"),
+            payload.replacingOccurrences(of: "\"sub\":\"lic_01\"", with: "\"sub\":\"\""),
+            payload.replacingOccurrences(of: "\"security_updates_after_expiry\":false", with: "\"security_updates_after_expiry\":true")
+        ] {
+            #expect(throws: EntitlementVerificationError.invalidClaims) {
+                try fixture.verify(try fixture.sign(payload: invalid))
+            }
+        }
+    }
+
+    @Test
     func rejectsMismatchedInstallationAndStaleRevision() throws {
         let fixture = try EntitlementFixture()
         let token = try fixture.sign(payload: fixture.monthlyPayload())

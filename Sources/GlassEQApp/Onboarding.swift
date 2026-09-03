@@ -88,14 +88,23 @@ final class LaunchAtLoginModel {
 
 enum OnboardingStep: Int, CaseIterable {
     case welcome
+    case license
     case audioCapture
     case preferences
     case done
+
+    /// Source builds have no licensing, so they skip the activation step. Everything else keeps
+    /// its order.
+    static func sequence(includingLicense: Bool) -> [OnboardingStep] {
+        allCases.filter { includingLicense || $0 != .license }
+    }
 
     var title: String {
         switch self {
         case .welcome:
             localized("Welcome to GlassEQ")
+        case .license:
+            localized("Activate GlassEQ")
         case .audioCapture:
             localized("Let GlassEQ hear what you hear")
         case .preferences:
@@ -105,12 +114,18 @@ enum OnboardingStep: Int, CaseIterable {
         }
     }
 
-    var previous: OnboardingStep {
-        OnboardingStep(rawValue: rawValue - 1) ?? .welcome
+    func previous(in steps: [OnboardingStep]) -> OnboardingStep {
+        guard let index = steps.firstIndex(of: self), index > 0 else {
+            return self
+        }
+        return steps[index - 1]
     }
 
-    var next: OnboardingStep {
-        OnboardingStep(rawValue: rawValue + 1) ?? .done
+    func next(in steps: [OnboardingStep]) -> OnboardingStep {
+        guard let index = steps.firstIndex(of: self), index < steps.count - 1 else {
+            return self
+        }
+        return steps[index + 1]
     }
 }
 
@@ -132,13 +147,17 @@ struct OnboardingView: View {
 
     static let width: CGFloat = 560
 
+    private var steps: [OnboardingStep] {
+        OnboardingStep.sequence(includingLicense: model.onboardingLicenseState != nil)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Every step sits in one paging strip, so going back reverses the motion and the strip
             // follows the layout direction instead of a hand-computed offset.
             ScrollView(.horizontal) {
                 HStack(spacing: 0) {
-                    ForEach(OnboardingStep.allCases, id: \.rawValue) { candidate in
+                    ForEach(steps, id: \.rawValue) { candidate in
                         content(for: candidate)
                             .padding(.horizontal, 36)
                             .padding(.top, 36)
@@ -158,9 +177,11 @@ struct OnboardingView: View {
 
             OnboardingFooter(
                 step: step,
+                steps: steps,
+                canSkipLicense: model.onboardingLicenseState?.isSettled == false,
                 canSkipAudioCapture: model.onboardingAudioCaptureState == .idle,
-                back: { step = step.previous },
-                advance: { step = step.next },
+                back: { step = step.previous(in: steps) },
+                advance: { step = step.next(in: steps) },
                 finish: { dismiss() }
             )
         }
@@ -177,6 +198,15 @@ struct OnboardingView: View {
         switch candidate {
         case .welcome:
             OnboardingWelcomeStep(isCurrent: step == .welcome)
+        case .license:
+            if let state = model.onboardingLicenseState {
+                OnboardingLicenseStep(
+                    state: state,
+                    isCurrent: step == .license,
+                    activate: { model.activateLicense(key: $0) },
+                    removeStoredLicense: { model.removeStoredLicense() }
+                )
+            }
         case .audioCapture:
             OnboardingAudioCaptureStep(
                 state: model.onboardingAudioCaptureState,

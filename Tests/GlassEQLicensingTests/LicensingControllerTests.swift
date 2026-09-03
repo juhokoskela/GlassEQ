@@ -127,6 +127,161 @@ struct LicensingControllerTests {
     // MARK: Activation
 
     @Test
+    func snapshotsReportWhatActivationWouldDoWithTheStoredRecord() async throws {
+        let fixture = try EntitlementFixture()
+
+        let empty = ControllerHarness(fixture: fixture)
+        #expect(await empty.controller.currentSnapshot().content.activation == .available)
+
+        let corrupt = ControllerHarness(fixture: fixture)
+        corrupt.store.activationLoadFailure = .corruptRecord
+        #expect(await corrupt.controller.currentSnapshot().content.activation == .available)
+
+        let newer = ControllerHarness(fixture: fixture)
+        newer.store.activationLoadFailure = .unsupportedSchemaVersion(2)
+        #expect(await newer.controller.currentSnapshot().content.activation == .needsAppUpdate)
+
+        let unreadable = ControllerHarness(fixture: fixture)
+        unreadable.store.loadFailure = .keychain(-1)
+        #expect(await unreadable.controller.currentSnapshot().content.activation == .storageUnavailable)
+
+        let foreign = ControllerHarness(
+            fixture: fixture,
+            activation: try fixture.monthlyActivationState(installationID: UUID())
+        )
+        let foreignSnapshot = await foreign.controller.currentSnapshot()
+        #expect(foreignSnapshot.content.state == .invalidEntitlement)
+        #expect(foreignSnapshot.content.activation == .needsRemoval)
+
+        let unknownKey = ControllerHarness(fixture: fixture, activation: ActivationState(
+            activationToken: "gea_test",
+            entitlement: try fixture.sign(
+                header: """
+                {"alg":"EdDSA","kid":"entitlement-2030-01","typ":"glasseq-entitlement+jwt"}
+                """,
+                payload: fixture.perpetualPayload()
+            ),
+            highestAcceptedRevision: 7,
+            highestTrustedTime: fixture.issuedAt
+        ))
+        let unknownKeySnapshot = await unknownKey.controller.currentSnapshot()
+        #expect(unknownKeySnapshot.content.state == .invalidEntitlement)
+        #expect(unknownKeySnapshot.content.activation == .needsAppUpdate)
+
+        let wrongIssuer = ControllerHarness(fixture: fixture, activation: ActivationState(
+            activationToken: "gea_test",
+            entitlement: try fixture.sign(payload: fixture.perpetualPayload()
+                .replacingOccurrences(of: "https://license.glasseq.app", with: "https://example.com")),
+            highestAcceptedRevision: 7,
+            highestTrustedTime: fixture.issuedAt
+        ))
+        let wrongIssuerSnapshot = await wrongIssuer.controller.currentSnapshot()
+        #expect(wrongIssuerSnapshot.content.state == .invalidEntitlement)
+        #expect(wrongIssuerSnapshot.content.activation == .needsRemoval)
+
+        let active = ControllerHarness(fixture: fixture)
+        active.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_new",
+                entitlement: try fixture.sign(payload: fixture.perpetualPayload(installationID: installationID))
+            )
+        }
+        let activated = try await active.controller.activate(licenseKey: "GEQ1-KEY")
+        #expect(activated.content.state == .perpetual)
+        #expect(activated.content.activation == .activated)
+
+        active.service.onDeactivate { _ in throw LicenseServiceError.transport(.offline) }
+        await #expect(throws: LicensingError.self) {
+            try await active.controller.deactivateCurrent()
+        }
+        let tombstoned = await active.controller.currentSnapshot()
+        #expect(tombstoned.content.state == .unlicensed)
+        #expect(tombstoned.content.activation == .releasingPreviousActivation)
+    }
+
+    @Test
+    func anExpiredRevokedRecordIsRemovableSoTheMacCanActivateAgain() async throws {
+        let fixture = try EntitlementFixture()
+        var revoked = try fixture.monthlyActivationState()
+        revoked.serviceRevokedAt = fixture.issuedAt
+        let harness = ControllerHarness(fixture: fixture, activation: revoked, wallTime: fixture.expiresAt)
+        harness.service.onDeactivate { _ in
+            throw LicenseServiceError.service(code: .invalidCredentials, retryAfterSeconds: nil)
+        }
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_new",
+                entitlement: try fixture.sign(payload: fixture.perpetualPayload(installationID: installationID))
+            )
+        }
+
+        let expired = await harness.controller.currentSnapshot()
+        #expect(expired.content.state == .monthlyExpired)
+        #expect(expired.content.activation == .revoked)
+        for _ in 0 ..< 20 { await Task.yield() }
+        #expect(harness.service.refreshCallCount == 0)
+
+        // The server no longer knows the token; that counts as released.
+        let released = try await harness.controller.deactivateCurrent()
+        #expect(released.content.activation == .available)
+
+        let activated = try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        #expect(activated.content.state == .perpetual)
+    }
+
+    @Test
+    func aCorruptIdentityKeepsTheActivationUntilItsTokenReleasesTheSlot() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        harness.store.identityLoadFailure = .corruptRecord
+        harness.service.onDeactivate { _ in }
+        harness.service.onActivate { _, installationID, _ in
+            ActivationResponse(
+                activationToken: "gea_new",
+                entitlement: try fixture.sign(payload: fixture.perpetualPayload(installationID: installationID))
+            )
+        }
+
+        let loaded = await harness.controller.currentSnapshot()
+        #expect(loaded.content.state == .invalidEntitlement)
+        #expect(loaded.content.activation == .needsRemoval)
+
+        // Activation must not replace the record and burn a second slot for the same Mac.
+        await #expect(throws: LicensingError.activationAlreadyExists) {
+            try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        }
+        #expect(harness.store.activation?.activationToken == "gea_test")
+        #expect(harness.service.calls.isEmpty)
+
+        let released = try await harness.controller.deactivateCurrent()
+        #expect(harness.service.calls == [.deactivate(activationToken: "gea_test")])
+        #expect(released.content.activation == .available)
+
+        let activated = try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        #expect(activated.content.state == .perpetual)
+        #expect(harness.store.identity != nil)
+    }
+
+    @Test
+    func operationsAreRefusedAfterShutdown() async throws {
+        let fixture = try EntitlementFixture()
+        let harness = ControllerHarness(fixture: fixture)
+        harness.service.onActivate { _, _, _ in
+            Issue.record("the service must not be called after shutdown")
+            throw LicenseServiceError.transport(.other)
+        }
+
+        await harness.controller.shutdown()
+
+        await #expect(throws: LicensingError.shutDown) {
+            try await harness.controller.activate(licenseKey: "GEQ1-KEY")
+        }
+        await #expect(throws: LicensingError.shutDown) {
+            try await harness.controller.deactivateCurrent()
+        }
+    }
+
+    @Test
     func activationCreatesTheIdentityOnceAndStoresTheEntitlement() async throws {
         let fixture = try EntitlementFixture()
         let harness = ControllerHarness(fixture: fixture, identity: false)
@@ -953,12 +1108,16 @@ struct LicensingControllerTests {
         harness.service.onDeactivate { _ in }
         _ = await harness.subscribe()
 
-        try await harness.controller.deactivateCurrent()
+        let returned = try await harness.controller.deactivateCurrent()
 
         #expect(harness.service.calls == [.deactivate(activationToken: "gea_test")])
         #expect(harness.store.activation == nil)
-        let snapshot = try #require(await harness.recorder.waitForSnapshot(state: .unlicensed))
-        #expect(snapshot.sequence == 2)
+        // The tombstone is published before the request and refuses activation; the cleared
+        // record is published after it and accepts one.
+        let published = harness.recorder.snapshots.filter { $0.content.state == .unlicensed }
+        #expect(published.map(\.sequence) == [2, 3])
+        #expect(published.map(\.content.activation) == [.releasingPreviousActivation, .available])
+        #expect(returned == published.last)
     }
 
     @Test

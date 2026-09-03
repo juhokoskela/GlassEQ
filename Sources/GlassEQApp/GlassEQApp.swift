@@ -302,20 +302,24 @@ extension AudioEngineControlling {
 
 extension SystemTapAudioEngine: AudioEngineControlling {}
 
-protocol LicenseSnapshotProviding: Sendable {
+/// The licensing owner as the app model sees it: snapshot delivery plus the user-driven
+/// operations onboarding requests. Both operations return the snapshot they published.
+protocol LicensingProviding: Sendable {
     func subscribe(_ handler: @escaping @Sendable (LicenseSnapshot) -> Void) async -> LicenseSnapshot
+    func activate(licenseKey: String) async throws(LicensingError) -> LicenseSnapshot
+    func deactivateCurrent() async throws(LicensingError) -> LicenseSnapshot
     func checkpoint() async
     func shutdown() async
 }
 
-extension LicensingController: LicenseSnapshotProviding {}
+extension LicensingController: LicensingProviding {}
 
 /// Licensing is enforced only in builds that embed entitlement public keys. A build without the
 /// key dictionary is a source build and runs unrestricted; a dictionary that is present but unusable
 /// is a packaging mistake and fails closed.
 enum LicensingSource {
     case disabled
-    case provider(any LicenseSnapshotProviding)
+    case provider(any LicensingProviding)
     case invalidConfiguration
 }
 
@@ -688,6 +692,22 @@ final class GlassEQAppModel {
     private(set) var licenseSnapshot: LicenseSnapshot?
     @ObservationIgnored private var lastAppliedLicenseSequence: UInt64 = 0
     @ObservationIgnored private var licenseStopTask: Task<Void, Never>?
+    private var licenseOperation = LicenseOperation.idle
+    private let licenseOperationCancellationGrace: Duration
+
+    /// The one user-driven licensing request that may be in flight, or how the last one ended.
+    private enum LicenseOperation {
+        case idle
+        case running(Task<Void, Never>, progress: String)
+        case failed(String)
+
+        var isRunning: Bool {
+            if case .running = self {
+                return true
+            }
+            return false
+        }
+    }
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
@@ -982,7 +1002,8 @@ final class GlassEQAppModel {
         renderWatchdogPollInterval: Duration = .milliseconds(500),
         aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
         licensing: LicensingSource = .disabled,
-        licenseStopTransitionTimeout: Duration = .milliseconds(500)
+        licenseStopTransitionTimeout: Duration = .milliseconds(500),
+        licenseOperationCancellationGrace: Duration = .seconds(3)
     ) {
         let loadResult: ProfileStoreLoadResult?
         let loadedStore: ProfileStore
@@ -1043,6 +1064,7 @@ final class GlassEQAppModel {
         self.renderWatchdogPollInterval = renderWatchdogPollInterval
         self.licensing = licensing
         self.licenseStopTransitionTimeout = licenseStopTransitionTimeout
+        self.licenseOperationCancellationGrace = licenseOperationCancellationGrace
         self.aggregateBufferNotifier = aggregateBufferNotifier
             ?? (registerAppDelegate
                 ? AggregateBufferNotifier.shared
@@ -1453,7 +1475,12 @@ final class GlassEQAppModel {
         }
         isRunning = false
         statusMessage = licenseBlockedStatusMessage()
-        if case .provider = licensing, licenseSnapshot == nil {
+        // The capture step only reports a failure for a start it asked for. A non-permitting
+        // snapshot that arrives before any start, as on a fresh launch, leaves the step untouched
+        // so activation on the preceding step is followed by the ordinary permission prompt.
+        if !hasStartedAudio {
+            onboardingAudioCaptureState = .idle
+        } else if case .provider = licensing, licenseSnapshot == nil {
             onboardingAudioCaptureState = .pending
         } else {
             onboardingAudioCaptureState = .failed(message: statusMessage)
@@ -1580,17 +1607,31 @@ final class GlassEQAppModel {
         guard let content = licenseSnapshot?.content else {
             return localized("Checking license...")
         }
+        // A permitting snapshot leaves the existing status in place.
+        return LicenseRecovery(content: content)?.statusMessage ?? statusMessage
+    }
+
+    /// One line describing any license state, whether or not it permits processing.
+    private func licenseSummary(for content: LicenseSnapshotContent) -> String {
         switch content.state {
-        case .unlicensed:
-            return localized("Activate a license to start processing")
+        case .perpetual:
+            localized("Perpetual license. Every v1 update is included.")
+        case .monthlyActive:
+            localized("Monthly subscription, active.")
+        case .monthlyRecovery:
+            recoveryStatusMessage(terms: content.terms)
+        case .monthlyGrace:
+            graceStatusMessage(terms: content.terms)
+        case .verificationNeeded:
+            verificationNeededStatusMessage
         case .monthlyExpired:
-            return localized("Subscription ended. GlassEQ has returned to unprocessed playback.")
+            localized("Subscription ended. GlassEQ has returned to unprocessed playback.")
+        case .unlicensed:
+            localized("Activate a license to start processing")
         case .invalidEntitlement:
-            return localized("The stored license is invalid. Activate again to continue.")
+            localized("The stored license is invalid.")
         case .storageUnavailable:
-            return localized("The license could not be read from Keychain")
-        case .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .verificationNeeded:
-            return statusMessage
+            localized("The license could not be read from Keychain.")
         }
     }
 
@@ -1602,24 +1643,155 @@ final class GlassEQAppModel {
         }
         switch content.state {
         case .monthlyRecovery:
-            // Only an authenticated recovering state may say a payment failed.
-            if content.terms?.billingState == .recovering {
-                return localized("Payment needs attention. Update your payment details to keep processing.")
-            }
-            return localized("Subscription renewal could not be verified yet")
+            return recoveryStatusMessage(terms: content.terms)
         case .monthlyGrace:
-            guard let terms = content.terms else {
-                return localized("Subscription ended. Processing stops soon.")
-            }
-            let deadline = Date(timeIntervalSince1970: TimeInterval(terms.expiresAt))
-                .formatted(date: .abbreviated, time: .shortened)
-            return localized("Subscription ended. Processing stops on \(deadline).")
+            return graceStatusMessage(terms: content.terms)
         case .verificationNeeded:
-            return localized("License could not be verified. Processing continues under the cached license.")
+            return verificationNeededStatusMessage
         case .perpetual, .monthlyActive, .unlicensed, .monthlyExpired, .invalidEntitlement,
              .storageUnavailable:
             return nil
         }
+    }
+
+    private func recoveryStatusMessage(terms: MonthlyTerms?) -> String {
+        // Only an authenticated recovering state may say a payment failed.
+        if terms?.billingState == .recovering {
+            return localized("Payment needs attention. Update your payment details to keep processing.")
+        }
+        return localized("Subscription renewal could not be verified yet")
+    }
+
+    private func graceStatusMessage(terms: MonthlyTerms?) -> String {
+        guard let terms else {
+            return localized("Subscription ended. Processing stops soon.")
+        }
+        let deadline = Date(timeIntervalSince1970: TimeInterval(terms.expiresAt))
+            .formatted(date: .abbreviated, time: .shortened)
+        return localized("Subscription ended. Processing stops on \(deadline).")
+    }
+
+    private var verificationNeededStatusMessage: String {
+        localized("License could not be verified. Processing continues under the cached license.")
+    }
+
+    /// Nil in source builds, which have no licensing and no activation step. Otherwise the step's
+    /// state, derived from the build's configuration, the snapshot's recovery, and the user-driven
+    /// operation in flight.
+    var onboardingLicenseState: OnboardingLicenseState? {
+        switch licensing {
+        case .disabled:
+            return nil
+        case .invalidConfiguration:
+            return .unavailable(
+                message: localized("This build's license configuration is invalid, so it can't be activated."),
+                failure: nil
+            )
+        case .provider:
+            break
+        }
+        var failure: String?
+        switch licenseOperation {
+        case let .running(_, progress):
+            return .working(progress)
+        case let .failed(message):
+            failure = message
+        case .idle:
+            break
+        }
+        guard let content = licenseSnapshot?.content else {
+            return .checking
+        }
+        switch LicenseRecovery(content: content) {
+        case let .activate(notice)?:
+            return .awaitingKey(notice: notice, failure: failure)
+        case let .remove(notice)?:
+            return .replaceable(notice: notice, failure: failure)
+        case let .wait(message)?:
+            return .unavailable(message: message, failure: failure)
+        case .renew?:
+            return .expired(
+                detail: localized("Renew the subscription, then relaunch GlassEQ. To use a different license instead, remove this one first. Your profiles are kept either way."),
+                failure: failure
+            )
+        case nil:
+            return .activated(detail: licenseSummary(for: content))
+        }
+    }
+
+    /// Onboarding's activation step. The controller owns the request and the Keychain write; the
+    /// model only tracks the operation in flight and the last failure for display.
+    func activateLicense(key: String) {
+        let licenseKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !licenseKey.isEmpty else {
+            guard case .provider = licensing, !licenseOperation.isRunning else {
+                return
+            }
+            licenseOperation = .failed(LicenseOperationFailureMessage.text(
+                for: LicensingError.service(.invalidLicenseKey)
+            ))
+            return
+        }
+        runLicenseOperation(progress: localized("Activating…")) { (provider) async throws(LicensingError) in
+            try await provider.activate(licenseKey: licenseKey)
+        }
+    }
+
+    /// Releases a stored record the controller cannot verify, so a key can be activated again.
+    func removeStoredLicense() {
+        runLicenseOperation(progress: localized("Removing the stored license…")) { (provider) async throws(LicensingError) in
+            try await provider.deactivateCurrent()
+        }
+    }
+
+    /// Nothing starts once termination has begun: the drain in `cleanupForTerminationAndWait` runs
+    /// once, and the controller refuses work after `shutdown()` anyway.
+    private func runLicenseOperation(
+        progress: String,
+        _ operation: @escaping @Sendable (any LicensingProviding) async throws(LicensingError) -> LicenseSnapshot
+    ) {
+        guard case let .provider(provider) = licensing,
+              !licenseOperation.isRunning,
+              lifecycleState != .terminating else {
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            let outcome: Result<LicenseSnapshot, LicensingError>
+            do throws(LicensingError) {
+                outcome = .success(try await operation(provider))
+            } catch {
+                outcome = .failure(error)
+            }
+            guard let self else {
+                return
+            }
+            switch outcome {
+            case let .success(snapshot):
+                licenseOperation = .idle
+                applyLicenseSnapshot(snapshot)
+            case let .failure(error):
+                licenseOperation = .failed(LicenseOperationFailureMessage.text(for: error))
+            }
+            notifyModelDidChange()
+        }
+        licenseOperation = .running(task, progress: progress)
+    }
+
+    /// A request still in flight at quit gets a grace period to finish, so a server-side
+    /// activation is persisted locally before the process exits. After it the request is
+    /// cancelled and the wait continues until the controller observes the cancellation, which is
+    /// cooperative; the controller then persists nothing, and re-activating the same installation
+    /// later does not consume another slot.
+    private func finishLicenseOperationBeforeTermination() async {
+        guard case let .running(task, _) = licenseOperation else {
+            return
+        }
+        let grace = Task { [licenseOperationCancellationGrace] in
+            try await Task.sleep(for: licenseOperationCancellationGrace)
+            task.cancel()
+        }
+        await task.value
+        grace.cancel()
     }
 
     func requestOnboardingPresentation() {
@@ -4451,6 +4623,7 @@ final class GlassEQAppModel {
         // never delay the return to dry playback.
         let stopTask = enqueueEngineStop()
         if case let .provider(provider) = licensing {
+            await finishLicenseOperationBeforeTermination()
             await provider.checkpoint()
         }
         _ = await stopTask.value

@@ -5568,6 +5568,7 @@ private func makeModel(
     aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
     licensing: LicensingSource = .disabled,
     licenseStopTransitionTimeout: Duration = .milliseconds(500),
+    licenseOperationCancellationGrace: Duration = .seconds(3),
     autoStart: Bool = false
 ) -> GlassEQAppModel {
     let store = normalizedStore(store ?? ProfileStore(profiles: [makeProfile(name: "Fallback")]))
@@ -5596,7 +5597,8 @@ private func makeModel(
         renderWatchdogPollInterval: renderWatchdogPollInterval,
         aggregateBufferNotifier: aggregateBufferNotifier,
         licensing: licensing,
-        licenseStopTransitionTimeout: licenseStopTransitionTimeout
+        licenseStopTransitionTimeout: licenseStopTransitionTimeout,
+        licenseOperationCancellationGrace: licenseOperationCancellationGrace
     )
 }
 
@@ -7496,7 +7498,8 @@ private func makeLicenseSnapshot(
     state: LicenseState,
     sequence: UInt64 = 1,
     billingState: MonthlyBillingState? = nil,
-    expiresAt: Int64? = nil
+    expiresAt: Int64? = nil,
+    activation: ActivationAvailability? = nil
 ) -> LicenseSnapshot {
     let terms: MonthlyTerms? = switch state {
     case .perpetual: nil
@@ -7514,17 +7517,32 @@ private func makeLicenseSnapshot(
         sequence: sequence,
         content: LicenseSnapshotContent(
             state: state,
-            terms: terms
+            terms: terms,
+            activation: activation ?? defaultAvailability(for: state)
         )
     )
 }
 
-private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchecked Sendable {
+private func defaultAvailability(for state: LicenseState) -> ActivationAvailability {
+    switch state {
+    case .unlicensed, .invalidEntitlement: .available
+    case .storageUnavailable: .storageUnavailable
+    case .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded: .activated
+    }
+}
+
+private final class FakeLicenseSnapshotSource: LicensingProviding, @unchecked Sendable {
     private let lock = NSLock()
     private let initial: LicenseSnapshot
     private var handler: (@Sendable (LicenseSnapshot) -> Void)?
     private var gateIsOpen: Bool
     private var gateWaiters: [CheckedContinuation<Void, Never>] = []
+    private var operationGateIsOpen = true
+    private var operationWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+    private var _activationResult: Result<LicenseSnapshot, LicensingError> = .failure(.service(.transport(.other)))
+    private var _deactivationResult: Result<LicenseSnapshot, LicensingError> = .failure(.service(.transport(.other)))
+    private var _activatedKeys: [String] = []
+    private var _deactivationCount = 0
     private var _checkpointCount = 0
     private var _onShutdown: (@Sendable () -> Void)?
     /// Delivered through the handler before `subscribe` returns, as a refresh that completes
@@ -7538,10 +7556,23 @@ private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchec
     }
 
     var checkpointCount: Int { lock.withLock { _checkpointCount } }
+    var activatedKeys: [String] { lock.withLock { _activatedKeys } }
+    var deactivationCount: Int { lock.withLock { _deactivationCount } }
 
     var onShutdown: (@Sendable () -> Void)? {
         get { lock.withLock { _onShutdown } }
         set { lock.withLock { _onShutdown = newValue } }
+    }
+
+    /// What `activate` does once released: return the snapshot after publishing it, or throw.
+    var activationResult: Result<LicenseSnapshot, LicensingError> {
+        get { lock.withLock { _activationResult } }
+        set { lock.withLock { _activationResult = newValue } }
+    }
+
+    var deactivationResult: Result<LicenseSnapshot, LicensingError> {
+        get { lock.withLock { _deactivationResult } }
+        set { lock.withLock { _deactivationResult = newValue } }
     }
 
     func subscribe(_ handler: @escaping @Sendable (LicenseSnapshot) -> Void) async -> LicenseSnapshot {
@@ -7573,6 +7604,66 @@ private final class FakeLicenseSnapshotSource: LicenseSnapshotProviding, @unchec
         lock.withLock { handler }?(snapshot)
     }
 
+    /// Holds every operation until `releaseOperations()`. A held operation still honours task
+    /// cancellation, like the controller's network call does.
+    func holdOperations() {
+        lock.withLock { operationGateIsOpen = false }
+    }
+
+    func releaseOperations() {
+        let waiters = lock.withLock {
+            operationGateIsOpen = true
+            defer { operationWaiters.removeAll() }
+            return Array(operationWaiters.values)
+        }
+        waiters.forEach { $0.resume() }
+    }
+
+    func activate(licenseKey: String) async throws(LicensingError) -> LicenseSnapshot {
+        lock.withLock { _activatedKeys.append(licenseKey) }
+        try await waitForOperationGate()
+        return try complete(activationResult)
+    }
+
+    func deactivateCurrent() async throws(LicensingError) -> LicenseSnapshot {
+        lock.withLock { _deactivationCount += 1 }
+        try await waitForOperationGate()
+        return try complete(deactivationResult)
+    }
+
+    private func waitForOperationGate() async throws(LicensingError) {
+        let id = UUID()
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    let resumeNow = lock.withLock {
+                        if operationGateIsOpen { return true }
+                        operationWaiters[id] = continuation
+                        return false
+                    }
+                    if resumeNow { continuation.resume() }
+                }
+            } onCancel: {
+                let waiter = lock.withLock { operationWaiters.removeValue(forKey: id) }
+                waiter?.resume(throwing: LicensingError.service(.cancelled))
+            }
+        } catch {
+            // The only error the gate resumes with is the cancellation above.
+            throw LicensingError.service(.cancelled)
+        }
+    }
+
+    private func complete(_ result: Result<LicenseSnapshot, LicensingError>) throws(LicensingError) -> LicenseSnapshot {
+        switch result {
+        case .success(let snapshot):
+            // Like the controller: the handler fires from inside the request, before it returns.
+            emit(snapshot)
+            return snapshot
+        case .failure(let error):
+            throw error
+        }
+    }
+
     func checkpoint() async {
         lock.withLock { _checkpointCount += 1 }
     }
@@ -7590,5 +7681,370 @@ private final class StopCountRecorder: @unchecked Sendable {
 
     func record(_ count: Int) {
         lock.withLock { _value = count }
+    }
+}
+
+@MainActor
+@Suite
+struct LicenseActivationOnboardingTests {
+    private func limitMessage() -> String {
+        LicenseOperationFailureMessage.text(
+            for: LicensingError.service(.service(code: .activationLimit, retryAfterSeconds: nil))
+        )
+    }
+
+    @Test
+    func sourceBuildsHaveNoActivationStep() {
+        let model = makeModel()
+
+        #expect(model.onboardingLicenseState == nil)
+    }
+
+    @Test
+    func anInvalidPackagedConfigurationShowsAnUnavailableStep() {
+        let model = makeModel(licensing: .invalidConfiguration)
+
+        guard case let .unavailable(message, nil)? = model.onboardingLicenseState else {
+            Issue.record("expected an unavailable step, got \(String(describing: model.onboardingLicenseState))")
+            return
+        }
+        #expect(message.contains("configuration is invalid"))
+
+        model.activateLicense(key: "GEQ1-KEY")
+        #expect(model.onboardingLicenseState?.isSettled == false)
+    }
+
+    @Test
+    func theStepChecksUntilTheFirstSnapshotThenAsksForAKey() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed), gated: true)
+        let model = makeModel(licensing: .provider(source))
+
+        #expect(model.onboardingLicenseState == .checking)
+
+        source.release()
+        await waitUntil { model.licenseSnapshot != nil }
+
+        #expect(model.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil))
+    }
+
+    @Test
+    func aMalformedStoredRecordCarriesANoticeButStillTakesAKey() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .available))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        #expect(model.onboardingLicenseState == .awaitingKey(
+            notice: localized("The stored license is invalid. Activate again to continue."),
+            failure: nil
+        ))
+    }
+
+    @Test
+    func anUnusableRecordOffersRemovalInsteadOfAKeyForm() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .needsRemoval))
+        source.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        guard case .replaceable(_, nil)? = model.onboardingLicenseState else {
+            Issue.record("expected the removal offer, got \(String(describing: model.onboardingLicenseState))")
+            return
+        }
+
+        model.removeStoredLicense()
+        await waitUntil { model.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil) }
+
+        #expect(source.deactivationCount == 1)
+        #expect(source.activatedKeys.isEmpty)
+    }
+
+    @Test
+    func recordsThatNeedANewerAppAreNotOfferedForRemoval() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .needsAppUpdate))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        guard case let .unavailable(message, nil)? = model.onboardingLicenseState else {
+            Issue.record("expected no action, got \(String(describing: model.onboardingLicenseState))")
+            return
+        }
+        #expect(message.contains("newer version"))
+    }
+
+    @Test
+    func expiryOffersRenewalUnlessTheSlotWasReleasedElsewhere() async {
+        let expired = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyExpired))
+        let revoked = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyExpired, activation: .revoked))
+        revoked.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
+        let expiredModel = makeModel(licensing: .provider(expired))
+        let revokedModel = makeModel(licensing: .provider(revoked))
+        await waitUntil { expiredModel.licenseSnapshot != nil && revokedModel.licenseSnapshot != nil }
+
+        guard case let .expired(detail, nil)? = expiredModel.onboardingLicenseState else {
+            Issue.record("expected the renewal state, got \(String(describing: expiredModel.onboardingLicenseState))")
+            return
+        }
+        #expect(detail.contains("Renew"))
+        #expect(expiredModel.onboardingLicenseState?.isSettled == true)
+
+        guard case let .replaceable(notice, nil)? = revokedModel.onboardingLicenseState else {
+            Issue.record("expected the removal offer, got \(String(describing: revokedModel.onboardingLicenseState))")
+            return
+        }
+        #expect(notice.contains("released"))
+        #expect(!notice.contains("Renew"))
+
+        revokedModel.removeStoredLicense()
+        await waitUntil { revokedModel.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil) }
+        #expect(revoked.deactivationCount == 1)
+
+        // An ordinary expired record can also make way for a different key.
+        expired.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
+        expiredModel.removeStoredLicense()
+        await waitUntil { expiredModel.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil) }
+    }
+
+    @Test
+    func aPendingReleaseAndAnUnreadableKeychainShowNoForm() async {
+        let releasing = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed, activation: .releasingPreviousActivation))
+        let unreadable = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .storageUnavailable))
+        let releasingModel = makeModel(licensing: .provider(releasing))
+        let unreadableModel = makeModel(licensing: .provider(unreadable))
+        await waitUntil { releasingModel.licenseSnapshot != nil && unreadableModel.licenseSnapshot != nil }
+
+        guard case let .unavailable(releasingMessage, nil)? = releasingModel.onboardingLicenseState,
+              case let .unavailable(unreadableMessage, nil)? = unreadableModel.onboardingLicenseState else {
+            Issue.record("expected both to hide the key form")
+            return
+        }
+        #expect(releasingMessage.contains("released"))
+        #expect(unreadableMessage.contains("Keychain"))
+    }
+
+    @Test
+    func theMenuBarStatusNamesTheSameRecoveryAsTheStep() async {
+        let cases: [(ActivationAvailability, LicenseState)] = [
+            (.available, .unlicensed),
+            (.available, .invalidEntitlement),
+            (.needsRemoval, .invalidEntitlement),
+            (.needsAppUpdate, .invalidEntitlement),
+            (.releasingPreviousActivation, .unlicensed),
+            (.storageUnavailable, .storageUnavailable),
+            (.revoked, .monthlyExpired)
+        ]
+        for (availability, state) in cases {
+            let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: state, activation: availability))
+            let model = makeModel(licensing: .provider(source))
+            await waitUntil { model.licenseSnapshot != nil }
+            model.start()
+            await settleAsyncWork()
+
+            let expected: String
+            switch model.onboardingLicenseState {
+            case let .awaitingKey(notice, _)?:
+                expected = notice ?? localized("Activate a license to start processing")
+            case let .replaceable(notice, _)?:
+                expected = notice
+            case let .unavailable(message, _)?:
+                expected = message
+            default:
+                Issue.record("unexpected step state for \(availability)")
+                continue
+            }
+            #expect(model.statusMessage == expected, "availability \(availability)")
+            #expect(!model.statusMessage.contains("Activate again") || availability == .available)
+        }
+    }
+
+    @Test
+    func successfulActivationSettlesTheStepWithTheTrimmedKey() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .perpetual, sequence: 2))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        model.activateLicense(key: "  GEQ1-TEST-KEY \n")
+        await waitUntil { model.onboardingLicenseState?.isSettled == true }
+
+        #expect(source.activatedKeys == ["GEQ1-TEST-KEY"])
+        #expect(model.licenseSnapshot?.content.state == .perpetual)
+        #expect(model.onboardingLicenseState == .activated(detail: localized("Perpetual license. Every v1 update is included.")))
+    }
+
+    @Test
+    func activationShowsProgressAndIgnoresASecondRequestWhileInFlight() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .monthlyActive, sequence: 2))
+        source.holdOperations()
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        model.activateLicense(key: "GEQ1-FIRST")
+        #expect(model.onboardingLicenseState == .working(localized("Activating…")))
+        model.activateLicense(key: "GEQ1-SECOND")
+        model.removeStoredLicense()
+        await waitUntil { source.activatedKeys.count == 1 }
+        #expect(source.activatedKeys == ["GEQ1-FIRST"])
+        #expect(source.deactivationCount == 0)
+
+        source.releaseOperations()
+        await waitUntil { model.onboardingLicenseState?.isSettled == true }
+
+        #expect(model.onboardingLicenseState == .activated(detail: localized("Monthly subscription, active.")))
+    }
+
+    @Test
+    func activationFailureKeepsTheFormAndExplainsIt() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .failure(.service(.service(code: .activationLimit, retryAfterSeconds: nil)))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        model.activateLicense(key: "GEQ1-FULL")
+        await waitUntil { model.onboardingLicenseState == .awaitingKey(notice: nil, failure: limitMessage()) }
+
+        #expect(model.licenseSnapshot?.content.state == .unlicensed)
+
+        // The next attempt clears the old explanation while it runs.
+        source.holdOperations()
+        model.activateLicense(key: "GEQ1-RETRY")
+        #expect(model.onboardingLicenseState == .working(localized("Activating…")))
+        source.releaseOperations()
+        await waitUntil { model.onboardingLicenseState == .awaitingKey(notice: nil, failure: limitMessage()) }
+    }
+
+    @Test
+    func aBlankKeyIsRejectedWithoutContactingTheService() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        model.activateLicense(key: "   ")
+
+        #expect(source.activatedKeys.isEmpty)
+        #expect(model.onboardingLicenseState == .awaitingKey(
+            notice: nil,
+            failure: LicenseOperationFailureMessage.text(for: LicensingError.service(.invalidLicenseKey))
+        ))
+    }
+
+    @Test
+    func aFreshLaunchKeepsTheCaptureStepIdleUntilAudioIsRequested() async {
+        let output = makeOutput()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .perpetual, sequence: 2))
+        let model = makeModel(
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            licensing: .provider(source)
+        )
+        await waitUntil { model.licenseSnapshot != nil }
+
+        // Nothing was requested yet, so the capture step must not claim a failure.
+        #expect(model.onboardingAudioCaptureState == .idle)
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+
+        model.activateLicense(key: "GEQ1-FRESH")
+        await waitUntil { model.onboardingLicenseState?.isSettled == true }
+        #expect(model.onboardingAudioCaptureState == .idle)
+        #expect(observers.observers.isEmpty)
+
+        model.startAudioForOnboarding()
+        #expect(model.onboardingAudioCaptureState == .pending)
+        await waitUntil { observers.observers.count == 1 }
+    }
+
+    @Test
+    func activatingAfterABlockedStartStartsProcessing() async {
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .perpetual, sequence: 2))
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            licensing: .provider(source)
+        )
+        await waitUntil { model.licenseSnapshot != nil }
+
+        // The user skipped activation and pressed Allow on the audio step first.
+        model.startAudioForOnboarding()
+        await settleAsyncWork()
+        #expect(observers.observers.isEmpty)
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+
+        model.activateLicense(key: "GEQ1-LATE")
+        await waitUntil { observers.observers.count == 1 }
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running }
+
+        #expect(engine.startCalls.count == 1)
+        #expect(model.onboardingLicenseState?.isSettled == true)
+    }
+
+    @Test
+    func quitWaitsForAnInFlightActivationToFinish() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .perpetual, sequence: 2))
+        source.holdOperations()
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.activateLicense(key: "GEQ1-QUIT")
+        await waitUntil { source.activatedKeys.count == 1 }
+
+        let finished = StopCountRecorder()
+        let cleanup = Task { @MainActor in
+            await model.cleanupForTerminationAndWait()
+            finished.record(1)
+        }
+        await settleAsyncWork()
+        #expect(finished.value == nil)
+        #expect(source.checkpointCount == 0)
+
+        source.releaseOperations()
+        await cleanup.value
+
+        #expect(model.licenseSnapshot?.content.state == .perpetual)
+        #expect(source.checkpointCount == 1)
+    }
+
+    @Test
+    func quitCancelsAnActivationThatOutlivesItsGracePeriod() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.holdOperations()
+        let model = makeModel(licensing: .provider(source), licenseOperationCancellationGrace: .milliseconds(50))
+        await waitUntil { model.licenseSnapshot != nil }
+        model.activateLicense(key: "GEQ1-SLOW")
+        await waitUntil { source.activatedKeys.count == 1 }
+
+        await model.cleanupForTerminationAndWait()
+
+        #expect(source.checkpointCount == 1)
+        #expect(model.onboardingLicenseState == .awaitingKey(
+            notice: nil,
+            failure: LicenseOperationFailureMessage.text(for: LicensingError.service(.cancelled))
+        ))
+    }
+
+    @Test
+    func nothingStartsOnceTerminationHasBegun() async {
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .perpetual, sequence: 2))
+        let model = makeModel(licensing: .provider(source))
+        await waitUntil { model.licenseSnapshot != nil }
+
+        await model.cleanupForTerminationAndWait()
+        model.activateLicense(key: "GEQ1-LATE")
+        model.removeStoredLicense()
+        await settleAsyncWork()
+
+        #expect(source.activatedKeys.isEmpty)
+        #expect(source.deactivationCount == 0)
+        #expect(model.onboardingLicenseState == .awaitingKey(notice: nil, failure: nil))
     }
 }

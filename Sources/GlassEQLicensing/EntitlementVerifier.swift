@@ -6,11 +6,21 @@ public enum EntitlementVerificationError: Error, Equatable, Sendable {
     case malformedCompactSerialization
     case invalidBase64URL
     case malformedHeader
+    /// The header carries a field this build does not know. A newer app may accept it.
     case unsupportedHeader
+    /// The header names an algorithm or type the protocol never used, or has no key ID. No app
+    /// should accept it.
+    case invalidHeader
     case unknownKeyID
     case invalidSignature
     case malformedClaims
+    /// The claim set belongs to a protocol this build does not know: an unknown schema, plan,
+    /// release scope, or key. A newer app may accept it.
     case unsupportedClaims
+    /// The claims break rules every version of the protocol shares: wrong issuer or audience, a
+    /// malformed installation ID, a nonpositive revision, empty identifiers, or an inconsistent
+    /// combination. No app should accept it.
+    case invalidClaims
     case installationMismatch
     case staleRevision
     case issuedInFuture
@@ -51,7 +61,7 @@ public struct EntitlementVerifier: Sendable {
         installationID: UUID,
         highestAcceptedRevision: Int64?,
         effectiveTime: Int64
-    ) throws -> VerifiedEntitlement {
+    ) throws(EntitlementVerificationError) -> VerifiedEntitlement {
         guard compactJWS.utf8.count <= Self.maximumTokenBytes else {
             throw EntitlementVerificationError.tokenTooLarge
         }
@@ -87,7 +97,7 @@ public struct EntitlementVerifier: Sendable {
         return VerifiedEntitlement(compactJWS: compactJWS, keyID: keyID, claims: claims)
     }
 
-    private func parseHeader(_ data: Data) throws -> String {
+    private func parseHeader(_ data: Data) throws(EntitlementVerificationError) -> String {
         let header: EntitlementHeader
         do {
             header = try decodeExactJSONObject(
@@ -104,7 +114,7 @@ public struct EntitlementVerifier: Sendable {
         guard header.algorithm == "EdDSA",
               header.type == Self.type,
               !header.keyID.isEmpty else {
-            throw EntitlementVerificationError.unsupportedHeader
+            throw EntitlementVerificationError.invalidHeader
         }
         return header.keyID
     }
@@ -114,12 +124,16 @@ public struct EntitlementVerifier: Sendable {
         installationID: UUID,
         highestAcceptedRevision: Int64?,
         effectiveTime: Int64
-    ) throws -> EntitlementClaims {
+    ) throws(EntitlementVerificationError) -> EntitlementClaims {
         let payload: EntitlementPayload
         do {
             let fields = try jsonObjectFields(data)
-            guard let rawPlan = fields["plan"] as? String,
-                  let plan = EntitlementPlan(rawValue: rawPlan) else {
+            // Every protocol version requires a string plan; only an unknown value is forward
+            // compatible.
+            guard let rawPlan = fields["plan"] as? String else {
+                throw EntitlementJSONError.malformed
+            }
+            guard let plan = EntitlementPlan(rawValue: rawPlan) else {
                 throw EntitlementJSONError.unsupportedFields
             }
             let commonKeys: Set<String> = [
@@ -141,20 +155,20 @@ public struct EntitlementVerifier: Sendable {
             throw EntitlementVerificationError.malformedClaims
         }
 
-        guard let plan = EntitlementPlan(rawValue: payload.plan) else {
+        guard let plan = EntitlementPlan(rawValue: payload.plan),
+              let releaseScope = EntitlementReleaseScope(rawValue: payload.releaseScope),
+              payload.schema == 1 else {
             throw EntitlementVerificationError.unsupportedClaims
         }
         guard let claimedInstallationID = UUID(uuidString: payload.installationID),
-              let releaseScope = EntitlementReleaseScope(rawValue: payload.releaseScope),
               payload.issuer == Self.issuer,
               payload.audience == Self.audience,
-              payload.schema == 1,
               payload.revision > 0,
               !payload.licenseID.isEmpty,
               !payload.entitlementID.isEmpty,
               !payload.activationID.isEmpty,
               payload.issuedAt >= 0 else {
-            throw EntitlementVerificationError.unsupportedClaims
+            throw EntitlementVerificationError.invalidClaims
         }
 
         guard claimedInstallationID == installationID else {
@@ -173,7 +187,7 @@ public struct EntitlementVerifier: Sendable {
         switch plan {
         case .perpetualV1:
             guard releaseScope == .v1, !payload.securityUpdatesAfterExpiry else {
-                throw EntitlementVerificationError.unsupportedClaims
+                throw EntitlementVerificationError.invalidClaims
             }
             return EntitlementClaims(
                 issuer: payload.issuer,
@@ -204,7 +218,7 @@ public struct EntitlementVerifier: Sendable {
         installationID: UUID,
         releaseScope: EntitlementReleaseScope,
         securityUpdatesAfterExpiry: Bool
-    ) throws -> EntitlementClaims {
+    ) throws(EntitlementVerificationError) -> EntitlementClaims {
         guard releaseScope == .current,
               let billingStateValue = payload.billingState,
               let billingState = MonthlyBillingState(rawValue: billingStateValue),
@@ -255,7 +269,7 @@ public struct EntitlementVerifier: Sendable {
         )
     }
 
-    private func decodeBase64URL(_ value: Substring) throws -> Data {
+    private func decodeBase64URL(_ value: Substring) throws(EntitlementVerificationError) -> Data {
         guard !value.contains("="),
               value.utf8.allSatisfy({ byte in
                   (0x41 ... 0x5A).contains(byte)
