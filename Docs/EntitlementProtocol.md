@@ -115,7 +115,7 @@ The verifier rejects `crit`, unknown header fields, an unknown key ID, another a
 | `release_scope` | `v1` for perpetual v1, `current` for monthly |
 | `security_updates_after_expiry` | Whether an expired monthly installation may use the security feed |
 
-The client accepts `iat` up to five minutes ahead of its effective local time. A larger difference reports that the Mac's date and time may be slow. It rejects a revision lower than the highest revision stored for the activation. Unknown schema versions, plans, release scopes, missing claims, unknown claims, and inconsistent claim combinations fail closed.
+The client accepts `iat` up to five minutes ahead of its effective local time. A larger difference reports that the Mac's date and time may be slow. It rejects a revision lower than the highest revision stored for the activation. Unknown schema versions, plans, release scopes, missing claims, unknown claims, and inconsistent claim combinations fail closed. The client keeps the first three apart from the rest: a claim set it does not know may belong to a newer protocol and is left for a newer app, while claims that break rules every version shares mark the record as unusable on this Mac.
 
 Perpetual entitlements set `security_updates_after_expiry` to false because they do not expire. Monthly entitlements set it according to the published security-update policy. This claim controls feed selection only. The download service always decides eligibility from current server state.
 

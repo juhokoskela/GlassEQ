@@ -168,6 +168,17 @@ struct LicensingControllerTests {
         #expect(unknownKeySnapshot.content.state == .invalidEntitlement)
         #expect(unknownKeySnapshot.content.activation == .needsAppUpdate)
 
+        let wrongIssuer = ControllerHarness(fixture: fixture, activation: ActivationState(
+            activationToken: "gea_test",
+            entitlement: try fixture.sign(payload: fixture.perpetualPayload()
+                .replacingOccurrences(of: "https://license.glasseq.app", with: "https://example.com")),
+            highestAcceptedRevision: 7,
+            highestTrustedTime: fixture.issuedAt
+        ))
+        let wrongIssuerSnapshot = await wrongIssuer.controller.currentSnapshot()
+        #expect(wrongIssuerSnapshot.content.state == .invalidEntitlement)
+        #expect(wrongIssuerSnapshot.content.activation == .needsRemoval)
+
         let active = ControllerHarness(fixture: fixture)
         active.service.onActivate { _, installationID, _ in
             ActivationResponse(

@@ -561,8 +561,8 @@ public actor LicensingController {
         case .unknownKeyID, .unsupportedHeader, .unsupportedClaims:
             .needsAppUpdate
         case .tokenTooLarge, .malformedCompactSerialization, .invalidBase64URL, .malformedHeader,
-             .invalidSignature, .malformedClaims, .installationMismatch, .staleRevision,
-             .issuedInFuture, .invalidTimeline:
+             .invalidSignature, .malformedClaims, .invalidClaims, .installationMismatch,
+             .staleRevision, .issuedInFuture, .invalidTimeline:
             .needsRemoval
         }
     }
