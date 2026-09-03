@@ -4,6 +4,28 @@ import Testing
 @testable import GlassEQApp
 
 @Suite
+struct OnboardingStepSequenceTests {
+    @Test
+    func licensedBuildsActivateBeforeAudioCapture() {
+        #expect(OnboardingStep.sequence(includingLicense: true) == [.welcome, .license, .audioCapture, .preferences, .done])
+        #expect(OnboardingStep.sequence(includingLicense: false) == [.welcome, .audioCapture, .preferences, .done])
+    }
+
+    @Test
+    func navigationFollowsTheSequenceAndClampsAtTheEnds() {
+        let licensed = OnboardingStep.sequence(includingLicense: true)
+        let unlicensed = OnboardingStep.sequence(includingLicense: false)
+
+        #expect(OnboardingStep.welcome.next(in: licensed) == .license)
+        #expect(OnboardingStep.welcome.next(in: unlicensed) == .audioCapture)
+        #expect(OnboardingStep.audioCapture.previous(in: licensed) == .license)
+        #expect(OnboardingStep.audioCapture.previous(in: unlicensed) == .welcome)
+        #expect(OnboardingStep.welcome.previous(in: licensed) == .welcome)
+        #expect(OnboardingStep.done.next(in: licensed) == .done)
+    }
+}
+
+@Suite
 struct LicenseOperationFailureMessageTests {
     private static let everyError: [LicensingError] = [
         .operationInProgress,

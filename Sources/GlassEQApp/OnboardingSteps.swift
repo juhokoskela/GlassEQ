@@ -64,6 +64,204 @@ private struct OnboardingMenuBarHint: View {
     }
 }
 
+struct OnboardingLicenseStep: View {
+    let state: OnboardingLicenseState
+    let isCurrent: Bool
+    let activate: (String) -> Void
+    let removeStoredLicense: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 18) {
+            OnboardingStepIcon(systemName: "key", tint: .accentColor)
+            Text(OnboardingStep.license.title)
+                .font(.title.weight(.bold))
+                .accessibilityAddTraits(.isHeader)
+            Text(localized("The official build needs a license. Enter the key from your purchase email to activate this Mac. One license covers two Macs at a time."))
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                OnboardingPromiseRow(systemName: "number", text: localized("GlassEQ sends the key and a random installation ID. No device names or hardware identifiers."))
+                OnboardingPromiseRow(systemName: "key.slash", text: localized("The key is not kept on this Mac. Save it in your password manager."))
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.macOSControlBackground, in: .rect(cornerRadius: 12))
+
+            OnboardingLicenseStatus(
+                state: state,
+                isCurrent: isCurrent,
+                activate: activate,
+                removeStoredLicense: removeStoredLicense
+            )
+            .frame(maxWidth: .infinity)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: state)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct OnboardingLicenseStatus: View {
+    let state: OnboardingLicenseState
+    let isCurrent: Bool
+    let activate: (String) -> Void
+    let removeStoredLicense: () -> Void
+    // The key is also the management credential, so it is masked by default and dropped once
+    // the step settles.
+    @State private var licenseKey = ""
+    @State private var keyIsRevealed = false
+    @State private var isConfirmingRemoval = false
+
+    private var keyIsBlank: Bool {
+        licenseKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        content
+            .onChange(of: state.isSettled) {
+                if state.isSettled {
+                    licenseKey = ""
+                    keyIsRevealed = false
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch state {
+        case .checking:
+            OnboardingLicenseProgress(text: localized("Checking this Mac's license…"))
+        case .awaitingKey(let notice, let failure):
+            VStack(spacing: 10) {
+                if let notice {
+                    OnboardingLicenseNote(text: notice)
+                }
+                HStack(spacing: 10) {
+                    Group {
+                        if keyIsRevealed {
+                            TextField(localized("License key"), text: $licenseKey, prompt: Text(verbatim: "GEQ1-…"))
+                                .autocorrectionDisabled()
+                        } else {
+                            SecureField(localized("License key"), text: $licenseKey, prompt: Text(verbatim: "GEQ1-…"))
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body.monospaced())
+                    .controlSize(.large)
+                    .accessibilityLabel(Text(localized("License key")))
+                    Button {
+                        keyIsRevealed.toggle()
+                    } label: {
+                        Image(systemName: keyIsRevealed ? "eye.slash" : "eye")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(Text(keyIsRevealed ? localized("Hide license key") : localized("Show license key")))
+                    Button(localized("Activate")) {
+                        activate(licenseKey)
+                    }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(keyIsBlank)
+                        // Only the visible step may own Return; the strip keeps the other steps mounted.
+                        .keyboardShortcut(isCurrent ? .defaultAction : nil)
+                        .accessibilityHint(Text(localized("Registers this Mac with the licensing service")))
+                }
+                if let failure {
+                    OnboardingLicenseNote(text: failure)
+                }
+            }
+        case .replaceable(let notice, let failure):
+            VStack(spacing: 10) {
+                OnboardingLicenseNote(text: notice)
+                // Deliberately not the default action: this drops local authority and releases
+                // the server slot, so it takes a click and a confirmation.
+                Button(localized("Remove Stored License"), role: .destructive) {
+                    isConfirmingRemoval = true
+                }
+                .controlSize(.large)
+                .confirmationDialog(
+                    localized("Remove the stored license from this Mac?"),
+                    isPresented: $isConfirmingRemoval,
+                    titleVisibility: .visible
+                ) {
+                    Button(localized("Remove License"), role: .destructive, action: removeStoredLicense)
+                } message: {
+                    Text(localized("This Mac stops being licensed right away, and its place on the license is released so another Mac can use it. You can activate a key again afterwards."))
+                }
+                if let failure {
+                    OnboardingLicenseNote(text: failure)
+                }
+            }
+        case .unavailable(let message, let failure):
+            VStack(spacing: 10) {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let failure {
+                    OnboardingLicenseNote(text: failure)
+                }
+            }
+        case .working(let text):
+            OnboardingLicenseProgress(text: text)
+        case .activated(let detail):
+            VStack(spacing: 6) {
+                Label(localized("This Mac is activated."), systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(Color.macOSSystemGreen)
+                    .font(.body.weight(.medium))
+                    .symbolEffect(.bounce, options: .nonRepeating, value: state)
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .transition(.scale(scale: 0.9).combined(with: .opacity))
+        case .expired(let detail):
+            VStack(spacing: 6) {
+                Label(localized("This Mac's subscription has ended."), systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Color.macOSSystemOrange)
+                    .font(.body.weight(.medium))
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct OnboardingLicenseProgress: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text(text)
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct OnboardingLicenseNote: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(Color.macOSSystemOrange)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 struct OnboardingAudioCaptureStep: View {
     let state: OnboardingAudioCaptureState
     let isCurrent: Bool
@@ -308,6 +506,8 @@ struct OnboardingDoneStep: View {
 
 struct OnboardingFooter: View {
     let step: OnboardingStep
+    let steps: [OnboardingStep]
+    let canSkipLicense: Bool
     let canSkipAudioCapture: Bool
     let back: () -> Void
     let advance: () -> Void
@@ -315,7 +515,7 @@ struct OnboardingFooter: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            OnboardingStepIndicator(step: step)
+            OnboardingStepIndicator(step: step, steps: steps)
             HStack {
                 if step != .welcome {
                     Button(localized("Back"), action: back)
@@ -326,7 +526,7 @@ struct OnboardingFooter: View {
                     Button(localized("Finish"), action: finish)
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
-                case .audioCapture where canSkipAudioCapture:
+                case .license where canSkipLicense, .audioCapture where canSkipAudioCapture:
                     Button(localized("Skip for Now"), action: advance)
                 default:
                     Button(localized("Continue"), action: advance)
@@ -342,11 +542,12 @@ struct OnboardingFooter: View {
 
 struct OnboardingStepIndicator: View {
     let step: OnboardingStep
+    let steps: [OnboardingStep]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(OnboardingStep.allCases, id: \.rawValue) { candidate in
+            ForEach(steps, id: \.rawValue) { candidate in
                 Capsule()
                     .fill(candidate == step ? Color.accentColor : Color.primary.opacity(0.15))
                     .frame(width: candidate == step ? 18 : 6, height: 6)
@@ -354,7 +555,7 @@ struct OnboardingStepIndicator: View {
         }
         .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: step)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(localized("Step \(step.rawValue + 1) of \(OnboardingStep.allCases.count)")))
+        .accessibilityLabel(Text(localized("Step \((steps.firstIndex(of: step) ?? 0) + 1) of \(steps.count)")))
     }
 }
 
