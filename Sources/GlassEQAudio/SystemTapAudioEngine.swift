@@ -1602,7 +1602,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     incomingPreampGains: incomingSystemSoundPreampGains(),
                     transition: transitionResult
                 )
-                finishDSPTransition(transitionResult)
                 if systemSoundSaturated > 0 {
                     saturatedSamples.wrappingAdd(
                         systemSoundSaturated,
@@ -1635,6 +1634,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     destinationRightChannel: channelPair.right,
                     to: outputBuffers
                 )
+                finishDSPTransition(transitionResult)
             }
             #if DEBUG
             if !freezePlayedFramesForTesting.load(ordering: .relaxed) {
@@ -2052,11 +2052,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
-            completedDSPTransitions.store(box.transitionID, ordering: .releasing)
+            let transitionID = box.transitionID
             box.retiredProcessor = result.retiredProcessor
             box.secondRetiredProcessor = result.secondRetiredProcessor
             activeSystemSoundPreampGains = box.systemSoundPreampGains
             pushRetiredDSPConfigBox(rawPointer)
+            completedDSPTransitions.store(transitionID, ordering: .releasing)
         }
 
         private func selectedProgrammeComparisonBranch() -> EQProgrammeComparisonSelection {
