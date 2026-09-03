@@ -1185,13 +1185,13 @@ struct LicensingControllerTests {
         _ = await harness.subscribe()
 
         harness.advance(seconds: 100)
-        _ = await harness.controller.currentSnapshot()
         #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt)
 
         harness.wall.time = fixture.issuedAt - TrustedTimeState.rollbackToleranceSeconds - 1
         _ = await harness.controller.currentSnapshot()
 
         #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt + 100)
+        #expect(harness.store.activation?.clockAnomalyDetectedAt == fixture.issuedAt + 100)
     }
 
     @Test

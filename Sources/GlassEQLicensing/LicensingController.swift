@@ -470,6 +470,8 @@ public actor LicensingController {
     /// larger than the tolerance. A rollback requests a refresh; it never expires anything.
     private func observeTime() -> Int64 {
         let wall = wallClock()
+        let effective = trustedTime.effectiveTime(wallClock: wall, now: clock.now())
+        trustedTime.advance(to: effective)
         if detectsRollback(wallClock: wall),
            case var .state(state) = activation,
            state.deactivationRequestedAt == nil,
@@ -479,8 +481,6 @@ public actor LicensingController {
             refreshRetry.reset()
             persist(state)
         }
-        let effective = trustedTime.effectiveTime(wallClock: wall, now: clock.now())
-        trustedTime.advance(to: effective)
         return effective
     }
 
