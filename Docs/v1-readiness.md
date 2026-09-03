@@ -85,7 +85,7 @@ License verification must run outside the realtime path. It must not make Core A
 - [ ] Explain that GlassEQ lives in the menu bar and show where to find it.
 - [ ] Explain system audio capture before asking macOS for permission.
 - [ ] Handle permission granted, denied, dismissed, and later revoked.
-- [ ] Activate or restore a license.
+- [x] Activate or restore a license.
 - [ ] Offer Launch at Login through `SMAppService.mainApp`.
 - [ ] Confirm the current output and active profile.
 - [ ] Show a clear success state after GlassEQ starts processing.
