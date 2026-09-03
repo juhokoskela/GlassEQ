@@ -1475,7 +1475,12 @@ final class GlassEQAppModel {
         }
         isRunning = false
         statusMessage = licenseBlockedStatusMessage()
-        if case .provider = licensing, licenseSnapshot == nil {
+        // The capture step only reports a failure for a start it asked for. A non-permitting
+        // snapshot that arrives before any start, as on a fresh launch, leaves the step untouched
+        // so activation on the preceding step is followed by the ordinary permission prompt.
+        if !hasStartedAudio {
+            onboardingAudioCaptureState = .idle
+        } else if case .provider = licensing, licenseSnapshot == nil {
             onboardingAudioCaptureState = .pending
         } else {
             onboardingAudioCaptureState = .failed(message: statusMessage)

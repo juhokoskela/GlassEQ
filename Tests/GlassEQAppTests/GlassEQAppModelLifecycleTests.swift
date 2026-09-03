@@ -7929,6 +7929,34 @@ struct LicenseActivationOnboardingTests {
     }
 
     @Test
+    func aFreshLaunchKeepsTheCaptureStepIdleUntilAudioIsRequested() async {
+        let output = makeOutput()
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
+        source.activationResult = .success(makeLicenseSnapshot(state: .perpetual, sequence: 2))
+        let model = makeModel(
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero,
+            licensing: .provider(source)
+        )
+        await waitUntil { model.licenseSnapshot != nil }
+
+        // Nothing was requested yet, so the capture step must not claim a failure.
+        #expect(model.onboardingAudioCaptureState == .idle)
+        #expect(model.statusMessage == localized("Activate a license to start processing"))
+
+        model.activateLicense(key: "GEQ1-FRESH")
+        await waitUntil { model.onboardingLicenseState?.isSettled == true }
+        #expect(model.onboardingAudioCaptureState == .idle)
+        #expect(observers.observers.isEmpty)
+
+        model.startAudioForOnboarding()
+        #expect(model.onboardingAudioCaptureState == .pending)
+        await waitUntil { observers.observers.count == 1 }
+    }
+
+    @Test
     func activatingAfterABlockedStartStartsProcessing() async {
         let output = makeOutput()
         let engine = FakeAudioEngine()
