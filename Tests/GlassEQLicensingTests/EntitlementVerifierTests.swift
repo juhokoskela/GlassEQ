@@ -111,6 +111,37 @@ struct EntitlementVerifierTests {
     }
 
     @Test
+    func separatesHeadersAFutureAppMightAcceptFromHeadersNoAppShould() throws {
+        let fixture = try EntitlementFixture()
+        let payload = fixture.perpetualPayload()
+
+        for invalidHeader in [
+            """
+            {"alg":"HS256","kid":"\(fixture.keyID)","typ":"glasseq-entitlement+jwt"}
+            """,
+            """
+            {"alg":"EdDSA","kid":"\(fixture.keyID)","typ":"JWT"}
+            """,
+            """
+            {"alg":"EdDSA","kid":"","typ":"glasseq-entitlement+jwt"}
+            """
+        ] {
+            #expect(throws: EntitlementVerificationError.invalidHeader) {
+                try fixture.verify(try fixture.sign(header: invalidHeader, payload: payload))
+            }
+        }
+
+        for malformedPlan in [
+            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\",", with: ""),
+            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\"", with: "\"plan\":1")
+        ] {
+            #expect(throws: EntitlementVerificationError.malformedClaims) {
+                try fixture.verify(try fixture.sign(payload: malformedPlan))
+            }
+        }
+    }
+
+    @Test
     func separatesClaimsAFutureAppMightAcceptFromClaimsNoAppShould() throws {
         let fixture = try EntitlementFixture()
         let payload = fixture.perpetualPayload()

@@ -35,6 +35,7 @@ struct LicenseOperationFailureMessageTests {
         .entitlement(.issuedInFuture),
         .entitlement(.invalidSignature),
         .entitlement(.invalidClaims),
+        .entitlement(.invalidHeader),
         .service(.invalidLicenseKey),
         .service(.service(code: .invalidCredentials, retryAfterSeconds: nil)),
         .service(.service(code: .activationLimit, retryAfterSeconds: nil)),

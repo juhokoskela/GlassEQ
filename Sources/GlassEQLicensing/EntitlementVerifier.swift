@@ -6,7 +6,11 @@ public enum EntitlementVerificationError: Error, Equatable, Sendable {
     case malformedCompactSerialization
     case invalidBase64URL
     case malformedHeader
+    /// The header carries a field this build does not know. A newer app may accept it.
     case unsupportedHeader
+    /// The header names an algorithm or type the protocol never used, or has no key ID. No app
+    /// should accept it.
+    case invalidHeader
     case unknownKeyID
     case invalidSignature
     case malformedClaims
@@ -110,7 +114,7 @@ public struct EntitlementVerifier: Sendable {
         guard header.algorithm == "EdDSA",
               header.type == Self.type,
               !header.keyID.isEmpty else {
-            throw EntitlementVerificationError.unsupportedHeader
+            throw EntitlementVerificationError.invalidHeader
         }
         return header.keyID
     }
@@ -124,8 +128,12 @@ public struct EntitlementVerifier: Sendable {
         let payload: EntitlementPayload
         do {
             let fields = try jsonObjectFields(data)
-            guard let rawPlan = fields["plan"] as? String,
-                  let plan = EntitlementPlan(rawValue: rawPlan) else {
+            // Every protocol version requires a string plan; only an unknown value is forward
+            // compatible.
+            guard let rawPlan = fields["plan"] as? String else {
+                throw EntitlementJSONError.malformed
+            }
+            guard let plan = EntitlementPlan(rawValue: rawPlan) else {
                 throw EntitlementJSONError.unsupportedFields
             }
             let commonKeys: Set<String> = [
