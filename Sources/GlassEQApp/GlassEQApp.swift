@@ -1241,7 +1241,7 @@ final class GlassEQAppModel {
         guard let activeAggregateRoute else {
             return SettingsAggregateBufferDTO()
         }
-        let selection = aggregateBufferPolicyStore.selection(for: activeAggregateRoute)
+        let selection = aggregateBufferSelection(for: activeAggregateRoute)
         let activeAutomaticFrameSize = selection.mode == .automatic
             && lifecycleState == .running
             && currentOutputBufferFrameSize > 0
@@ -1250,6 +1250,7 @@ final class GlassEQAppModel {
         return SettingsAggregateBufferDTO(
             mode: selection.mode,
             automaticFrameSize: activeAutomaticFrameSize,
+            defaultFrameSize: AggregateBufferPolicyStore.defaultFrameSize(isBluetooth: currentOutputIsBluetooth),
             isAvailable: lifecycleState == .running
                 && isRunning
                 && engineStartTask == nil
@@ -1275,11 +1276,13 @@ final class GlassEQAppModel {
             32
         case .frames64:
             64
+        case .frames128:
+            128
         }
         let selectedBufferIsSafer = switch buffer.mode {
         case .automatic:
-            buffer.automaticFrameSize > 16
-        case .frames16, .frames32, .frames64:
+            buffer.automaticFrameSize > buffer.defaultFrameSize
+        case .frames16, .frames32, .frames64, .frames128:
             currentOutputBufferFrameSize > selectedFrameSize
         }
         let isUsingSaferBuffer = buffer.isAvailable && selectedBufferIsSafer
@@ -1835,6 +1838,7 @@ final class GlassEQAppModel {
         if !wasComplete, GlassEQAppDelegate.model === self {
             AggregateBufferNotifier.shared.start()
         }
+        notifyBluetoothBufferDefaultIfNeeded()
     }
 
     private func startObserver(sendInitialValue: Bool) {
@@ -2760,6 +2764,7 @@ final class GlassEQAppModel {
     }
 
     private func refreshCurrentOutputMetadata(from output: AudioOutputDevice) {
+        diagnosticsTransportType = output.transportType
         currentOutputName = output.name
         currentOutputUID = output.uid
         currentOutputSampleRate = output.nominalSampleRate
@@ -2779,7 +2784,6 @@ final class GlassEQAppModel {
         switch result {
         case .success(let output):
             diagnosticsObservedDeviceSampleRate = output.nominalSampleRate
-            diagnosticsTransportType = output.transportType
             lastHandledDefaultOutputConfiguration = DefaultOutputConfiguration(output)
             refreshCurrentOutputMetadata(from: output)
             activeProfile = profileStore.profile(forOutputUID: output.uid)
@@ -2860,6 +2864,7 @@ final class GlassEQAppModel {
             attempted: attemptedRollback
         )
         let confirmedEngineProfileState = confirmedEngineProfileState
+        let bufferSelections = aggregateBufferPolicyStore.selectionSnapshot()
         let workTask = engineWorkExecutor.enqueue(priority: .userInitiated) {
             Self.performEngineWork(
                 work,
@@ -2867,7 +2872,8 @@ final class GlassEQAppModel {
                 failedAttempt: failedAttempt,
                 confirmedState: confirmedEngineProfileState,
                 engine: engine,
-                defaultOutputLookup: defaultOutputLookup
+                defaultOutputLookup: defaultOutputLookup,
+                bufferSelections: bufferSelections
             )
         }
 
@@ -2894,8 +2900,8 @@ final class GlassEQAppModel {
     ) {
         let route = try? engine.aggregateRouteFingerprint(for: output)
         let frameSize = requestedFrameSize
-            ?? route.map { aggregateBufferFrameSize(for: $0) }
-            ?? 16
+            ?? route.map { aggregateBufferFrameSize(for: $0, isBluetooth: output.isBluetoothTransport) }
+            ?? AggregateBufferPolicyStore.defaultFrameSize(isBluetooth: output.isBluetoothTransport)
         scheduleEngineWork(.start(
             output: output,
             profile: profile,
@@ -2905,10 +2911,26 @@ final class GlassEQAppModel {
         ))
     }
 
+    private var currentOutputIsBluetooth: Bool {
+        diagnosticsTransportType == kAudioDeviceTransportTypeBluetooth
+            || diagnosticsTransportType == kAudioDeviceTransportTypeBluetoothLE
+    }
+
+    private func aggregateBufferSelection(
+        for route: AggregateAudioRouteFingerprint,
+        isBluetooth: Bool? = nil
+    ) -> AggregateBufferSelection {
+        aggregateBufferPolicyStore.selection(
+            for: route,
+            isBluetooth: isBluetooth ?? currentOutputIsBluetooth
+        )
+    }
+
     private func aggregateBufferFrameSize(
-        for route: AggregateAudioRouteFingerprint
+        for route: AggregateAudioRouteFingerprint,
+        isBluetooth: Bool
     ) -> UInt32 {
-        let selection = aggregateBufferPolicyStore.selection(for: route)
+        let selection = aggregateBufferSelection(for: route, isBluetooth: isBluetooth)
         guard selection.mode != .automatic,
               let fixedBufferRecovery,
               fixedBufferRecovery.route == route,
@@ -3091,7 +3113,8 @@ final class GlassEQAppModel {
         failedAttempt: FailedEngineProfileAttempt,
         confirmedState: ConfirmedEngineProfileState,
         engine: any AudioEngineControlling,
-        defaultOutputLookup: any DefaultOutputLookingUp
+        defaultOutputLookup: any DefaultOutputLookingUp,
+        bufferSelections: [AggregateAudioRouteFingerprint: AggregateBufferSelection]
     ) -> EngineWorkResult {
         var attemptedOutput: AudioOutputDevice?
         do {
@@ -3172,6 +3195,15 @@ final class GlassEQAppModel {
                         confirmedState.recordCancelledAttempt(failedAttempt)
                         return .cancelled
                     }
+                    let route = try? engine.aggregateRouteFingerprint(for: defaultOutput)
+                    let selection = route.flatMap { bufferSelections[$0] }
+                    let defaultFrameSize = AggregateBufferPolicyStore.defaultFrameSize(
+                        isBluetooth: defaultOutput.isBluetoothTransport
+                    )
+                    let frameSize = selection.map {
+                        $0.mode == .automatic ? max($0.frameSize, defaultFrameSize) : $0.frameSize
+                    } ?? defaultFrameSize
+                    engine.setPreferredAggregateBufferFrameSize(frameSize)
                     try engine.start(output: defaultOutput, profile: profile)
                     if case .running(let activeOutput) = engine.state {
                         output = activeOutput
@@ -3233,6 +3265,15 @@ final class GlassEQAppModel {
         scheduleEngineStop(updateMetrics: lifecycleState == .stopped)
     }
 
+    private func notifyBluetoothBufferDefaultIfNeeded() {
+        guard OnboardingState.isComplete,
+              lifecycleState == .running,
+              currentOutputIsBluetooth else {
+            return
+        }
+        aggregateBufferNotifier.notifyBluetoothBufferDefault()
+    }
+
     private func completeEngineWork(_ result: EngineWorkResult, generation: Int) {
         guard generation == engineStartGeneration,
               lifecycleState != .terminating,
@@ -3256,6 +3297,7 @@ final class GlassEQAppModel {
             wasRunningBeforeSleep = false
             statusMessage = runningEngineStatusMessage(for: output)
             completePendingAggregateBufferIncreaseIfNeeded(output: output)
+            notifyBluetoothBufferDefaultIfNeeded()
             startAggregateStabilityMonitoring()
             startColdStartupAggregatePromotionIfNeeded()
             startHeadsetAggregatePromotionIfNeeded()
@@ -3276,6 +3318,7 @@ final class GlassEQAppModel {
             wakeReconnectAttempts = 0
             wasRunningBeforeSleep = false
             pendingAggregateBufferIncrease = nil
+            notifyBluetoothBufferDefaultIfNeeded()
             startAggregateStabilityMonitoring()
             startColdStartupAggregatePromotionIfNeeded()
             startHeadsetAggregatePromotionIfNeeded()
@@ -3336,7 +3379,7 @@ final class GlassEQAppModel {
         guard let fixedBufferRecovery else {
             return
         }
-        let selection = aggregateBufferPolicyStore.selection(for: fixedBufferRecovery.route)
+        let selection = aggregateBufferSelection(for: fixedBufferRecovery.route)
         if activeAggregateRoute != fixedBufferRecovery.route
             || selection.mode == .automatic
             || selection.frameSize != fixedBufferRecovery.preferredFrameSize {
@@ -3350,7 +3393,7 @@ final class GlassEQAppModel {
         guard let route = activeAggregateRoute else {
             return
         }
-        let selection = aggregateBufferPolicyStore.selection(for: route)
+        let selection = aggregateBufferSelection(for: route)
         let engineGeneration = engineStartGeneration
         let outputGeneration = outputChangeGeneration
         let settlingDelay = aggregateStabilitySettlingDelay
@@ -3690,7 +3733,7 @@ final class GlassEQAppModel {
               case .running(let output) = engine.state else {
             return false
         }
-        let selection = aggregateBufferPolicyStore.selection(for: route)
+        let selection = aggregateBufferSelection(for: route)
         guard selection.mode != .automatic else {
             return false
         }
@@ -3760,7 +3803,7 @@ final class GlassEQAppModel {
             isRunning = false
             renderWatchdog.pause()
             statusMessage = localized(
-                "64-frame processing missed audio deadlines again, so GlassEQ stopped processing. Retry the audio engine when ready."
+                "\(recovery.session.runtimeFrameSize)-frame processing missed audio deadlines again, so GlassEQ stopped processing. Retry the audio engine when ready."
             )
             onboardingAudioCaptureState = .failed(message: statusMessage)
             notifyModelDidChange()
@@ -3794,11 +3837,12 @@ final class GlassEQAppModel {
             )
             return true
         }
-        let previousFrameSize = aggregateBufferPolicyStore.selection(for: route).frameSize
+        let previousFrameSize = aggregateBufferSelection(for: route).frameSize
         do {
             guard let nextFrameSize = try aggregateBufferPolicyStore
                 .recordAutomaticFailure(
                     for: route,
+                    isBluetooth: output.isBluetoothTransport,
                     occurrences: occurrences
                 ) else {
                 return false
@@ -3841,7 +3885,7 @@ final class GlassEQAppModel {
         }
         do {
             guard let nextFrameSize = try aggregateBufferPolicyStore
-                .recordCleanAutomaticSession(for: route) else {
+                .recordCleanAutomaticSession(for: route, isBluetooth: output.isBluetoothTransport) else {
                 return false
             }
             pendingAggregateBufferIncrease = nil
@@ -3896,7 +3940,7 @@ final class GlassEQAppModel {
                 frameSize: pendingAggregateBufferIncrease.newFrameSize
             )
         case .fixedTemporaryIncrease:
-            let preferredFrameSize = aggregateBufferPolicyStore.selection(
+            let preferredFrameSize = aggregateBufferSelection(
                 for: pendingAggregateBufferIncrease.route
             ).frameSize
             aggregateBufferNotifier.notifyTemporaryBufferIncrease(
@@ -4209,7 +4253,7 @@ final class GlassEQAppModel {
         }
         fixedBufferRecovery = nil
         try aggregateBufferPolicyStore.setMode(mode, for: activeAggregateRoute)
-        let selection = aggregateBufferPolicyStore.selection(for: activeAggregateRoute)
+        let selection = aggregateBufferSelection(for: activeAggregateRoute)
         pendingAggregateBufferIncrease = nil
         statusMessage = localized(
             "Rebuilding \(output.name) with \(selection.frameSize)-frame buffers..."
@@ -4234,17 +4278,21 @@ final class GlassEQAppModel {
             )
         }
         fixedBufferRecovery = nil
-        try aggregateBufferPolicyStore.retryAutomaticBuffer(for: activeAggregateRoute)
+        try aggregateBufferPolicyStore.retryAutomaticBuffer(
+            for: activeAggregateRoute,
+            isBluetooth: output.isBluetoothTransport
+        )
+        let frameSize = aggregateBufferSelection(for: activeAggregateRoute).frameSize
         pendingAggregateBufferIncrease = nil
         statusMessage = localized(
-            "Retrying 16-frame buffers on \(output.name)..."
+            "Retrying \(frameSize)-frame buffers on \(output.name)..."
         )
         notifyModelDidChange()
         scheduleEngineStart(
             output: output,
             profile: activeProfile,
             rollback: nil,
-            aggregateBufferFrameSize: 16
+            aggregateBufferFrameSize: frameSize
         )
     }
 
@@ -4404,9 +4452,10 @@ final class GlassEQAppModel {
         switch action {
         case .restart:
             recordAutomaticRecovery(.renderStall)
-            let frameSize = activeAggregateRoute.map {
-                aggregateBufferFrameSize(for: $0)
-            } ?? 16
+            let route = activeAggregateRoute ?? (try? engine.aggregateRouteFingerprint(for: output))
+            let frameSize = route.map {
+                aggregateBufferFrameSize(for: $0, isBluetooth: output.isBluetoothTransport)
+            } ?? AggregateBufferPolicyStore.defaultFrameSize(isBluetooth: output.isBluetoothTransport)
             statusMessage = localized(
                 "Audio rendering stalled; rebuilding \(output.name)..."
             )

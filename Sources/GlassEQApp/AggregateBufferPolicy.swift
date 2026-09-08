@@ -99,11 +99,15 @@ final class AggregateBufferPolicyStore {
             .appendingPathComponent("aggregate-buffer-policy.json")
     }
 
-    func selection(for route: AggregateAudioRouteFingerprint) -> AggregateBufferSelection {
+    func selection(
+        for route: AggregateAudioRouteFingerprint,
+        isBluetooth: Bool = false
+    ) -> AggregateBufferSelection {
         let record = record(for: route)
         let mode = record?.mode ?? .automatic
-        let automaticFrameSize = Self.validatedAutomaticFrameSize(
-            record?.automaticFrameSize ?? 16
+        let automaticFrameSize = max(
+            Self.validatedAutomaticFrameSize(record?.automaticFrameSize ?? 16),
+            Self.defaultFrameSize(isBluetooth: isBluetooth)
         )
         let frameSize: UInt32 = switch mode {
         case .automatic:
@@ -114,12 +118,22 @@ final class AggregateBufferPolicyStore {
             32
         case .frames64:
             64
+        case .frames128:
+            128
         }
         return AggregateBufferSelection(
             mode: mode,
             frameSize: frameSize,
             automaticFrameSize: automaticFrameSize
         )
+    }
+
+    func selectionSnapshot() -> [AggregateAudioRouteFingerprint: AggregateBufferSelection] {
+        var snapshot: [AggregateAudioRouteFingerprint: AggregateBufferSelection] = [:]
+        for record in records {
+            snapshot[record.route] = selection(for: record.route)
+        }
+        return snapshot
     }
 
     func setMode(
@@ -140,6 +154,7 @@ final class AggregateBufferPolicyStore {
     @discardableResult
     func recordAutomaticFailure(
         for route: AggregateAudioRouteFingerprint,
+        isBluetooth: Bool = false,
         occurrences: UInt64 = 1,
         at now: Date = Date()
     ) throws -> UInt32? {
@@ -168,7 +183,7 @@ final class AggregateBufferPolicyStore {
             record.failureWindowStartedAt = nil
             record.failureCount = 0
             guard let nextFrameSize = Self.nextAutomaticFrameSize(
-                after: record.automaticFrameSize
+                after: max(record.automaticFrameSize, Self.defaultFrameSize(isBluetooth: isBluetooth))
             ) else {
                 return
             }
@@ -180,11 +195,12 @@ final class AggregateBufferPolicyStore {
 
     @discardableResult
     func recordCleanAutomaticSession(
-        for route: AggregateAudioRouteFingerprint
+        for route: AggregateAudioRouteFingerprint,
+        isBluetooth: Bool = false
     ) throws -> UInt32? {
-        let selection = selection(for: route)
+        let selection = selection(for: route, isBluetooth: isBluetooth)
         guard selection.mode == .automatic,
-              selection.automaticFrameSize > 16 else {
+              selection.automaticFrameSize > Self.defaultFrameSize(isBluetooth: isBluetooth) else {
             return nil
         }
         var resultingFrameSize: UInt32?
@@ -205,10 +221,13 @@ final class AggregateBufferPolicyStore {
         return resultingFrameSize
     }
 
-    func retryAutomaticBuffer(for route: AggregateAudioRouteFingerprint) throws {
+    func retryAutomaticBuffer(
+        for route: AggregateAudioRouteFingerprint,
+        isBluetooth: Bool = false
+    ) throws {
         try update(route: route) { record in
             record.mode = .automatic
-            record.automaticFrameSize = 16
+            record.automaticFrameSize = Self.defaultFrameSize(isBluetooth: isBluetooth)
             record.failureWindowStartedAt = nil
             record.failureCount = 0
             record.cleanSessionCount = 0
@@ -299,7 +318,7 @@ final class AggregateBufferPolicyStore {
         }
         return document.records.compactMap { record in
             guard record.route.isValid,
-                  [16, 32, 64].contains(record.automaticFrameSize) else {
+                  [16, 32, 64, 128].contains(record.automaticFrameSize) else {
                 return nil
             }
             var record = record
@@ -334,8 +353,12 @@ final class AggregateBufferPolicyStore {
         return data
     }
 
+    nonisolated static func defaultFrameSize(isBluetooth: Bool) -> UInt32 {
+        isBluetooth ? 64 : 16
+    }
+
     private static func validatedAutomaticFrameSize(_ frameSize: UInt32) -> UInt32 {
-        [16, 32, 64].contains(frameSize) ? frameSize : 16
+        [16, 32, 64, 128].contains(frameSize) ? frameSize : 16
     }
 
     private static func nextAutomaticFrameSize(after frameSize: UInt32) -> UInt32? {
@@ -344,6 +367,8 @@ final class AggregateBufferPolicyStore {
             32
         case 32..<64:
             64
+        case 64..<128:
+            128
         default:
             nil
         }
@@ -351,7 +376,9 @@ final class AggregateBufferPolicyStore {
 
     private static func previousAutomaticFrameSize(before frameSize: UInt32) -> UInt32? {
         switch frameSize {
-        case 64...:
+        case 128...:
+            64
+        case 64..<128:
             32
         case 32..<64:
             16

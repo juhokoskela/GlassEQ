@@ -510,7 +510,7 @@ struct SettingsIPCTests {
                 sessionToken: "token",
                 id: "buffer-mode",
                 kind: .command,
-                command: .setAggregateBufferMode(.frames64)
+                command: .setAggregateBufferMode(.frames128)
             ),
             SettingsPipeMessage.request(
                 sessionToken: "token",
@@ -659,6 +659,23 @@ struct SettingsIPCTests {
         )
 
         #expect(decoded == SettingsAggregateBufferDTO())
+    }
+
+    @Test
+    func bluetoothBufferSnapshotRoundTripsWithItsDefaultAndFixedChoice() throws {
+        let snapshot = SettingsAggregateBufferDTO(
+            mode: .frames128,
+            automaticFrameSize: 128,
+            defaultFrameSize: 64,
+            isAvailable: true
+        )
+        let data = try JSONEncoder().encode(snapshot)
+        #expect(try JSONDecoder().decode(SettingsAggregateBufferDTO.self, from: data) == snapshot)
+        let legacy = Data(#"{"mode":"frames16","automaticFrameSize":32,"isAvailable":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(SettingsAggregateBufferDTO.self, from: legacy)
+        #expect(decoded.mode == .frames16)
+        #expect(decoded.automaticFrameSize == 32)
+        #expect(decoded.defaultFrameSize == 16)
     }
 
     @Test

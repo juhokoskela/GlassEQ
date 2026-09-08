@@ -12,6 +12,8 @@ extension SettingsAggregateBufferMode {
             32
         case .frames64:
             64
+        case .frames128:
+            128
         }
     }
 }
@@ -45,6 +47,7 @@ struct OutputTab: View {
                         Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
                         Text(localized("32 frames")).tag(SettingsAggregateBufferMode.frames32)
                         Text(localized("64 frames")).tag(SettingsAggregateBufferMode.frames64)
+                        Text(localized("128 frames")).tag(SettingsAggregateBufferMode.frames128)
                     }
                     .labelsHidden()
                     .disabled(!snapshot.aggregateBuffer.isAvailable)
@@ -55,8 +58,8 @@ struct OutputTab: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     if snapshot.aggregateBuffer.mode == .automatic,
-                       snapshot.aggregateBuffer.automaticFrameSize > 16 {
-                        Button(localized("Retry 16 Frames")) {
+                       snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize {
+                        Button(localized("Retry \(snapshot.aggregateBuffer.defaultFrameSize) Frames")) {
                             controller.retryAutomaticAggregateBuffer()
                         }
                         .controlSize(.large)
@@ -190,7 +193,7 @@ struct OutputTab: View {
         }
         if snapshot.aggregateBuffer.mode == .automatic {
             return localized(
-                "Automatic uses the smallest buffer proven reliable for this device stream and sample rate. It is currently \(snapshot.aggregateBuffer.automaticFrameSize) frames."
+                "Automatic starts at \(snapshot.aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions. It is currently \(snapshot.aggregateBuffer.automaticFrameSize) frames."
             )
         }
         if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
