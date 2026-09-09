@@ -89,6 +89,9 @@ struct FixedBufferRecoverySession: Sendable {
         case 32..<64:
             runtimeFrameSize = 64
             return .temporarilyIncrease(frameSize: 64)
+        case 64..<128:
+            runtimeFrameSize = 128
+            return .temporarilyIncrease(frameSize: 128)
         default:
             return .stop
         }

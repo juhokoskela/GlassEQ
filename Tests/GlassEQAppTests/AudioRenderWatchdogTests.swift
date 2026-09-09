@@ -346,7 +346,10 @@ struct AudioRenderWatchdogTests {
         let fourth = recovery.observeFailure(
             at: start.advanced(by: .seconds(30))
         )
-        #expect(fourth == .stop)
+        #expect(fourth == .temporarilyIncrease(frameSize: 128))
+        #expect(recovery.runtimeFrameSize == 128)
+        let fifth = recovery.observeFailure(at: start.advanced(by: .seconds(40)))
+        #expect(fifth == .stop)
     }
 
     @Test

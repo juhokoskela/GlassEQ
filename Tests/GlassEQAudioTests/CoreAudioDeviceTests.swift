@@ -576,7 +576,10 @@ struct CoreAudioDeviceTests {
         ) == [32, 32, 64])
         #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
             requestedFrameSize: 64
-        ) == [64, 64])
+        ) == [64, 64, 128])
+        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
+            requestedFrameSize: 128
+        ) == [128, 128])
     }
 
     @Test

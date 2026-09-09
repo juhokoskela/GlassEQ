@@ -45,6 +45,7 @@ public enum SettingsAggregateBufferMode: String, CaseIterable, Codable, Identifi
     case frames16
     case frames32
     case frames64
+    case frames128
 
     public var id: String { rawValue }
 }
@@ -56,21 +57,25 @@ public enum SettingsSection: String, Codable, Equatable, Sendable {
 public struct SettingsAggregateBufferDTO: Codable, Equatable, Sendable {
     public var mode: SettingsAggregateBufferMode
     public var automaticFrameSize: UInt32
+    public var defaultFrameSize: UInt32
     public var isAvailable: Bool
 
     public init(
         mode: SettingsAggregateBufferMode = .automatic,
         automaticFrameSize: UInt32 = 16,
+        defaultFrameSize: UInt32 = 16,
         isAvailable: Bool = false
     ) {
         self.mode = mode
         self.automaticFrameSize = automaticFrameSize
+        self.defaultFrameSize = defaultFrameSize
         self.isAvailable = isAvailable
     }
 
     private enum CodingKeys: String, CodingKey {
         case mode
         case automaticFrameSize
+        case defaultFrameSize
         case isAvailable
     }
 
@@ -84,6 +89,9 @@ public struct SettingsAggregateBufferDTO: Codable, Equatable, Sendable {
             automaticFrameSize: try container.decodeIfPresent(
                 UInt32.self,
                 forKey: .automaticFrameSize
+            ) ?? 16,
+            defaultFrameSize: try container.decodeIfPresent(
+                UInt32.self, forKey: .defaultFrameSize
             ) ?? 16,
             isAvailable: try container.decodeIfPresent(
                 Bool.self,

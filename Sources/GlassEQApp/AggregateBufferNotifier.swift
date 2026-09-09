@@ -9,6 +9,7 @@ private extension Notification.Name {
 
 @MainActor
 protocol AggregateBufferChangeNotifying: AnyObject {
+    func notifyBluetoothBufferDefault()
     func notifyBufferIncrease(
         outputName: String,
         previousFrameSize: UInt32,
@@ -34,14 +35,31 @@ final class AggregateBufferNotifier: NSObject,
     private nonisolated static let categoryIdentifier = "GLASSEQ_BUFFER_RELIABILITY"
     private nonisolated static let openActionIdentifier = "GLASSEQ_OPEN_OUTPUT_SETTINGS"
 
+    private static let bluetoothNoticeDefaultsKey = "hasShownBluetoothBufferNotice"
+
+    private let defaults: UserDefaults
+    private let deliverNotification: @MainActor (UNNotificationRequest) async throws -> Bool
+    private var authorizationTask: Task<Void, Never>?
+    private(set) var bluetoothNotificationTask: Task<Void, Never>?
+
+    init(
+        defaults: UserDefaults = .standard,
+        deliverNotification: @escaping @MainActor (UNNotificationRequest) async throws -> Bool =
+            AggregateBufferNotifier.deliverAuthorizedNotification
+    ) {
+        self.defaults = defaults
+        self.deliverNotification = deliverNotification
+        super.init()
+    }
+
     func start() {
-        guard Self.canUseUserNotifications() else {
+        guard authorizationTask == nil, Self.canUseUserNotifications() else {
             return
         }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.setNotificationCategories([Self.notificationCategory()])
-        Task {
+        authorizationTask = Task {
             let settings = await center.notificationSettings()
             if settings.authorizationStatus == .notDetermined {
                 _ = try? await center.requestAuthorization(options: [.alert])
@@ -64,6 +82,27 @@ final class AggregateBufferNotifier: NSObject,
             actions: [openAction],
             intentIdentifiers: []
         )
+    }
+
+    func notifyBluetoothBufferDefault() {
+        guard !defaults.bool(forKey: Self.bluetoothNoticeDefaultsKey),
+              bluetoothNotificationTask == nil else {
+            return
+        }
+        bluetoothNotificationTask = Task {
+            defer { bluetoothNotificationTask = nil }
+            await authorizationTask?.value
+            let request = Self.notificationRequest(
+                identifier: "glasseq-bluetooth-buffer-default",
+                title: localized("Smoother Bluetooth playback"),
+                body: localized(
+                    "Automatic uses a larger buffer for smoother playback. Customize it in Output settings."
+                )
+            )
+            if (try? await deliverNotification(request)) == true {
+                defaults.set(true, forKey: Self.bluetoothNoticeDefaultsKey)
+            }
+        }
     }
 
     func notifyBufferIncrease(
@@ -105,28 +144,42 @@ final class AggregateBufferNotifier: NSObject,
     }
 
     private func notify(title: String, body: String) {
-        guard Self.canUseUserNotifications() else {
-            return
+        Task {
+            await authorizationTask?.value
+            _ = try? await deliverNotification(Self.notificationRequest(
+                identifier: "glasseq-buffer-recovery-\(UUID().uuidString)",
+                title: title,
+                body: body
+            ))
+        }
+    }
+
+    private static func notificationRequest(
+        identifier: String,
+        title: String,
+        body: String
+    ) -> UNNotificationRequest {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.categoryIdentifier = Self.categoryIdentifier
+        return UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+    }
+
+    private static func deliverAuthorizedNotification(
+        _ request: UNNotificationRequest
+    ) async throws -> Bool {
+        guard canUseUserNotifications() else {
+            return false
         }
         let center = UNUserNotificationCenter.current()
-        Task {
-            let settings = await center.notificationSettings()
-            guard settings.authorizationStatus == .authorized
-                    || settings.authorizationStatus == .provisional else {
-                return
-            }
-            let content = UNMutableNotificationContent()
-            content.title = title
-            content.body = body
-            content.categoryIdentifier = Self.categoryIdentifier
-            try? await center.add(
-                UNNotificationRequest(
-                    identifier: "glasseq-buffer-recovery-\(UUID().uuidString)",
-                    content: content,
-                    trigger: nil
-                )
-            )
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional else {
+            return false
         }
+        try await center.add(request)
+        return true
     }
 
     nonisolated func userNotificationCenter(
@@ -155,6 +208,8 @@ final class AggregateBufferNotifier: NSObject,
 
 @MainActor
 final class NoopAggregateBufferNotifier: AggregateBufferChangeNotifying {
+    func notifyBluetoothBufferDefault() {}
+
     func notifyBufferIncrease(
         outputName _: String,
         previousFrameSize _: UInt32,

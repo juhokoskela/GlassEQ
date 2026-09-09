@@ -32,11 +32,53 @@ struct AggregateBufferPolicyTests {
             for: route,
             occurrences: 2,
             at: start.addingTimeInterval(4)
-        ) == nil)
+        ) == 128)
+        #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == nil)
 
         let reloaded = AggregateBufferPolicyStore(url: url)
-        #expect(reloaded.selection(for: route).automaticFrameSize == 64)
-        #expect(reloaded.selection(for: route).frameSize == 64)
+        #expect(reloaded.selection(for: route).automaticFrameSize == 128)
+        #expect(reloaded.selection(for: route).frameSize == 128)
+    }
+
+    @Test
+    func bluetoothAutomaticStartsAtSixtyFourAndNeverLearnsBelowIt() throws {
+        let url = temporaryPolicyURL()
+        let route = fingerprint(uid: "bluetooth", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+
+        #expect(store.selection(for: route, isBluetooth: true).frameSize == 64)
+        // A previously learned smaller request must also respect the Bluetooth floor.
+        #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == 32)
+        #expect(store.selection(for: route, isBluetooth: true).frameSize == 64)
+        #expect(try store.recordAutomaticFailure(for: route, isBluetooth: true, occurrences: 2) == 128)
+
+        let reloaded = AggregateBufferPolicyStore(url: url)
+        #expect(reloaded.selection(for: route, isBluetooth: true).frameSize == 128)
+        #expect(try reloaded.recordCleanAutomaticSession(for: route, isBluetooth: true) == nil)
+        #expect(try reloaded.recordCleanAutomaticSession(for: route, isBluetooth: true) == nil)
+        #expect(try reloaded.recordCleanAutomaticSession(for: route, isBluetooth: true) == 64)
+        for _ in 0..<4 {
+            #expect(try reloaded.recordCleanAutomaticSession(for: route, isBluetooth: true) == nil)
+        }
+        #expect(reloaded.selection(for: route, isBluetooth: true).frameSize == 64)
+        #expect(try reloaded.recordAutomaticFailure(for: route, isBluetooth: true, occurrences: 2) == 128)
+        try reloaded.retryAutomaticBuffer(for: route, isBluetooth: true)
+        #expect(reloaded.selection(for: route, isBluetooth: true).frameSize == 64)
+    }
+
+    @Test(arguments: [SettingsAggregateBufferMode.frames16, .frames32, .frames64, .frames128])
+    func bluetoothFixedChoicesSurviveReloadAndOverrideTheDefault(mode: SettingsAggregateBufferMode) throws {
+        let url = temporaryPolicyURL()
+        let route = fingerprint(uid: "fixed-bluetooth", stream: 0, sampleRate: 48_000)
+        try AggregateBufferPolicyStore(url: url).setMode(mode, for: route)
+        let reloaded = AggregateBufferPolicyStore(url: url)
+        let selection = reloaded.selection(for: route, isBluetooth: true)
+        #expect(selection.mode == mode)
+        #expect(selection.frameSize == reloaded.selection(for: route).frameSize)
+        #expect(selection.automaticFrameSize == 64)
+        #expect(try reloaded.recordAutomaticFailure(for: route, isBluetooth: true, occurrences: 2) == nil)
+        try reloaded.setMode(.automatic, for: route)
+        #expect(reloaded.selection(for: route, isBluetooth: true).frameSize == 64)
     }
 
     @Test

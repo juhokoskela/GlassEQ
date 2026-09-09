@@ -2752,15 +2752,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public func aggregateRouteFingerprint(
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
-        if Self.shouldUseSeparateClockBackend(for: output) {
-            let isActivePromotedRoute = control.withLock { state in
-                    state.activeOutput?.uid == output.uid
-                        && state.activeOutput?.nominalSampleRate == output.nominalSampleRate
-                }
-            guard isActivePromotedRoute else {
-                return nil
-            }
-        }
         let freshOutput = try CoreAudioDeviceQuery.outputDevice(id: output.id)
         let preferredChannels = try? CoreAudioDeviceQuery.preferredStereoChannels(
             objectID: freshOutput.id
@@ -5139,7 +5130,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     static func startupAttemptFrameSizes(requestedFrameSize: UInt32) -> [UInt32] {
         var attempts = [requestedFrameSize, requestedFrameSize]
-        if let saferFrameSize = [UInt32(16), 32, 64].first(where: {
+        if let saferFrameSize = [UInt32(16), 32, 64, 128].first(where: {
             $0 > requestedFrameSize
         }) {
             attempts.append(saferFrameSize)

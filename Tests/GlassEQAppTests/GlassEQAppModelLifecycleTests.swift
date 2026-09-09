@@ -348,6 +348,42 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func bluetoothCompatibilityWatchdogPreservesTheFixedAggregatePreference() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let output = makeOutput(
+            uid: "headset-watchdog",
+            name: "AirPods Headset",
+            nominalSampleRate: 24_000,
+            bufferFrameSize: 480,
+            transportType: kAudioDeviceTransportTypeBluetooth
+        )
+        try AggregateBufferPolicyStore(
+            url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
+        ).setMode(.frames16, for: AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: 0,
+            nominalSampleRate: output.nominalSampleRate
+        ))
+        let engine = FakeAudioEngine()
+        engine.headsetPromotionCandidateUIDs = [output.uid]
+        let model = makeModel(
+            storeURL: storeURL,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            renderWatchdogStallThreshold: .milliseconds(50),
+            renderWatchdogRepeatedFailureWindow: .seconds(1),
+            renderWatchdogPollInterval: .milliseconds(5)
+        )
+        model.retryAudioEngine()
+        await waitUntil { engine.startCalls.count == 2 && model.lifecycleState == .running }
+        #expect(engine.isUsingSeparateClockBackend)
+        #expect(!model.settingsSnapshot().aggregateBuffer.isAvailable)
+        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [16, 16])
+        model.stop()
+    }
+
+    @Test
     func repeatedRenderStallFailsOpenAndLeavesRetryAvailable() async {
         let output = makeOutput(uid: "watchdog-stop", name: "Watchdog Stop")
         let engine = FakeAudioEngine()
@@ -945,8 +981,16 @@ struct GlassEQAppModelLifecycleTests {
             uid: "fixed-headset-demotion",
             name: "Fixed AirPods Headset",
             nominalSampleRate: 24_000,
-            bufferFrameSize: 480
+            bufferFrameSize: 480,
+            transportType: kAudioDeviceTransportTypeBluetooth
         )
+        try AggregateBufferPolicyStore(
+            url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
+        ).setMode(.frames16, for: AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: 0,
+            nominalSampleRate: output.nominalSampleRate
+        ))
         let engine = FakeAudioEngine()
         engine.headsetPromotionCandidateUIDs = [output.uid]
         engine.headsetAggregatePromotionResult = .promoted(output)
@@ -967,6 +1011,7 @@ struct GlassEQAppModelLifecycleTests {
                 && engine.isUsingPromotedHeadsetAggregate
                 && model.settingsSnapshot().aggregateBuffer.isAvailable
         }
+        #expect(engine.startCalls.first?.aggregateBufferFrameSize == 16)
         let route = try engine.aggregateRouteFingerprint(for: output)
         let aggregateRoute = try #require(route)
 
@@ -1088,8 +1133,95 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.headsetAggregatePromotionAttemptCount == 1)
     }
 
+    @Test(arguments: [SettingsAggregateBufferMode.automatic, .frames16, .frames128])
+    func enablingBypassedBluetoothLoadsTheSavedBufferPolicy(mode: SettingsAggregateBufferMode) async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        var profile = makeProfile(name: "Bypassed Bluetooth")
+        profile.isBypassed = true
+        let output = makeOutput(uid: "bypassed-bluetooth", name: "AirPods", transportType: kAudioDeviceTransportTypeBluetooth)
+        try AggregateBufferPolicyStore(
+            url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
+        ).setMode(mode, for: AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid,
+            nativeOutputStreamIndex: 0,
+            nominalSampleRate: output.nominalSampleRate
+        ))
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
+            storeURL: storeURL,
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.currentOutputUID == output.uid && model.lifecycleState == .stopped }
+        #expect(engine.startCalls.isEmpty)
+
+        model.setBypass(false)
+        await waitUntil { model.settingsSnapshot().aggregateBuffer.isAvailable }
+        let expected: UInt32 = mode == .automatic ? 64 : mode == .frames16 ? 16 : 128
+        #expect(engine.startCalls.first?.aggregateBufferFrameSize == expected)
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == mode)
+        #expect(model.settingsSnapshot().aggregateBuffer.defaultFrameSize == 64)
+    }
+
+    @Test(arguments: [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE])
+    func bluetoothUsesAutomaticSixtyFourAndHonorsFixedBuffers(transport: UInt32) async throws {
+        let output = makeOutput(uid: "bluetooth-policy", name: "AirPods", transportType: transport)
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let notifier = FakeAggregateBufferNotifier()
+        let model = makeModel(
+            engine: engine,
+            lookup: lookup,
+            observers: observers,
+            outputDelay: .zero,
+            aggregateBufferNotifier: notifier
+        )
+
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running && engine.startCalls.count == 1 }
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 64)
+        #expect(model.settingsSnapshot().aggregateBuffer.defaultFrameSize == 64)
+        #expect(model.settingsMetricsSnapshot().diagnostics.status.health == .stable)
+
+        #expect(notifier.bluetoothNoticeCount == (OnboardingState.isComplete ? 1 : 0))
+
+        try model.setAggregateBufferMode(.frames16)
+        await waitUntil { model.settingsSnapshot().aggregateBuffer.isAvailable && engine.startCalls.count == 2 }
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 16)
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames16)
+
+        try model.setAggregateBufferMode(.frames128)
+        await waitUntil { model.settingsSnapshot().aggregateBuffer.isAvailable && engine.startCalls.count == 3 }
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 128)
+
+        try model.retryAutomaticAggregateBuffer()
+        await waitUntil { model.settingsSnapshot().aggregateBuffer.isAvailable && engine.startCalls.count == 4 }
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 64)
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .automatic)
+
+        let usb = makeOutput(uid: "usb-policy", name: "USB DAC", transportType: kAudioDeviceTransportTypeUSB)
+        let noticesBeforeUSB = notifier.bluetoothNoticeCount
+        lookup.result = .success(usb)
+        observers.observers[0].emit(.success(usb))
+        await waitUntil { model.lifecycleState == .running && engine.startCalls.count == 5 }
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 16)
+        #expect(model.settingsSnapshot().aggregateBuffer.defaultFrameSize == 16)
+        #expect(notifier.bluetoothNoticeCount == noticesBeforeUSB)
+    }
+
     @Test
-    func automaticAggregateBufferClimbsToSixtyFourAfterQualifyingInterruptions() async {
+    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async {
         let output = makeOutput(uid: "adaptive-aggregate", name: "Adaptive Aggregate")
         let engine = FakeAudioEngine()
         engine.reflectPreferredAggregateBufferFrameSize = true
@@ -1147,8 +1279,11 @@ struct GlassEQAppModelLifecycleTests {
         engine.metrics = metrics
         try? await Task.sleep(for: .milliseconds(350))
 
-        #expect(engine.startCalls.count == 3)
-        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 64)
+        await waitUntil {
+            engine.startCalls.count == 4 && engine.startCalls.last?.aggregateBufferFrameSize == 128
+        }
+        #expect(notifier.calls.count == 3)
+        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 128)
     }
 
     @Test
@@ -1236,7 +1371,8 @@ struct GlassEQAppModelLifecycleTests {
         for (misses, expectedStartCount, expectedFrameSize) in [
             (3, 3, UInt32(16)),
             (6, 4, UInt32(32)),
-            (9, 5, UInt32(64))
+            (9, 5, UInt32(64)),
+            (12, 6, UInt32(128))
         ] {
             try? await Task.sleep(for: .milliseconds(50))
             var metrics = engine.metrics
@@ -1250,7 +1386,7 @@ struct GlassEQAppModelLifecycleTests {
 
         try? await Task.sleep(for: .milliseconds(50))
         var metrics = engine.metrics
-        metrics.renderDeadlineMisses = 12
+        metrics.renderDeadlineMisses = 15
         engine.metrics = metrics
         await waitUntil {
             model.lifecycleState == .stopped
@@ -1258,10 +1394,10 @@ struct GlassEQAppModelLifecycleTests {
 
         model.retryAudioEngine()
         await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 6
+            model.lifecycleState == .running && engine.startCalls.count == 7
         }
 
-        #expect(engine.startCalls[5].aggregateBufferFrameSize == 16)
+        #expect(engine.startCalls[6].aggregateBufferFrameSize == 16)
         #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames16)
         #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 16)
     }
@@ -6669,9 +6805,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint? {
         withLock {
-            if _isUsingTransitionalHeadsetBackend {
-                return nil
-            }
             return AggregateAudioRouteFingerprint(
                 outputDeviceUID: output.uid,
                 nativeOutputStreamIndex: _nativeOutputStreamIndex,
@@ -6881,6 +7014,11 @@ private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying 
     }
 
     private(set) var calls: [Call] = []
+    private(set) var bluetoothNoticeCount = 0
+
+    func notifyBluetoothBufferDefault() {
+        bluetoothNoticeCount += 1
+    }
 
     func notifyBufferIncrease(
         outputName: String,
