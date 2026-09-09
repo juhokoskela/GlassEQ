@@ -351,7 +351,7 @@ struct CoreAudioDeviceTests {
         #expect(samples.allSatisfy { (-1...1).contains($0) })
     }
 
-    @Test
+    @Test(.enabled(if: try hasDefaultAudioOutput(), "Requires a default audio output device"))
     func defaultOutputQueryDoesNotCrash() throws {
         let device = try CoreAudioDeviceQuery.defaultOutputDevice()
 
@@ -1271,13 +1271,17 @@ struct CoreAudioDeviceTests {
         ) == nil)
     }
 
-    @Test
+    @Test(.enabled(if: try hasDefaultAudioOutput(), "Requires a default audio output device"))
     func outputDeviceUIDLookupResolvesDefaultOutput() throws {
         let defaultOutput = try CoreAudioDeviceQuery.defaultOutputDevice()
         let resolvedOutput = try #require(try CoreAudioDeviceQuery.outputDevice(uid: defaultOutput.uid))
 
         #expect(resolvedOutput.uid == defaultOutput.uid)
         #expect(resolvedOutput.outputChannelCount > 0)
+    }
+
+    @Test
+    func outputDeviceUIDLookupRejectsEmptyUID() throws {
         #expect(try CoreAudioDeviceQuery.outputDevice(uid: "") == nil)
     }
 
@@ -2280,6 +2284,14 @@ struct CoreAudioDeviceTests {
             transportType: transportType
         )
     }
+}
+
+private func hasDefaultAudioOutput() throws -> Bool {
+    try CoreAudioDeviceQuery.getAudioObjectIDProperty(
+        objectID: AudioObjectID(kAudioObjectSystemObject),
+        selector: kAudioHardwarePropertyDefaultOutputDevice,
+        scope: kAudioObjectPropertyScopeGlobal
+    ) != kAudioObjectUnknown
 }
 
 private enum TestDeviceMutationError: Error {
