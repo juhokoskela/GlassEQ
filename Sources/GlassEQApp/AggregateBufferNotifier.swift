@@ -94,9 +94,9 @@ final class AggregateBufferNotifier: NSObject,
             await authorizationTask?.value
             let request = Self.notificationRequest(
                 identifier: "glasseq-bluetooth-buffer-default",
-                title: localized("Bluetooth audio buffer"),
+                title: localized("Smoother Bluetooth playback"),
                 body: localized(
-                    "Automatic buffering starts Bluetooth devices at 64 frames to reduce clicks when changing volume on your Mac. In Output settings, choose a fixed size: 16 frames for lower latency or 128 for more stability."
+                    "Automatic uses a larger buffer for smoother playback. Customize it in Output settings."
                 )
             )
             if (try? await deliverNotification(request)) == true {

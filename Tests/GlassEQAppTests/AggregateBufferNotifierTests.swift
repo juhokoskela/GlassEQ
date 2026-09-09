@@ -49,9 +49,6 @@ struct AggregateBufferNotifierTests {
         let request = try #require(requests.first)
         #expect(requests.count == 1)
         #expect(request.content.categoryIdentifier == AggregateBufferNotifier.notificationCategory().identifier)
-        #expect(request.content.body.contains("64 frames"))
-        #expect(request.content.body.contains("16 frames"))
-        #expect(request.content.body.contains("128"))
         #expect(request.content.sound == nil)
     }
 

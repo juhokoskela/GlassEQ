@@ -57,6 +57,21 @@ struct OutputTab: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
+                    if snapshot.aggregateBuffer.defaultFrameSize > 16 {
+                        DisclosureGroup {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(localized("Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."))
+                                Text(localized("Smaller buffers remain available. On AirPods Pro, adjusting volume using the stems avoided the issue."))
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        } label: {
+                            Text(localized("Why a larger buffer?"))
+                                .font(.caption)
+                        }
+                    }
+
                     if snapshot.aggregateBuffer.mode == .automatic,
                        snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize {
                         Button(localized("Retry \(snapshot.aggregateBuffer.defaultFrameSize) Frames")) {
