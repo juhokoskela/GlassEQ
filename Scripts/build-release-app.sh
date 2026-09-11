@@ -79,6 +79,11 @@ is_dry_run() {
 }
 
 default_release_label() {
+    if [[ "$RELEASE_CHANNEL" == "alpha" && "$VERSION" == "$(source_plist_value CFBundleShortVersionString "$ROOT_DIR/Sources/GlassEQApp/Info.plist")" ]]; then
+        source_plist_value GlassEQReleaseLabel "$ROOT_DIR/Sources/GlassEQApp/Info.plist"
+        return
+    fi
+
     if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.0$ ]]; then
         echo "${RELEASE_CHANNEL}-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
     else
