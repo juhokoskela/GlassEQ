@@ -804,10 +804,8 @@ public actor LicensingController {
                     )
                 }
                 persist(current)
-            } catch let error as EntitlementVerificationError {
-                recordRefreshFailure(.invalidEntitlementReceived(error), retryAfterSeconds: nil)
             } catch {
-                recordRefreshFailure(.serviceUnavailable, retryAfterSeconds: nil)
+                recordRefreshFailure(.invalidEntitlementReceived(error), retryAfterSeconds: nil)
             }
         case .failure(.cancelled):
             return
