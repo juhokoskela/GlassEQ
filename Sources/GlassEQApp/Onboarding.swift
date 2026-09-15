@@ -146,7 +146,6 @@ struct OnboardingView: View {
     @State private var isAdvancing = true
 
     static let width: CGFloat = 560
-    // Tall enough for the tallest step, so the window keeps one size while paging.
     static let stepHeight: CGFloat = 440
 
     private var steps: [OnboardingStep] {
@@ -156,12 +155,13 @@ struct OnboardingView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .top) {
-                content(for: step)
-                    .padding(.horizontal, 36)
-                    .padding(.top, 36)
-                    .frame(width: Self.width, alignment: .top)
-                    .id(step)
-                    .transition(.push(from: isAdvancing ? .trailing : .leading))
+                ScrollView {
+                    content(for: step)
+                        .padding(36)
+                        .frame(width: Self.width, alignment: .top)
+                }
+                .id(step)
+                .transition(.push(from: isAdvancing ? .trailing : .leading))
             }
             .frame(height: Self.stepHeight, alignment: .top)
             .clipped()
@@ -191,12 +191,11 @@ struct OnboardingView: View {
     private func content(for candidate: OnboardingStep) -> some View {
         switch candidate {
         case .welcome:
-            OnboardingWelcomeStep(isCurrent: step == .welcome)
+            OnboardingWelcomeStep()
         case .license:
             if let state = model.onboardingLicenseState {
                 OnboardingLicenseStep(
                     state: state,
-                    isCurrent: step == .license,
                     activate: { model.activateLicense(key: $0) },
                     removeStoredLicense: { model.removeStoredLicense() }
                 )
@@ -204,7 +203,6 @@ struct OnboardingView: View {
         case .audioCapture:
             OnboardingAudioCaptureStep(
                 state: model.onboardingAudioCaptureState,
-                isCurrent: step == .audioCapture,
                 requestAudio: { model.startAudioForOnboarding() },
                 openPrivacySettings: { model.openPrivacySettingsForOnboarding() }
             )
@@ -218,8 +216,7 @@ struct OnboardingView: View {
             OnboardingDoneStep(
                 isRunning: model.isRunning,
                 outputName: model.currentOutputName,
-                profileName: model.activeProfileName,
-                isCurrent: step == .done
+                profileName: model.activeProfileName
             )
         }
     }

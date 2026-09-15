@@ -8,8 +8,6 @@ private enum OnboardingAppIcon {
 }
 
 struct OnboardingWelcomeStep: View {
-    let isCurrent: Bool
-
     var body: some View {
         VStack(spacing: 20) {
             Image(nsImage: OnboardingAppIcon.image)
@@ -25,7 +23,7 @@ struct OnboardingWelcomeStep: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
 
-            OnboardingMenuBarHint(isCurrent: isCurrent)
+            OnboardingMenuBarHint()
                 .padding(.top, 8)
         }
         .frame(maxWidth: .infinity)
@@ -33,8 +31,6 @@ struct OnboardingWelcomeStep: View {
 }
 
 private struct OnboardingMenuBarHint: View {
-    let isCurrent: Bool
-
     var body: some View {
         VStack(spacing: 10) {
             HStack(spacing: 14) {
@@ -46,7 +42,6 @@ private struct OnboardingMenuBarHint: View {
                     .foregroundStyle(Color.accentColor)
                     .padding(6)
                     .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 6))
-                    .symbolEffect(.bounce, options: .repeat(2), value: isCurrent)
                 Text(verbatim: "9:41")
             }
             .font(.callout)
@@ -66,7 +61,6 @@ private struct OnboardingMenuBarHint: View {
 
 struct OnboardingLicenseStep: View {
     let state: OnboardingLicenseState
-    let isCurrent: Bool
     let activate: (String) -> Void
     let removeStoredLicense: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -93,7 +87,6 @@ struct OnboardingLicenseStep: View {
 
             OnboardingLicenseStatus(
                 state: state,
-                isCurrent: isCurrent,
                 activate: activate,
                 removeStoredLicense: removeStoredLicense
             )
@@ -106,7 +99,6 @@ struct OnboardingLicenseStep: View {
 
 private struct OnboardingLicenseStatus: View {
     let state: OnboardingLicenseState
-    let isCurrent: Bool
     let activate: (String) -> Void
     let removeStoredLicense: () -> Void
     // The key is also the management credential, so it is masked by default and dropped once
@@ -165,8 +157,7 @@ private struct OnboardingLicenseStatus: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                         .disabled(keyIsBlank)
-                        // Only the visible step may own Return; the strip keeps the other steps mounted.
-                        .keyboardShortcut(isCurrent ? .defaultAction : nil)
+                        .keyboardShortcut(.defaultAction)
                         .accessibilityHint(Text(localized("Registers this Mac with the licensing service")))
                 }
                 if let failure {
@@ -281,7 +272,6 @@ private struct OnboardingLicenseNote: View {
 
 struct OnboardingAudioCaptureStep: View {
     let state: OnboardingAudioCaptureState
-    let isCurrent: Bool
     let requestAudio: () -> Void
     let openPrivacySettings: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -309,7 +299,6 @@ struct OnboardingAudioCaptureStep: View {
 
             OnboardingAudioCaptureStatus(
                 state: state,
-                isCurrent: isCurrent,
                 requestAudio: requestAudio,
                 openPrivacySettings: openPrivacySettings
             )
@@ -322,7 +311,6 @@ struct OnboardingAudioCaptureStep: View {
 
 private struct OnboardingAudioCaptureStatus: View {
     let state: OnboardingAudioCaptureState
-    let isCurrent: Bool
     let requestAudio: () -> Void
     let openPrivacySettings: () -> Void
 
@@ -335,8 +323,7 @@ private struct OnboardingAudioCaptureStatus: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            // Only the visible step may own Return; the strip keeps the other steps mounted.
-            .keyboardShortcut(isCurrent ? .defaultAction : nil)
+            .keyboardShortcut(.defaultAction)
             .accessibilityHint(Text(localized("Starts GlassEQ and shows the macOS permission prompt")))
         case .pending:
             HStack(spacing: 10) {
@@ -492,14 +479,12 @@ struct OnboardingDoneStep: View {
     let isRunning: Bool
     let outputName: String
     let profileName: String
-    let isCurrent: Bool
 
     var body: some View {
         VStack(spacing: 20) {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(Color.macOSSystemGreen)
-                .symbolEffect(.bounce, options: .nonRepeating, value: isCurrent)
                 .accessibilityHidden(true)
             Text(OnboardingStep.done.title)
                 .font(.largeTitle.weight(.bold))
