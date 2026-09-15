@@ -143,9 +143,10 @@ struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step = OnboardingStep.welcome
-    @State private var scrolledStep: OnboardingStep? = .welcome
+    @State private var isAdvancing = true
 
     static let width: CGFloat = 560
+    static let stepHeight: CGFloat = 440
 
     private var steps: [OnboardingStep] {
         OnboardingStep.sequence(includingLicense: model.onboardingLicenseState != nil)
@@ -153,43 +154,36 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Every step sits in one paging strip, so going back reverses the motion and the strip
-            // follows the layout direction instead of a hand-computed offset.
-            ScrollView(.horizontal) {
-                HStack(spacing: 0) {
-                    ForEach(steps, id: \.rawValue) { candidate in
-                        content(for: candidate)
-                            .padding(.horizontal, 36)
-                            .padding(.top, 36)
-                            .frame(width: Self.width)
-                            .frame(maxHeight: .infinity, alignment: .top)
-                            .accessibilityHidden(candidate != step)
-                            .id(candidate)
-                    }
+            ZStack(alignment: .top) {
+                ScrollView {
+                    content(for: step)
+                        .padding(36)
+                        .frame(width: Self.width, alignment: .top)
                 }
-                .scrollTargetLayout()
+                .id(step)
+                .transition(.push(from: isAdvancing ? .trailing : .leading))
             }
-            .scrollTargetBehavior(.paging)
-            .scrollPosition(id: $scrolledStep)
-            .scrollDisabled(true)
-            .scrollIndicators(.hidden)
-            .frame(width: Self.width)
+            .frame(height: Self.stepHeight, alignment: .top)
+            .clipped()
 
             OnboardingFooter(
                 step: step,
                 steps: steps,
                 canSkipLicense: model.onboardingLicenseState?.isSettled == false,
                 canSkipAudioCapture: model.onboardingAudioCaptureState == .idle,
-                back: { step = step.previous(in: steps) },
-                advance: { step = step.next(in: steps) },
+                back: { move(to: step.previous(in: steps)) },
+                advance: { move(to: step.next(in: steps)) },
                 finish: { dismiss() }
             )
         }
+        .frame(width: Self.width)
         .background(Color.macOSWindowBackground)
-        .onChange(of: step) {
-            withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
-                scrolledStep = step
-            }
+    }
+
+    private func move(to next: OnboardingStep) {
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) {
+            isAdvancing = next.rawValue > step.rawValue
+            step = next
         }
     }
 
@@ -197,12 +191,11 @@ struct OnboardingView: View {
     private func content(for candidate: OnboardingStep) -> some View {
         switch candidate {
         case .welcome:
-            OnboardingWelcomeStep(isCurrent: step == .welcome)
+            OnboardingWelcomeStep()
         case .license:
             if let state = model.onboardingLicenseState {
                 OnboardingLicenseStep(
                     state: state,
-                    isCurrent: step == .license,
                     activate: { model.activateLicense(key: $0) },
                     removeStoredLicense: { model.removeStoredLicense() }
                 )
@@ -210,7 +203,6 @@ struct OnboardingView: View {
         case .audioCapture:
             OnboardingAudioCaptureStep(
                 state: model.onboardingAudioCaptureState,
-                isCurrent: step == .audioCapture,
                 requestAudio: { model.startAudioForOnboarding() },
                 openPrivacySettings: { model.openPrivacySettingsForOnboarding() }
             )
@@ -224,8 +216,7 @@ struct OnboardingView: View {
             OnboardingDoneStep(
                 isRunning: model.isRunning,
                 outputName: model.currentOutputName,
-                profileName: model.activeProfileName,
-                isCurrent: step == .done
+                profileName: model.activeProfileName
             )
         }
     }

@@ -134,19 +134,19 @@ public struct RealtimeEQTransition: Sendable {
     @discardableResult
     public mutating func beginProgrammeComparison(
         equalizedProcessor: EQProcessor,
-        filtersOffProcessor: EQProcessor
+        referenceProcessor: EQProcessor
     ) -> Bool {
         guard incomingProcessor == nil,
               comparisonReferenceProcessor == nil,
               pendingComparisonReferenceProcessor == nil,
               equalizedProcessor.configuration.sampleRate == activeProcessor.configuration.sampleRate,
-              filtersOffProcessor.configuration.sampleRate == activeProcessor.configuration.sampleRate,
+              referenceProcessor.configuration.sampleRate == activeProcessor.configuration.sampleRate,
               equalizedProcessor.configuration.channelCount == activeProcessor.configuration.channelCount,
-              filtersOffProcessor.configuration.channelCount == activeProcessor.configuration.channelCount else {
+              referenceProcessor.configuration.channelCount == activeProcessor.configuration.channelCount else {
             return false
         }
         incomingProcessor = equalizedProcessor
-        pendingComparisonReferenceProcessor = filtersOffProcessor
+        pendingComparisonReferenceProcessor = referenceProcessor
         beginStandardTransition()
         return true
     }
@@ -174,7 +174,7 @@ public struct RealtimeEQTransition: Sendable {
                 && match.isReady,
             selection: comparisonSelection,
             equalizedAttenuationDB: match.equalizedAttenuationDB,
-            filtersOffAttenuationDB: match.filtersOffAttenuationDB
+            referenceAttenuationDB: match.referenceAttenuationDB
         )
     }
 
@@ -327,7 +327,7 @@ public struct RealtimeEQTransition: Sendable {
             if let referenceProcessor = pendingComparisonReferenceProcessor {
                 pendingComparisonReferenceProcessor = nil
                 comparisonReferenceProcessor = referenceProcessor
-                comparisonWarmupFramesRemaining = warmupFrameCount
+                comparisonWarmupFramesRemaining = max(warmupFrameCount, referenceProcessor.requiredWarmupFrames)
                 comparisonSelection = .equalized
                 comparisonSelectionStartWeight = 0
                 comparisonSelectionWeight = 0
@@ -380,14 +380,14 @@ public struct RealtimeEQTransition: Sendable {
                 frameCount: frameCount,
                 channelCount: channelCount
             )
-            let filtersOffDiagnostics = comparisonReferenceProcessor!
+            let referenceDiagnostics = comparisonReferenceProcessor!
                 .processInterleavedLinearlyWithDiagnostics(
                     alternate,
                     frameCount: frameCount,
                     channelCount: channelCount
                 )
             var workTiming = equalizedDiagnostics.workTiming
-            workTiming.merge(filtersOffDiagnostics.workTiming)
+            workTiming.merge(referenceDiagnostics.workTiming)
 
             if comparisonWarmupFramesRemaining > 0 {
                 comparisonWarmupFramesRemaining = max(
@@ -399,27 +399,27 @@ public struct RealtimeEQTransition: Sendable {
                 }
                 return EQTransitionRenderResult(
                     saturatedSamples: equalizedDiagnostics.nonFiniteSamples
-                        &+ filtersOffDiagnostics.nonFiniteSamples
+                        &+ referenceDiagnostics.nonFiniteSamples
                         &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
                     workTiming: workTiming
                 )
             }
 
             let equalized = UnsafeBufferPointer(samples)
-            let filtersOff = UnsafeBufferPointer(alternate)
+            let reference = UnsafeBufferPointer(alternate)
             var sampleIndex = 0
             for _ in 0..<frameCount {
                 let match = programmeLoudnessMatcher.observeFrame(
                     equalized: equalized,
-                    filtersOff: filtersOff,
+                    reference: reference,
                     sampleOffset: sampleIndex,
                     channelCount: channelCount
                 )
-                let selectionTarget: Float = comparisonSelection == .filtersOff ? 1 : 0
-                let filtersOffWeight: Float
+                let selectionTarget: Float = comparisonSelection == .reference ? 1 : 0
+                let referenceWeight: Float
                 if comparisonSelectionBlendedFrames >= blendFrameCount {
                     comparisonSelectionWeight = selectionTarget
-                    filtersOffWeight = selectionTarget
+                    referenceWeight = selectionTarget
                 } else {
                     let progress = blendFrameCount == 1
                         ? 1
@@ -433,13 +433,13 @@ public struct RealtimeEQTransition: Sendable {
                     if comparisonSelectionBlendedFrames >= blendFrameCount {
                         comparisonSelectionWeight = selectionTarget
                     }
-                    filtersOffWeight = comparisonSelectionWeight
+                    referenceWeight = comparisonSelectionWeight
                 }
                 for channel in 0..<channelCount {
                     let equalizedSample = samples[sampleIndex + channel] * match.equalized
-                    let filtersOffSample = alternate[sampleIndex + channel] * match.filtersOff
+                    let referenceSample = alternate[sampleIndex + channel] * match.reference
                     samples[sampleIndex + channel] = equalizedSample
-                        + (filtersOffSample - equalizedSample) * filtersOffWeight
+                        + (referenceSample - equalizedSample) * referenceWeight
                 }
                 sampleIndex += channelCount
             }
@@ -457,7 +457,7 @@ public struct RealtimeEQTransition: Sendable {
             }
             return EQTransitionRenderResult(
                 saturatedSamples: equalizedDiagnostics.nonFiniteSamples
-                    &+ filtersOffDiagnostics.nonFiniteSamples
+                    &+ referenceDiagnostics.nonFiniteSamples
                     &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
                 workTiming: workTiming
             )

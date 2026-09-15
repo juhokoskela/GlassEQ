@@ -790,7 +790,6 @@ public struct SettingsProfileStoreProtectionDTO: Codable, Equatable, Sendable {
 public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var isRunning: Bool?
-    public var isPreviewing: Bool?
     public var programmeComparison: EQProgrammeComparisonSnapshot?
     public var selectedProfileID: UUID?
     public var draftProfile: EQProfile?
@@ -806,7 +805,6 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public init(
         statusMessage: String? = nil,
         isRunning: Bool? = nil,
-        isPreviewing: Bool? = nil,
         programmeComparison: EQProgrammeComparisonSnapshot? = nil,
         selectedProfileID: UUID? = nil,
         draftProfile: EQProfile? = nil,
@@ -821,7 +819,6 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     ) {
         self.statusMessage = statusMessage
         self.isRunning = isRunning
-        self.isPreviewing = isPreviewing
         self.programmeComparison = programmeComparison
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile
@@ -854,7 +851,6 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var statusMessage: String
     public var metrics: SettingsAudioMetricsDTO
     public var isRunning: Bool
-    public var isPreviewing: Bool
     public var programmeComparison: EQProgrammeComparisonSnapshot
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO
 
@@ -876,7 +872,6 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case statusMessage
         case metrics
         case isRunning
-        case isPreviewing
         case programmeComparison
         case profileStoreProtection
     }
@@ -899,7 +894,6 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         statusMessage: String,
         metrics: SettingsAudioMetricsDTO,
         isRunning: Bool,
-        isPreviewing: Bool,
         programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
         profileStoreProtection: SettingsProfileStoreProtectionDTO = .unprotected
     ) {
@@ -920,7 +914,6 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.statusMessage = statusMessage
         self.metrics = metrics
         self.isRunning = isRunning
-        self.isPreviewing = isPreviewing
         self.programmeComparison = programmeComparison
         self.profileStoreProtection = profileStoreProtection
     }
@@ -955,7 +948,6 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             statusMessage: try container.decode(String.self, forKey: .statusMessage),
             metrics: try container.decode(SettingsAudioMetricsDTO.self, forKey: .metrics),
             isRunning: try container.decodeIfPresent(Bool.self, forKey: .isRunning) ?? false,
-            isPreviewing: try container.decode(Bool.self, forKey: .isPreviewing),
             programmeComparison: try container.decodeIfPresent(
                 EQProgrammeComparisonSnapshot.self,
                 forKey: .programmeComparison
@@ -987,7 +979,6 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             statusMessage: "Connecting to GlassEQ...",
             metrics: SettingsAudioMetricsDTO(),
             isRunning: false,
-            isPreviewing: false,
             programmeComparison: EQProgrammeComparisonSnapshot(),
             profileStoreProtection: .unprotected
         )
@@ -1031,9 +1022,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case importProfile(format: SettingsImportFormat, name: String, text: String)
     case importParsedProfile(EQProfile)
     case chooseImportFiles(mode: SettingsFileImportMode)
-    case preview(EQProfile)
-    case stopPreview
-    case startProgrammeComparison(EQProfile)
+    case startProgrammeComparison(EQProfile, reference: EQProgrammeComparisonReference)
     case selectProgrammeComparison(EQProgrammeComparisonSelection)
     case stopProgrammeComparison
     case resetDiagnostics

@@ -1,26 +1,28 @@
 # Distribution Notes
 
-GlassEQ alpha-0.9.2 is intended for ad hoc-signed distribution to technical testers. It is not Developer ID signed and is not notarized. A later non-alpha build will move to Developer ID distribution outside the Mac App Store.
+GlassEQ beta-0.9.3 is intended for ad hoc-signed distribution to technical testers. It is not Developer ID signed and is not notarized. A later release will move to Developer ID distribution outside the Mac App Store.
 
-## Current Alpha Distribution
+## Current Beta Distribution
 
-Build the alpha artifact:
+Build the beta artifact:
 
 ```sh
 ./Scripts/build-release-app.sh
 ```
 
-The script produces:
+With no overrides, the script uses the beta channel and the version from the app's Info.plist. It derives the release label from the channel and version and produces:
 
 - `.build/release-app/GlassEQ.app`
-- `.build/dist/GlassEQ-alpha-0.9.2-macos26-arm64.zip`
+- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip`
+
+`RELEASE_CHANNEL=alpha` selects an alpha build and label. Alpha and beta builds both require Apple Silicon and ad hoc signing. `RELEASE_CHANNEL=production` requires Developer ID signing, Hardened Runtime, and notarization. `RELEASE_LABEL` can override the archive label without changing the channel or its signing requirements.
 
 The release script requires a clean Git checkout so the packaged source matches the binaries it builds. The downloadable ZIP contains:
 
 - `GlassEQ.app`, with the GPL text embedded at `Contents/Resources/LICENSE`.
 - `LICENSE`, containing the full GPLv3 text.
 - `SOURCE.md`, identifying the exact Git commit and build inputs.
-- `GlassEQ-alpha-0.9.2-source.tar.gz`, containing the machine-readable Corresponding Source for that commit.
+- `GlassEQ-beta-0.9.3-source.tar.gz`, containing the machine-readable Corresponding Source for that commit.
 
 The source archive is generated from the same clean commit used for the build. The script verifies the license inside the app, at the ZIP root, and inside the source archive before writing the release checksum. Do not publish an app-only ZIP. A future DMG or other download format must provide the same license and Corresponding Source access.
 
@@ -30,9 +32,9 @@ The bundle is ad hoc-signed with `codesign --sign -`. It is not Developer ID sig
 spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 ```
 
-That rejection is expected for alpha. Document it clearly for testers.
+That rejection is expected for beta. Document it clearly for testers.
 
-## Alpha Installer Instructions
+## Beta Installer Instructions
 
 Technical testers can install by unzipping the artifact and moving `GlassEQ.app` to `/Applications`.
 
@@ -70,7 +72,7 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 - The settings helper is signed with only `com.apple.security.app-sandbox` and `com.apple.security.inherit`. Adding another App Sandbox entitlement makes macOS abort the inherited child process during sandbox initialization.
 - Info.plist: use `Sources/GlassEQApp/Info.plist`.
 - Entitlements: use `GlassEQ.entitlements`.
-- Signing for alpha: ad hoc.
+- Signing for beta: ad hoc.
 - Signing for public distribution: Developer ID Application with Hardened Runtime.
 
 ## Required Plist Key
@@ -89,17 +91,18 @@ swift build -c release --product GlassEQ
 swift run GlassEQDiagnostics 2
 ```
 
-For alpha packaging, also run:
+For beta packaging, also run:
 
 ```sh
+python3 Scripts/test-release-app.py
 ./Scripts/build-release-app.sh
 codesign --verify --strict --verbose=2 .build/release-app/GlassEQ.app/Contents/Helpers/GlassEQSettings.app
 codesign --verify --strict --verbose=2 .build/release-app/GlassEQ.app
 codesign -d --entitlements :- .build/release-app/GlassEQ.app
 spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
-unzip -Z1 .build/dist/GlassEQ-alpha-0.9.2-macos26-arm64.zip
+unzip -Z1 .build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip
 ```
 
-`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed alpha because it is not Developer ID signed or notarized.
+`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
 
 For manual sandbox verification, launch the packaged app and open Activity Monitor, then enable the `Sandbox` column. GlassEQ should show `Yes`.

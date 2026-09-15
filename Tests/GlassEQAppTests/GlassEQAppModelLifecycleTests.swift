@@ -1093,9 +1093,9 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func cancelledHeadsetPromotionDelayCanRetryInTheSameOutputGeneration() async {
+    func cancelledHeadsetPromotionDelayCanRetryInTheSameOutputGeneration() async throws {
         let active = makeProfile(name: "Headset Active")
-        let preview = makeProfile(name: "Headset Preview")
+        let applied = makeProfile(name: "Headset Applied")
         let output = makeOutput(
             uid: "cancelled-headset-promotion",
             name: "Cancelled AirPods Headset",
@@ -1108,7 +1108,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateDSPResult = false
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
-            store: ProfileStore(profiles: [active, preview], fallbackProfileID: active.id),
+            store: ProfileStore(profiles: [active, applied], fallbackProfileID: active.id),
             engine: engine,
             lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
@@ -1122,7 +1122,7 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
-        model.preview(profile: preview)
+        try model.apply(profile: applied)
         await waitUntil {
             engine.updateCalls.count == 1 && model.lifecycleState == .running
         }
@@ -1803,57 +1803,6 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func profilePreviewedDuringRouteStartIsRepublishedAfterTheRouteSettles() async {
-        let firstOutput = makeOutput(uid: "preview-first", name: "Preview First", id: 200)
-        let secondOutput = makeOutput(uid: "preview-second", name: "Preview Second", id: 300)
-        let initialProfile = makeProfile(name: "Initial")
-        let previewProfile = makeProfile(name: "Preview During Route Start")
-        let store = ProfileStore(
-            profiles: [initialProfile, previewProfile],
-            fallbackProfileID: initialProfile.id
-        )
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero
-        )
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(firstOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        engine.blockStart(for: secondOutput.uid)
-        lookup.result = .success(secondOutput)
-        observer.emit(.success(secondOutput))
-        await waitUntil {
-            engine.startCalls.count == 2
-        }
-        #expect(engine.waitUntilStartIsBlocked(for: secondOutput.uid, timeout: .now() + 1))
-
-        model.preview(profile: previewProfile)
-        #expect(engine.updateDSPCalls.isEmpty)
-
-        engine.unblockStart(for: secondOutput.uid)
-        await waitUntil {
-            model.lifecycleState == .running
-                && model.currentOutputUID == secondOutput.uid
-                && engine.startCalls.count == 3
-        }
-
-        #expect(engine.startCalls.last?.profile == previewProfile)
-        #expect(model.activeProfile == previewProfile)
-        #expect(model.previewReturnProfile == initialProfile)
-    }
-
-    @Test
     func profileStartFailureDuringPendingRouteRestoresTheRunningProfile() async throws {
         let firstOutput = makeOutput(uid: "rollback-first", name: "Rollback First", id: 200)
         let secondOutput = makeOutput(uid: "rollback-second", name: "Rollback Second", id: 300)
@@ -2237,51 +2186,6 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func outputChangeClearsPreviewAndStopPreviewIsNoOp() async {
-        let fallback = makeProfile(name: "Fallback")
-        let preview = makeProfile(name: "Preview")
-        let mapped = makeProfile(name: "Mapped")
-        let output = makeOutput(uid: "mapped-output", name: "Mapped Output")
-        let store = ProfileStore(
-            profiles: [fallback, preview, mapped],
-            outputMappings: [
-                OutputDeviceProfileMapping(outputDeviceUID: output.uid, profileID: mapped.id)
-            ],
-            fallbackProfileID: fallback.id
-        )
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero
-        )
-
-        model.preview(profile: preview)
-        #expect(model.previewReturnProfile?.id == fallback.id)
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.previewReturnProfile == nil
-                && model.activeProfile.id == mapped.id
-                && model.lifecycleState == .running
-        }
-
-        #expect(model.previewReturnProfile == nil)
-        #expect(model.activeProfile.id == mapped.id)
-        #expect(model.lifecycleState == .running)
-
-        model.stopPreview()
-
-        #expect(model.activeProfile.id == mapped.id)
-        #expect(model.previewReturnProfile == nil)
-    }
-
-    @Test
     func programmeComparisonKeepsTheActiveProfileAndReturnsThroughDSPTransition() async throws {
         let active = makeProfile(name: "Active")
         let output = makeOutput(uid: "comparison-output", name: "Comparison Output")
@@ -2305,21 +2209,22 @@ struct GlassEQAppModelLifecycleTests {
         draft.filters = [
             EQFilter(kind: .peak, frequency: 1_000, gainDB: 5, q: 1)
         ]
-        try model.startProgrammeComparison(profile: draft)
+        try model.startProgrammeComparison(profile: draft, reference: .filtersOff)
 
         #expect(engine.programmeComparisonCalls == [draft])
+        #expect(engine.programmeComparisonReferences == [draft.filtersOffReference])
         #expect(engine.programmeComparisonSelections == [.equalized])
         #expect(model.activeProfile == active)
         #expect(model.settingsSnapshot().programmeComparison.isActive)
 
-        model.selectProgrammeComparison(.filtersOff)
-        #expect(engine.programmeComparisonSelections == [.equalized, .filtersOff])
-        #expect(model.settingsSnapshot().programmeComparison.selection == .filtersOff)
+        model.selectProgrammeComparison(.reference)
+        #expect(engine.programmeComparisonSelections == [.equalized, .reference])
+        #expect(model.settingsSnapshot().programmeComparison.selection == .reference)
 
         engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
             isActive: true,
             isReady: true,
-            selection: .filtersOff,
+            selection: .reference,
             equalizedAttenuationDB: -3.25
         )
         await waitUntil {
@@ -2338,6 +2243,73 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.updateDSPCalls.last == active)
         #expect(!model.settingsSnapshot().programmeComparison.isActive)
         #expect(model.activeProfile == active)
+    }
+
+    @Test
+    func playingNowReferenceComparesTheDraftWithTheActiveProfile() async throws {
+        let active = makeProfile(name: "Active")
+        let output = makeOutput(uid: "comparison-reference-output", name: "Comparison Reference Output")
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var draft = active
+        draft.filters = [EQFilter(kind: .peak, frequency: 2_000, gainDB: -4, q: 1)]
+        try model.startProgrammeComparison(profile: draft, reference: .playingNow)
+
+        #expect(engine.programmeComparisonCalls == [draft])
+        #expect(engine.programmeComparisonReferences == [active])
+        #expect(model.settingsSnapshot().programmeComparison.reference == .playingNow)
+
+        engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(isActive: true, isReady: true)
+        await waitUntil {
+            model.settingsSnapshot().programmeComparison.isReady
+        }
+        #expect(model.settingsSnapshot().programmeComparison.reference == .playingNow)
+    }
+
+    @Test
+    func applyingAProfileEndsTheProgrammeComparison() async throws {
+        let active = makeProfile(name: "Active")
+        let output = makeOutput(uid: "comparison-apply-output", name: "Comparison Apply Output")
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil {
+            model.lifecycleState == .running && engine.startCalls.count == 1
+        }
+
+        var draft = active
+        draft.preampDB = -6
+        try model.startProgrammeComparison(profile: draft, reference: .filtersOff)
+        model.selectProgrammeComparison(.reference)
+        #expect(model.settingsSnapshot().programmeComparison.isActive)
+
+        try model.apply(profile: draft)
+
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        #expect(engine.programmeComparisonSelections.last == .equalized)
+        #expect(engine.updateDSPCalls.last == draft)
+        #expect(model.activeProfile == draft)
     }
 
     @Test
@@ -2376,8 +2348,8 @@ struct GlassEQAppModelLifecycleTests {
 
         var comparisonProfile = firstProfile
         comparisonProfile.preampDB = -6
-        try model.startProgrammeComparison(profile: comparisonProfile)
-        model.selectProgrammeComparison(.filtersOff)
+        try model.startProgrammeComparison(profile: comparisonProfile, reference: .filtersOff)
+        model.selectProgrammeComparison(.reference)
 
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
@@ -2391,7 +2363,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.activeProfile == secondProfile)
         #expect(engine.programmeComparisonSelections == [
             .equalized,
-            .filtersOff,
+            .reference,
             .equalized
         ])
 
@@ -2424,8 +2396,8 @@ struct GlassEQAppModelLifecycleTests {
 
         var comparisonProfile = active
         comparisonProfile.preampDB = -6
-        try model.startProgrammeComparison(profile: comparisonProfile)
-        model.selectProgrammeComparison(.filtersOff)
+        try model.startProgrammeComparison(profile: comparisonProfile, reference: .filtersOff)
+        model.selectProgrammeComparison(.reference)
 
         engine.emitRuntimeFailure(adaptiveRenderFailure)
         await waitUntil {
@@ -2707,7 +2679,7 @@ struct GlassEQAppModelLifecycleTests {
     ])
     func semanticOutputChangeRebuildsEvenWhenDeviceMetadataIsUnchanged(
         reason: DefaultOutputDeviceChangeReason
-    ) async {
+    ) async throws {
         let output = makeOutput(
             uid: "semantic-change-output",
             name: "USB DAC",
@@ -2715,6 +2687,8 @@ struct GlassEQAppModelLifecycleTests {
             nominalSampleRate: 48_000,
             bufferFrameSize: 256
         )
+        let settlement = OutputSettlementGate()
+        defer { settlement.release() }
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
@@ -2722,7 +2696,7 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             lookup: lookup,
             observers: observers,
-            outputDelay: .milliseconds(200)
+            outputSleep: { await settlement.sleep(for: $0) }
         )
 
         model.start()
@@ -2732,12 +2706,14 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
+        settlement.hold()
         observer.emit(.success(output), reason: reason)
 
-        await waitUntil {
-            engine.stopCallCount == 1
-        }
+        try #require(await waitUntil {
+            engine.stopCallCount == 1 && settlement.waitCount == 1
+        })
         #expect(engine.startCalls.count == 1)
+        settlement.release()
 
         await waitUntil {
             engine.startCalls.count == 2 && model.lifecycleState == .running
@@ -2871,7 +2847,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func returningToOriginalFormatAfterTransitionStopStillRebuilds() async {
+    func returningToOriginalFormatAfterTransitionStopStillRebuilds() async throws {
         let runningOutput = makeOutput(
             uid: "same-output",
             name: "USB DAC",
@@ -2884,6 +2860,8 @@ struct GlassEQAppModelLifecycleTests {
             id: runningOutput.id,
             nominalSampleRate: 48_000
         )
+        let settlement = OutputSettlementGate()
+        defer { settlement.release() }
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(runningOutput))
         let observers = FakeDefaultOutputObserverFactory()
@@ -2891,7 +2869,7 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             lookup: lookup,
             observers: observers,
-            outputDelay: .milliseconds(200)
+            outputSleep: { await settlement.sleep(for: $0) }
         )
 
         model.start()
@@ -2901,14 +2879,17 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
+        settlement.hold()
         lookup.result = .success(transientOutput)
         observer.emit(.success(transientOutput))
-        await waitUntil {
-            engine.stopCallCount == 1
-        }
+        try #require(await waitUntil {
+            engine.stopCallCount == 1 && settlement.waitCount == 1
+        })
 
         lookup.result = .success(runningOutput)
         observer.emit(.success(runningOutput))
+        try #require(await waitUntil { settlement.waitCount == 2 })
+        settlement.release()
         await waitUntil {
             engine.startCalls.count == 2 && model.lifecycleState == .running
         }
@@ -3171,50 +3152,6 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func incompatibleImpulseResponsePreviewPreservesWorkingEngine() async {
-        let active = makeProfile(name: "Active")
-        let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
-        let store = ProfileStore(
-            profiles: [active, impulse],
-            fallbackProfileID: active.id
-        )
-        let output = makeOutput(
-            uid: "preview-rate-mismatch",
-            name: "44.1 kHz Output",
-            nominalSampleRate: 44_100
-        )
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero
-        )
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        model.preview(profile: impulse)
-
-        #expect(model.lifecycleState == .running)
-        #expect(model.isRunning)
-        #expect(engine.state == .running(output: output))
-        #expect(engine.stopCallCount == 0)
-        #expect(engine.updateDSPCalls.isEmpty)
-        #expect(model.profileStore == store)
-        #expect(model.activeProfile == active)
-        #expect(model.selectedProfileID == active.id)
-        #expect(model.draftProfile == active)
-        #expect(model.previewReturnProfile == nil)
-        #expect(model.statusMessage.contains("48"))
-        #expect(model.statusMessage.contains("44"))
-    }
-
-    @Test
     func unknownSeparateClockImpulseResponseStaysDryAcrossRetries() async throws {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "Cold Route IR", sampleRate: 48_000)
@@ -3449,28 +3386,10 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func staleDeletedProfileCannotBePreviewed() {
-        let running = makeProfile(name: "Preview Current")
-        let stale = makeProfile(name: "Preview Deleted")
-        let store = ProfileStore(profiles: [running], fallbackProfileID: running.id)
-        let engine = FakeAudioEngine()
-        let model = makeModel(store: store, engine: engine)
-
-        model.preview(profile: stale)
-
-        #expect(model.activeProfile == running)
-        #expect(model.profileStore == store)
-        #expect(model.previewReturnProfile == nil)
-        #expect(engine.updateDSPCalls.isEmpty)
-        #expect(model.statusMessage.contains("no longer exists"))
-    }
-
-    @Test
-    func sleepClearsPreviewAndWakeCreatesFreshObserverGeneration() async {
+    func sleepAndWakeCreateAFreshObserverGeneration() async {
         let output = makeOutput(uid: "wake-output", name: "Wake Output")
         let fallback = makeProfile(name: "Fallback")
-        let preview = makeProfile(name: "Preview")
-        let store = ProfileStore(profiles: [fallback, preview], fallbackProfileID: fallback.id)
+        let store = ProfileStore(profiles: [fallback], fallbackProfileID: fallback.id)
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
@@ -3487,12 +3406,10 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
-        model.preview(profile: preview)
         model.start()
         let preSleepObserver = observers.observers[0]
 
         model.handleWillSleep()
-        #expect(model.previewReturnProfile == nil)
         #expect(model.lifecycleState == .sleeping)
 
         model.handleDidWake()
@@ -3819,7 +3736,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.lifecycleState == .stopped)
         #expect(model.activeProfile.id == mapped.id)
         #expect(model.activeProfile.isBypassed)
-        #expect(model.previewReturnProfile == nil)
         #expect(engine.updateCalls.isEmpty)
         #expect(engine.updateDSPCalls.isEmpty)
         #expect(model.profileStore.profile(forOutputUID: output.uid).id == mapped.id)
@@ -4523,7 +4439,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func incompatibleImpulseResponseCannotBeAppliedPreviewedComparedOrMapped() async throws {
+    func incompatibleImpulseResponseCannotBeAppliedComparedOrMapped() async throws {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
         let store = ProfileStore(
@@ -4550,25 +4466,22 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
-        #expect(throws: SettingsCommandFailure.self) {
+        let applyFailure = #expect(throws: SettingsCommandFailure.self) {
             try model.apply(profile: impulse)
         }
         #expect(throws: SettingsCommandFailure.self) {
             try model.useForCurrentOutput(profile: impulse)
         }
 
-        model.preview(profile: impulse)
-
         #expect(throws: SettingsCommandFailure.self) {
-            try model.startProgrammeComparison(profile: impulse)
+            try model.startProgrammeComparison(profile: impulse, reference: .playingNow)
         }
         #expect(model.profileStore == store)
         #expect(model.activeProfile == fallback)
-        #expect(model.previewReturnProfile == nil)
         #expect(engine.updateDSPCalls.isEmpty)
         #expect(engine.programmeComparisonCalls.isEmpty)
-        #expect(model.statusMessage.contains("48"))
-        #expect(model.statusMessage.contains("44"))
+        #expect(applyFailure?.message.contains("48") == true)
+        #expect(applyFailure?.message.contains("44") == true)
     }
 
     @Test
@@ -5693,6 +5606,9 @@ private func makeModel(
     profileImportOperation: (@Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>)? = nil,
     saveDelay: Duration = .zero,
     outputDelay: Duration? = nil,
+    outputSleep: @escaping @MainActor @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    },
     wakeDelay: Duration? = nil,
     aggregateStabilityDelay: Duration = .zero,
     aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
@@ -5721,6 +5637,7 @@ private func makeModel(
         profileImportOperation: profileImportOperation,
         saveDebounceDelay: saveDelay,
         outputChangeSettlingDelayOverride: outputDelay,
+        outputChangeSleep: outputSleep,
         wakeReconnectDelayOverride: wakeDelay,
         aggregateBufferPolicyURL: storeURL.deletingPathExtension()
             .appendingPathExtension("aggregate-buffer-policy.json"),
@@ -5736,6 +5653,31 @@ private func makeModel(
         licenseStopTransitionTimeout: licenseStopTransitionTimeout,
         licenseOperationCancellationGrace: licenseOperationCancellationGrace
     )
+}
+
+@MainActor
+private final class OutputSettlementGate {
+    private var isHeld = false
+    private var waiters: [AsyncStream<Void>.Continuation] = []
+    private(set) var waitCount = 0
+
+    func hold() {
+        isHeld = true
+    }
+
+    func sleep(for _: Duration) async {
+        guard isHeld else { return }
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        waiters.append(continuation)
+        waitCount += 1
+        for await _ in stream {}
+    }
+
+    func release() {
+        isHeld = false
+        for waiter in waiters { waiter.finish() }
+        waiters.removeAll()
+    }
 }
 
 private final class BlockingProfileImportOperation: @unchecked Sendable {
@@ -6386,6 +6328,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
     private var _programmeComparisonCalls: [EQProfile] = []
+    private var _programmeComparisonReferences: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _dspTransitionProgress = DSPTransitionProgress()
@@ -6506,6 +6449,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var programmeComparisonCalls: [EQProfile] {
         get { withLock { _programmeComparisonCalls } }
         set { withLock { _programmeComparisonCalls = newValue } }
+    }
+
+    private(set) var programmeComparisonReferences: [EQProfile] {
+        get { withLock { _programmeComparisonReferences } }
+        set { withLock { _programmeComparisonReferences = newValue } }
     }
 
     private(set) var programmeComparisonSelections: [EQProgrammeComparisonSelection] {
@@ -6885,9 +6833,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func beginProgrammeComparison(profile: EQProfile) -> Bool {
+    func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
         withLock {
             _programmeComparisonCalls.append(profile)
+            _programmeComparisonReferences.append(reference)
             if _beginProgrammeComparisonResult {
                 _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
                     isActive: true,

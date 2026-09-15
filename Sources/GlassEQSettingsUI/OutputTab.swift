@@ -27,21 +27,11 @@ struct OutputTab: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(localized("Current Output"))
-                        .font(.headline)
-                    Text(snapshot.currentOutputName)
-                        .font(.title3.weight(.semibold))
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .cardPanel(padding: 16)
+        Form {
+            Section {
+                LabeledContent(localized("Current Output"), value: snapshot.currentOutputName)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(localized("Audio Buffer"))
-                        .font(.headline)
+                LabeledContent(localized("Audio Buffer")) {
                     Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
                         Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
                         Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
@@ -52,146 +42,106 @@ struct OutputTab: View {
                     .labelsHidden()
                     .disabled(!snapshot.aggregateBuffer.isAvailable)
 
-                    Text(aggregateBufferExplanation)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if snapshot.aggregateBuffer.defaultFrameSize > 16 {
-                        DisclosureGroup {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(localized("Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."))
-                                Text(localized("Smaller buffers remain available. On AirPods Pro, adjusting volume using the stems avoided the issue."))
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        } label: {
-                            Text(localized("Why a larger buffer?"))
-                                .font(.caption)
-                        }
-                    }
-
                     if snapshot.aggregateBuffer.mode == .automatic,
                        snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize {
                         Button(localized("Retry \(snapshot.aggregateBuffer.defaultFrameSize) Frames")) {
                             controller.retryAutomaticAggregateBuffer()
                         }
-                        .controlSize(.large)
                     } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
                               snapshot.currentOutputBufferFrameSize > fixedFrameSize {
                         Button(localized("Retry \(fixedFrameSize) Frames")) {
                             controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
                         }
-                        .controlSize(.large)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .cardPanel(padding: 16)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(localized("Profile Mapping"))
-                        .font(.headline)
-                    LabeledContent(localized("Mapped Profile"), value: mappedProfileName)
-                    HStack {
-                        Button(localized("Use for This Output")) {
-                            controller.useDraftForCurrentOutput()
+                if snapshot.aggregateBuffer.defaultFrameSize > 16 {
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(localized("Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."))
+                            Text(localized("Smaller buffers remain available. On AirPods Pro, adjusting volume using the stems avoided the issue."))
                         }
-                        .disabled(controller.isProfileStoreProtected || !controller.hasCurrentOutput)
-                        .controlSize(.large)
-
-                        Button(localized("Set as Fallback")) {
-                            controller.setFallbackToDraft()
-                        }
-                        .disabled(controller.isProfileStoreProtected)
-                        .controlSize(.large)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .cardPanel(padding: 16)
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(localized("Setup Guide"))
-                        .font(.headline)
-                    Text(localized("Walk through system audio capture permission, Launch at Login, and how GlassEQ follows your output."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button {
+                    } label: {
+                        Text(localized("Why a larger buffer?"))
+                    }
+                }
+            } footer: {
+                Text(aggregateBufferExplanation)
+            }
+
+            Section(localized("Profile Mapping")) {
+                LabeledContent(localized("Mapped Profile"), value: mappedProfileName)
+                LabeledContent(controller.draftProfile.name) {
+                    Button(localized("Use for This Output")) {
+                        controller.useDraftForCurrentOutput()
+                    }
+                    .disabled(controller.isProfileStoreProtected || !controller.hasCurrentOutput)
+
+                    Button(localized("Set as Fallback")) {
+                        controller.setFallbackToDraft()
+                    }
+                    .disabled(controller.isProfileStoreProtected)
+                }
+            }
+
+            Section {
+                LabeledContent(localized("Status"), value: statusSummary)
+                LabeledContent(localized("Mode"), value: routeModeSummary)
+                LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
+                LabeledContent(localized("Buffer"), value: bufferSummary)
+                LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
+                LabeledContent(
+                    localized("Underrun Events"),
+                    value: snapshot.metrics.playbackUnderrunEvents == 0
+                        ? localized("None")
+                        : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
+                )
+                HStack {
+                    Button(localized("Retry Audio Engine")) {
+                        controller.retryAudioEngine()
+                    }
+                    Button(localized("Open Privacy Settings")) {
+                        controller.openPrivacySettings()
+                    }
+                }
+            } header: {
+                Text(localized("Engine Status"))
+            } footer: {
+                Text(snapshot.statusMessage)
+            }
+
+            Section {
+                LabeledContent {
+                    Button(localized("Open Setup Guide")) {
                         controller.showSetupGuide()
-                    } label: {
-                        Label(localized("Open Setup Guide"), systemImage: "questionmark.circle")
                     }
-                    .controlSize(.large)
                     .accessibilityHint(Text(localized("Reopens the first-launch walkthrough in GlassEQ")))
+                } label: {
+                    Text(localized("Setup Guide"))
+                    Text(localized("Walk through system audio capture permission, Launch at Login, and how GlassEQ follows your output."))
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .cardPanel(padding: 16)
-            }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
 
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(localized("Engine Status"))
-                        .font(.headline)
-                    LabeledContent(localized("Status"), value: statusSummary)
-                    LabeledContent(localized("Mode"), value: routeModeSummary)
-                    LabeledContent(localized("Current Output"), value: snapshot.currentOutputName)
-                    LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
-                    LabeledContent(localized("Buffer"), value: bufferSummary)
-                    LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
-                    LabeledContent(
-                        localized("Underrun Events"),
-                        value: snapshot.metrics.playbackUnderrunEvents == 0
-                            ? localized("None")
-                            : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
-                    )
-                    Text(snapshot.statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Button(localized("Retry Audio Engine")) {
-                            controller.retryAudioEngine()
-                        }
-                        .controlSize(.large)
-
-                        Button(localized("Open Privacy Settings")) {
-                            controller.openPrivacySettings()
-                        }
-                        .controlSize(.large)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .cardPanel(padding: 16)
-
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(localized("Stats for Nerds"))
-                        .font(.headline)
-                    Text(localized("Render timing percentiles, reliability counters, recovery history, and the Core Audio route behind this output."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button {
+                LabeledContent {
+                    Button(localized("Show Stats")) {
                         isShowingDiagnostics = true
-                    } label: {
-                        Label(localized("Show Stats"), systemImage: "waveform.path.ecg.rectangle")
                     }
-                    .controlSize(.large)
                     .accessibilityHint(Text(localized("Opens detailed audio engine diagnostics")))
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .cardPanel(padding: 16)
-                .sheet(isPresented: $isShowingDiagnostics) {
-                    OutputDiagnosticsSheet(
-                        report: OutputDiagnosticsReport(snapshot: snapshot),
-                        onReset: controller.resetDiagnostics
-                    )
+                } label: {
+                    Text(localized("Stats for Nerds"))
+                    Text(localized("Render timing percentiles, reliability counters, recovery history, and the Core Audio route behind this output."))
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
+        .sheet(isPresented: $isShowingDiagnostics) {
+            OutputDiagnosticsSheet(
+                report: OutputDiagnosticsReport(snapshot: snapshot),
+                onReset: controller.resetDiagnostics
+            )
+        }
     }
 
     private var mappedProfileName: String {

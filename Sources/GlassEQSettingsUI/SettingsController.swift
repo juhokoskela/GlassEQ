@@ -35,10 +35,13 @@ struct EditorContextID: Hashable {
 @Observable
 final class SettingsController {
     let model: GlassEQSettingsViewModel
-    var draftProfile: EQProfile
+    var draftProfile: EQProfile {
+        didSet { refreshAnalyses() }
+    }
     var selectedProfileID: UUID
     var tab = EditorSection.editor
     var editChannel = EQEditChannel.left
+    var comparisonReference = EQProgrammeComparisonReference.playingNow
     var isImportSheetPresented = false
     var importRoute = ProfileImportRoute.text
     var isNewProfileSheetPresented = false
@@ -49,6 +52,9 @@ final class SettingsController {
     // draft against it separates local edits from stored changes that arrived from the app.
     private var storedProfile: EQProfile
     private var pendingNewProfileImportRoute: ProfileImportRoute?
+
+    let analysisCache = EQAnalysisCache()
+    @ObservationIgnored private var isAnalysisActive = false
 
     init(model: GlassEQSettingsViewModel) {
         self.model = model
@@ -73,6 +79,14 @@ final class SettingsController {
 
     var isEditingLocked: Bool {
         isProfileStoreProtected || snapshot.programmeComparison.isActive
+    }
+
+    var draftName: String {
+        get { draftProfile.name }
+        set {
+            guard !isEditingLocked else { return }
+            draftProfile.name = newValue
+        }
     }
 
     var hasCurrentOutput: Bool {
@@ -186,16 +200,8 @@ final class SettingsController {
         perform(.setFallback(draftProfile))
     }
 
-    func previewDraft() {
-        perform(.preview(draftProfile))
-    }
-
-    func stopPreview() {
-        perform(.stopPreview)
-    }
-
     func startProgrammeComparison() {
-        perform(.startProgrammeComparison(draftProfile))
+        perform(.startProgrammeComparison(draftProfile, reference: comparisonReference))
     }
 
     func stopProgrammeComparison() {
@@ -306,9 +312,22 @@ final class SettingsController {
         perform(.stopMetricsPolling)
     }
 
-    // Called whenever the model publishes a new snapshot. The local selection survives as long as
-    // the profile still exists; the draft is refreshed from the store only when it has no local
-    // edits, so a delayed snapshot cannot discard work the user did in the meantime.
+    func startAnalyses() {
+        isAnalysisActive = true
+        refreshAnalyses()
+    }
+
+    func stopAnalyses() {
+        isAnalysisActive = false
+        analysisCache.stop()
+    }
+
+    func refreshAnalyses() {
+        guard isAnalysisActive else { return }
+        analysisCache.update(profiles: snapshot.profiles, selected: draftProfile, sampleRate: analysisSampleRate)
+    }
+
+    // Preserve local selection and edits when a delayed snapshot arrives.
     func reconcileWithSnapshot() {
         let latest = snapshot
         guard let latestStored = latest.profiles.first(where: { $0.id == selectedProfileID }) else {
@@ -317,6 +336,8 @@ final class SettingsController {
         }
         if !hasUnsavedDraft {
             draftProfile = latestStored
+        } else {
+            refreshAnalyses()
         }
         storedProfile = latestStored
     }
@@ -365,7 +386,6 @@ final class SettingsController {
 func settingsCanDeleteProfile(_ snapshot: SettingsSnapshot, id: UUID) -> Bool {
     !snapshot.profileStoreProtection.isProtected
         && snapshot.profiles.count > 1
-        && !snapshot.isPreviewing
         && !snapshot.programmeComparison.isActive
         && id != snapshot.activeProfileID
 }

@@ -35,15 +35,10 @@ public func localizedDecimal(
     maximumFractionDigits: Int,
     signed: Bool = false
 ) -> String {
-    let formatter = NumberFormatter()
-    formatter.locale = .autoupdatingCurrent
-    formatter.numberStyle = .decimal
-    formatter.minimumFractionDigits = minimumFractionDigits
-    formatter.maximumFractionDigits = maximumFractionDigits
-    if signed {
-        formatter.positivePrefix = formatter.plusSign
-    }
-    return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    value.formatted(.number
+        .locale(.autoupdatingCurrent)
+        .precision(.fractionLength(minimumFractionDigits...maximumFractionDigits))
+        .sign(strategy: signed ? .always(includingZero: true) : .automatic))
 }
 
 func editableNumberText(_ value: Double, locale: Locale = .autoupdatingCurrent) -> String {

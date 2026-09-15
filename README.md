@@ -7,7 +7,7 @@ A native macOS equalizer that processes your **entire system audio** in real tim
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors)](https://github.com/sponsors/juhokoskela)
 
-**[Download the latest GlassEQ alpha](https://github.com/juhokoskela/GlassEQ/releases/latest)** for macOS 26 and Apple Silicon. See the installation notes below.
+**[Get GlassEQ beta](#download--install)** for macOS 26 and Apple Silicon. See the installation notes below.
 
 ## What makes GlassEQ different
 
@@ -27,19 +27,19 @@ GlassEQ takes a different route. It uses **Core Audio process taps**, Apple's mo
 
 ## Download & install
 
-Grab `GlassEQ-alpha-0.9.2-macos26-arm64.zip` from the [alpha-0.9.2 release](https://github.com/juhokoskela/GlassEQ/releases/tag/alpha-0.9.2), then:
+Look for `GlassEQ-beta-0.9.3-macos26-arm64.zip` on the [releases page](https://github.com/juhokoskela/GlassEQ/releases). If beta-0.9.3 is not listed yet, [build from source](#build-from-source). To install the ZIP:
 
 1. Unzip it.
 2. Move `GlassEQ.app` to `/Applications`.
 3. Open it from Finder.
 
-The alpha is ad hoc-signed and not yet notarized ([you can help change that](#support-the-project)), so macOS asks you to confirm the first launch: open **System Settings → Privacy & Security**, find the GlassEQ notice, and click **Open Anyway**. It opens normally after that.
+The beta is ad hoc-signed and not yet notarized ([you can help change that](#support-the-project)), so macOS asks you to confirm the first launch: open **System Settings → Privacy & Security**, find the GlassEQ notice, and click **Open Anyway**. It opens normally after that.
 
 On first run GlassEQ asks for **system audio capture permission** — that's what lets it read and equalize the system mix. Grant it and you're set.
 
-### About this alpha
+### About this beta
 
-GlassEQ is an early alpha: Apple Silicon only, tested on macOS 26, with no automatic updates or crash reporting yet. Expect the occasional rough edge, and please report any hardware-specific audio issues you run into. See [Docs/AlphaTesting.md](Docs/AlphaTesting.md), [Docs/Distribution.md](Docs/Distribution.md), and [Docs/ReleaseNotes-alpha-0.9.2.md](Docs/ReleaseNotes-alpha-0.9.2.md) before installing a build.
+GlassEQ is an early beta: Apple Silicon only, tested on macOS 26, with no automatic updates or crash reporting yet. Expect the occasional rough edge, and please report any hardware-specific audio issues you run into. See the [beta testing guide](Docs/BetaTesting.md), [distribution notes](Docs/Distribution.md), and [beta-0.9.3 release notes](Docs/ReleaseNotes-beta-0.9.3.md) before installing a build.
 
 ## How it works
 
@@ -58,7 +58,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 
 - **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and convolution (a minimum-phase FIR built from a response curve or impulse response).
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
-- **Live frequency-response graph** and instant preview while you edit.
+- **Live frequency-response graph** while you edit, and a loudness-matched A/B between the draft and the playing profile or the draft with its filters off.
 - **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
@@ -74,7 +74,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 ### Security & privacy
 
 - Sandboxed: audio capture is the only privacy permission GlassEQ requests. A file chosen through the import panel is readable only through that user action.
-- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc alpha builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. AutoEq downloads normally run in the helper; if GlassEQ falls back to an in-process settings window, the main app performs them instead. The helper has no shared profile storage.
+- The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. AutoEq downloads normally run in the helper; if GlassEQ falls back to an in-process settings window, the main app performs them instead. The helper has no shared profile storage.
 - No telemetry, no analytics, no cloud sync. Diagnostics run locally and print device details only to your terminal.
 
 ## Known limitations
@@ -82,7 +82,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 - **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
 - **Bluetooth** headset modes initially use a higher-latency separate-clock compatibility path to avoid periodic combined-aggregate timestamp faults while the route settles. Promotion to the low-latency path is experimental; please report the device model, macOS version, and steps if a route still produces jitter.
-- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Preview, Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. If a mapped route later changes processing rate, GlassEQ keeps the mapping and leaves normal unprocessed playback active until the rate matches again. It never silently resamples or truncates the impulse response.
+- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. If a mapped route later changes processing rate, GlassEQ keeps the mapping and leaves normal unprocessed playback active until the rate matches again. It never silently resamples or truncates the impulse response.
 - No automatic updates, no crash reporting, no x86_64 build.
 
 <a id="supported-target"></a>
@@ -90,9 +90,9 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ## Support the project
 
-GlassEQ's source is released under GPL-3.0-or-later. The current alpha is ad hoc-signed and still needs the Gatekeeper workaround described above. Sponsorship helps cover the Apple Developer Program membership and other release costs required for a **Developer ID-signed, notarized** app.
+GlassEQ's source is released under GPL-3.0-or-later. The current beta is ad hoc-signed and still needs the Gatekeeper workaround described above. Sponsorship helps cover the Apple Developer Program membership and other release costs required for a **Developer ID-signed, notarized** app.
 
-If you'd like to help get there, the **Sponsor** button at the top of this repository goes directly toward that cost. Every bit helps move GlassEQ from "ad hoc-signed alpha" to "double-click to open."
+If you'd like to help get there, the **Sponsor** button at the top of this repository goes directly toward that cost. Every bit helps move GlassEQ from "ad hoc-signed beta" to "double-click to open."
 
 ## Build from source
 
@@ -124,7 +124,7 @@ swift run GlassEQDiagnostics 2
 
 `GlassEQDiagnostics` runs a short smoke test against the current default output and prints local device details plus capture/playback metrics.
 
-### Creating an alpha build
+### Creating a beta build
 
 ```sh
 ./Scripts/build-release-app.sh
@@ -132,7 +132,7 @@ swift run GlassEQDiagnostics 2
 
 The script builds a release app bundle, embeds the app icon and GPL text, ad hoc-signs the bundle, and writes a ZIP under `.build/dist/`. The ZIP also contains the full license, the exact Git revision and build inputs, and a machine-readable Corresponding Source archive generated from the clean commit used for the build.
 
-Gatekeeper assessment is *expected to fail* because the alpha is not Developer ID signed or notarized:
+Gatekeeper assessment is *expected to fail* because the beta is not Developer ID signed or notarized:
 
 ```sh
 codesign -d --entitlements :- .build/release-app/GlassEQ.app

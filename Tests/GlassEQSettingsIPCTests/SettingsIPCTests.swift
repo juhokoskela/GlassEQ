@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 @_spi(GlassEQSettingsUI) import GlassEQCore
 import GlassEQSettingsIPC
+import SwiftUI
 import Testing
 @testable import GlassEQSettings
 @testable import GlassEQSettingsUI
@@ -61,23 +62,19 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func profileDeletionIsDisabledWhilePreviewProtectsTheReturnProfile() {
-        let returnProfile = EQProfile(name: "Return", mode: .parametric, filters: [])
-        let previewProfile = EQProfile(name: "Preview", mode: .parametric, filters: [])
+    func profileDeletionIsDisabledDuringComparison() {
+        let candidate = EQProfile(name: "Candidate", mode: .parametric, filters: [])
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
         var snapshot = SettingsSnapshotDTO.disconnected
-        snapshot.profiles = [returnProfile, previewProfile]
-        snapshot.selectedProfileID = returnProfile.id
-        snapshot.draftProfile = returnProfile
-        snapshot.activeProfileID = previewProfile.id
-        snapshot.isPreviewing = true
+        snapshot.profiles = [candidate, active]
+        snapshot.selectedProfileID = candidate.id
+        snapshot.draftProfile = candidate
+        snapshot.activeProfileID = active.id
 
-        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
-
-        snapshot.isPreviewing = false
-        #expect(settingsCanDeleteProfile(snapshot, id: returnProfile.id))
+        #expect(settingsCanDeleteProfile(snapshot, id: candidate.id))
 
         snapshot.programmeComparison.isActive = true
-        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
+        #expect(!settingsCanDeleteProfile(snapshot, id: candidate.id))
     }
 
     @Test
@@ -148,6 +145,72 @@ struct SettingsIPCTests {
         #expect(!textChangeWasExternal)
         #expect(headroomChangeWasExternal)
         #expect(restoredValue == nil)
+    }
+
+    @Test
+    func reusedValueControlRejectsEditsFromAnotherProfileChannelFilterOrRevert() {
+        let editor = EditorContextID(profileID: UUID(), channel: .linked, generation: 0)
+        let original = EditableValueContext(editor: editor, valueID: UUID())
+        var session = EditableValueEditSession()
+        session.begin(value: -3, context: original)
+        #expect(session.isActive(in: original))
+        for changed in [
+            EditableValueContext(editor: EditorContextID(profileID: UUID(), channel: .linked, generation: 0), valueID: original.valueID),
+            EditableValueContext(editor: EditorContextID(profileID: editor.profileID, channel: .right, generation: 0), valueID: original.valueID),
+            EditableValueContext(editor: EditorContextID(profileID: editor.profileID, channel: .linked, generation: 1), valueID: original.valueID),
+            EditableValueContext(editor: editor, valueID: UUID())
+        ] {
+            #expect(!session.isActive(in: changed))
+        }
+        session.finish()
+        #expect(!session.isActive(in: original))
+        #expect(session.cancel() == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func decimalFormatStylePreservesNumericLabels(signed: Bool) {
+        for digits in 0...2 {
+            let reference = NumberFormatter()
+            reference.locale = .autoupdatingCurrent
+            reference.numberStyle = .decimal
+            reference.minimumFractionDigits = digits
+            reference.maximumFractionDigits = digits
+            if signed { reference.positivePrefix = reference.plusSign }
+            for value in [-120.0, -6.125, -0.0, 0, 0.707, 1.25, 1_000, 20_000] {
+                #expect(localizedDecimal(value, minimumFractionDigits: digits, maximumFractionDigits: digits, signed: signed)
+                    == reference.string(from: NSNumber(value: value)))
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor
+    func profileTitleBindingHonorsTheCurrentEditingLock(protectedStore: Bool) {
+        let profile = EQProfile(name: "Original", mode: .parametric, filters: [])
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [profile]
+        snapshot.selectedProfileID = profile.id
+        snapshot.draftProfile = profile
+        let model = GlassEQSettingsViewModel(snapshot: snapshot)
+        @Bindable var controller = SettingsController(model: model)
+        let title = $controller.draftName
+
+        title.wrappedValue = "Renamed"
+        #expect(controller.draftProfile.name == "Renamed")
+
+        snapshot.profileStoreProtection.isProtected = protectedStore
+        snapshot.programmeComparison.isActive = !protectedStore
+        model.accept(snapshot: snapshot)
+        #expect(controller.isEditingLocked)
+        title.wrappedValue = "Blocked"
+        #expect(controller.draftProfile.name == "Renamed")
+        #expect(title.wrappedValue == "Renamed")
+
+        snapshot.profileStoreProtection.isProtected = false
+        snapshot.programmeComparison.isActive = false
+        model.accept(snapshot: snapshot)
+        title.wrappedValue = "Unlocked"
+        #expect(controller.draftProfile.name == "Unlocked")
     }
 
     @Test
@@ -548,8 +611,8 @@ struct SettingsIPCTests {
     func programmeComparisonCommandsRoundTrip() throws {
         let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
         let commands: [SettingsCommand] = [
-            .startProgrammeComparison(profile),
-            .selectProgrammeComparison(.filtersOff),
+            .startProgrammeComparison(profile, reference: .filtersOff),
+            .selectProgrammeComparison(.reference),
             .stopProgrammeComparison
         ]
 
@@ -919,8 +982,9 @@ struct SettingsIPCTests {
 
         #expect(flat.signature != shaped.signature)
         #expect(abs((shaped.linkedPoints.first?.magnitudeDB ?? 0) - 6) < 0.000_001)
-        #expect(shaped.recommendedPreampDB < -6.6)
-        #expect(shaped.recommendedPreampDB > -6.8)
+        let recommendedPreampDB = try #require(shaped.recommendedPreampDB)
+        #expect(recommendedPreampDB < -6.6)
+        #expect(recommendedPreampDB > -6.8)
     }
 
     @Test
@@ -1212,7 +1276,7 @@ struct SettingsIPCTests {
             programmeComparison: EQProgrammeComparisonSnapshot(
                 isActive: true,
                 isReady: true,
-                selection: .filtersOff,
+                selection: .reference,
                 equalizedAttenuationDB: -2.5
             ),
             activeProfileID: profileID,

@@ -7,100 +7,106 @@ struct ApplyBar: View {
     var body: some View {
         let hasUnsavedDraft = controller.hasUnsavedDraft
         let isReadOnly = controller.isProfileStoreProtected
-        let isPreviewing = controller.snapshot.isPreviewing
         let programmeComparison = controller.snapshot.programmeComparison
-        let hasCurrentOutput = controller.hasCurrentOutput
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(localized("Programme-loudness A/B"))
-                        .font(.caption.weight(.semibold))
-                    Text(comparisonDescription(programmeComparison))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if programmeComparison.isActive {
-                    Picker(localized("A/B branch"), selection: $controller.programmeComparisonSelection) {
-                        Text(localized("A · EQ"))
-                            .tag(EQProgrammeComparisonSelection.equalized)
-                        Text(localized("B · Filters off"))
-                            .tag(EQProgrammeComparisonSelection.filtersOff)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 210)
-
-                    Button(localized("Stop A/B")) {
-                        controller.stopProgrammeComparison()
-                    }
-                    .buttonStyle(ToolbarButtonStyle())
-                } else {
-                    Button(localized("Start A/B")) {
-                        controller.startProgrammeComparison()
-                    }
-                    .disabled(isReadOnly || isPreviewing || !controller.snapshot.isRunning)
-                    .buttonStyle(ToolbarButtonStyle())
-                    .help(localized("Compares the draft EQ with its filters disabled while preserving the same preamp."))
-                }
-            }
-
-            Divider()
-
-            HStack {
+        HStack(spacing: 8) {
+            if programmeComparison.isActive {
+                Text(comparisonStatus(programmeComparison))
+                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.medium))
+            } else {
                 Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
                     .foregroundStyle(.secondary)
                     .font(.caption.weight(.medium))
                     .accessibilityLabel(Text(localized("Profile edit state")))
                     .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
-                Spacer()
-                Button(localized("Revert")) {
-                    controller.revertDraft()
-                }
-                .disabled(!hasUnsavedDraft || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle())
-
-                Button(localized("Apply")) {
-                    controller.applyDraft()
-                }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(isReadOnly || !hasUnsavedDraft || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle(prominent: true))
-
-                Button(isPreviewing ? localized("Stop Preview") : localized("Preview")) {
-                    isPreviewing ? controller.stopPreview() : controller.previewDraft()
-                }
-                .disabled((isReadOnly && !isPreviewing) || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle())
-                .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
-
-                Button(localized("Use for This Output")) {
-                    controller.useDraftForCurrentOutput()
-                }
-                .disabled(isReadOnly || !hasCurrentOutput || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle())
-                .accessibilityHint(Text(hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
             }
+            Spacer()
+
+            if programmeComparison.isActive {
+                Picker(localized("Listening to"), selection: $controller.programmeComparisonSelection) {
+                    Text(localized("Draft"))
+                        .tag(EQProgrammeComparisonSelection.equalized)
+                    Text(programmeComparison.reference.title)
+                        .tag(EQProgrammeComparisonSelection.reference)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+
+                Button(localized("Stop")) {
+                    controller.stopProgrammeComparison()
+                }
+            } else {
+                Picker(localized("Compare with"), selection: $controller.comparisonReference) {
+                    ForEach(EQProgrammeComparisonReference.allCases, id: \.self) { reference in
+                        Text(reference.title).tag(reference)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+
+                Button(localized("Compare")) {
+                    controller.startProgrammeComparison()
+                }
+                .disabled(isReadOnly || !controller.snapshot.isRunning)
+                .help(localized("Switches between the draft and a loudness-matched reference: the profile playing now, or the draft with its filters off."))
+            }
+
+            Divider()
+                .frame(height: 20)
+                .padding(.horizontal, 4)
+
+            Button(localized("Revert")) {
+                controller.revertDraft()
+            }
+            .disabled(!hasUnsavedDraft || programmeComparison.isActive)
+
+            Button(localized("Apply")) {
+                controller.applyDraft()
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(isReadOnly || !hasUnsavedDraft)
+            .buttonStyle(.borderedProminent)
+
+            Button(localized("Use for This Output")) {
+                controller.useDraftForCurrentOutput()
+            }
+            .disabled(isReadOnly || !controller.hasCurrentOutput)
+            .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
         }
     }
 
-    private func comparisonDescription(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
-        guard programmeComparison.isActive else {
-            return localized("Compare the draft EQ with filters off. Preamp stays enabled in both.")
-        }
+    private func comparisonStatus(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
         guard programmeComparison.isReady else {
             return localized("Measuring the current programme…")
         }
         if programmeComparison.equalizedAttenuationDB < -0.05 {
             return localized(
-                "Matched · EQ \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
+                "Matched · Draft \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
             )
         }
-        if programmeComparison.filtersOffAttenuationDB < -0.05 {
+        if programmeComparison.referenceAttenuationDB < -0.05 {
             return localized(
-                "Matched · Filters off \(localizedDecibels(programmeComparison.filtersOffAttenuationDB))"
+                "Matched · \(programmeComparison.reference.title) \(localizedDecibels(programmeComparison.referenceAttenuationDB))"
             )
         }
         return localized("Matched · no level adjustment needed")
+    }
+}
+
+private extension EQProgrammeComparisonReference {
+    var title: String {
+        switch self {
+        case .playingNow:
+            localized("Playing now")
+        case .filtersOff:
+            localized("Filters off")
+        }
     }
 }

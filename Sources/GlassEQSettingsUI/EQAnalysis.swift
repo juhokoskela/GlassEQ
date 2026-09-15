@@ -56,7 +56,7 @@ struct EQAnalysisSignature: Equatable, Sendable {
 struct EQAnalysisSnapshot: Equatable, Sendable {
     var signature: EQAnalysisSignature
     var channelMode: EQChannelMode
-    var recommendedPreampDB: Double
+    var recommendedPreampDB: Double?
     var maximumUsableFrequency: Double
     var inactiveEnabledFilterCount: Int
     var linkedPoints: [FrequencyResponsePoint]
@@ -75,11 +75,48 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         sampleRate: Double,
         cancellationCheck: @Sendable () throws -> Void = { try Task.checkCancellation() }
     ) async throws -> Self {
-        try Self(
+        let response = try Self(
             profile: profile,
             sampleRate: sampleRate,
             cancellationCheck: cancellationCheck
         )
+        return try await response.analyzingHeadroom(profile: profile, cancellationCheck: cancellationCheck)
+    }
+
+    @concurrent
+    static func response(profile: EQProfile, sampleRate: Double) async throws -> Self {
+        try Self(profile: profile, sampleRate: sampleRate, cancellationCheck: { try Task.checkCancellation() })
+    }
+
+    @concurrent
+    func analyzingHeadroom(
+        profile: EQProfile,
+        cancellationCheck: @Sendable () throws -> Void = { try Task.checkCancellation() }
+    ) async throws -> Self {
+        var result = self
+        for channel in profile.channelMode == .linked ? [EQProfileChannel.linked] : [.left, .right] {
+            let settings = profile[channel: channel]
+            let peak = try Self.sourcePeakMagnitudeDB(
+                mode: profile.mode,
+                filters: settings.filters,
+                source: settings.convolution,
+                sampleRate: signature.sampleRate,
+                cancellationCheck: cancellationCheck
+            )
+            switch channel {
+            case .linked: result.linkedSourcePeakDB = peak
+            case .left: result.leftSourcePeakDB = peak
+            case .right: result.rightSourcePeakDB = peak
+            }
+        }
+        result.recommendedPreampDB = Self.recommendedPreampDB(
+            profile: profile,
+            linkedSourcePeakDB: result.linkedSourcePeakDB,
+            leftSourcePeakDB: result.leftSourcePeakDB,
+            rightSourcePeakDB: result.rightSourcePeakDB
+        )
+        try cancellationCheck()
+        return result
     }
 
     private init(
@@ -101,13 +138,6 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
 
         switch profile.channelMode {
         case .linked:
-            let sourcePeakDB = try Self.sourcePeakMagnitudeDB(
-                mode: profile.mode,
-                filters: profile.filters,
-                source: profile.convolution,
-                sampleRate: sampleRate,
-                cancellationCheck: cancellationCheck
-            )
             let sourcePoints = try Self.responsePoints(
                 mode: profile.mode,
                 filters: profile.filters,
@@ -116,7 +146,7 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
                 sampleRate: sampleRate,
                 cancellationCheck: cancellationCheck
             )
-            self.linkedSourcePeakDB = sourcePeakDB
+            self.linkedSourcePeakDB = nil
             self.leftSourcePeakDB = nil
             self.rightSourcePeakDB = nil
             self.linkedSourcePoints = sourcePoints
@@ -126,20 +156,6 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
             self.leftPoints = []
             self.rightPoints = []
         case .stereo:
-            let leftSourcePeakDB = try Self.sourcePeakMagnitudeDB(
-                mode: profile.mode,
-                filters: profile.leftFilters,
-                source: profile.leftConvolution,
-                sampleRate: sampleRate,
-                cancellationCheck: cancellationCheck
-            )
-            let rightSourcePeakDB = try Self.sourcePeakMagnitudeDB(
-                mode: profile.mode,
-                filters: profile.rightFilters,
-                source: profile.rightConvolution,
-                sampleRate: sampleRate,
-                cancellationCheck: cancellationCheck
-            )
             let leftSourcePoints = try Self.responsePoints(
                 mode: profile.mode,
                 filters: profile.leftFilters,
@@ -157,8 +173,8 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
                 cancellationCheck: cancellationCheck
             )
             self.linkedSourcePeakDB = nil
-            self.leftSourcePeakDB = leftSourcePeakDB
-            self.rightSourcePeakDB = rightSourcePeakDB
+            self.leftSourcePeakDB = nil
+            self.rightSourcePeakDB = nil
             self.linkedSourcePoints = []
             self.leftSourcePoints = leftSourcePoints
             self.rightSourcePoints = rightSourcePoints
@@ -166,12 +182,7 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
             self.leftPoints = Self.applyingPreamp(profile.leftPreampDB, to: leftSourcePoints)
             self.rightPoints = Self.applyingPreamp(profile.rightPreampDB, to: rightSourcePoints)
         }
-        self.recommendedPreampDB = Self.recommendedPreampDB(
-            profile: profile,
-            linkedSourcePeakDB: linkedSourcePeakDB,
-            leftSourcePeakDB: leftSourcePeakDB,
-            rightSourcePeakDB: rightSourcePeakDB
-        )
+        self.recommendedPreampDB = nil
         try cancellationCheck()
     }
 
@@ -248,14 +259,17 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         linkedSourcePeakDB: Double?,
         leftSourcePeakDB: Double?,
         rightSourcePeakDB: Double?
-    ) -> Double {
-        let renderedPeakDB = switch profile.channelMode {
+    ) -> Double? {
+        let renderedPeakDB: Double
+        switch profile.channelMode {
         case .linked:
-            profile.preampDB + (linkedSourcePeakDB ?? 0)
+            guard let linkedSourcePeakDB else { return nil }
+            renderedPeakDB = profile.preampDB + linkedSourcePeakDB
         case .stereo:
-            max(
-                profile.leftPreampDB + (leftSourcePeakDB ?? 0),
-                profile.rightPreampDB + (rightSourcePeakDB ?? 0)
+            guard let leftSourcePeakDB, let rightSourcePeakDB else { return nil }
+            renderedPeakDB = max(
+                profile.leftPreampDB + leftSourcePeakDB,
+                profile.rightPreampDB + rightSourcePeakDB
             )
         }
         return profile.activePreampDB - max(renderedPeakDB + 0.5, 0)
@@ -288,15 +302,16 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
     }
 
     var accessibilitySummary: String {
+        let preamp = recommendedPreampDB.map { localizedDecibels($0) } ?? localized("Analyzing…")
         let curveSummary: String
         switch channelMode {
         case .linked:
             curveSummary = localized(
-                "Linked curve from \(localizedDecibels(minMagnitude(in: linkedPoints))) to \(localizedDecibels(maxMagnitude(in: linkedPoints))); recommended preamp \(localizedDecibels(recommendedPreampDB))"
+                "Linked curve from \(localizedDecibels(minMagnitude(in: linkedPoints))) to \(localizedDecibels(maxMagnitude(in: linkedPoints))); recommended preamp \(preamp)"
             )
         case .stereo:
             curveSummary = localized(
-                "Left curve from \(localizedDecibels(minMagnitude(in: leftPoints))) to \(localizedDecibels(maxMagnitude(in: leftPoints))); right curve from \(localizedDecibels(minMagnitude(in: rightPoints))) to \(localizedDecibels(maxMagnitude(in: rightPoints))); recommended preamp \(localizedDecibels(recommendedPreampDB))"
+                "Left curve from \(localizedDecibels(minMagnitude(in: leftPoints))) to \(localizedDecibels(maxMagnitude(in: leftPoints))); right curve from \(localizedDecibels(minMagnitude(in: rightPoints))) to \(localizedDecibels(maxMagnitude(in: rightPoints))); recommended preamp \(preamp)"
             )
         }
         guard let inactiveFilterSummary else {
