@@ -18,7 +18,6 @@ struct ProfileDetail: View {
                         onReset: controller.resetUnsupportedProfileStore
                     )
                 }
-                .fixedSize(horizontal: false, vertical: true)
             }
 
             ScrollView {
@@ -55,13 +54,11 @@ struct ProfileDetail: View {
                     ApplyBar(controller: controller)
                         .cardPanel(padding: 16)
                 }
-                .fixedSize(horizontal: false, vertical: true)
                 .layoutPriority(2)
             }
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 18)
-        .padding(.top, settingsTitlebarInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .windowBackgroundColor))
     }

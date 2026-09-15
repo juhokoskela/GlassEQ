@@ -11,9 +11,8 @@ public struct SettingsView: View {
 
     public var body: some View {
         @Bindable var controller = controller
-        HStack(spacing: 0) {
+        NavigationSplitView {
             ProfileSidebar(controller: controller)
-                .frame(width: 260)
                 .sheet(isPresented: $controller.isNewProfileSheetPresented, onDismiss: controller.newProfileSheetDidDismiss) {
                     NewProfileSheet(
                         onCreate: controller.createProfile,
@@ -32,13 +31,11 @@ public struct SettingsView: View {
                 } message: { _ in
                     Text(localized("This also removes any output assignment that uses the profile. It can't be undone."))
                 }
-
+        } detail: {
             ProfileDetail(controller: controller)
-                .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .background {
-            FinderStyleWindowConfigurator()
+            SettingsWindowFocusBridge()
         }
         .sheet(isPresented: $controller.isImportSheetPresented) {
             ProfileImportSheet(
@@ -50,10 +47,6 @@ public struct SettingsView: View {
                 onChooseImportFiles: controller.chooseImportFiles
             )
         }
-        // Run the content up under the (transparent, separator-less) titlebar so there's no bar
-        // or hairline between the window controls and the content, and the sidebar card sits
-        // beneath the traffic lights, matching System Settings.
-        .ignoresSafeArea(.container, edges: .top)
         .overlay(alignment: .bottom) {
             if let message = controller.model.commandErrorMessage {
                 Text(message)

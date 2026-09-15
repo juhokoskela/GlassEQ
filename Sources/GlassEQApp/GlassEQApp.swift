@@ -74,7 +74,6 @@ struct GlassEQApp: App {
         }
         .defaultSize(width: 1180, height: 720)
         .windowResizability(.contentMinSize)
-        .windowStyle(.hiddenTitleBar)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
     }
