@@ -3870,12 +3870,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     @discardableResult
-    public func beginProgrammeComparison(profile: EQProfile) -> Bool {
+    public func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
         guard !profile.isBypassed else {
             return false
         }
         if activeBackend.withLock({ $0 }) == .separateClock {
-            return separateClockBackend.beginProgrammeComparison(profile: profile)
+            return separateClockBackend.beginProgrammeComparison(profile: profile, reference: reference)
         }
         guard let preparation = control.withLock({ state -> (AudioRuntime, EQProfile)? in
             guard let runtime = state.runtime,
@@ -3897,7 +3897,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             maximumUsableFrequency: maximumUsableFrequency
         ),
         let referenceConfig = try? EQRenderConfiguration.prepare(
-            profile: profile.filtersOffReference,
+            profile: reference,
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency

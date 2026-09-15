@@ -1161,9 +1161,9 @@ extension GlassEQAppModel {
         case .chooseImportFiles:
             throw SettingsCommandFailure(message: localized("File selection is unavailable from this settings connection."))
 
-        case .startProgrammeComparison(let profile):
+        case .startProgrammeComparison(let profile, let reference):
             try validateIncomingProfile(profile)
-            try startProgrammeComparison(profile: profile)
+            try startProgrammeComparison(profile: profile, reference: reference)
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .selectProgrammeComparison(let selection):

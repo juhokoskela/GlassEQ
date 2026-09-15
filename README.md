@@ -58,7 +58,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 
 - **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and convolution (a minimum-phase FIR built from a response curve or impulse response).
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
-- **Live frequency-response graph** while you edit.
+- **Live frequency-response graph** while you edit, and a loudness-matched A/B between the draft and the playing profile or the draft with its filters off.
 - **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.

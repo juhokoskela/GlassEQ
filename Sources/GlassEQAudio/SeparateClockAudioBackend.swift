@@ -1976,7 +1976,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     @discardableResult
-    public func beginProgrammeComparison(profile: EQProfile) -> Bool {
+    public func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
         guard !profile.isBypassed else {
             return false
         }
@@ -1999,7 +1999,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             maximumUsableFrequency: maximumUsableFrequency
         ),
         let referenceConfig = try? EQRenderConfiguration.prepare(
-            profile: profile.filtersOffReference,
+            profile: reference,
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency

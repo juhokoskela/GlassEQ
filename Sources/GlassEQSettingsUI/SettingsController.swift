@@ -39,6 +39,7 @@ final class SettingsController {
     var selectedProfileID: UUID
     var tab = EditorSection.editor
     var editChannel = EQEditChannel.left
+    var comparisonReference = EQProgrammeComparisonReference.playingNow
     var isImportSheetPresented = false
     var importRoute = ProfileImportRoute.text
     var isNewProfileSheetPresented = false
@@ -187,7 +188,7 @@ final class SettingsController {
     }
 
     func startProgrammeComparison() {
-        perform(.startProgrammeComparison(draftProfile))
+        perform(.startProgrammeComparison(draftProfile, reference: comparisonReference))
     }
 
     func stopProgrammeComparison() {

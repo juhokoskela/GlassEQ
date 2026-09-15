@@ -22,9 +22,18 @@ public enum EQProgrammeComparisonSelection: UInt8, Codable, Equatable, Sendable 
     case reference
 }
 
+/// What the draft is compared against.
+public enum EQProgrammeComparisonReference: String, Codable, Equatable, Sendable, CaseIterable {
+    /// The profile currently processing the output.
+    case playingNow
+    /// The draft with its filters removed and its preamp kept.
+    case filtersOff
+}
+
 public struct EQProgrammeComparisonSnapshot: Codable, Equatable, Sendable {
     public var isActive: Bool
     public var isReady: Bool
+    public var reference: EQProgrammeComparisonReference
     public var selection: EQProgrammeComparisonSelection
     public var equalizedAttenuationDB: Double
     public var referenceAttenuationDB: Double
@@ -32,12 +41,14 @@ public struct EQProgrammeComparisonSnapshot: Codable, Equatable, Sendable {
     public init(
         isActive: Bool = false,
         isReady: Bool = false,
+        reference: EQProgrammeComparisonReference = .playingNow,
         selection: EQProgrammeComparisonSelection = .equalized,
         equalizedAttenuationDB: Double = 0,
         referenceAttenuationDB: Double = 0
     ) {
         self.isActive = isActive
         self.isReady = isReady
+        self.reference = reference
         self.selection = selection
         self.equalizedAttenuationDB = equalizedAttenuationDB
         self.referenceAttenuationDB = referenceAttenuationDB

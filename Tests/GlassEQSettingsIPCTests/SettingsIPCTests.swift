@@ -544,7 +544,7 @@ struct SettingsIPCTests {
     func programmeComparisonCommandsRoundTrip() throws {
         let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
         let commands: [SettingsCommand] = [
-            .startProgrammeComparison(profile),
+            .startProgrammeComparison(profile, reference: .filtersOff),
             .selectProgrammeComparison(.reference),
             .stopProgrammeComparison
         ]

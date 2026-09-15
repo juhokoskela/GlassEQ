@@ -254,7 +254,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32)
     func update(profile: EQProfile) throws
     @discardableResult func updateDSP(profile: EQProfile) -> DSPTransitionProgress.Target?
-    @discardableResult func beginProgrammeComparison(profile: EQProfile) -> Bool
+    @discardableResult func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool
     func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
     func dspTransitionProgress() -> DSPTransitionProgress
@@ -276,7 +276,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
 extension AudioEngineControlling {
     var isUsingSeparateClockBackend: Bool { false }
 
-    func beginProgrammeComparison(profile _: EQProfile) -> Bool { false }
+    func beginProgrammeComparison(profile _: EQProfile, reference _: EQProfile) -> Bool { false }
 
     func setProgrammeComparisonSelection(_: EQProgrammeComparisonSelection) {}
 
@@ -2110,7 +2110,10 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func startProgrammeComparison(profile: EQProfile) throws {
+    func startProgrammeComparison(
+        profile: EQProfile,
+        reference: EQProgrammeComparisonReference
+    ) throws {
         guard programmeComparisonReturnProfile == nil else {
             return
         }
@@ -2129,8 +2132,14 @@ final class GlassEQAppModel {
             )
         }
 
+        let referenceProfile = switch reference {
+        case .playingNow:
+            activeProfile
+        case .filtersOff:
+            profile.filtersOffReference
+        }
         engine.setProgrammeComparisonSelection(.equalized)
-        guard engine.beginProgrammeComparison(profile: profile) else {
+        guard engine.beginProgrammeComparison(profile: profile, reference: referenceProfile) else {
             throw SettingsCommandFailure(
                 message: localized("The audio engine could not start A/B comparison.")
             )
@@ -2139,9 +2148,15 @@ final class GlassEQAppModel {
         programmeComparisonReturnProfile = activeProfile
         programmeComparison = EQProgrammeComparisonSnapshot(
             isActive: true,
+            reference: reference,
             selection: .equalized
         )
-        statusMessage = localized("Comparing EQ with filters off")
+        statusMessage = switch reference {
+        case .playingNow:
+            localized("Comparing the draft with \(activeProfile.name)")
+        case .filtersOff:
+            localized("Comparing the draft with its filters off")
+        }
         startProgrammeComparisonPolling()
         notifyModelDidChange()
     }
@@ -2187,6 +2202,7 @@ final class GlassEQAppModel {
                 }
                 var next = self.engine.snapshotProgrammeComparison()
                 next.isActive = true
+                next.reference = self.programmeComparison.reference
                 guard next != self.programmeComparison else {
                     continue
                 }

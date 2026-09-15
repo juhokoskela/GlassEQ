@@ -51,50 +51,67 @@ struct ProgrammeComparisonSection: View {
         Section {
             LabeledContent {
                 if programmeComparison.isActive {
-                    Picker(localized("A/B branch"), selection: $controller.programmeComparisonSelection) {
-                        Text(localized("A · EQ"))
+                    Picker(localized("Listening to"), selection: $controller.programmeComparisonSelection) {
+                        Text(localized("Draft"))
                             .tag(EQProgrammeComparisonSelection.equalized)
-                        Text(localized("B · Filters off"))
+                        Text(programmeComparison.reference.title)
                             .tag(EQProgrammeComparisonSelection.reference)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 210)
+                    .frame(width: 220)
 
-                    Button(localized("Stop A/B")) {
+                    Button(localized("Stop")) {
                         controller.stopProgrammeComparison()
                     }
                 } else {
-                    Button(localized("Start A/B")) {
+                    Picker(localized("Compare with"), selection: $controller.comparisonReference) {
+                        ForEach(EQProgrammeComparisonReference.allCases, id: \.self) { reference in
+                            Text(reference.title).tag(reference)
+                        }
+                    }
+                    .labelsHidden()
+
+                    Button(localized("Start")) {
                         controller.startProgrammeComparison()
                     }
                     .disabled(controller.isProfileStoreProtected || !controller.snapshot.isRunning)
-                    .help(localized("Compares the draft EQ with its filters disabled while preserving the same preamp."))
                 }
             } label: {
-                Text(localized("Programme-loudness A/B"))
-                Text(comparisonDescription(programmeComparison))
+                Text(localized("Compare"))
+                Text(description(programmeComparison))
             }
         }
     }
 
-    private func comparisonDescription(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
+    private func description(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
         guard programmeComparison.isActive else {
-            return localized("Compare the draft EQ with filters off. Preamp stays enabled in both.")
+            return localized("Switch between the draft and a loudness-matched reference: the profile playing now, or the draft with its filters off.")
         }
         guard programmeComparison.isReady else {
             return localized("Measuring the current programme…")
         }
         if programmeComparison.equalizedAttenuationDB < -0.05 {
             return localized(
-                "Matched · EQ \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
+                "Matched · Draft \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
             )
         }
         if programmeComparison.referenceAttenuationDB < -0.05 {
             return localized(
-                "Matched · Filters off \(localizedDecibels(programmeComparison.referenceAttenuationDB))"
+                "Matched · \(programmeComparison.reference.title) \(localizedDecibels(programmeComparison.referenceAttenuationDB))"
             )
         }
         return localized("Matched · no level adjustment needed")
+    }
+}
+
+private extension EQProgrammeComparisonReference {
+    var title: String {
+        switch self {
+        case .playingNow:
+            localized("Playing now")
+        case .filtersOff:
+            localized("Filters off")
+        }
     }
 }

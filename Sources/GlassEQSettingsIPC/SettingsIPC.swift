@@ -1022,7 +1022,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case importProfile(format: SettingsImportFormat, name: String, text: String)
     case importParsedProfile(EQProfile)
     case chooseImportFiles(mode: SettingsFileImportMode)
-    case startProgrammeComparison(EQProfile)
+    case startProgrammeComparison(EQProfile, reference: EQProgrammeComparisonReference)
     case selectProgrammeComparison(EQProgrammeComparisonSelection)
     case stopProgrammeComparison
     case resetDiagnostics
