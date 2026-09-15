@@ -330,12 +330,18 @@ struct EditorTab: View {
         guard analysis?.signature != signature else {
             return
         }
+        if let cached = controller.analysis(for: profile) {
+            lastRequestedAnalysisSignature = signature
+            analysis = cached
+            return
+        }
         if let updatedAnalysis = analysis?.updatingPreamp(
             profile: profile,
             sampleRate: sampleRate
         ) {
             lastRequestedAnalysisSignature = signature
             analysis = updatedAnalysis
+            controller.store(updatedAnalysis, for: profile.id)
             return
         }
 
@@ -358,6 +364,7 @@ struct EditorTab: View {
                 return
             }
             analysis = nextAnalysis
+            controller.store(nextAnalysis, for: profile.id)
         } catch {
             return
         }

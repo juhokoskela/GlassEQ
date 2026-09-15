@@ -51,6 +51,11 @@ final class SettingsController {
     private var storedProfile: EQProfile
     private var pendingNewProfileImportRoute: ProfileImportRoute?
 
+    // Frequency analyses by profile, warmed for every stored profile when a snapshot arrives so
+    // switching profiles shows the response without a recompute.
+    private var analyses: [UUID: EQAnalysisSnapshot] = [:]
+    @ObservationIgnored private var analysisWarmupTask: Task<Void, Never>?
+
     init(model: GlassEQSettingsViewModel) {
         self.model = model
         let snapshot = model.snapshot
@@ -302,7 +307,42 @@ final class SettingsController {
     // Called whenever the model publishes a new snapshot. The local selection survives as long as
     // the profile still exists; the draft is refreshed from the store only when it has no local
     // edits, so a delayed snapshot cannot discard work the user did in the meantime.
+    func analysis(for profile: EQProfile) -> EQAnalysisSnapshot? {
+        guard let analysis = analyses[profile.id],
+              analysis.signature == EQAnalysisSignature(profile: profile, sampleRate: analysisSampleRate) else {
+            return nil
+        }
+        return analysis
+    }
+
+    func store(_ analysis: EQAnalysisSnapshot, for profileID: UUID) {
+        analyses[profileID] = analysis
+    }
+
+    private func warmAnalyses() {
+        analysisWarmupTask?.cancel()
+        let profiles = snapshot.profiles.filter { analysis(for: $0) == nil }
+        guard !profiles.isEmpty else {
+            return
+        }
+        let sampleRate = analysisSampleRate
+        analysisWarmupTask = Task { [weak self] in
+            for profile in profiles {
+                guard !Task.isCancelled,
+                      let analysis = try? await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: sampleRate),
+                      let self else {
+                    return
+                }
+                // The editor may have stored a fresher analysis of an edited draft meanwhile.
+                if self.analyses[profile.id] == nil {
+                    self.analyses[profile.id] = analysis
+                }
+            }
+        }
+    }
+
     func reconcileWithSnapshot() {
+        warmAnalyses()
         let latest = snapshot
         guard let latestStored = latest.profiles.first(where: { $0.id == selectedProfileID }) else {
             adoptSnapshotSelection()
