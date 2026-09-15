@@ -27,6 +27,9 @@ struct ProfileSidebar: View {
                 }
         }
         .listStyle(.sidebar)
+        // Removing the toggle after the column width modifier drops the width back to a system
+        // minimum, so the order here matters.
+        .toolbar(removing: .sidebarToggle)
         .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 4) {

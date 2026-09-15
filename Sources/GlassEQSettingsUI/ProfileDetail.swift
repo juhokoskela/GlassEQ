@@ -7,7 +7,9 @@ struct ProfileDetail: View {
 
     var body: some View {
         let isReadOnly = controller.isEditingLocked
-        Group {
+        // The toolbar is anchored to this stack rather than to the switching content, so its
+        // items survive a tab change instead of being rebuilt mid-animation.
+        ZStack {
             switch controller.tab {
             case .editor:
                 EditorTab(controller: controller)
