@@ -679,3 +679,73 @@ The current policy is therefore deliberate. Smooth the edge, classify the cause,
 - The 16,384-tap minimum-phase response curve adds compute but no fixed tap-to-output latency. The head is immediate and the partitioned tail completes against frame deadlines.
 - Under severe contention, the measured failure was callback start starvation. Biquads and FIR failed in the same way, FIR render cost stayed far below one callback period, and the tail scheduler recorded no debt.
 - No application can make a low-latency stream continuous when macOS fails to schedule it for 10 to 45 ms. GlassEQ can soften the return and recover, but actually concealing the hole requires latency paid in advance.
+
+## macOS 27 AirPods buffer clamp
+
+On 2026-09-15, upgrading a MacBook Pro from macOS 26.6.2 (`25G83`) to macOS 27.0 (`26A428`) changed a successful 32-frame AirPods Pro 2 buffer request into a 256-frame result after music playback. Core Audio returned `OSStatus 0` for the request on both versions. The property readbacks and actual IOProc buffer sizes agreed with each other.
+
+GlassEQ exposed the symptom as “32 selected, 256 frames active.” Its supplied diagnostics showed 256-frame capture and output callbacks with no buffer escalations, deadline misses, or underruns. Standalone probes reproduced the clamp without GlassEQ, process taps, or DSP.
+
+### Reproduction and measurement
+
+The aggregate-only probe creates one private aggregate containing the selected physical output as its main subdevice, with physical input channels disabled in its description and drift compensation disabled for that subdevice. It requires an output-only device and verifies that the aggregate also exposes no input streams. It creates no process taps.
+
+The probe starts a silent output IOProc at the incumbent buffer size, records baseline callbacks, then requests 32 frames through `kAudioDevicePropertyBufferFrameSize` on the running aggregate. It reads physical and aggregate properties immediately and after nominal waits of 100 ms, 500 ms, and one second. After excluding that settlement interval, it records another callback histogram, stops the IOProc, and destroys the aggregate. The wrapper verifies the original physical buffer property and restores it if necessary.
+
+The histogram counts actual output frames by dividing the validated output buffer's `AudioBuffer.mDataByteSize` by the stream format's `mBytesPerFrame`. Storage is preallocated; the callback outputs silence and does not allocate or log. Self-tests cover frame counting, silence, settlement exclusion, and invalid buffers. The observation windows use sleeps, so total callback counts are not precision timing measurements or end-to-end latency measurements.
+
+The playback-state comparison on the first affected macOS 27 MBP was:
+
+1. Disconnect and reconnect AirPods, then run the aggregate-only probe before playing music: 32-frame callbacks were available.
+2. Play music, pause, and rerun without reconnecting: the request produced 256-frame callbacks.
+3. Quit the player and rerun: the 256-frame result persisted.
+4. Disconnect and reconnect AirPods, then test before playback again: 32-frame callbacks returned.
+
+A separate direct physical-output probe also produced 256-frame callbacks after playback and quitting the player, with no aggregate or process tap. It restored and verified the original 512-frame physical property afterward. An earlier direct-output run accepted 32 frames, but its preceding playback history was not recorded. The affected Mac's built-in speakers accepted GlassEQ's selected 32-frame size.
+
+### Same Mac before and after upgrading
+
+The controlled comparison used one MacBook Pro (`Mac17,9`, Apple M5 Pro) and the same AirPods Pro 2 (`A2698`) at 48 kHz, stereo Float32, eight bytes per frame. System Profiler reported AirPods and case firmware `9A348` in both captures. The Mac hardware identity, output UID, capture script, probe executable, probe source, and wrapper matched across the upgrade; archived files and SHA-256 manifests were verified.
+
+Both captures record the tester confirming this sequence: play music for about ten seconds, pause, leave the player open, and keep AirPods connected. GlassEQ was quit. The exact player/version and ANC/Spatial Audio settings were not recorded in the context fields.
+
+| Measurement | macOS 26.6.2 (`25G83`) | macOS 27.0 (`26A428`) |
+| --- | ---: | ---: |
+| Requested aggregate buffer | 32 frames | 32 frames |
+| Request status | 0 | 0 |
+| Aggregate property at every post-request readback | 32 frames | 256 frames |
+| Actual settled IOProc buffers | 3,521 callbacks of 32 frames | 458 callbacks of 256 frames |
+| Invalid buffers | 0 | 0 |
+| Physical buffer throughout and after cleanup | 512 frames | 512 frames |
+| Advertised physical and aggregate ranges | 15...960 frames | 15...960 frames |
+
+Every capture step exited successfully, and both aggregates were destroyed successfully. The short `coreaudiod` streams captured the corresponding decisions:
+
+```text
+macOS 26.6.2, 2026-09-15 19:49:31.939 EEST:
+  handle buffer frame size change, old 512 new 32
+
+macOS 27.0, 2026-09-15 20:11:58.490 EEST:
+  A2DPAudioDevice::GetCalculateBufferFrameSize with HAL Request : 32
+  A2DPAudioDevice::GetCalculateBufferFrameSize returning 256 for HAL Request : 32
+macOS 27.0, 2026-09-15 20:11:58.491 EEST:
+  handle buffer frame size change, old 512 new 256
+```
+
+The upgrade also changed the Mac's firmware:
+
+| Component | Before upgrade | After upgrade |
+| --- | --- | --- |
+| Mac system firmware | `18000.161.10` | `20457.1.29` |
+| Bluetooth controller MAC firmware | `1.544.0.0` | `26.72.12.0` |
+| Bluetooth controller PHY firmware | `2.1.527.0` | `3.1.46.0` |
+
+### Scope and status
+
+The same-Mac comparison ties the changed behavior to the upgrade. It does not isolate the OS software, Bluetooth driver, and controller firmware changes from one another, or establish whether Apple intended the new behavior. The direct-output and reconnect comparisons above were performed on the first affected MBP; they have not been repeated on the newly upgraded Mac.
+
+The unchanged advertised range does not establish that macOS will grant 32 frames after playback. A physical property of 512 frames also does not imply 512-frame aggregate callbacks: the before-upgrade run delivered real 32-frame buffers while the physical property stayed at 512. The 32-to-256 clamp is not evidence of an EQ overload, a process-tap requirement, a universal minimum for Bluetooth devices, or a measured increase in end-to-end acoustic latency.
+
+No reliable workaround for sustained playback is established. Reconnecting restored 32-frame callbacks before music playback in the isolation test, but that result does not show that requesting a small buffer before playback preserves it during listening. GlassEQ continues to show the selected and active sizes separately; the reported 256-frame size reflects the observed Core Audio result.
+
+As of 2026-09-15, Apple Feedback **FB24790758** is awaiting a response. No application buffer-policy change has been made for this finding.
