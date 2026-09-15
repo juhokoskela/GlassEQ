@@ -748,4 +748,4 @@ The unchanged advertised range does not establish that macOS will grant 32 frame
 
 No reliable workaround for sustained playback is established. Reconnecting restored 32-frame callbacks before music playback in the isolation test, but that result does not show that requesting a small buffer before playback preserves it during listening. GlassEQ continues to show the selected and active sizes separately; the reported 256-frame size reflects the observed Core Audio result.
 
-As of 2026-09-15, Apple Feedback **FB24790758** is awaiting a response. No application buffer-policy change has been made for this finding.
+As of 2026-09-15, Apple Feedback **FB24790758** is awaiting a response. Output settings show an inline notice on macOS 27 for Bluetooth and Bluetooth LE routes, describing the possible 256-frame result. The notice uses “may” because the hardware reproduction covers AirPods Pro 2. No application buffer-policy change has been made for this finding.

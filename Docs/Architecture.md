@@ -97,6 +97,8 @@ The separate-clock fallback reports its additional bridge diagnostics instead: b
 
 The Settings Output tab keeps the normal view to route health, route mode, output, active profile, selected and active buffer, measured added latency, and underrun events. Its collapsed **Stats for nerds** section exposes the timing percentiles, FIR head and tail timing, tail deadline margin, reliability counters, callback-size histograms, timestamp deltas, current route metadata, stream layouts, and device and aggregate safety offsets. App-owned observation, rebuild, recovery, escalation, and headset-fallback context survives runtime replacement; callback timing and frame counters describe only the current engine runtime. Resetting metrics starts both contexts at one visible timestamp.
 
+On macOS 27, the Audio Buffer card shows an inline notice for Bluetooth and Bluetooth LE outputs that macOS may apply a larger buffer than selected. The main app supplies Bluetooth transport metadata independently of its localized transport label; older IPC payloads without that optional field do not show the notice. A fixed/active size mismatch reports the actual size and saved preference without inferring an instability event. The notice does not change buffer selection or recovery policy. See the [macOS 27 measurements and Apple feedback reference](AggregateClockExperiment.md#macos-27-airpods-buffer-clamp).
+
 The diagnostic follows the current macOS output device and does not switch outputs itself.
 
 The release DSP benchmark accepts an optional EqualizerAPO GraphicEQ file so the convolution path can be measured with a real response:

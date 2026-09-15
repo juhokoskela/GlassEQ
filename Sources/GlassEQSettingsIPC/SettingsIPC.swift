@@ -142,6 +142,7 @@ public struct SettingsAudioStatusDTO: Codable, Equatable, Sendable {
 
 public struct SettingsAudioRouteDTO: Codable, Equatable, Sendable {
     public var transport: String
+    public var isBluetoothTransport: Bool?
     public var observedDeviceSampleRate: Double
     public var activeDeviceSampleRate: Double
     public var processingSampleRate: Double
@@ -158,6 +159,7 @@ public struct SettingsAudioRouteDTO: Codable, Equatable, Sendable {
 
     public init(
         transport: String = "Unknown",
+        isBluetoothTransport: Bool? = nil,
         observedDeviceSampleRate: Double = 0,
         activeDeviceSampleRate: Double = 0,
         processingSampleRate: Double = 0,
@@ -173,6 +175,7 @@ public struct SettingsAudioRouteDTO: Codable, Equatable, Sendable {
         aggregateOutputSafetyOffsetFrames: UInt32? = nil
     ) {
         self.transport = transport
+        self.isBluetoothTransport = isBluetoothTransport
         self.observedDeviceSampleRate = observedDeviceSampleRate
         self.activeDeviceSampleRate = activeDeviceSampleRate
         self.processingSampleRate = processingSampleRate

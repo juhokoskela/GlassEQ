@@ -55,11 +55,26 @@ struct OutputTab: View {
                     }
                 }
 
+                if shouldShowMacOS27BluetoothBufferNotice(
+                    route: diagnostics.route,
+                    operatingSystemMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+                ) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(localized("macOS 27 Bluetooth audio"), systemImage: "info.circle")
+                            .fontWeight(.semibold)
+                        Text(localized("macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."))
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
+                }
+
                 if snapshot.aggregateBuffer.defaultFrameSize > 16 {
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(localized("Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."))
-                            Text(localized("Smaller buffers remain available. On AirPods Pro, adjusting volume using the stems avoided the issue."))
+                            Text(localized("On AirPods Pro, adjusting volume using the stems avoided the issue."))
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -69,7 +84,10 @@ struct OutputTab: View {
                     }
                 }
             } footer: {
-                Text(aggregateBufferExplanation)
+                Text(outputBufferExplanation(
+                    aggregateBuffer: snapshot.aggregateBuffer,
+                    currentFrameSize: snapshot.currentOutputBufferFrameSize
+                ))
             }
 
             Section(localized("Profile Mapping")) {
@@ -152,26 +170,6 @@ struct OutputTab: View {
         return profile.name
     }
 
-    private var aggregateBufferExplanation: String {
-        guard snapshot.aggregateBuffer.isAvailable else {
-            return localized("This route uses GlassEQ's compatibility audio path.")
-        }
-        if snapshot.aggregateBuffer.mode == .automatic {
-            return localized(
-                "Automatic starts at \(snapshot.aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions. It is currently \(snapshot.aggregateBuffer.automaticFrameSize) frames."
-            )
-        }
-        if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
-           snapshot.currentOutputBufferFrameSize > fixedFrameSize {
-            return localized(
-                "The fixed \(fixedFrameSize)-frame setting became unstable. GlassEQ is temporarily using \(snapshot.currentOutputBufferFrameSize) frames for this session."
-            )
-        }
-        return localized(
-            "A fixed buffer keeps this preference. GlassEQ may temporarily use a safer buffer if repeated deadline misses continue after a rebuild."
-        )
-    }
-
     private var diagnostics: SettingsAudioDiagnosticsDTO {
         snapshot.metrics.diagnostics
     }
@@ -210,6 +208,36 @@ struct OutputTab: View {
             currentFrameSize: snapshot.currentOutputBufferFrameSize
         )
     }
+}
+
+func shouldShowMacOS27BluetoothBufferNotice(
+    route: SettingsAudioRouteDTO,
+    operatingSystemMajorVersion: Int
+) -> Bool {
+    operatingSystemMajorVersion == 27 && route.isBluetoothTransport == true
+}
+
+func outputBufferExplanation(
+    aggregateBuffer: SettingsAggregateBufferDTO,
+    currentFrameSize: UInt32
+) -> String {
+    guard aggregateBuffer.isAvailable else {
+        return localized("This route uses GlassEQ's compatibility audio path.")
+    }
+    if aggregateBuffer.mode == .automatic {
+        return localized(
+            "Automatic starts at \(aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions. It is currently \(aggregateBuffer.automaticFrameSize) frames."
+        )
+    }
+    if let fixedFrameSize = aggregateBuffer.mode.fixedFrameSize,
+       currentFrameSize > fixedFrameSize {
+        return localized(
+            "The active buffer is \(currentFrameSize) frames. Your \(fixedFrameSize)-frame preference is saved."
+        )
+    }
+    return localized(
+        "A fixed buffer keeps this preference. GlassEQ may temporarily use a safer buffer if repeated deadline misses continue after a rebuild."
+    )
 }
 
 func outputBufferSummary(

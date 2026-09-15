@@ -1305,6 +1305,7 @@ final class GlassEQAppModel {
             ),
             route: SettingsAudioRouteDTO(
                 transport: Self.transportDescription(diagnosticsTransportType),
+                isBluetoothTransport: currentOutputIsBluetooth,
                 observedDeviceSampleRate: diagnosticsObservedDeviceSampleRate,
                 activeDeviceSampleRate: currentOutputSampleRate,
                 processingSampleRate: processingSampleRate,
