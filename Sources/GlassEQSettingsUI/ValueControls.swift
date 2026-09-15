@@ -1,5 +1,14 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    @Entry var editorContext: EditorContextID?
+}
+
+struct EditableValueContext: Equatable {
+    var editor: EditorContextID?
+    var valueID: UUID?
+}
+
 enum SliderScale {
     case linear
     case logarithmic
@@ -13,6 +22,7 @@ struct SliderRow: View {
     var step: Double
     var suffix: String
     var scale = SliderScale.linear
+    var valueID: UUID?
 
     var body: some View {
         LabeledContent(title) {
@@ -24,7 +34,8 @@ struct SliderRow: View {
                 title: title,
                 value: $value,
                 range: validationRange ?? range,
-                display: label
+                display: label,
+                valueID: valueID
             )
         }
     }
@@ -72,8 +83,10 @@ struct EditableValueText: View {
     var range: ClosedRange<Double>
     var display: String
     var width: CGFloat = 64
+    var valueID: UUID?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.editorContext) private var editorContext
     @State private var isEditing = false
     @State private var editText = ""
     @State private var editSession = EditableValueEditSession()
@@ -111,7 +124,7 @@ struct EditableValueText: View {
             } else {
                 Button {
                     editText = editableNumberText(value)
-                    editSession.begin(value: value)
+                    editSession.begin(value: value, context: context)
                     isEditing = true
                 } label: {
                     Text(display)
@@ -129,6 +142,20 @@ struct EditableValueText: View {
         .accessibilityLabel(Text(localized("\(title) value")))
         .accessibilityValue(Text(display))
         .accessibilityHint(Text(localized("Edits \(title.lowercased()) as text")))
+        .onChange(of: context) {
+            if isEditing { finishEditing() }
+        }
+        .transaction(value: context) { $0.disablesAnimations = true }
+    }
+
+    private var context: EditableValueContext {
+        EditableValueContext(editor: editorContext, valueID: valueID)
+    }
+
+    private func finishEditing() {
+        editSession.finish()
+        isEditing = false
+        isFocused = false
     }
 
     private func commit() {
@@ -139,20 +166,19 @@ struct EditableValueText: View {
             cancel()
             return
         }
-        editSession.finish()
-        isEditing = false
+        finishEditing()
     }
 
     private func cancel() {
-        if let originalValue = editSession.cancel() {
+        if editSession.isActive(in: context), let originalValue = editSession.cancel() {
             value = originalValue
         }
-        isEditing = false
+        finishEditing()
     }
 
     @discardableResult
     private func updateValue(from text: String) -> Bool {
-        guard isEditing,
+        guard isEditing, editSession.isActive(in: context),
               let parsed = clampedEditableNumber(text, range: range) else {
             return false
         }
@@ -165,10 +191,16 @@ struct EditableValueText: View {
 struct EditableValueEditSession: Equatable {
     private var originalValue: Double?
     private var textDrivenValue: Double?
+    private var context: EditableValueContext?
 
-    mutating func begin(value: Double) {
+    mutating func begin(value: Double, context: EditableValueContext = EditableValueContext()) {
         originalValue = value
         textDrivenValue = nil
+        self.context = context
+    }
+
+    func isActive(in context: EditableValueContext) -> Bool {
+        originalValue != nil && self.context == context
     }
 
     mutating func recordTextDrivenValue(_ value: Double) {
@@ -193,5 +225,6 @@ struct EditableValueEditSession: Equatable {
     mutating func finish() {
         originalValue = nil
         textDrivenValue = nil
+        context = nil
     }
 }

@@ -200,8 +200,6 @@ private extension EQChannelMode {
 
 struct EditorTab: View {
     @Bindable var controller: SettingsController
-    @State private var analysis: EQAnalysisSnapshot?
-    @State private var lastRequestedAnalysisSignature: EQAnalysisSignature?
 
     var body: some View {
         let draftProfile = controller.draftProfile
@@ -246,57 +244,19 @@ struct EditorTab: View {
                         step: 0.1,
                         suffix: "dB"
                     )
-                    .id(controller.editorContextID)
 
                     Toggle(localized("Bypass"), isOn: $controller.draftProfile.isBypassed)
                         .toggleStyle(.switch)
                         .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
 
-                    if let analysis {
-                        HeadroomRow(
-                            profile: $controller.draftProfile,
-                            recommendedPreampDB: analysis.recommendedPreampDB
-                        )
-                    } else {
-                        PendingHeadroomRow()
-                    }
+                    EditorHeadroomRow(controller: controller)
                 }
 
-                Section {
-                    // The most recent analysis stays on screen while a newer one computes. Swapping
-                    // in a placeholder on every slider tick would flicker and break the curve animation.
-                    if let analysis {
-                        FrequencyResponseGraph(analysis: analysis)
-                            .frame(height: 165)
-                            .accessibilityLabel(Text(localized("Frequency response graph")))
-                            .accessibilityValue(Text(analysis.accessibilitySummary))
-                            .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
-                        if let inactiveFilterSummary = analysis.inactiveFilterSummary {
-                            Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                    } else {
-                        VStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(localized("Analyzing frequency response…"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 165)
-                        .accessibilityElement(children: .combine)
-                    }
-                } header: {
-                    HStack {
-                        Text(localized("Frequency Response"))
-                        Spacer()
-                        if draftProfile.channelMode == .stereo {
-                            GraphLegendItem(color: .blue, title: localized("Left"))
-                            GraphLegendItem(color: .orange, title: localized("Right"))
-                        }
-                    }
-                }
+                EditorResponseSection(
+                    profile: draftProfile,
+                    sampleRate: controller.analysisSampleRate,
+                    cache: controller.analysisCache
+                )
 
                 switch draftProfile.mode {
                 case .parametric:
@@ -314,59 +274,65 @@ struct EditorTab: View {
             .disabled(controller.isEditingLocked)
         }
         .formStyle(.grouped)
-        .task(id: analysisSignature) {
-            await refreshAnalysis()
+        .environment(\.editorContext, controller.editorContextID)
+    }
+}
+
+private struct EditorHeadroomRow: View {
+    @Bindable var controller: SettingsController
+
+    var body: some View {
+        if let preamp = controller.analysisCache.analysis(
+            for: controller.draftProfile, sampleRate: controller.analysisSampleRate
+        )?.recommendedPreampDB {
+            HeadroomRow(profile: $controller.draftProfile, recommendedPreampDB: preamp)
+        } else {
+            PendingHeadroomRow()
         }
     }
+}
 
-    private var analysisSignature: EQAnalysisSignature {
-        EQAnalysisSignature(profile: controller.draftProfile, sampleRate: controller.analysisSampleRate)
-    }
+private struct EditorResponseSection: View {
+    var profile: EQProfile
+    var sampleRate: Double
+    var cache: EQAnalysisCache
 
-    private func refreshAnalysis() async {
-        let profile = controller.draftProfile
-        let sampleRate = controller.analysisSampleRate
-        let signature = EQAnalysisSignature(profile: profile, sampleRate: sampleRate)
-        guard analysis?.signature != signature else {
-            return
-        }
-        if let cached = controller.analysis(for: profile) {
-            lastRequestedAnalysisSignature = signature
-            analysis = cached
-            return
-        }
-        if let updatedAnalysis = analysis?.updatingPreamp(
-            profile: profile,
-            sampleRate: sampleRate
-        ) {
-            lastRequestedAnalysisSignature = signature
-            analysis = updatedAnalysis
-            controller.store(updatedAnalysis, for: profile.id)
-            return
-        }
-
-        let previousSignature = lastRequestedAnalysisSignature ?? analysis?.signature
-        lastRequestedAnalysisSignature = signature
-        let shouldDebounce = previousSignature?.mode == signature.mode
-            && previousSignature?.channelMode == signature.channelMode
-
-        do {
-            if shouldDebounce {
-                try await Task.sleep(for: .milliseconds(50))
+    var body: some View {
+        let analysis = cache.analysis(for: profile, sampleRate: sampleRate)
+        Section {
+            // The most recent analysis stays on screen while a newer one computes. Swapping
+            // in a placeholder on every slider tick would flicker and break the curve animation.
+            if let analysis {
+                FrequencyResponseGraph(analysis: analysis)
+                    .frame(height: 165)
+                    .accessibilityLabel(Text(localized("Frequency response graph")))
+                    .accessibilityValue(Text(analysis.accessibilitySummary))
+                    .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
+                if let inactiveFilterSummary = analysis.inactiveFilterSummary {
+                    Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(localized("Analyzing frequency response…"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 165)
+                .accessibilityElement(children: .combine)
             }
-            let nextAnalysis = try await EQAnalysisSnapshot.analyze(
-                profile: profile,
-                sampleRate: sampleRate
-            )
-            try Task.checkCancellation()
-
-            guard analysisSignature == nextAnalysis.signature else {
-                return
+        } header: {
+            HStack {
+                Text(localized("Frequency Response"))
+                Spacer()
+                if profile.channelMode == .stereo {
+                    GraphLegendItem(color: .blue, title: localized("Left"))
+                    GraphLegendItem(color: .orange, title: localized("Right"))
+                }
             }
-            analysis = nextAnalysis
-            controller.store(nextAnalysis, for: profile.id)
-        } catch {
-            return
         }
     }
 }

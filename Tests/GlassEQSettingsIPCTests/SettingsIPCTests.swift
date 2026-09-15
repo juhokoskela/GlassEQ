@@ -147,6 +147,42 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func reusedValueControlRejectsEditsFromAnotherProfileChannelFilterOrRevert() {
+        let editor = EditorContextID(profileID: UUID(), channel: .linked, generation: 0)
+        let original = EditableValueContext(editor: editor, valueID: UUID())
+        var session = EditableValueEditSession()
+        session.begin(value: -3, context: original)
+        #expect(session.isActive(in: original))
+        for changed in [
+            EditableValueContext(editor: EditorContextID(profileID: UUID(), channel: .linked, generation: 0), valueID: original.valueID),
+            EditableValueContext(editor: EditorContextID(profileID: editor.profileID, channel: .right, generation: 0), valueID: original.valueID),
+            EditableValueContext(editor: EditorContextID(profileID: editor.profileID, channel: .linked, generation: 1), valueID: original.valueID),
+            EditableValueContext(editor: editor, valueID: UUID())
+        ] {
+            #expect(!session.isActive(in: changed))
+        }
+        session.finish()
+        #expect(!session.isActive(in: original))
+        #expect(session.cancel() == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func decimalFormatStylePreservesNumericLabels(signed: Bool) {
+        for digits in 0...2 {
+            let reference = NumberFormatter()
+            reference.locale = .autoupdatingCurrent
+            reference.numberStyle = .decimal
+            reference.minimumFractionDigits = digits
+            reference.maximumFractionDigits = digits
+            if signed { reference.positivePrefix = reference.plusSign }
+            for value in [-120.0, -6.125, -0.0, 0, 0.707, 1.25, 1_000, 20_000] {
+                #expect(localizedDecimal(value, minimumFractionDigits: digits, maximumFractionDigits: digits, signed: signed)
+                    == reference.string(from: NSNumber(value: value)))
+            }
+        }
+    }
+
+    @Test
     @MainActor
     func delayedSnapshotPreservesNewerLocalDraftAndSelection() {
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
@@ -915,8 +951,9 @@ struct SettingsIPCTests {
 
         #expect(flat.signature != shaped.signature)
         #expect(abs((shaped.linkedPoints.first?.magnitudeDB ?? 0) - 6) < 0.000_001)
-        #expect(shaped.recommendedPreampDB < -6.6)
-        #expect(shaped.recommendedPreampDB > -6.8)
+        let recommendedPreampDB = try #require(shaped.recommendedPreampDB)
+        #expect(recommendedPreampDB < -6.6)
+        #expect(recommendedPreampDB > -6.8)
     }
 
     @Test

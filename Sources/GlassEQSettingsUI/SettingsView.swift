@@ -66,10 +66,15 @@ public struct SettingsView: View {
                 controller.show(requestedSection)
             }
             controller.reconcileWithSnapshot()
+            controller.startAnalyses()
             controller.updateMetricsPolling()
         }
         .onDisappear {
+            controller.stopAnalyses()
             controller.stopMetricsPolling()
+        }
+        .onChange(of: controller.analysisSampleRate) {
+            controller.refreshAnalyses()
         }
         .onChange(of: controller.tab) {
             controller.updateMetricsPolling()

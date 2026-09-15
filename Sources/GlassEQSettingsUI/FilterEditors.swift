@@ -106,28 +106,40 @@ struct GraphicFilterEditor: View {
 
     var body: some View {
         Section(localized("Bands")) {
-            ForEach($filters) { $filter in
-                HStack {
-                    Text(filter.frequency.frequencyLabel)
-                        .font(.caption.monospacedDigit())
-                        .frame(width: 64, alignment: .trailing)
-                    Slider(value: $filter.quantizedGainDB, in: -12...12)
-                        .accessibilityLabel(Text(localized("Gain at \(filter.frequency.frequencyLabel)")))
-                        .accessibilityValue(Text(filter.gainDB.dbLabel))
-                        .accessibilityHint(Text(localized("Adjusts this graphic EQ band")))
-                    EditableValueText(
-                        title: localized("Gain"),
-                        value: $filter.gainDB,
-                        range: ProfilePersistence.gainRange,
-                        display: filter.gainDB.dbLabel,
-                        width: 56
-                    )
+            // Graphic bands are fixed slots; switching profiles only replaces their values.
+            LazyVStack(spacing: 12) {
+                ForEach(filters.indices, id: \.self) { index in
+                    GraphicFilterRow(filter: $filters[index])
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(Text(localized("Graphic filter row")))
-                .accessibilityValue(Text(localized("\(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel)")))
             }
         }
+    }
+}
+
+private struct GraphicFilterRow: View {
+    @Binding var filter: EQFilter
+
+    var body: some View {
+        HStack {
+            Text(filter.frequency.frequencyLabel)
+                .font(.caption.monospacedDigit())
+                .frame(width: 64, alignment: .trailing)
+            Slider(value: $filter.quantizedGainDB, in: -12...12)
+                .accessibilityLabel(Text(localized("Gain at \(filter.frequency.frequencyLabel)")))
+                .accessibilityValue(Text(filter.gainDB.dbLabel))
+                .accessibilityHint(Text(localized("Adjusts this graphic EQ band")))
+            EditableValueText(
+                title: localized("Gain"),
+                value: $filter.gainDB,
+                range: ProfilePersistence.gainRange,
+                display: filter.gainDB.dbLabel,
+                width: 56,
+                valueID: filter.id
+            )
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(localized("Graphic filter row")))
+        .accessibilityValue(Text(localized("\(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel)")))
     }
 }
 
@@ -141,7 +153,8 @@ struct ParametricFilterEditor: View {
                 VStack(alignment: .leading, spacing: 8) {
                     FilterListHeader()
                     VStack(spacing: 4) {
-                        ForEach(filters) { filter in
+                        ForEach(filters.indices, id: \.self) { index in
+                            let filter = filters[index]
                             CompactFilterRow(
                                 filter: filter,
                                 isSelected: filter.id == effectiveSelectedFilterID
@@ -168,7 +181,6 @@ struct ParametricFilterEditor: View {
                             selectedFilterID = filters.first?.id
                         }
                     )
-                    .id(filters[index].id)
                     .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
                 } else {
                     ContentUnavailableView(localized("No Filter Selected"), systemImage: "slider.horizontal.3")
@@ -309,7 +321,8 @@ struct ParametricFilterInspector: View {
                 validationRange: ProfilePersistence.frequencyRange,
                 step: 1,
                 suffix: "Hz",
-                scale: .logarithmic
+                scale: .logarithmic,
+                valueID: filter.id
             )
             SliderRow(
                 title: localized("Gain"),
@@ -317,7 +330,8 @@ struct ParametricFilterInspector: View {
                 range: -24...24,
                 validationRange: ProfilePersistence.gainRange,
                 step: 0.1,
-                suffix: "dB"
+                suffix: "dB",
+                valueID: filter.id
             )
             SliderRow(
                 title: localized("Q"),
@@ -325,7 +339,8 @@ struct ParametricFilterInspector: View {
                 range: 0.1...10,
                 validationRange: ProfilePersistence.qRange,
                 step: 0.01,
-                suffix: ""
+                suffix: "",
+                valueID: filter.id
             )
         }
     }

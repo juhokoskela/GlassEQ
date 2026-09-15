@@ -7,6 +7,21 @@ import Testing
 @Suite
 struct EQAnalysisSnapshotTests {
     @Test
+    func responseIsAvailableBeforeHeadroomAndPreampUpdatesKeepItPending() async throws {
+        let profile = impulseResponseProfile(samples: [1, 0.5, -0.25])
+        let response = try await EQAnalysisSnapshot.response(profile: profile, sampleRate: 48_000)
+        #expect(!response.linkedPoints.isEmpty)
+        #expect(response.recommendedPreampDB == nil)
+        var quieter = profile
+        quieter.preampDB = -6
+        #expect(response.updatingPreamp(profile: quieter, sampleRate: 48_000)?.recommendedPreampDB == nil)
+        let complete = try await response.analyzingHeadroom(profile: profile)
+        #expect(complete.linkedPoints == response.linkedPoints)
+        #expect(complete.recommendedPreampDB != nil)
+        #expect(complete == (try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)))
+    }
+
+    @Test
     func asynchronousAnalysisMatchesCoreReference() async throws {
         let sampleRate = 48_000.0
         let leftSource = EQConvolutionSource.impulseResponse(ImpulseResponseSource(
