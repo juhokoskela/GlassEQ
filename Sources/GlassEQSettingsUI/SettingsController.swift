@@ -81,6 +81,14 @@ final class SettingsController {
         isProfileStoreProtected || snapshot.programmeComparison.isActive
     }
 
+    var draftName: String {
+        get { draftProfile.name }
+        set {
+            guard !isEditingLocked else { return }
+            draftProfile.name = newValue
+        }
+    }
+
     var hasCurrentOutput: Bool {
         !snapshot.currentOutputUID.isEmpty
     }

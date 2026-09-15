@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 @_spi(GlassEQSettingsUI) import GlassEQCore
 import GlassEQSettingsIPC
+import SwiftUI
 import Testing
 @testable import GlassEQSettings
 @testable import GlassEQSettingsUI
@@ -180,6 +181,36 @@ struct SettingsIPCTests {
                     == reference.string(from: NSNumber(value: value)))
             }
         }
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor
+    func profileTitleBindingHonorsTheCurrentEditingLock(protectedStore: Bool) {
+        let profile = EQProfile(name: "Original", mode: .parametric, filters: [])
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [profile]
+        snapshot.selectedProfileID = profile.id
+        snapshot.draftProfile = profile
+        let model = GlassEQSettingsViewModel(snapshot: snapshot)
+        @Bindable var controller = SettingsController(model: model)
+        let title = $controller.draftName
+
+        title.wrappedValue = "Renamed"
+        #expect(controller.draftProfile.name == "Renamed")
+
+        snapshot.profileStoreProtection.isProtected = protectedStore
+        snapshot.programmeComparison.isActive = !protectedStore
+        model.accept(snapshot: snapshot)
+        #expect(controller.isEditingLocked)
+        title.wrappedValue = "Blocked"
+        #expect(controller.draftProfile.name == "Renamed")
+        #expect(title.wrappedValue == "Renamed")
+
+        snapshot.profileStoreProtection.isProtected = false
+        snapshot.programmeComparison.isActive = false
+        model.accept(snapshot: snapshot)
+        title.wrappedValue = "Unlocked"
+        #expect(controller.draftProfile.name == "Unlocked")
     }
 
     @Test

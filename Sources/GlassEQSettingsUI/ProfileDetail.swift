@@ -30,7 +30,7 @@ struct ProfileDetail: View {
                 ApplyBar(controller: controller)
             }
         }
-        .navigationTitle($controller.draftProfile.name)
+        .navigationTitle($controller.draftName)
         .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItem(placement: .principal) {
