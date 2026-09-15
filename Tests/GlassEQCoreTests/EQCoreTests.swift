@@ -1384,6 +1384,69 @@ struct EQCoreTests {
     }
 
     @Test
+    func programmeComparisonWarmsConvolutionReferenceBeforeSelectingIt() throws {
+        let draft = EQProfile(name: "Draft", mode: .parametric, filters: [])
+        var impulse = [Float](repeating: 0, count: PreparedConvolutionKernel.tapCount)
+        impulse[impulse.count - 1] = 0.5
+        let reference = EQProfile(
+            name: "Delayed reference",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(sampleRate: 48_000, samples: impulse))
+        )
+        let draftConfiguration = EQConfiguration(profile: draft, sampleRate: 48_000, channelCount: 1)
+        let referenceProcessor = EQProcessor(renderConfiguration: try EQRenderConfiguration.prepare(
+            profile: reference,
+            sampleRate: 48_000,
+            channelCount: 1
+        ))
+        let requiredWarmupFrames = referenceProcessor.requiredWarmupFrames
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: draftConfiguration),
+            maximumFrameCount: 480,
+            channelCount: 1,
+            sampleRate: 48_000,
+            blendSeconds: 4.0 / 48_000
+        )
+        let didBeginComparison = transition.beginProgrammeComparison(
+            equalizedProcessor: EQProcessor(configuration: draftConfiguration),
+            referenceProcessor: referenceProcessor
+        )
+        #expect(didBeginComparison)
+        for frameCount in [480, 480, 4] {
+            var samples = [Float](repeating: 0.25, count: frameCount)
+            _ = samples.withUnsafeMutableBufferPointer {
+                transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
+            }
+        }
+        #expect(!transition.isTransitioning)
+        transition.setProgrammeComparisonSelection(.reference)
+
+        let chunkSizes = [1, 63, 127, 480]
+        var renderedFrames = 0
+        var chunkIndex = 0
+        var stayedAudible = true
+        while renderedFrames < requiredWarmupFrames {
+            let frameCount = min(chunkSizes[chunkIndex % chunkSizes.count], requiredWarmupFrames - renderedFrames)
+            var samples = [Float](repeating: 0.25, count: frameCount)
+            _ = samples.withUnsafeMutableBufferPointer {
+                transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
+            }
+            stayedAudible = stayedAudible && samples.allSatisfy { abs($0 - 0.25) < 0.000_001 }
+            renderedFrames += frameCount
+            chunkIndex += 1
+        }
+        #expect(stayedAudible)
+
+        var blend = [Float](repeating: 0.25, count: 4)
+        _ = blend.withUnsafeMutableBufferPointer {
+            transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 1)
+        }
+        #expect(abs(blend[0] - 0.25) < 0.000_001)
+        #expect(abs(blend[3] - 0.125) < 0.000_001)
+    }
+
+    @Test
     func programmeComparisonPublishesReadinessDuringSteadyStateRendering() {
         let sampleRate = 48_000.0
         let blockFrames = 4_800

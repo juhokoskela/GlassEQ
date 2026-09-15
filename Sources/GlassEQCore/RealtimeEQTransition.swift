@@ -327,7 +327,7 @@ public struct RealtimeEQTransition: Sendable {
             if let referenceProcessor = pendingComparisonReferenceProcessor {
                 pendingComparisonReferenceProcessor = nil
                 comparisonReferenceProcessor = referenceProcessor
-                comparisonWarmupFramesRemaining = warmupFrameCount
+                comparisonWarmupFramesRemaining = max(warmupFrameCount, referenceProcessor.requiredWarmupFrames)
                 comparisonSelection = .equalized
                 comparisonSelectionStartWeight = 0
                 comparisonSelectionWeight = 0

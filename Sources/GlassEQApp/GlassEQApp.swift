@@ -601,7 +601,6 @@ final class GlassEQAppModel {
     var draftProfile: EQProfile
     var engineMetrics = AudioEngineMetrics()
     var programmeComparison = EQProgrammeComparisonSnapshot()
-    private var programmeComparisonReturnProfile: EQProfile?
     private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped
 
     private let engine: any AudioEngineControlling
@@ -1167,7 +1166,7 @@ final class GlassEQAppModel {
             statusMessage: statusMessage,
             metrics: settingsMetricsSnapshot(),
             isRunning: isRunning,
-            programmeComparison: settingsProgrammeComparisonSnapshot(),
+            programmeComparison: programmeComparison,
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
     }
@@ -1217,15 +1216,6 @@ final class GlassEQAppModel {
         return SystemTapAudioEngine.shouldUseSeparateClockBackend(for: output)
             ? 0
             : currentOutputSampleRate
-    }
-
-    private func settingsProgrammeComparisonSnapshot() -> EQProgrammeComparisonSnapshot {
-        guard programmeComparisonReturnProfile != nil else {
-            return EQProgrammeComparisonSnapshot()
-        }
-        var snapshot = programmeComparison
-        snapshot.isActive = true
-        return snapshot
     }
 
     private func aggregateBufferSnapshot() -> SettingsAggregateBufferDTO {
@@ -2114,7 +2104,7 @@ final class GlassEQAppModel {
         profile: EQProfile,
         reference: EQProgrammeComparisonReference
     ) throws {
-        guard programmeComparisonReturnProfile == nil else {
+        guard !programmeComparison.isActive else {
             return
         }
         try ensureCompatibleWithCurrentOutput(profile)
@@ -2145,7 +2135,6 @@ final class GlassEQAppModel {
             )
         }
 
-        programmeComparisonReturnProfile = activeProfile
         programmeComparison = EQProgrammeComparisonSnapshot(
             isActive: true,
             reference: reference,
@@ -2162,7 +2151,7 @@ final class GlassEQAppModel {
     }
 
     func selectProgrammeComparison(_ selection: EQProgrammeComparisonSelection) {
-        guard programmeComparisonReturnProfile != nil else {
+        guard programmeComparison.isActive else {
             return
         }
         programmeComparison.selection = selection
@@ -2171,7 +2160,7 @@ final class GlassEQAppModel {
     }
 
     func stopProgrammeComparison() {
-        guard let returnProfile = programmeComparisonReturnProfile else {
+        guard programmeComparison.isActive else {
             return
         }
         engine.setProgrammeComparisonSelection(.equalized)
@@ -2179,10 +2168,10 @@ final class GlassEQAppModel {
         if lifecycleState == .running,
            isRunning,
            engineStartTask == nil {
-            if engine.updateDSP(profile: returnProfile) != nil {
+            if engine.updateDSP(profile: activeProfile) != nil {
                 statusMessage = processingStatus(
                     outputName: currentOutputName,
-                    profileName: returnProfile.name
+                    profileName: activeProfile.name
                 )
             } else {
                 restartEngineWithActiveProfile()
@@ -2197,7 +2186,7 @@ final class GlassEQAppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard let self,
-                      self.programmeComparisonReturnProfile != nil else {
+                      self.programmeComparison.isActive else {
                     return
                 }
                 var next = self.engine.snapshotProgrammeComparison()
@@ -2216,13 +2205,12 @@ final class GlassEQAppModel {
         restoringEqualizedRendererIfRunning: Bool = false
     ) {
         if restoringEqualizedRendererIfRunning,
-           programmeComparisonReturnProfile != nil,
+           programmeComparison.isActive,
            case .running = engine.state {
             engine.setProgrammeComparisonSelection(.equalized)
         }
         programmeComparisonTask?.cancel()
         programmeComparisonTask = nil
-        programmeComparisonReturnProfile = nil
         programmeComparison = EQProgrammeComparisonSnapshot()
     }
 
