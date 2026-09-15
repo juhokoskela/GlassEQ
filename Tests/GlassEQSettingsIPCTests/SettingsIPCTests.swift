@@ -742,6 +742,39 @@ struct SettingsIPCTests {
     }
 
     @Test
+    func bluetoothRouteMetadataRoundTripsAndDecodesOlderPayloads() throws {
+        let route = SettingsAudioRouteDTO(transport: "Bluetooth LE", isBluetoothTransport: true)
+        let encoded = try JSONEncoder().encode(route)
+        #expect(try JSONDecoder().decode(SettingsAudioRouteDTO.self, from: encoded) == route)
+
+        var legacy = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "isBluetoothTransport")
+        let decoded = try JSONDecoder().decode(
+            SettingsAudioRouteDTO.self,
+            from: JSONSerialization.data(withJSONObject: legacy)
+        )
+        #expect(decoded.isBluetoothTransport == nil)
+        #expect(!shouldShowMacOS27BluetoothBufferNotice(route: decoded, operatingSystemMajorVersion: 27))
+    }
+
+    @Test(arguments: [26, 27, 28], [true, false])
+    func bluetoothBufferNoticeUsesOSAndTransportMetadata(majorVersion: Int, isBluetooth: Bool) {
+        let route = SettingsAudioRouteDTO(transport: "Localized transport name", isBluetoothTransport: isBluetooth)
+        #expect(shouldShowMacOS27BluetoothBufferNotice(
+            route: route,
+            operatingSystemMajorVersion: majorVersion
+        ) == (majorVersion == 27 && isBluetooth))
+    }
+
+    @Test
+    func clampedFixedBufferExplanationDoesNotInventAnInstabilityEvent() {
+        #expect(outputBufferExplanation(
+            aggregateBuffer: SettingsAggregateBufferDTO(mode: .frames32, isAvailable: true),
+            currentFrameSize: 256
+        ) == "The active buffer is 256 frames. Your 32-frame preference is saved.")
+    }
+
+    @Test
     func outputBufferSummaryInterpolatesFixedAndAutomaticFrameSizes() {
         #expect(outputBufferSummary(
             aggregateBuffer: SettingsAggregateBufferDTO(

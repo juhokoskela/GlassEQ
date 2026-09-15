@@ -11,6 +11,24 @@ import Testing
 @MainActor
 @Suite
 struct GlassEQAppModelLifecycleTests {
+    @Test(arguments: [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeUSB])
+    func outputDiagnosticsPublishBluetoothTransportMetadata(transport: UInt32) async {
+        let output = makeOutput(uid: "transport-output", name: "Output", transportType: transport)
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers,
+            outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running }
+
+        #expect(model.settingsSnapshot().metrics.diagnostics.route.isBluetoothTransport == output.isBluetoothTransport)
+    }
+
     @Test
     func outputDiagnosticsDescribeTheRuntimeAndSurviveRebuilds() async throws {
         let output = makeOutput(
