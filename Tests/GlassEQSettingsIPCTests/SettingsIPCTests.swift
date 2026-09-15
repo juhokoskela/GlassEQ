@@ -549,7 +549,7 @@ struct SettingsIPCTests {
         let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
         let commands: [SettingsCommand] = [
             .startProgrammeComparison(profile),
-            .selectProgrammeComparison(.filtersOff),
+            .selectProgrammeComparison(.reference),
             .stopProgrammeComparison
         ]
 
@@ -1212,7 +1212,7 @@ struct SettingsIPCTests {
             programmeComparison: EQProgrammeComparisonSnapshot(
                 isActive: true,
                 isReady: true,
-                selection: .filtersOff,
+                selection: .reference,
                 equalizedAttenuationDB: -2.5
             ),
             activeProfileID: profileID,

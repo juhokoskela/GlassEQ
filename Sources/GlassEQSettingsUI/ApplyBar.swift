@@ -62,7 +62,7 @@ struct ProgrammeComparisonSection: View {
                         Text(localized("A · EQ"))
                             .tag(EQProgrammeComparisonSelection.equalized)
                         Text(localized("B · Filters off"))
-                            .tag(EQProgrammeComparisonSelection.filtersOff)
+                            .tag(EQProgrammeComparisonSelection.reference)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
@@ -97,9 +97,9 @@ struct ProgrammeComparisonSection: View {
                 "Matched · EQ \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
             )
         }
-        if programmeComparison.filtersOffAttenuationDB < -0.05 {
+        if programmeComparison.referenceAttenuationDB < -0.05 {
             return localized(
-                "Matched · Filters off \(localizedDecibels(programmeComparison.filtersOffAttenuationDB))"
+                "Matched · Filters off \(localizedDecibels(programmeComparison.referenceAttenuationDB))"
             )
         }
         return localized("Matched · no level adjustment needed")

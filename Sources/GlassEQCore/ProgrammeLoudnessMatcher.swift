@@ -1,7 +1,7 @@
 import Foundation
 
 public extension EQProfile {
-    var programmeComparisonReference: EQProfile {
+    var filtersOffReference: EQProfile {
         var reference = self
         reference.filters = []
         reference.leftFilters = []
@@ -19,7 +19,7 @@ public extension EQProfile {
 
 public enum EQProgrammeComparisonSelection: UInt8, Codable, Equatable, Sendable {
     case equalized
-    case filtersOff
+    case reference
 }
 
 public struct EQProgrammeComparisonSnapshot: Codable, Equatable, Sendable {
@@ -27,34 +27,34 @@ public struct EQProgrammeComparisonSnapshot: Codable, Equatable, Sendable {
     public var isReady: Bool
     public var selection: EQProgrammeComparisonSelection
     public var equalizedAttenuationDB: Double
-    public var filtersOffAttenuationDB: Double
+    public var referenceAttenuationDB: Double
 
     public init(
         isActive: Bool = false,
         isReady: Bool = false,
         selection: EQProgrammeComparisonSelection = .equalized,
         equalizedAttenuationDB: Double = 0,
-        filtersOffAttenuationDB: Double = 0
+        referenceAttenuationDB: Double = 0
     ) {
         self.isActive = isActive
         self.isReady = isReady
         self.selection = selection
         self.equalizedAttenuationDB = equalizedAttenuationDB
-        self.filtersOffAttenuationDB = filtersOffAttenuationDB
+        self.referenceAttenuationDB = referenceAttenuationDB
     }
 }
 
 struct ProgrammeLoudnessMatch: Equatable, Sendable {
     var isReady = false
     var equalizedGain: Float = 1
-    var filtersOffGain: Float = 1
+    var referenceGain: Float = 1
     var equalizedAttenuationDB = 0.0
-    var filtersOffAttenuationDB = 0.0
+    var referenceAttenuationDB = 0.0
 }
 
 struct ProgrammeLoudnessGains: Equatable, Sendable {
     var equalized: Float = 1
-    var filtersOff: Float = 1
+    var reference: Float = 1
 }
 
 struct RealtimeProgrammeLoudnessMatcher: Sendable {
@@ -65,12 +65,12 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
     private static let maximumAttenuationDB = -60.0
 
     private var equalizedWeighting: [KWeightingChannel]
-    private var filtersOffWeighting: [KWeightingChannel]
+    private var referenceWeighting: [KWeightingChannel]
     private var equalizedSegmentEnergy = Array(
         repeating: 0.0,
         count: Self.windowSegmentCount
     )
-    private var filtersOffSegmentEnergy = Array(
+    private var referenceSegmentEnergy = Array(
         repeating: 0.0,
         count: Self.windowSegmentCount
     )
@@ -78,13 +78,13 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
     private let gainSmoothingCoefficient: Double
     private var segmentFrames = 0
     private var equalizedEnergyAccumulator = 0.0
-    private var filtersOffEnergyAccumulator = 0.0
+    private var referenceEnergyAccumulator = 0.0
     private var segmentWriteIndex = 0
     private var storedSegmentCount = 0
     private var targetEqualizedGain = 1.0
-    private var targetFiltersOffGain = 1.0
+    private var targetReferenceGain = 1.0
     private var currentEqualizedGain = 1.0
-    private var currentFiltersOffGain = 1.0
+    private var currentReferenceGain = 1.0
     private(set) var isReady = false
 
     init(
@@ -99,7 +99,7 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         self.equalizedWeighting = (0..<channels).map { _ in
             KWeightingChannel(sampleRate: validSampleRate)
         }
-        self.filtersOffWeighting = (0..<channels).map { _ in
+        self.referenceWeighting = (0..<channels).map { _ in
             KWeightingChannel(sampleRate: validSampleRate)
         }
         self.segmentFrameCount = max(Int((validSampleRate * 0.1).rounded()), 1)
@@ -112,37 +112,37 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
     mutating func reset() {
         for index in equalizedWeighting.indices {
             equalizedWeighting[index].reset()
-            filtersOffWeighting[index].reset()
+            referenceWeighting[index].reset()
         }
         for index in equalizedSegmentEnergy.indices {
             equalizedSegmentEnergy[index] = 0
-            filtersOffSegmentEnergy[index] = 0
+            referenceSegmentEnergy[index] = 0
         }
         segmentFrames = 0
         equalizedEnergyAccumulator = 0
-        filtersOffEnergyAccumulator = 0
+        referenceEnergyAccumulator = 0
         segmentWriteIndex = 0
         storedSegmentCount = 0
         targetEqualizedGain = 1
-        targetFiltersOffGain = 1
+        targetReferenceGain = 1
         currentEqualizedGain = 1
-        currentFiltersOffGain = 1
+        currentReferenceGain = 1
         isReady = false
     }
 
     mutating func observeFrame(
         equalized: UnsafeBufferPointer<Float>,
-        filtersOff: UnsafeBufferPointer<Float>,
+        reference: UnsafeBufferPointer<Float>,
         sampleOffset: Int,
         channelCount: Int
     ) -> ProgrammeLoudnessGains {
         let availableSamples = min(
             max(equalized.count - sampleOffset, 0),
-            max(filtersOff.count - sampleOffset, 0)
+            max(reference.count - sampleOffset, 0)
         )
         let weightingChannels = min(
             equalizedWeighting.count,
-            filtersOffWeighting.count
+            referenceWeighting.count
         )
         let channels = min(
             max(channelCount, 1),
@@ -153,11 +153,11 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
                 let equalizedSample = equalizedWeighting[channel].process(
                     equalized[sampleOffset + channel]
                 )
-                let filtersOffSample = filtersOffWeighting[channel].process(
-                    filtersOff[sampleOffset + channel]
+                let referenceSample = referenceWeighting[channel].process(
+                    reference[sampleOffset + channel]
                 )
                 equalizedEnergyAccumulator += Double(equalizedSample * equalizedSample)
-                filtersOffEnergyAccumulator += Double(filtersOffSample * filtersOffSample)
+                referenceEnergyAccumulator += Double(referenceSample * referenceSample)
             }
         }
 
@@ -168,7 +168,7 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         advanceSmoothedGains()
         return ProgrammeLoudnessGains(
             equalized: Float(currentEqualizedGain),
-            filtersOff: Float(currentFiltersOffGain)
+            reference: Float(currentReferenceGain)
         )
     }
 
@@ -179,12 +179,12 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
     private mutating func finishSegment() {
         let divisor = Double(max(segmentFrames, 1))
         equalizedSegmentEnergy[segmentWriteIndex] = equalizedEnergyAccumulator / divisor
-        filtersOffSegmentEnergy[segmentWriteIndex] = filtersOffEnergyAccumulator / divisor
+        referenceSegmentEnergy[segmentWriteIndex] = referenceEnergyAccumulator / divisor
         segmentWriteIndex = (segmentWriteIndex + 1) % Self.windowSegmentCount
         storedSegmentCount = min(storedSegmentCount + 1, Self.windowSegmentCount)
         segmentFrames = 0
         equalizedEnergyAccumulator = 0
-        filtersOffEnergyAccumulator = 0
+        referenceEnergyAccumulator = 0
         updateTargetGains()
     }
 
@@ -199,7 +199,7 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         var absoluteGatedBlockCount = 0
         for blockEnd in (Self.gatingBlockSegmentCount - 1)..<storedSegmentCount {
             let block = blockEnergy(endingAt: blockEnd)
-            let jointEnergy = max(block.equalized, block.filtersOff)
+            let jointEnergy = max(block.equalized, block.reference)
             if jointEnergy >= Self.absoluteGateEnergy {
                 absoluteGatedJointEnergy += jointEnergy
                 absoluteGatedBlockCount += 1
@@ -214,27 +214,27 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
             * 0.1
         let gate = max(Self.absoluteGateEnergy, relativeGate)
         var equalizedEnergy = 0.0
-        var filtersOffEnergy = 0.0
+        var referenceEnergy = 0.0
         var gatedBlockCount = 0
         for blockEnd in (Self.gatingBlockSegmentCount - 1)..<storedSegmentCount {
             let block = blockEnergy(endingAt: blockEnd)
-            guard max(block.equalized, block.filtersOff) >= gate else {
+            guard max(block.equalized, block.reference) >= gate else {
                 continue
             }
             equalizedEnergy += block.equalized
-            filtersOffEnergy += block.filtersOff
+            referenceEnergy += block.reference
             gatedBlockCount += 1
         }
         guard gatedBlockCount >= Self.minimumGatedBlockCount,
               equalizedEnergy.isFinite,
-              filtersOffEnergy.isFinite,
+              referenceEnergy.isFinite,
               equalizedEnergy > 0,
-              filtersOffEnergy > 0 else {
+              referenceEnergy > 0 else {
             return
         }
 
         isReady = true
-        let differenceDB = 10 * log10(equalizedEnergy / filtersOffEnergy)
+        let differenceDB = 10 * log10(equalizedEnergy / referenceEnergy)
         // Never boost the quieter branch: matching by attenuation preserves the profile's
         // available headroom and cannot manufacture a new clipping path.
         if differenceDB > 0 {
@@ -242,10 +242,10 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
                 10,
                 max(-differenceDB, Self.maximumAttenuationDB) / 20
             )
-            targetFiltersOffGain = 1
+            targetReferenceGain = 1
         } else {
             targetEqualizedGain = 1
-            targetFiltersOffGain = pow(
+            targetReferenceGain = pow(
                 10,
                 max(differenceDB, Self.maximumAttenuationDB) / 20
             )
@@ -254,18 +254,18 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
 
     private func blockEnergy(endingAt orderedEndIndex: Int) -> (
         equalized: Double,
-        filtersOff: Double
+        reference: Double
     ) {
         var equalized = 0.0
-        var filtersOff = 0.0
+        var reference = 0.0
         let first = orderedEndIndex - Self.gatingBlockSegmentCount + 1
         for orderedIndex in first...orderedEndIndex {
             let storageIndex = segmentStorageIndex(forOrderedIndex: orderedIndex)
             equalized += equalizedSegmentEnergy[storageIndex]
-            filtersOff += filtersOffSegmentEnergy[storageIndex]
+            reference += referenceSegmentEnergy[storageIndex]
         }
         let divisor = Double(Self.gatingBlockSegmentCount)
-        return (equalized / divisor, filtersOff / divisor)
+        return (equalized / divisor, reference / divisor)
     }
 
     private func segmentStorageIndex(forOrderedIndex orderedIndex: Int) -> Int {
@@ -278,8 +278,8 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         currentEqualizedGain += (
             targetEqualizedGain - currentEqualizedGain
         ) * gainSmoothingCoefficient
-        currentFiltersOffGain += (
-            targetFiltersOffGain - currentFiltersOffGain
+        currentReferenceGain += (
+            targetReferenceGain - currentReferenceGain
         ) * gainSmoothingCoefficient
     }
 
@@ -287,9 +287,9 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         ProgrammeLoudnessMatch(
             isReady: isReady,
             equalizedGain: Float(currentEqualizedGain),
-            filtersOffGain: Float(currentFiltersOffGain),
+            referenceGain: Float(currentReferenceGain),
             equalizedAttenuationDB: 20 * log10(max(currentEqualizedGain, .leastNonzeroMagnitude)),
-            filtersOffAttenuationDB: 20 * log10(max(currentFiltersOffGain, .leastNonzeroMagnitude))
+            referenceAttenuationDB: 20 * log10(max(currentReferenceGain, .leastNonzeroMagnitude))
         )
     }
 }

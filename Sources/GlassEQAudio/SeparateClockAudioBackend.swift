@@ -359,7 +359,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private let programmeComparisonActive = Atomic<Bool>(false)
         private let programmeComparisonReady = Atomic<Bool>(false)
         private let equalizedAttenuationMilliDB = Atomic<Int64>(0)
-        private let filtersOffAttenuationMilliDB = Atomic<Int64>(0)
+        private let referenceAttenuationMilliDB = Atomic<Int64>(0)
         private let stopping = Atomic<Bool>(false)
         private let captureInCallback = Atomic<Bool>(false)
         private let playbackInCallback = Atomic<Bool>(false)
@@ -660,8 +660,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 equalizedAttenuationDB: Double(
                     equalizedAttenuationMilliDB.load(ordering: .relaxed)
                 ) / 1_000,
-                filtersOffAttenuationDB: Double(
-                    filtersOffAttenuationMilliDB.load(ordering: .relaxed)
+                referenceAttenuationDB: Double(
+                    referenceAttenuationMilliDB.load(ordering: .relaxed)
                 ) / 1_000
             )
         }
@@ -1245,7 +1245,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             if let referenceProcessor = box.comparisonReferenceProcessor {
                 didBegin = dspTransition.beginProgrammeComparison(
                     equalizedProcessor: processor,
-                    filtersOffProcessor: referenceProcessor
+                    referenceProcessor: referenceProcessor
                 )
             } else {
                 didBegin = dspTransition.beginTransition(to: processor)
@@ -1358,8 +1358,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 Int64((snapshot.equalizedAttenuationDB * 1_000).rounded()),
                 ordering: .relaxed
             )
-            filtersOffAttenuationMilliDB.store(
-                Int64((snapshot.filtersOffAttenuationDB * 1_000).rounded()),
+            referenceAttenuationMilliDB.store(
+                Int64((snapshot.referenceAttenuationDB * 1_000).rounded()),
                 ordering: .relaxed
             )
         }
@@ -1999,7 +1999,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             maximumUsableFrequency: maximumUsableFrequency
         ),
         let referenceConfig = try? EQRenderConfiguration.prepare(
-            profile: profile.programmeComparisonReference,
+            profile: profile.filtersOffReference,
             sampleRate: runtime.sampleRate,
             channelCount: runtime.channelCount,
             maximumUsableFrequency: maximumUsableFrequency

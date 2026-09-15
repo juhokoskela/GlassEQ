@@ -1188,7 +1188,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func programmeComparisonReferenceKeepsPreampAndDisablesOnlyFilters() {
+    func filtersOffReferenceKeepsPreampAndDisablesOnlyFilters() {
         let profile = EQProfile(
             name: "Stereo",
             mode: .parametric,
@@ -1209,7 +1209,7 @@ struct EQCoreTests {
         var bypassed = profile
         bypassed.isBypassed = true
 
-        let reference = bypassed.programmeComparisonReference
+        let reference = bypassed.filtersOffReference
 
         #expect(reference.preampDB == -7)
         #expect(reference.leftPreampDB == -5)
@@ -1222,12 +1222,12 @@ struct EQCoreTests {
     }
 
     @Test
-    func programmeComparisonReferenceKeepsConvolutionPreampAndDisablesCurve() {
+    func filtersOffReferenceKeepsConvolutionPreampAndDisablesCurve() {
         var profile = EQProfile.flatConvolution
         profile.preampDB = -8
         profile.isBypassed = true
 
-        let reference = profile.programmeComparisonReference
+        let reference = profile.filtersOffReference
 
         #expect(reference.preampDB == -8)
         #expect(reference.mode == .parametric)
@@ -1242,13 +1242,13 @@ struct EQCoreTests {
         let sampleRate = 48_000.0
         let frameCount = Int(sampleRate * 4)
         var equalized = [Float](repeating: 0, count: frameCount * 2)
-        var filtersOff = [Float](repeating: 0, count: frameCount * 2)
+        var reference = [Float](repeating: 0, count: frameCount * 2)
         for frame in 0..<frameCount {
             let sample = Float(sin(2 * Double.pi * 1_000 * Double(frame) / sampleRate))
             equalized[frame * 2] = sample * 0.2
             equalized[frame * 2 + 1] = sample * 0.2
-            filtersOff[frame * 2] = sample * 0.1
-            filtersOff[frame * 2 + 1] = sample * 0.1
+            reference[frame * 2] = sample * 0.1
+            reference[frame * 2 + 1] = sample * 0.1
         }
         var matcher = RealtimeProgrammeLoudnessMatcher(
             sampleRate: sampleRate,
@@ -1256,11 +1256,11 @@ struct EQCoreTests {
         )
 
         equalized.withUnsafeBufferPointer { equalizedSamples in
-            filtersOff.withUnsafeBufferPointer { filtersOffSamples in
+            reference.withUnsafeBufferPointer { referenceSamples in
                 for frame in 0..<frameCount {
                     _ = matcher.observeFrame(
                         equalized: equalizedSamples,
-                        filtersOff: filtersOffSamples,
+                        reference: referenceSamples,
                         sampleOffset: frame * 2,
                         channelCount: 2
                     )
@@ -1271,7 +1271,7 @@ struct EQCoreTests {
         let match = matcher.snapshot
         #expect(match.isReady)
         #expect(abs(match.equalizedAttenuationDB + 6.0206) < 0.02)
-        #expect(abs(match.filtersOffAttenuationDB) < 0.000_001)
+        #expect(abs(match.referenceAttenuationDB) < 0.000_001)
     }
 
     @Test
@@ -1300,7 +1300,7 @@ struct EQCoreTests {
             preampDB: 6.020_599_913,
             filters: []
         )
-        let filtersOff = EQProfile(name: "Filters off", mode: .parametric, filters: [])
+        let reference = EQProfile(name: "Filters off", mode: .parametric, filters: [])
         var transition = RealtimeEQTransition(
             activeProcessor: EQProcessor(configuration: EQConfiguration(
                 profile: active,
@@ -1320,8 +1320,8 @@ struct EQCoreTests {
                 sampleRate: 48_000,
                 channelCount: 1
             )),
-            filtersOffProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: filtersOff,
+            referenceProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: reference,
                 sampleRate: 48_000,
                 channelCount: 1
             ))
@@ -1340,7 +1340,7 @@ struct EQCoreTests {
         #expect(abs(entry[0] - 0.25) < 0.000_001)
         #expect(abs(entry[3] - 0.5) < 0.000_001)
 
-        transition.setProgrammeComparisonSelection(.filtersOff)
+        transition.setProgrammeComparisonSelection(.reference)
         var comparison = [Float](repeating: 0.25, count: 4)
         let comparisonResult = comparison.withUnsafeMutableBufferPointer {
             transition.processInterleavedWithDiagnostics(
@@ -1394,7 +1394,7 @@ struct EQCoreTests {
             preampDB: 6.020_599_913,
             filters: []
         )
-        let filtersOff = EQProfile(name: "Filters off", mode: .parametric, filters: [])
+        let reference = EQProfile(name: "Filters off", mode: .parametric, filters: [])
         var transition = RealtimeEQTransition(
             activeProcessor: EQProcessor(configuration: EQConfiguration(
                 profile: active,
@@ -1413,8 +1413,8 @@ struct EQCoreTests {
                 sampleRate: sampleRate,
                 channelCount: 1
             )),
-            filtersOffProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: filtersOff,
+            referenceProcessor: EQProcessor(configuration: EQConfiguration(
+                profile: reference,
                 sampleRate: sampleRate,
                 channelCount: 1
             ))
@@ -1442,7 +1442,7 @@ struct EQCoreTests {
         #expect(lastResult.programmeComparison.isActive)
         #expect(lastResult.programmeComparison.isReady)
         #expect(lastResult.programmeComparison.equalizedAttenuationDB < -5.9)
-        #expect(abs(lastResult.programmeComparison.filtersOffAttenuationDB) < 0.001)
+        #expect(abs(lastResult.programmeComparison.referenceAttenuationDB) < 0.001)
     }
 
     @Test

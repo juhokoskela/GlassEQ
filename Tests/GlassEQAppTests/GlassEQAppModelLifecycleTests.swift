@@ -2312,14 +2312,14 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.activeProfile == active)
         #expect(model.settingsSnapshot().programmeComparison.isActive)
 
-        model.selectProgrammeComparison(.filtersOff)
-        #expect(engine.programmeComparisonSelections == [.equalized, .filtersOff])
-        #expect(model.settingsSnapshot().programmeComparison.selection == .filtersOff)
+        model.selectProgrammeComparison(.reference)
+        #expect(engine.programmeComparisonSelections == [.equalized, .reference])
+        #expect(model.settingsSnapshot().programmeComparison.selection == .reference)
 
         engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
             isActive: true,
             isReady: true,
-            selection: .filtersOff,
+            selection: .reference,
             equalizedAttenuationDB: -3.25
         )
         await waitUntil {
@@ -2377,7 +2377,7 @@ struct GlassEQAppModelLifecycleTests {
         var comparisonProfile = firstProfile
         comparisonProfile.preampDB = -6
         try model.startProgrammeComparison(profile: comparisonProfile)
-        model.selectProgrammeComparison(.filtersOff)
+        model.selectProgrammeComparison(.reference)
 
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
@@ -2391,7 +2391,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.activeProfile == secondProfile)
         #expect(engine.programmeComparisonSelections == [
             .equalized,
-            .filtersOff,
+            .reference,
             .equalized
         ])
 
@@ -2425,7 +2425,7 @@ struct GlassEQAppModelLifecycleTests {
         var comparisonProfile = active
         comparisonProfile.preampDB = -6
         try model.startProgrammeComparison(profile: comparisonProfile)
-        model.selectProgrammeComparison(.filtersOff)
+        model.selectProgrammeComparison(.reference)
 
         engine.emitRuntimeFailure(adaptiveRenderFailure)
         await waitUntil {
