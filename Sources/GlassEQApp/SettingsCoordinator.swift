@@ -581,10 +581,6 @@ final class SettingsCoordinator: NSObject {
             patch.isRunning = snapshot.isRunning
             didPatch = true
         }
-        if previous.isPreviewing != snapshot.isPreviewing {
-            patch.isPreviewing = snapshot.isPreviewing
-            didPatch = true
-        }
         if previous.programmeComparison != snapshot.programmeComparison {
             patch.programmeComparison = snapshot.programmeComparison
             didPatch = true
@@ -1164,15 +1160,6 @@ extension GlassEQAppModel {
 
         case .chooseImportFiles:
             throw SettingsCommandFailure(message: localized("File selection is unavailable from this settings connection."))
-
-        case .preview(let profile):
-            try validateIncomingProfile(profile)
-            preview(profile: profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
-
-        case .stopPreview:
-            stopPreview()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .startProgrammeComparison(let profile):
             try validateIncomingProfile(profile)

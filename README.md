@@ -58,7 +58,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 
 - **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and convolution (a minimum-phase FIR built from a response curve or impulse response).
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
-- **Live frequency-response graph** and instant preview while you edit.
+- **Live frequency-response graph** while you edit.
 - **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
@@ -82,7 +82,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 - **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
 - **Bluetooth** headset modes initially use a higher-latency separate-clock compatibility path to avoid periodic combined-aggregate timestamp faults while the route settles. Promotion to the low-latency path is experimental; please report the device model, macOS version, and steps if a route still produces jitter.
-- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Preview, Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. If a mapped route later changes processing rate, GlassEQ keeps the mapping and leaves normal unprocessed playback active until the rate matches again. It never silently resamples or truncates the impulse response.
+- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. If a mapped route later changes processing rate, GlassEQ keeps the mapping and leaves normal unprocessed playback active until the rate matches again. It never silently resamples or truncates the impulse response.
 - No automatic updates, no crash reporting, no x86_64 build.
 
 <a id="supported-target"></a>

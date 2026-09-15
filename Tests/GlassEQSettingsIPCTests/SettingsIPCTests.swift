@@ -61,23 +61,19 @@ struct SettingsIPCTests {
     }
 
     @Test
-    func profileDeletionIsDisabledWhilePreviewProtectsTheReturnProfile() {
-        let returnProfile = EQProfile(name: "Return", mode: .parametric, filters: [])
-        let previewProfile = EQProfile(name: "Preview", mode: .parametric, filters: [])
+    func profileDeletionIsDisabledDuringComparison() {
+        let candidate = EQProfile(name: "Candidate", mode: .parametric, filters: [])
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
         var snapshot = SettingsSnapshotDTO.disconnected
-        snapshot.profiles = [returnProfile, previewProfile]
-        snapshot.selectedProfileID = returnProfile.id
-        snapshot.draftProfile = returnProfile
-        snapshot.activeProfileID = previewProfile.id
-        snapshot.isPreviewing = true
+        snapshot.profiles = [candidate, active]
+        snapshot.selectedProfileID = candidate.id
+        snapshot.draftProfile = candidate
+        snapshot.activeProfileID = active.id
 
-        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
-
-        snapshot.isPreviewing = false
-        #expect(settingsCanDeleteProfile(snapshot, id: returnProfile.id))
+        #expect(settingsCanDeleteProfile(snapshot, id: candidate.id))
 
         snapshot.programmeComparison.isActive = true
-        #expect(!settingsCanDeleteProfile(snapshot, id: returnProfile.id))
+        #expect(!settingsCanDeleteProfile(snapshot, id: candidate.id))
     }
 
     @Test

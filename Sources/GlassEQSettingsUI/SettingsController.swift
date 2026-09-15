@@ -186,14 +186,6 @@ final class SettingsController {
         perform(.setFallback(draftProfile))
     }
 
-    func previewDraft() {
-        perform(.preview(draftProfile))
-    }
-
-    func stopPreview() {
-        perform(.stopPreview)
-    }
-
     func startProgrammeComparison() {
         perform(.startProgrammeComparison(draftProfile))
     }
@@ -365,7 +357,6 @@ final class SettingsController {
 func settingsCanDeleteProfile(_ snapshot: SettingsSnapshot, id: UUID) -> Bool {
     !snapshot.profileStoreProtection.isProtected
         && snapshot.profiles.count > 1
-        && !snapshot.isPreviewing
         && !snapshot.programmeComparison.isActive
         && id != snapshot.activeProfileID
 }

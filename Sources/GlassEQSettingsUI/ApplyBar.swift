@@ -7,7 +7,6 @@ struct ApplyBar: View {
     var body: some View {
         let hasUnsavedDraft = controller.hasUnsavedDraft
         let isReadOnly = controller.isProfileStoreProtected
-        let isPreviewing = controller.snapshot.isPreviewing
         let isComparing = controller.snapshot.programmeComparison.isActive
         HStack {
             Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
@@ -25,19 +24,13 @@ struct ApplyBar: View {
                 controller.applyDraft()
             }
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(isReadOnly || !hasUnsavedDraft || isComparing)
+            .disabled(isReadOnly || !hasUnsavedDraft)
             .buttonStyle(.borderedProminent)
-
-            Button(isPreviewing ? localized("Stop Preview") : localized("Preview")) {
-                isPreviewing ? controller.stopPreview() : controller.previewDraft()
-            }
-            .disabled((isReadOnly && !isPreviewing) || isComparing)
-            .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
 
             Button(localized("Use for This Output")) {
                 controller.useDraftForCurrentOutput()
             }
-            .disabled(isReadOnly || !controller.hasCurrentOutput || isComparing)
+            .disabled(isReadOnly || !controller.hasCurrentOutput)
             .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
         }
         .controlSize(.large)
@@ -75,7 +68,7 @@ struct ProgrammeComparisonSection: View {
                     Button(localized("Start A/B")) {
                         controller.startProgrammeComparison()
                     }
-                    .disabled(controller.isProfileStoreProtected || controller.snapshot.isPreviewing || !controller.snapshot.isRunning)
+                    .disabled(controller.isProfileStoreProtected || !controller.snapshot.isRunning)
                     .help(localized("Compares the draft EQ with its filters disabled while preserving the same preamp."))
                 }
             } label: {
