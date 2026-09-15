@@ -27,7 +27,7 @@ GlassEQ takes a different route. It uses **Core Audio process taps**, Apple's mo
 
 ## Download & install
 
-Look for `GlassEQ-beta-0.9.3-macos26-arm64.zip` on the [releases page](https://github.com/juhokoskela/GlassEQ/releases). If beta-0.9.3 is not listed yet, [build from source](#build-from-source). To install the ZIP:
+Download `GlassEQ-beta-0.9.3-macos26-arm64.zip` from the [beta-0.9.3 release](https://github.com/juhokoskela/GlassEQ/releases/tag/beta-0.9.3). To install:
 
 1. Unzip it.
 2. Move `GlassEQ.app` to `/Applications`.
@@ -52,7 +52,7 @@ The normal fast path has low, predictable latency without a separate playback qu
 
 The current low-latency path requires the output's preferred pair to occupy one native mono or stereo hardware stream. Audio routed to a different device or a distinct system-alert output is outside that tap.
 
-![GlassEQ settings — Output tab, showing current output, profile mapping, engine status, and live diagnostics](Docs/Screenshots/output.png)
+![GlassEQ Output tab with profile mapping, engine status, and diagnostic controls](Docs/Screenshots/beta-0.9.3-output.png)
 
 ## Features
 
@@ -65,7 +65,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
 - **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.
 
-![GlassEQ settings — Editor tab, with the frequency-response graph and parametric filters](Docs/Screenshots/editor.png)
+![GlassEQ Editor tab with a convolution response graph and collapsed response points](Docs/Screenshots/beta-0.9.3-editor.png)
 
 ### Memory footprint
 
