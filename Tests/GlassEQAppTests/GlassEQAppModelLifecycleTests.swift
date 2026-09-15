@@ -2679,7 +2679,7 @@ struct GlassEQAppModelLifecycleTests {
     ])
     func semanticOutputChangeRebuildsEvenWhenDeviceMetadataIsUnchanged(
         reason: DefaultOutputDeviceChangeReason
-    ) async {
+    ) async throws {
         let output = makeOutput(
             uid: "semantic-change-output",
             name: "USB DAC",
@@ -2687,6 +2687,8 @@ struct GlassEQAppModelLifecycleTests {
             nominalSampleRate: 48_000,
             bufferFrameSize: 256
         )
+        let settlement = OutputSettlementGate()
+        defer { settlement.release() }
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
@@ -2694,7 +2696,7 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             lookup: lookup,
             observers: observers,
-            outputDelay: .milliseconds(200)
+            outputSleep: { await settlement.sleep(for: $0) }
         )
 
         model.start()
@@ -2704,12 +2706,14 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
+        settlement.hold()
         observer.emit(.success(output), reason: reason)
 
-        await waitUntil {
-            engine.stopCallCount == 1
-        }
+        try #require(await waitUntil {
+            engine.stopCallCount == 1 && settlement.waitCount == 1
+        })
         #expect(engine.startCalls.count == 1)
+        settlement.release()
 
         await waitUntil {
             engine.startCalls.count == 2 && model.lifecycleState == .running
@@ -2843,7 +2847,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func returningToOriginalFormatAfterTransitionStopStillRebuilds() async {
+    func returningToOriginalFormatAfterTransitionStopStillRebuilds() async throws {
         let runningOutput = makeOutput(
             uid: "same-output",
             name: "USB DAC",
@@ -2856,6 +2860,8 @@ struct GlassEQAppModelLifecycleTests {
             id: runningOutput.id,
             nominalSampleRate: 48_000
         )
+        let settlement = OutputSettlementGate()
+        defer { settlement.release() }
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(runningOutput))
         let observers = FakeDefaultOutputObserverFactory()
@@ -2863,7 +2869,7 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             lookup: lookup,
             observers: observers,
-            outputDelay: .milliseconds(200)
+            outputSleep: { await settlement.sleep(for: $0) }
         )
 
         model.start()
@@ -2873,14 +2879,17 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
+        settlement.hold()
         lookup.result = .success(transientOutput)
         observer.emit(.success(transientOutput))
-        await waitUntil {
-            engine.stopCallCount == 1
-        }
+        try #require(await waitUntil {
+            engine.stopCallCount == 1 && settlement.waitCount == 1
+        })
 
         lookup.result = .success(runningOutput)
         observer.emit(.success(runningOutput))
+        try #require(await waitUntil { settlement.waitCount == 2 })
+        settlement.release()
         await waitUntil {
             engine.startCalls.count == 2 && model.lifecycleState == .running
         }
@@ -5597,6 +5606,9 @@ private func makeModel(
     profileImportOperation: (@Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>)? = nil,
     saveDelay: Duration = .zero,
     outputDelay: Duration? = nil,
+    outputSleep: @escaping @MainActor @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    },
     wakeDelay: Duration? = nil,
     aggregateStabilityDelay: Duration = .zero,
     aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
@@ -5625,6 +5637,7 @@ private func makeModel(
         profileImportOperation: profileImportOperation,
         saveDebounceDelay: saveDelay,
         outputChangeSettlingDelayOverride: outputDelay,
+        outputChangeSleep: outputSleep,
         wakeReconnectDelayOverride: wakeDelay,
         aggregateBufferPolicyURL: storeURL.deletingPathExtension()
             .appendingPathExtension("aggregate-buffer-policy.json"),
@@ -5640,6 +5653,31 @@ private func makeModel(
         licenseStopTransitionTimeout: licenseStopTransitionTimeout,
         licenseOperationCancellationGrace: licenseOperationCancellationGrace
     )
+}
+
+@MainActor
+private final class OutputSettlementGate {
+    private var isHeld = false
+    private var waiters: [AsyncStream<Void>.Continuation] = []
+    private(set) var waitCount = 0
+
+    func hold() {
+        isHeld = true
+    }
+
+    func sleep(for _: Duration) async {
+        guard isHeld else { return }
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        waiters.append(continuation)
+        waitCount += 1
+        for await _ in stream {}
+    }
+
+    func release() {
+        isHeld = false
+        for waiter in waiters { waiter.finish() }
+        waiters.removeAll()
+    }
 }
 
 private final class BlockingProfileImportOperation: @unchecked Sendable {

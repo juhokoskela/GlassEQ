@@ -609,6 +609,7 @@ final class GlassEQAppModel {
     private let workspaceOpener: any WorkspaceOpening
     private let profileImportOperation: @Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>
     private let outputChangeSettlingDelayOverride: Duration?
+    private let outputChangeSleep: @MainActor @Sendable (Duration) async throws -> Void
     private let wakeReconnectDelayOverride: Duration?
     private let saveDebounceDelay: Duration
     private var observer: (any DefaultOutputObserving)?
@@ -982,6 +983,9 @@ final class GlassEQAppModel {
         profileImportOperation: (@Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>)? = nil,
         saveDebounceDelay: Duration = .milliseconds(250),
         outputChangeSettlingDelayOverride: Duration? = nil,
+        outputChangeSleep: @escaping @MainActor @Sendable (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        },
         wakeReconnectDelayOverride: Duration? = nil,
         aggregateBufferPolicyURL: URL? = nil,
         aggregateStabilitySettlingDelay: Duration = .seconds(2),
@@ -1039,6 +1043,7 @@ final class GlassEQAppModel {
         }
         self.saveDebounceDelay = saveDebounceDelay
         self.outputChangeSettlingDelayOverride = outputChangeSettlingDelayOverride
+        self.outputChangeSleep = outputChangeSleep
         self.wakeReconnectDelayOverride = wakeReconnectDelayOverride
         self.storeWriter = ProfileStoreWriter(url: storeURL)
         self.aggregateBufferPolicyStore = AggregateBufferPolicyStore(
@@ -2578,8 +2583,9 @@ final class GlassEQAppModel {
             statusMessage = outputChangeStatusMessage(for: result)
             notifyModelDidChange()
         }
+        let sleep = outputChangeSleep
         outputChangeTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: settlingDelay)
+            try? await sleep(settlingDelay)
             guard !Task.isCancelled,
                   self?.observerCallbackGeneration == observerGeneration else {
                 return
