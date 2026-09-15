@@ -263,6 +263,7 @@ struct EditorTab: View {
                     ParametricFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
                 case .graphic10, .graphic31:
                     GraphicFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
+                        .id(draftProfile.mode)
                 case .convolution:
                     if case .impulseResponse(let source) = draftProfile[channel: channel].convolution {
                         ImportedImpulseResponseEditor(source: source)

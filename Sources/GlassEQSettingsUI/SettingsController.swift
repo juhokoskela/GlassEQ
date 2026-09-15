@@ -321,7 +321,6 @@ final class SettingsController {
 
     // Preserve local selection and edits when a delayed snapshot arrives.
     func reconcileWithSnapshot() {
-        defer { refreshAnalyses() }
         let latest = snapshot
         guard let latestStored = latest.profiles.first(where: { $0.id == selectedProfileID }) else {
             adoptSnapshotSelection()
@@ -329,6 +328,8 @@ final class SettingsController {
         }
         if !hasUnsavedDraft {
             draftProfile = latestStored
+        } else {
+            refreshAnalyses()
         }
         storedProfile = latestStored
     }
