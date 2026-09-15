@@ -19,60 +19,47 @@ struct MagnitudeCurveEditor: View {
     @Binding var points: [EQMagnitudePoint]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(localized("Target Response"))
-                    .font(.headline)
-                Spacer()
-                Button {
-                    addPoint()
-                } label: {
-                    ActionButtonLabel(title: localized("Add Point"), systemImage: "plus")
-                }
-                .controlSize(.large)
-                .accessibilityHint(Text(localized("Adds a magnitude point in the largest frequency gap")))
-            }
-
-            Text(localized("GlassEQ interpolates these points in log-frequency space and compiles a 16,384-tap minimum-phase filter when you apply the profile."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            LazyVStack(spacing: 6) {
-                ForEach($points) { $point in
-                    HStack(spacing: 10) {
-                        EditableValueText(
-                            title: localized("Frequency"),
-                            value: $point.frequency,
-                            range: ProfilePersistence.frequencyRange,
-                            display: point.frequency.frequencyLabel,
-                            width: 72
-                        )
-                        Slider(value: $point.quantizedGainDB, in: -24...12)
-                            .frame(maxWidth: 640)
-                            .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
-                            .accessibilityValue(Text(point.gainDB.dbLabel))
-                        EditableValueText(
-                            title: localized("Gain"),
-                            value: $point.gainDB,
-                            range: ProfilePersistence.gainRange,
-                            display: point.gainDB.dbLabel,
-                            width: 60
-                        )
-                        Button(role: .destructive) {
-                            points.removeAll { $0.id == point.id }
-                        } label: {
-                            IconButtonLabel(systemImage: "trash", size: 24)
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(points.count <= 2)
-                        .accessibilityLabel(Text(localized("Delete response point")))
-                        .accessibilityHint(Text(localized("Removes this magnitude point")))
+        Section {
+            ForEach($points) { $point in
+                HStack(spacing: 10) {
+                    EditableValueText(
+                        title: localized("Frequency"),
+                        value: $point.frequency,
+                        range: ProfilePersistence.frequencyRange,
+                        display: point.frequency.frequencyLabel,
+                        width: 72
+                    )
+                    Slider(value: $point.quantizedGainDB, in: -24...12)
+                        .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
+                        .accessibilityValue(Text(point.gainDB.dbLabel))
+                    EditableValueText(
+                        title: localized("Gain"),
+                        value: $point.gainDB,
+                        range: ProfilePersistence.gainRange,
+                        display: point.gainDB.dbLabel,
+                        width: 60
+                    )
+                    Button(role: .destructive) {
+                        points.removeAll { $0.id == point.id }
+                    } label: {
+                        IconButtonLabel(systemImage: "trash", size: 24)
                     }
-                    .accessibilityElement(children: .contain)
+                    .buttonStyle(.borderless)
+                    .disabled(points.count <= 2)
+                    .accessibilityLabel(Text(localized("Delete response point")))
+                    .accessibilityHint(Text(localized("Removes this magnitude point")))
                 }
+                .accessibilityElement(children: .contain)
             }
+            Button(localized("Add Point"), systemImage: "plus") {
+                addPoint()
+            }
+            .accessibilityHint(Text(localized("Adds a magnitude point in the largest frequency gap")))
+        } header: {
+            Text(localized("Target Response"))
+        } footer: {
+            Text(localized("GlassEQ interpolates these points in log-frequency space and compiles a 16,384-tap minimum-phase filter when you apply the profile."))
         }
-        .padding(.vertical, 4)
     }
 
     private func addPoint() {
@@ -97,9 +84,7 @@ struct ImportedImpulseResponseEditor: View {
     var source: ImpulseResponseSource
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(localized("Imported Impulse Response"), systemImage: "waveform")
-                .font(.headline)
+        Section {
             LabeledContent(
                 localized("Length"),
                 value: localized("\(source.samples.count) taps")
@@ -108,12 +93,11 @@ struct ImportedImpulseResponseEditor: View {
                 localized("Sample rate"),
                 value: source.sampleRate.frequencyLabel
             )
+        } header: {
+            Text(localized("Imported Impulse Response"))
+        } footer: {
             Text(localized("GlassEQ preserves the file's phase and samples. To replace it, import another WAV file."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -121,14 +105,13 @@ struct GraphicFilterEditor: View {
     @Binding var filters: [EQFilter]
 
     var body: some View {
-        VStack(spacing: 10) {
+        Section(localized("Bands")) {
             ForEach($filters) { $filter in
                 HStack {
                     Text(filter.frequency.frequencyLabel)
                         .font(.caption.monospacedDigit())
                         .frame(width: 64, alignment: .trailing)
                     Slider(value: $filter.quantizedGainDB, in: -12...12)
-                        .frame(maxWidth: 640)
                         .accessibilityLabel(Text(localized("Gain at \(filter.frequency.frequencyLabel)")))
                         .accessibilityValue(Text(filter.gainDB.dbLabel))
                         .accessibilityHint(Text(localized("Adjusts this graphic EQ band")))
@@ -145,7 +128,6 @@ struct GraphicFilterEditor: View {
                 .accessibilityValue(Text(localized("\(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel)")))
             }
         }
-        .padding(.vertical, 4)
     }
 }
 
@@ -154,56 +136,46 @@ struct ParametricFilterEditor: View {
     @State private var selectedFilterID: UUID?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(localized("Filters"))
-                        .font(.headline)
-                    Button {
+        Section(localized("Filters")) {
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    FilterListHeader()
+                    VStack(spacing: 4) {
+                        ForEach(filters) { filter in
+                            CompactFilterRow(
+                                filter: filter,
+                                isSelected: filter.id == effectiveSelectedFilterID
+                            ) {
+                                selectedFilterID = filter.id
+                            }
+                        }
+                    }
+                    Button(localized("Add Filter"), systemImage: "plus") {
                         let filter = EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)
                         filters.append(filter)
                         selectedFilterID = filter.id
-                    } label: {
-                        ActionButtonLabel(title: localized("Add Filter"), systemImage: "plus")
                     }
-                    .controlSize(.large)
                     .accessibilityHint(Text(localized("Adds a new parametric filter and selects it")))
-                    Spacer()
                 }
+                .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
 
-                FilterListHeader()
-
-                LazyVStack(spacing: 4) {
-                    ForEach(filters) { filter in
-                        CompactFilterRow(
-                            filter: filter,
-                            isSelected: filter.id == effectiveSelectedFilterID
-                        ) {
-                            selectedFilterID = filter.id
+                if let index = selectedFilterIndex {
+                    ParametricFilterInspector(
+                        filter: $filters[index],
+                        onDelete: {
+                            let id = filters[index].id
+                            filters.removeAll { $0.id == id }
+                            selectedFilterID = filters.first?.id
                         }
-                    }
+                    )
+                    .id(filters[index].id)
+                    .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
+                } else {
+                    ContentUnavailableView(localized("No Filter Selected"), systemImage: "slider.horizontal.3")
+                        .frame(maxWidth: .infinity, minHeight: 150)
                 }
-                .padding(.vertical, 2)
             }
-            .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
-            .cardPanel(padding: 16)
-
-            if let index = selectedFilterIndex {
-                ParametricFilterInspector(
-                    filter: $filters[index],
-                    onDelete: {
-                        let id = filters[index].id
-                        filters.removeAll { $0.id == id }
-                        selectedFilterID = filters.first?.id
-                    }
-                )
-                .id(filters[index].id)
-                .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
-            } else {
-                ContentUnavailableView(localized("No Filter Selected"), systemImage: "slider.horizontal.3")
-                    .cardPanel(padding: 16)
-                    .frame(maxWidth: .infinity, minHeight: 150)
-            }
+            .padding(.vertical, 4)
         }
     }
 
@@ -273,11 +245,7 @@ struct CompactFilterRow: View {
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
-            .card(
-                fill: isSelected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.035),
-                border: isSelected ? Color.accentColor.opacity(0.55) : Color.clear,
-                cornerRadius: 8
-            )
+            .background(isSelected ? Color.accentColor.opacity(0.25) : Color.clear, in: .rect(cornerRadius: 6))
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -322,14 +290,13 @@ struct ParametricFilterInspector: View {
                 .accessibilityHint(Text(localized("Removes the selected filter")))
             }
 
-            SettingRow(title: localized("Type")) {
+            LabeledContent(localized("Type")) {
                 Picker(localized("Type"), selection: $filter.kind) {
                     ForEach(FilterKind.allCases, id: \.self) { kind in
                         Text(kind.title).tag(kind)
                     }
                 }
                 .labelsHidden()
-                .frame(maxWidth: 260)
                 .accessibilityLabel(Text(localized("Filter type")))
                 .accessibilityValue(Text(filter.kind.title))
                 .accessibilityHint(Text(localized("Changes the selected filter type")))
@@ -361,6 +328,5 @@ struct ParametricFilterInspector: View {
                 suffix: ""
             )
         }
-        .cardPanel(padding: 16)
     }
 }

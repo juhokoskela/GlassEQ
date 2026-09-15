@@ -2,24 +2,61 @@ import GlassEQCore
 import SwiftUI
 
 struct ApplyBar: View {
-    @Bindable var controller: SettingsController
+    var controller: SettingsController
 
     var body: some View {
         let hasUnsavedDraft = controller.hasUnsavedDraft
         let isReadOnly = controller.isProfileStoreProtected
         let isPreviewing = controller.snapshot.isPreviewing
+        let isComparing = controller.snapshot.programmeComparison.isActive
+        HStack {
+            Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
+                .foregroundStyle(.secondary)
+                .font(.caption.weight(.medium))
+                .accessibilityLabel(Text(localized("Profile edit state")))
+                .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+            Spacer()
+            Button(localized("Revert")) {
+                controller.revertDraft()
+            }
+            .disabled(!hasUnsavedDraft || isComparing)
+
+            Button(localized("Apply")) {
+                controller.applyDraft()
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(isReadOnly || !hasUnsavedDraft || isComparing)
+            .buttonStyle(.borderedProminent)
+
+            Button(isPreviewing ? localized("Stop Preview") : localized("Preview")) {
+                isPreviewing ? controller.stopPreview() : controller.previewDraft()
+            }
+            .disabled((isReadOnly && !isPreviewing) || isComparing)
+            .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
+
+            Button(localized("Use for This Output")) {
+                controller.useDraftForCurrentOutput()
+            }
+            .disabled(isReadOnly || !controller.hasCurrentOutput || isComparing)
+            .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
+        }
+        .controlSize(.large)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+}
+
+struct ProgrammeComparisonSection: View {
+    @Bindable var controller: SettingsController
+
+    var body: some View {
         let programmeComparison = controller.snapshot.programmeComparison
-        let hasCurrentOutput = controller.hasCurrentOutput
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(localized("Programme-loudness A/B"))
-                        .font(.caption.weight(.semibold))
-                    Text(comparisonDescription(programmeComparison))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
+        Section {
+            LabeledContent {
                 if programmeComparison.isActive {
                     Picker(localized("A/B branch"), selection: $controller.programmeComparisonSelection) {
                         Text(localized("A · EQ"))
@@ -34,52 +71,16 @@ struct ApplyBar: View {
                     Button(localized("Stop A/B")) {
                         controller.stopProgrammeComparison()
                     }
-                    .buttonStyle(ToolbarButtonStyle())
                 } else {
                     Button(localized("Start A/B")) {
                         controller.startProgrammeComparison()
                     }
-                    .disabled(isReadOnly || isPreviewing || !controller.snapshot.isRunning)
-                    .buttonStyle(ToolbarButtonStyle())
+                    .disabled(controller.isProfileStoreProtected || controller.snapshot.isPreviewing || !controller.snapshot.isRunning)
                     .help(localized("Compares the draft EQ with its filters disabled while preserving the same preamp."))
                 }
-            }
-
-            Divider()
-
-            HStack {
-                Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
-                    .foregroundStyle(.secondary)
-                    .font(.caption.weight(.medium))
-                    .accessibilityLabel(Text(localized("Profile edit state")))
-                    .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
-                Spacer()
-                Button(localized("Revert")) {
-                    controller.revertDraft()
-                }
-                .disabled(!hasUnsavedDraft || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle())
-
-                Button(localized("Apply")) {
-                    controller.applyDraft()
-                }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(isReadOnly || !hasUnsavedDraft || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle(prominent: true))
-
-                Button(isPreviewing ? localized("Stop Preview") : localized("Preview")) {
-                    isPreviewing ? controller.stopPreview() : controller.previewDraft()
-                }
-                .disabled((isReadOnly && !isPreviewing) || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle())
-                .accessibilityValue(Text(isPreviewing ? localized("Previewing") : localized("Not previewing")))
-
-                Button(localized("Use for This Output")) {
-                    controller.useDraftForCurrentOutput()
-                }
-                .disabled(isReadOnly || !hasCurrentOutput || programmeComparison.isActive)
-                .buttonStyle(ToolbarButtonStyle())
-                .accessibilityHint(Text(hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
+            } label: {
+                Text(localized("Programme-loudness A/B"))
+                Text(comparisonDescription(programmeComparison))
             }
         }
     }

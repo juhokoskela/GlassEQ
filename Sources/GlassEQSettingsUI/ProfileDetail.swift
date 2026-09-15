@@ -7,57 +7,27 @@ struct ProfileDetail: View {
 
     var body: some View {
         let isReadOnly = controller.isEditingLocked
-        VStack(alignment: .leading, spacing: 16) {
-            if controller.isProfileStoreProtected {
-                constrainedContent {
-                    ProfileStoreProtectionBanner(
-                        protection: controller.snapshot.profileStoreProtection,
-                        onReset: controller.resetUnsupportedProfileStore
-                    )
-                }
-            }
-
-            ScrollView {
-                constrainedContent {
-                    Group {
-                        switch controller.tab {
-                        case .editor:
-                            if controller.snapshot.profiles.allSatisfy(\.isNeutral) {
-                                StartingPointHint(
-                                    onImport: { controller.presentImport(.text) },
-                                    onCreate: { controller.isNewProfileSheetPresented = true }
-                                )
-                                .padding(.bottom, 12)
-                            }
-                            EditorTab(controller: controller)
-                                .disabled(isReadOnly)
-                        case .output:
-                            OutputTab(controller: controller)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    // Breathing room so the last editor panel scrolls clear of the footer
-                    // instead of being cut against it.
-                    .padding(.bottom, 24)
-                }
-            }
-            .scrollIndicators(.visible)
-            .frame(minHeight: 0, maxHeight: .infinity, alignment: .topLeading)
-            .clipped()
-            .layoutPriority(1)
-
-            if controller.tab == .editor {
-                constrainedContent {
-                    ApplyBar(controller: controller)
-                        .cardPanel(padding: 16)
-                }
-                .layoutPriority(2)
+        Group {
+            switch controller.tab {
+            case .editor:
+                EditorTab(controller: controller)
+            case .output:
+                OutputTab(controller: controller)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if controller.isProfileStoreProtected {
+                ProfileStoreProtectionBanner(
+                    protection: controller.snapshot.profileStoreProtection,
+                    onReset: controller.resetUnsupportedProfileStore
+                )
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if controller.tab == .editor {
+                ApplyBar(controller: controller)
+            }
+        }
         .navigationTitle($controller.draftProfile.name)
         .navigationSubtitle(subtitle)
         .toolbar {
@@ -78,13 +48,6 @@ struct ProfileDetail: View {
                 .accessibilityHint(Text(localized("Opens guided profile import")))
             }
         }
-    }
-
-    private func constrainedContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            // Cap the editor column so controls (preamp row, chart) don't stretch on wide windows.
-            .frame(maxWidth: 860, alignment: .topLeading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // The profile type plus where the selected profile is used right now, as opposed to the
@@ -137,12 +100,11 @@ struct StartingPointHint: View {
                         onCreate()
                     }
                 }
-                .controlSize(.large)
                 .padding(.top, 4)
             }
             Spacer(minLength: 0)
         }
-        .cardPanel(padding: 16)
+        .padding(.vertical, 6)
     }
 }
 
@@ -165,9 +127,13 @@ struct ProfileStoreProtectionBanner: View {
             } label: {
                 ActionButtonLabel(title: protection.resetButtonTitle, systemImage: "arrow.counterclockwise")
             }
-            .controlSize(.large)
             .accessibilityLabel(Text(protection.resetButtonTitle))
         }
-        .cardPanel(padding: 14)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
     }
 }

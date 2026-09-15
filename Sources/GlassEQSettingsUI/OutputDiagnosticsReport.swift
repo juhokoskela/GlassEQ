@@ -665,11 +665,9 @@ struct OutputDiagnosticsSheet: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 0) {
-                ScrollView {
-                    if let section = selectedSection {
-                        OutputDiagnosticsSectionView(section: section)
-                            .id(section.id)
-                    }
+                if let section = selectedSection {
+                    OutputDiagnosticsSectionView(section: section)
+                        .id(section.id)
                 }
 
                 Divider()
@@ -723,44 +721,24 @@ private struct OutputDiagnosticsSectionView: View {
     let section: OutputDiagnosticsReport.Section
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(section.title)
-                .font(.title3.weight(.semibold))
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 0) {
+        Form {
+            Section {
                 ForEach(section.rows) { row in
-                    if row.id != section.rows[0].id {
-                        Divider()
-                            .gridCellUnsizedAxes(.horizontal)
-                    }
-                    GridRow {
-                        Text(row.title)
-                            .foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
+                    LabeledContent(row.title) {
                         Text(row.value)
-                            .font(.body.monospacedDigit())
+                            .monospacedDigit()
                             .multilineTextAlignment(.trailing)
                             .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .accessibilityLabel(row.title)
-                            .accessibilityValue(row.value)
                     }
-                    .padding(.vertical, 9)
+                }
+            } header: {
+                Text(section.title)
+            } footer: {
+                if let note = section.note {
+                    Text(note)
                 }
             }
-            .padding(.horizontal, 12)
-            .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 10))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            }
-            if let note = section.note {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
     }
 }

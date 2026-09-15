@@ -206,124 +206,116 @@ struct EditorTab: View {
     var body: some View {
         let draftProfile = controller.draftProfile
         let channel = controller.editedChannel
-        let contextID = controller.editorContextID
-        VStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 10) {
-                SettingRow(title: localized("Channels")) {
+        Form {
+            // Everything except the A/B controls locks while a comparison is running, so the
+            // comparison can still be stopped.
+            Group {
+                if controller.snapshot.profiles.allSatisfy(\.isNeutral) {
+                    Section {
+                        StartingPointHint(
+                            onImport: { controller.presentImport(.text) },
+                            onCreate: { controller.isNewProfileSheetPresented = true }
+                        )
+                    }
+                }
+
+                Section {
                     Picker(localized("Channels"), selection: $controller.draftChannelMode) {
                         Text(localized("Linked")).tag(EQChannelMode.linked)
                         Text(localized("Separate L/R")).tag(EQChannelMode.stereo)
                     }
                     .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: 230)
-                    .accessibilityLabel(Text(localized("Channels")))
                     .accessibilityValue(Text(draftProfile.channelMode.accessibilityTitle))
                     .accessibilityHint(Text(localized("Chooses whether channels share one EQ or use separate left and right settings")))
-                }
 
-                if draftProfile.channelMode == .stereo {
-                    SettingRow(title: localized("Editing")) {
+                    if draftProfile.channelMode == .stereo {
                         Picker(localized("Editing"), selection: $controller.editChannel) {
                             ForEach(EQEditChannel.allCases) { editChannel in
                                 Text(editChannel.title).tag(editChannel)
                             }
                         }
                         .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 160)
-                        .accessibilityLabel(Text(localized("Editing channel")))
-                        .accessibilityValue(Text(controller.editChannel.title))
                         .accessibilityHint(Text(localized("Chooses which stereo channel is being edited")))
                     }
-                }
 
-                SliderRow(
-                    title: localized("Preamp"),
-                    value: $controller.draftProfile[channel: channel].preampDB,
-                    range: -24...12,
-                    validationRange: ProfilePersistence.preampRange,
-                    step: 0.1,
-                    suffix: "dB"
-                )
-                .id(contextID)
-
-                SettingRow(title: localized("Bypass")) {
-                    Toggle(localized("Bypass"), isOn: $controller.draftProfile.isBypassed)
-                        .labelsHidden()
-                        .accessibilityLabel(Text(localized("Bypass")))
-                        .accessibilityValue(Text(draftProfile.isBypassed ? localized("On") : localized("Off")))
-                        .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
-                }
-
-                if let analysis {
-                    HeadroomRow(
-                        profile: $controller.draftProfile,
-                        recommendedPreampDB: analysis.recommendedPreampDB
+                    SliderRow(
+                        title: localized("Preamp"),
+                        value: $controller.draftProfile[channel: channel].preampDB,
+                        range: -24...12,
+                        validationRange: ProfilePersistence.preampRange,
+                        step: 0.1,
+                        suffix: "dB"
                     )
-                } else {
-                    PendingHeadroomRow()
-                }
-            }
-            .cardPanel(padding: 16)
+                    .id(controller.editorContextID)
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text(localized("Frequency Response"))
-                        .font(.headline)
-                    Spacer()
-                    if draftProfile.channelMode == .stereo {
-                        GraphLegendItem(color: .blue, title: localized("Left"))
-                        GraphLegendItem(color: .orange, title: localized("Right"))
-                    }
-                }
-                // The most recent analysis stays on screen while a newer one computes. Swapping
-                // in a placeholder on every slider tick would flicker and break the curve animation.
-                if let analysis {
-                    FrequencyResponseGraph(analysis: analysis)
-                        .frame(height: 165)
-                        .accessibilityLabel(Text(localized("Frequency response graph")))
-                        .accessibilityValue(Text(analysis.accessibilitySummary))
-                        .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
-                    if let inactiveFilterSummary = analysis.inactiveFilterSummary {
-                        Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                } else {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(localized("Analyzing frequency response…"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 165)
-                    .accessibilityElement(children: .combine)
-                }
-            }
-            .cardPanel(padding: 16)
+                    Toggle(localized("Bypass"), isOn: $controller.draftProfile.isBypassed)
+                        .toggleStyle(.switch)
+                        .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
 
-            switch draftProfile.mode {
-            case .parametric:
-                ParametricFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
-                    .id(contextID)
-            case .graphic10, .graphic31:
-                GraphicFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
-                    .id(contextID)
-                    .cardPanel(padding: 16)
-            case .convolution:
-                if case .impulseResponse(let source) = draftProfile[channel: channel].convolution {
-                    ImportedImpulseResponseEditor(source: source)
-                        .id(contextID)
-                        .cardPanel(padding: 16)
-                } else {
-                    MagnitudeCurveEditor(points: $controller.draftProfile[channel: channel].magnitudePoints)
-                        .id(contextID)
-                        .cardPanel(padding: 16)
+                    if let analysis {
+                        HeadroomRow(
+                            profile: $controller.draftProfile,
+                            recommendedPreampDB: analysis.recommendedPreampDB
+                        )
+                    } else {
+                        PendingHeadroomRow()
+                    }
+                }
+
+                Section {
+                    // The most recent analysis stays on screen while a newer one computes. Swapping
+                    // in a placeholder on every slider tick would flicker and break the curve animation.
+                    if let analysis {
+                        FrequencyResponseGraph(analysis: analysis)
+                            .frame(height: 165)
+                            .accessibilityLabel(Text(localized("Frequency response graph")))
+                            .accessibilityValue(Text(analysis.accessibilitySummary))
+                            .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
+                        if let inactiveFilterSummary = analysis.inactiveFilterSummary {
+                            Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                    } else {
+                        VStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(localized("Analyzing frequency response…"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 165)
+                        .accessibilityElement(children: .combine)
+                    }
+                } header: {
+                    HStack {
+                        Text(localized("Frequency Response"))
+                        Spacer()
+                        if draftProfile.channelMode == .stereo {
+                            GraphLegendItem(color: .blue, title: localized("Left"))
+                            GraphLegendItem(color: .orange, title: localized("Right"))
+                        }
+                    }
+                }
+
+                switch draftProfile.mode {
+                case .parametric:
+                    ParametricFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
+                case .graphic10, .graphic31:
+                    GraphicFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
+                case .convolution:
+                    if case .impulseResponse(let source) = draftProfile[channel: channel].convolution {
+                        ImportedImpulseResponseEditor(source: source)
+                    } else {
+                        MagnitudeCurveEditor(points: $controller.draftProfile[channel: channel].magnitudePoints)
+                    }
                 }
             }
+            .disabled(controller.isEditingLocked)
+
+            ProgrammeComparisonSection(controller: controller)
         }
+        .formStyle(.grouped)
         .task(id: analysisSignature) {
             await refreshAnalysis()
         }
@@ -388,20 +380,18 @@ struct HeadroomRow: View {
         } else {
             localized("Recommend \(localizedDecibels(recommendedPreampDB))")
         }
-        SettingRow(title: localized("Headroom")) {
+        LabeledContent(localized("Headroom")) {
             Text(status)
-                .font(.caption.monospacedDigit())
+                .monospacedDigit()
                 .foregroundStyle(needsHeadroom ? Color.orange : Color.secondary)
                 .accessibilityLabel(Text(localized("Headroom")))
                 .accessibilityValue(Text(status))
-            Spacer()
             Button(localized("Use Recommended")) {
                 if let adjusted = profileApplyingRecommendedHeadroom(profile, recommendedPreampDB: recommendedPreampDB) {
                     profile = adjusted
                 }
             }
             .disabled(!needsHeadroom || attenuation == nil)
-            .controlSize(.large)
             .accessibilityHint(Text(localized("Applies the recommended preamp to avoid clipping")))
         }
     }
@@ -409,13 +399,11 @@ struct HeadroomRow: View {
 
 struct PendingHeadroomRow: View {
     var body: some View {
-        SettingRow(title: localized("Headroom")) {
+        LabeledContent(localized("Headroom")) {
             ProgressView()
                 .controlSize(.small)
             Text(localized("Analyzing…"))
-                .font(.caption)
                 .foregroundStyle(.secondary)
-            Spacer()
         }
         .accessibilityElement(children: .combine)
     }

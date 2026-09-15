@@ -15,9 +15,8 @@ struct SliderRow: View {
     var scale = SliderScale.linear
 
     var body: some View {
-        SettingRow(title: title) {
+        LabeledContent(title) {
             Slider(value: sliderValue, in: sliderRange)
-                .frame(minWidth: 80, maxWidth: 640)
                 .accessibilityLabel(Text(title))
                 .accessibilityValue(Text(label))
                 .accessibilityHint(Text(localized("Adjusts \(title.lowercased())")))
