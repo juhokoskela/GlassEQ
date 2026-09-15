@@ -2,23 +2,64 @@ import GlassEQCore
 import SwiftUI
 
 struct ApplyBar: View {
-    var controller: SettingsController
+    @Bindable var controller: SettingsController
 
     var body: some View {
         let hasUnsavedDraft = controller.hasUnsavedDraft
         let isReadOnly = controller.isProfileStoreProtected
-        let isComparing = controller.snapshot.programmeComparison.isActive
-        HStack {
-            Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
-                .foregroundStyle(.secondary)
-                .font(.caption.weight(.medium))
-                .accessibilityLabel(Text(localized("Profile edit state")))
-                .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+        let programmeComparison = controller.snapshot.programmeComparison
+        HStack(spacing: 8) {
+            if programmeComparison.isActive {
+                Text(comparisonStatus(programmeComparison))
+                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.medium))
+            } else {
+                Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
+                    .foregroundStyle(.secondary)
+                    .font(.caption.weight(.medium))
+                    .accessibilityLabel(Text(localized("Profile edit state")))
+                    .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+            }
             Spacer()
+
+            if programmeComparison.isActive {
+                Picker(localized("Listening to"), selection: $controller.programmeComparisonSelection) {
+                    Text(localized("Draft"))
+                        .tag(EQProgrammeComparisonSelection.equalized)
+                    Text(programmeComparison.reference.title)
+                        .tag(EQProgrammeComparisonSelection.reference)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+
+                Button(localized("Stop")) {
+                    controller.stopProgrammeComparison()
+                }
+            } else {
+                Picker(localized("Compare with"), selection: $controller.comparisonReference) {
+                    ForEach(EQProgrammeComparisonReference.allCases, id: \.self) { reference in
+                        Text(reference.title).tag(reference)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+
+                Button(localized("Compare")) {
+                    controller.startProgrammeComparison()
+                }
+                .disabled(isReadOnly || !controller.snapshot.isRunning)
+                .help(localized("Switches between the draft and a loudness-matched reference: the profile playing now, or the draft with its filters off."))
+            }
+
+            Divider()
+                .frame(height: 20)
+                .padding(.horizontal, 4)
+
             Button(localized("Revert")) {
                 controller.revertDraft()
             }
-            .disabled(!hasUnsavedDraft || isComparing)
+            .disabled(!hasUnsavedDraft || programmeComparison.isActive)
 
             Button(localized("Apply")) {
                 controller.applyDraft()
@@ -33,7 +74,6 @@ struct ApplyBar: View {
             .disabled(isReadOnly || !controller.hasCurrentOutput)
             .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
         }
-        .controlSize(.large)
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .background(.bar)
@@ -41,53 +81,8 @@ struct ApplyBar: View {
             Divider()
         }
     }
-}
 
-struct ProgrammeComparisonSection: View {
-    @Bindable var controller: SettingsController
-
-    var body: some View {
-        let programmeComparison = controller.snapshot.programmeComparison
-        Section {
-            LabeledContent {
-                if programmeComparison.isActive {
-                    Picker(localized("Listening to"), selection: $controller.programmeComparisonSelection) {
-                        Text(localized("Draft"))
-                            .tag(EQProgrammeComparisonSelection.equalized)
-                        Text(programmeComparison.reference.title)
-                            .tag(EQProgrammeComparisonSelection.reference)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 220)
-
-                    Button(localized("Stop")) {
-                        controller.stopProgrammeComparison()
-                    }
-                } else {
-                    Picker(localized("Compare with"), selection: $controller.comparisonReference) {
-                        ForEach(EQProgrammeComparisonReference.allCases, id: \.self) { reference in
-                            Text(reference.title).tag(reference)
-                        }
-                    }
-                    .labelsHidden()
-
-                    Button(localized("Start")) {
-                        controller.startProgrammeComparison()
-                    }
-                    .disabled(controller.isProfileStoreProtected || !controller.snapshot.isRunning)
-                }
-            } label: {
-                Text(localized("Compare"))
-                Text(description(programmeComparison))
-            }
-        }
-    }
-
-    private func description(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
-        guard programmeComparison.isActive else {
-            return localized("Switch between the draft and a loudness-matched reference: the profile playing now, or the draft with its filters off.")
-        }
+    private func comparisonStatus(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
         guard programmeComparison.isReady else {
             return localized("Measuring the current programme…")
         }

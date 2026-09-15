@@ -312,8 +312,6 @@ struct EditorTab: View {
                 }
             }
             .disabled(controller.isEditingLocked)
-
-            ProgrammeComparisonSection(controller: controller)
         }
         .formStyle(.grouped)
         .task(id: analysisSignature) {
