@@ -10,10 +10,12 @@ Build the beta artifact:
 ./Scripts/build-release-app.sh
 ```
 
-With no overrides, the script uses `GlassEQReleaseLabel` from the app’s Info.plist and produces:
+With no overrides, the script uses the beta channel and the version from the app's Info.plist. It derives the release label from the channel and version and produces:
 
 - `.build/release-app/GlassEQ.app`
 - `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip`
+
+`RELEASE_CHANNEL=alpha` selects an alpha build and label. Alpha and beta builds both require Apple Silicon and ad hoc signing. `RELEASE_CHANNEL=production` requires Developer ID signing, Hardened Runtime, and notarization. `RELEASE_LABEL` can override the archive label without changing the channel or its signing requirements.
 
 The release script requires a clean Git checkout so the packaged source matches the binaries it builds. The downloadable ZIP contains:
 
@@ -92,6 +94,7 @@ swift run GlassEQDiagnostics 2
 For beta packaging, also run:
 
 ```sh
+python3 Scripts/test-release-app.py
 ./Scripts/build-release-app.sh
 codesign --verify --strict --verbose=2 .build/release-app/GlassEQ.app/Contents/Helpers/GlassEQSettings.app
 codesign --verify --strict --verbose=2 .build/release-app/GlassEQ.app

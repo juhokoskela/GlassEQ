@@ -25,7 +25,7 @@ source_plist_value() {
 
 VERSION="${VERSION:-$(source_plist_value CFBundleShortVersionString "$ROOT_DIR/Sources/GlassEQApp/Info.plist")}"
 BUILD="${BUILD:-$(source_plist_value CFBundleVersion "$ROOT_DIR/Sources/GlassEQApp/Info.plist")}"
-RELEASE_CHANNEL="${RELEASE_CHANNEL:-alpha}"
+RELEASE_CHANNEL="${RELEASE_CHANNEL:-beta}"
 ARCH="${ARCH:-arm64}"
 RELEASE_LABEL="${RELEASE_LABEL:-}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -79,11 +79,6 @@ is_dry_run() {
 }
 
 default_release_label() {
-    if [[ "$RELEASE_CHANNEL" == "alpha" && "$VERSION" == "$(source_plist_value CFBundleShortVersionString "$ROOT_DIR/Sources/GlassEQApp/Info.plist")" ]]; then
-        source_plist_value GlassEQReleaseLabel "$ROOT_DIR/Sources/GlassEQApp/Info.plist"
-        return
-    fi
-
     if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.0$ ]]; then
         echo "${RELEASE_CHANNEL}-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
     else
@@ -120,16 +115,16 @@ validate_inputs() {
     esac
 
     case "$RELEASE_CHANNEL" in
-        alpha|production) ;;
-        *) fail "RELEASE_CHANNEL must be alpha or production; got '$RELEASE_CHANNEL'" ;;
+        alpha|beta|production) ;;
+        *) fail "RELEASE_CHANNEL must be alpha, beta, or production; got '$RELEASE_CHANNEL'" ;;
     esac
 
-    if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
-        [[ "$ARCH" == "arm64" ]] || fail "alpha builds are arm64-only"
-        [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" ]] || fail "alpha builds must use ad hoc signing; unset SIGN_IDENTITY or set it to '-'"
-        [[ "$ENABLE_HARDENED_RUNTIME" == "0" || "$ENABLE_HARDENED_RUNTIME" == "false" ]] || fail "alpha builds do not enable Hardened Runtime"
-        [[ "$NOTARIZE" == "0" || "$NOTARIZE" == "false" ]] || fail "alpha builds are not notarized"
-        [[ -z "$NOTARY_PROFILE" ]] || fail "alpha builds must not set NOTARY_PROFILE"
+    if [[ "$RELEASE_CHANNEL" != "production" ]]; then
+        [[ "$ARCH" == "arm64" ]] || fail "$RELEASE_CHANNEL builds are arm64-only"
+        [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" ]] || fail "$RELEASE_CHANNEL builds must use ad hoc signing; unset SIGN_IDENTITY or set it to '-'"
+        [[ "$ENABLE_HARDENED_RUNTIME" == "0" || "$ENABLE_HARDENED_RUNTIME" == "false" ]] || fail "$RELEASE_CHANNEL builds do not enable Hardened Runtime"
+        [[ "$NOTARIZE" == "0" || "$NOTARIZE" == "false" ]] || fail "$RELEASE_CHANNEL builds are not notarized"
+        [[ -z "$NOTARY_PROFILE" ]] || fail "$RELEASE_CHANNEL builds must not set NOTARY_PROFILE"
         SIGN_IDENTITY="-"
         return
     fi
@@ -264,8 +259,8 @@ verify_macho_arch() {
         fail "$binary does not contain requested ARCH '$ARCH' (found: $archs)"
     fi
 
-    if [[ "$RELEASE_CHANNEL" == "alpha" && "$archs" != "arm64" ]]; then
-        fail "alpha builds must be arm64-only (found: $archs)"
+    if [[ "$RELEASE_CHANNEL" != "production" && "$archs" != "arm64" ]]; then
+        fail "$RELEASE_CHANNEL builds must be arm64-only (found: $archs)"
     fi
 }
 
@@ -351,7 +346,7 @@ chmod +x "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
 verify_macho_arch "$MACOS_DIR/$APP_NAME"
 verify_macho_arch "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
 
-if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
+if [[ "$RELEASE_CHANNEL" != "production" ]]; then
     codesign \
         --force \
         --sign - \
@@ -435,15 +430,10 @@ echo "Corresponding Source: $SOURCE_ARCHIVE_NAME (inside the release Zip)"
 echo "Checksum: $CHECKSUM_PATH"
 cat "$CHECKSUM_PATH"
 echo
-if [[ "$RELEASE_CHANNEL" == "alpha" ]]; then
-    echo "Alpha verification:"
-    echo "  lipo -archs \"$MACOS_DIR/$APP_NAME\""
-    echo "  codesign -d --entitlements :- \"$APP_DIR\""
-    echo "  spctl --assess --type execute --verbose=4 \"$APP_DIR\""
+echo "Release verification ($RELEASE_CHANNEL):"
+echo "  lipo -archs \"$MACOS_DIR/$APP_NAME\""
+echo "  codesign -d --entitlements :- \"$APP_DIR\""
+echo "  spctl --assess --type execute --verbose=4 \"$APP_DIR\""
+if [[ "$RELEASE_CHANNEL" != "production" ]]; then
     echo "  Expected spctl result: rejected, because this build is ad hoc-signed and not notarized."
-else
-    echo "Production verification:"
-    echo "  lipo -archs \"$MACOS_DIR/$APP_NAME\""
-    echo "  codesign -d --entitlements :- \"$APP_DIR\""
-    echo "  spctl --assess --type execute --verbose=4 \"$APP_DIR\""
 fi

@@ -28,6 +28,9 @@ jobs:
       - name: Build
         run: swift build
 
+      - name: Check release channels
+        run: python3 Scripts/test-release-app.py
+
       - name: Test
         run: swift test
 
