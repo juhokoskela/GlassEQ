@@ -6,7 +6,7 @@ public struct SettingsView: View {
     @State private var controller: SettingsController
 
     public init(model: GlassEQSettingsViewModel) {
-        _controller = State(initialValue: SettingsController(model: model))
+        controller = SettingsController(model: model)
     }
 
     public var body: some View {
