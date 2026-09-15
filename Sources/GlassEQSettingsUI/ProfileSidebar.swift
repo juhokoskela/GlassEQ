@@ -9,7 +9,11 @@ struct ProfileSidebar: View {
         let selectedProfileID = controller.selectedProfileID
         let canDeleteSelectedProfile = controller.canDeleteProfile(selectedProfileID)
         List(controller.snapshot.profiles, selection: selection) { profile in
-            ProfileRow(profile: profile, isActive: profile.id == controller.snapshot.activeProfileID)
+            ProfileRow(
+                profile: profile,
+                isSelected: profile.id == selectedProfileID,
+                isActive: profile.id == controller.snapshot.activeProfileID
+            )
                 .contextMenu {
                     Button(localized("Duplicate")) {
                         controller.duplicateProfile(profile.id)
@@ -86,6 +90,7 @@ struct ProfileSidebar: View {
 
 private struct ProfileRow: View {
     var profile: EQProfile
+    var isSelected: Bool
     var isActive: Bool
 
     var body: some View {
@@ -96,6 +101,7 @@ private struct ProfileRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(profile.name)
+                    .fontWeight(isSelected ? .semibold : .regular)
                     .lineLimit(1)
                 Text(subtitle)
                     .font(.caption)
