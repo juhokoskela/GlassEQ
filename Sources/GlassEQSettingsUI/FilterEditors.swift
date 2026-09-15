@@ -17,44 +17,53 @@ extension EQMagnitudePoint {
 
 struct MagnitudeCurveEditor: View {
     @Binding var points: [EQMagnitudePoint]
+    @State private var isExpanded = false
 
     var body: some View {
         Section {
-            ForEach($points) { $point in
-                HStack(spacing: 10) {
-                    EditableValueText(
-                        title: localized("Frequency"),
-                        value: $point.frequency,
-                        range: ProfilePersistence.frequencyRange,
-                        display: point.frequency.frequencyLabel,
-                        width: 72
-                    )
-                    Slider(value: $point.quantizedGainDB, in: -24...12)
-                        .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
-                        .accessibilityValue(Text(point.gainDB.dbLabel))
-                    EditableValueText(
-                        title: localized("Gain"),
-                        value: $point.gainDB,
-                        range: ProfilePersistence.gainRange,
-                        display: point.gainDB.dbLabel,
-                        width: 60
-                    )
-                    Button(role: .destructive) {
-                        points.removeAll { $0.id == point.id }
-                    } label: {
-                        IconButtonLabel(systemImage: "trash", size: 24)
+            DisclosureGroup(isExpanded: $isExpanded) {
+                if isExpanded {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach($points) { $point in
+                            HStack(spacing: 10) {
+                                EditableValueText(
+                                    title: localized("Frequency"),
+                                    value: $point.frequency,
+                                    range: ProfilePersistence.frequencyRange,
+                                    display: point.frequency.frequencyLabel,
+                                    width: 72
+                                )
+                                Slider(value: $point.quantizedGainDB, in: -24...12)
+                                    .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
+                                    .accessibilityValue(Text(point.gainDB.dbLabel))
+                                EditableValueText(
+                                    title: localized("Gain"),
+                                    value: $point.gainDB,
+                                    range: ProfilePersistence.gainRange,
+                                    display: point.gainDB.dbLabel,
+                                    width: 60
+                                )
+                                Button(role: .destructive) {
+                                    points.removeAll { $0.id == point.id }
+                                } label: {
+                                    IconButtonLabel(systemImage: "trash", size: 24)
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(points.count <= 2)
+                                .accessibilityLabel(Text(localized("Delete response point")))
+                                .accessibilityHint(Text(localized("Removes this magnitude point")))
+                            }
+                            .accessibilityElement(children: .contain)
+                        }
+                        Button(localized("Add Point"), systemImage: "plus") {
+                            addPoint()
+                        }
+                        .accessibilityHint(Text(localized("Adds a magnitude point in the largest frequency gap")))
                     }
-                    .buttonStyle(.borderless)
-                    .disabled(points.count <= 2)
-                    .accessibilityLabel(Text(localized("Delete response point")))
-                    .accessibilityHint(Text(localized("Removes this magnitude point")))
                 }
-                .accessibilityElement(children: .contain)
+            } label: {
+                Text(localized("Response points (\(points.count))"))
             }
-            Button(localized("Add Point"), systemImage: "plus") {
-                addPoint()
-            }
-            .accessibilityHint(Text(localized("Adds a magnitude point in the largest frequency gap")))
         } header: {
             Text(localized("Target Response"))
         } footer: {

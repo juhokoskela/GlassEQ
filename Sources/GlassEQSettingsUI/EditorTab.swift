@@ -268,6 +268,7 @@ struct EditorTab: View {
                         ImportedImpulseResponseEditor(source: source)
                     } else {
                         MagnitudeCurveEditor(points: $controller.draftProfile[channel: channel].magnitudePoints)
+                            .id(draftProfile.id)
                     }
                 }
             }
