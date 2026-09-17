@@ -8,7 +8,7 @@ enum HybridConvolverError: Error, Equatable, Sendable {
     case transformSetupFailed
 }
 
-struct PreparedConvolutionKernel: @unchecked Sendable {
+struct PreparedConvolutionKernel: Sendable {
     static let tapCount = 16_384
     static let directTapCount = 512
     static let tailPartitionFrames = 256
@@ -70,8 +70,13 @@ struct PreparedConvolutionKernel: @unchecked Sendable {
     }
 }
 
-struct RealtimeHybridConvolver: @unchecked Sendable {
-    private static let outputRingFrames = 1_024
+struct RealtimeHybridConvolver: Sendable {
+    typealias DirectHistory = InlineArray<1024, Float>
+    typealias TailInputBlock = InlineArray<256, Float>
+    typealias TailOverlap = InlineArray<256, Float>
+    typealias TailOutputRing = InlineArray<1024, Float>
+
+    static let outputRingFrames = 1_024
     private static let outputRingMask = outputRingFrames - 1
     private static let inverseGuardFrames = 16
     private static let partitionWorkFrames = PreparedConvolutionKernel.tailPartitionFrames
@@ -79,15 +84,9 @@ struct RealtimeHybridConvolver: @unchecked Sendable {
 
     private let kernel: PreparedConvolutionKernel
     private let transform: RealFloatDFTSetup
-    private var directHistory = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.directTapCount * 2
-    )
+    private var directHistory: DirectHistory = .init(repeating: 0)
     private var directWriteIndex = 0
-    private var tailInputBlock = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.tailPartitionFrames
-    )
+    private var tailInputBlock: TailInputBlock = .init(repeating: 0)
     private var tailInputCount = 0
     private var fftInputEven = [Float](
         repeating: 0,
@@ -132,14 +131,8 @@ struct RealtimeHybridConvolver: @unchecked Sendable {
         repeating: 0,
         count: PreparedConvolutionKernel.packedBinCount
     )
-    private var tailOverlap = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.tailPartitionFrames
-    )
-    private var tailOutputRing = [Float](
-        repeating: 0,
-        count: Self.outputRingFrames
-    )
+    private var tailOverlap: TailOverlap = .init(repeating: 0)
+    private var tailOutputRing: TailOutputRing = .init(repeating: 0)
     private var jobActive = false
     private var jobInputSpectrumIndex = 0
     private var jobNextPartition = 0
@@ -170,7 +163,7 @@ struct RealtimeHybridConvolver: @unchecked Sendable {
         let historyStart = directWriteIndex + 1
         var directOutput: Float = 0
         kernel.directCoefficientsReversed.withUnsafeBufferPointer { coefficients in
-            directHistory.withUnsafeBufferPointer { history in
+            directHistory.span.withUnsafeBufferPointer { history in
                 vDSP_dotpr(
                     coefficients.baseAddress!,
                     1,
@@ -243,7 +236,7 @@ struct RealtimeHybridConvolver: @unchecked Sendable {
                 let historyStart = directWriteIndex + 1
                 var directOutput: Float = 0
                 kernel.directCoefficientsReversed.withUnsafeBufferPointer { coefficients in
-                    directHistory.withUnsafeBufferPointer { history in
+                    directHistory.span.withUnsafeBufferPointer { history in
                         vDSP_dotpr(
                             coefficients.baseAddress!,
                             1,
@@ -283,9 +276,9 @@ struct RealtimeHybridConvolver: @unchecked Sendable {
     }
 
     mutating func reset() {
-        clear(&directHistory)
+        directHistory = .init(repeating: 0)
         directWriteIndex = 0
-        clear(&tailInputBlock)
+        tailInputBlock = .init(repeating: 0)
         tailInputCount = 0
         clear(&fftInputEven)
         clear(&fftInputOdd)
@@ -298,8 +291,8 @@ struct RealtimeHybridConvolver: @unchecked Sendable {
         clear(&accumulatorImaginary)
         clear(&inverseOutputEven)
         clear(&inverseOutputOdd)
-        clear(&tailOverlap)
-        clear(&tailOutputRing)
+        tailOverlap = .init(repeating: 0)
+        tailOutputRing = .init(repeating: 0)
         jobActive = false
         jobInputSpectrumIndex = 0
         jobNextPartition = 0

@@ -679,12 +679,14 @@ struct ExtremeDurationSnapshot {
 }
 
 final class RealtimeExtremeDurationTracker: @unchecked Sendable {
+    typealias Buckets = InlineArray<513, UInt64>
+
     private static let fineBucketCount = 256
     private static let fineBucketWidthNanoseconds: UInt64 = 250
     private static let coarseBucketCount = 256
     private static let coarseBucketWidthNanoseconds: UInt64 = 4_000
     private static let overflowBucket = fineBucketCount + coarseBucketCount
-    private static let bucketCount = overflowBucket + 1
+    static let bucketCount = overflowBucket + 1
     private static let publishInterval: UInt64 = 1_024
 
     private let requestedGeneration = Atomic<UInt64>(0)
@@ -695,8 +697,8 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     private let publishedP9999Nanoseconds = Atomic<UInt64>(0)
     private let publishedMaximumNanoseconds = Atomic<UInt64>(0)
     private var localGeneration: UInt64 = 0
-    private var bucketGenerations = [UInt64](repeating: .max, count: bucketCount)
-    private var bucketCounts = [UInt64](repeating: 0, count: bucketCount)
+    private var bucketGenerations: Buckets = .init(repeating: .max)
+    private var bucketCounts: Buckets = .init(repeating: 0)
     private var observations: UInt64 = 0
     private var maximumNanoseconds: UInt64 = 0
     private let publishPhase: UInt64
