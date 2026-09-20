@@ -281,11 +281,11 @@ struct RealtimeAudioRingBufferTests {
         let cancelled = Atomic<Bool>(false)
         defer { cancelled.store(true, ordering: .relaxed) }
         let accepted = Mutex((samples: [Float](), droppedFrames: 0))
-        let consumed = Mutex((samples: [Float](), discardedFrames: 0))
+        let consumed = Mutex((samples: [Float](), discardedFrames: 0, sequenceOvertookWrite: false))
         let group = DispatchGroup()
 
         group.enter()
-        DispatchQueue.global(qos: .utility).async {
+        let producer = Thread {
             var samples = [Float](repeating: 0, count: 129 * 2)
             var acceptedSamples: [Float] = []
             var droppedFrames = 0
@@ -311,10 +311,11 @@ struct RealtimeAudioRingBufferTests {
         }
 
         group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
+        let consumer = Thread {
             var samples = [Float](repeating: 0, count: 32 * 2)
             var consumedSamples: [Float] = []
             var discardedFrames = 0
+            var sequenceOvertookWrite = false
             var blockIndex = 0
             while !cancelled.load(ordering: .relaxed) {
                 if producerDone.load(ordering: .acquiring) && ring.occupancyFrames() == 0 {
@@ -331,17 +332,26 @@ struct RealtimeAudioRingBufferTests {
                 let count = samples.withUnsafeMutableBufferPointer {
                     ring.readInterleaved(into: $0, frameCount: frames, destinationChannelCount: 2)
                 }
-                #expect(ring.nextReadSequence() <= ring.nextWriteSequence())
+                if ring.nextReadSequence() > ring.nextWriteSequence() {
+                    sequenceOvertookWrite = true
+                }
                 consumedSamples.append(contentsOf: samples.prefix(count * 2))
                 blockIndex += 1
             }
-            consumed.withLock { $0 = (consumedSamples, discardedFrames) }
+            consumed.withLock { $0 = (consumedSamples, discardedFrames, sequenceOvertookWrite) }
             group.leave()
         }
 
+        // Dedicated peers must make progress independently of the test runner's shared
+        // Dispatch pools. An empty-ring spin must not starve a lower-priority producer.
+        producer.qualityOfService = .userInitiated
+        consumer.qualityOfService = .userInitiated
+        producer.start()
+        consumer.start()
         try #require(group.wait(timeout: .now() + 30) == .success)
         let written = accepted.withLock { $0 }
         let read = consumed.withLock { $0 }
+        #expect(!read.sequenceOvertookWrite)
         #expect(written.samples.count > 0)
         #expect(written.samples.count / 2 + written.droppedFrames == totalFrames)
         #expect(read.samples.count / 2 + read.discardedFrames == written.samples.count / 2)
