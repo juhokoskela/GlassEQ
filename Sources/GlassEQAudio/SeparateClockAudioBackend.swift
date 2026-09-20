@@ -567,7 +567,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             playbackBufferRenegotiations.store(0, ordering: .relaxed)
             adaptivePlaybackRenderFailures.store(0, ordering: .relaxed)
             playbackRateCorrectionSaturated.store(false, ordering: .relaxed)
-            ringBuffer.resetOverwriteGateContentionFailureCount()
             playbackPriming.store(true, ordering: .releasing)
         }
 
@@ -581,7 +580,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 playbackUnderrunFrames: playbackUnderrunFrames.load(ordering: .relaxed),
                 droppedInputFrames: droppedInputFrames.load(ordering: .relaxed),
                 droppedBufferedFrames: droppedBufferedFrames.load(ordering: .relaxed),
-                ringGateContentionFailures: ringBuffer.overwriteGateContentionFailureCount(),
                 saturatedSamples: saturatedSamples.load(ordering: .relaxed),
                 currentBufferedFrames: ringBuffer.occupancyFrames(),
                 maxBufferedFrames: maxBufferedFrames.load(ordering: .relaxed),
@@ -800,7 +798,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             }
 
             if pendingPlaybackReset.exchange(false, ordering: .acquiringAndReleasing) {
-                _ = ringBuffer.reset()
+                droppedBufferedFrames.wrappingAdd(UInt64(ringBuffer.reset()), ordering: .relaxed)
             }
             if pendingPlaybackClockReset.exchange(false, ordering: .acquiringAndReleasing) {
                 pendingPlaybackTargetRetarget.store(false, ordering: .releasing)
@@ -851,10 +849,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     clear(outputData: outputData)
                     return
                 }
-                guard ringBuffer.trimToLatestFrames(primeFrames) else {
-                    clear(outputData: outputData)
-                    return
-                }
+                let trimmedFrames = ringBuffer.trimToLatestFrames(primeFrames)
+                droppedBufferedFrames.wrappingAdd(UInt64(trimmedFrames), ordering: .relaxed)
                 playbackRateServo.didPrime(occupancyFrames: primeFrames)
                 publishAdaptivePlaybackMetrics()
                 playbackPriming.store(false, ordering: .releasing)
@@ -1211,9 +1207,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             if result.droppedInputFrames > 0 {
                 droppedInputFrames.wrappingAdd(UInt64(result.droppedInputFrames), ordering: .relaxed)
             }
-            if result.droppedBufferedFrames > 0 {
-                droppedBufferedFrames.wrappingAdd(UInt64(result.droppedBufferedFrames), ordering: .relaxed)
-            }
         }
 
         private func beginPendingDSPTransitionIfPossible() {
@@ -1280,22 +1273,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             guard let completionFrameOffset = box.playbackCompletionFrameOffset else {
                 return
             }
-            guard writeResult.writtenFrames > 0 else {
-                box.playbackCompletionFrameOffset = 0
-                return
-            }
-
-            let retainedCompletionOffset = max(
-                completionFrameOffset - writeResult.droppedInputFrames,
-                0
-            )
-            guard retainedCompletionOffset < writeResult.writtenFrames else {
+            guard completionFrameOffset < writeResult.writtenFrames else {
+                // The incoming tail was dropped. Wait for the next committed frame of the new bank.
                 box.playbackCompletionFrameOffset = 0
                 return
             }
             box.playbackCompletionFrameOffset = nil
             pendingPlaybackDSPCompletionSequence.store(
-                firstWrittenSequence &+ UInt64(retainedCompletionOffset) &+ 1,
+                firstWrittenSequence &+ UInt64(completionFrameOffset) &+ 1,
                 ordering: .releasing
             )
 

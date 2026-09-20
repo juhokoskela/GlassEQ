@@ -410,7 +410,6 @@ extension SettingsAudioMetricsDTO {
             playbackUnderrunFrames: metrics.playbackUnderrunFrames,
             droppedInputFrames: metrics.droppedInputFrames,
             droppedBufferedFrames: metrics.droppedBufferedFrames,
-            ringGateContentionFailures: metrics.ringGateContentionFailures,
             saturatedSamples: metrics.saturatedSamples,
             currentBufferedFrames: metrics.currentBufferedFrames,
             maxBufferedFrames: metrics.maxBufferedFrames,

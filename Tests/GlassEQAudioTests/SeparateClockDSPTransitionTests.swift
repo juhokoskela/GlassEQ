@@ -63,6 +63,63 @@ struct SeparateClockDSPTransitionTests {
         #expect(runtime.dspTransitionProgress().hasCompleted(target))
     }
 
+    @Test(arguments: [0, 128, 512])
+    func overflowDoesNotCompleteAnUnplayedFade(acceptedTailFrames: Int) throws {
+        let active = EQRenderConfiguration(
+            profile: EQProfile(name: "Active", mode: .parametric, preampDB: -12, filters: []),
+            sampleRate: 48_000,
+            channelCount: 2
+        )
+        var identityProfile = EQProfile.flatParametric
+        identityProfile.isBypassed = true
+        let identity = EQRenderConfiguration(profile: identityProfile, sampleRate: 48_000, channelCount: 2)
+        let capacity = 1_024 + acceptedTailFrames
+        let runtime = SeparateClockAudioBackend.AudioRuntime(
+            renderConfiguration: active,
+            ringCapacityFrames: capacity,
+            scratchFrames: 1_024,
+            captureCallbackFrames: 1_024,
+            playbackPrimeFrames: capacity
+        )
+        try runtime.configurePlayback(primeFrames: capacity, outputSampleRate: 48_000)
+        let target = runtime.publishPendingDSPConfig(identity)
+
+        // The first block warms the bank. The second starts its 480-frame blend and
+        // completes it at offset 479, but may drop that frame.
+        withInterleavedBuffer(frames: 1_024, repeating: 0.25) { input in
+            runtime.capture(inputData: UnsafePointer(input))
+            runtime.capture(inputData: UnsafePointer(input))
+            // Further rejected input must not arm completion either.
+            runtime.capture(inputData: UnsafePointer(input))
+        }
+        #expect(runtime.ringBuffer.nextWriteSequence() == UInt64(capacity))
+        #expect(!runtime.dspTransitionProgress().hasCompleted(target))
+
+        for callback in 0..<9 {
+            withInterleavedBuffer(frames: 128, repeating: 0) { output in
+                runtime.playback(outputData: output, outputSampleTime: Double(callback * 128))
+            }
+            #expect(!runtime.dspTransitionProgress().hasCompleted(target))
+        }
+
+        // Refill enough to prime after underrun and cover resampler read-ahead. If the end
+        // of the fade was dropped, the first new committed frame provides its watermark.
+        withInterleavedBuffer(frames: 1_024, repeating: 0.25) { input in
+            runtime.capture(inputData: UnsafePointer(input))
+            runtime.capture(inputData: UnsafePointer(input))
+        }
+        #expect(!runtime.dspTransitionProgress().hasCompleted(target))
+        for callback in 9..<18 {
+            withInterleavedBuffer(frames: 128, repeating: 0) { output in
+                runtime.playback(outputData: output, outputSampleTime: Double(callback * 128))
+            }
+            if runtime.dspTransitionProgress().hasCompleted(target) {
+                break
+            }
+        }
+        #expect(runtime.dspTransitionProgress().hasCompleted(target))
+    }
+
     private func withInterleavedBuffer(
         frames: Int,
         repeating sample: Float,

@@ -255,7 +255,6 @@ struct OutputDiagnosticsReport {
         ]
         if usesSeparateClockDiagnostics {
             rows += [
-                Row(id: "ringGateFailures", title: localized("Ring Gate Failures"), value: localizedInteger(snapshot.metrics.ringGateContentionFailures)),
                 Row(id: "bufferedFrames", title: localized("Buffered / Peak"), value: bufferedFramesLabel),
                 Row(id: "clockCorrection", title: localized("Clock Correction"), value: playbackRateCorrectionLabel),
                 Row(id: "servoBuffer", title: localized("Servo Buffer"), value: servoBufferLabel),
