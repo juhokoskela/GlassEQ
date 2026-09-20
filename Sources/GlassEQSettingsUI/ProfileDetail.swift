@@ -17,6 +17,7 @@ struct ProfileDetail: View {
                 OutputTab(controller: controller)
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity)
         .safeAreaInset(edge: .top, spacing: 0) {
             if controller.isProfileStoreProtected {
                 ProfileStoreProtectionBanner(

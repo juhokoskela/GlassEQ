@@ -155,10 +155,14 @@ private struct GraphicFilterRow: View {
 struct ParametricFilterEditor: View {
     @Binding var filters: [EQFilter]
     @State private var selectedFilterID: UUID?
+    @State private var showsColumns = false
 
     var body: some View {
+        let layout = showsColumns
+            ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
         Section(localized("Filters")) {
-            HStack(alignment: .top, spacing: 24) {
+            layout {
                 VStack(alignment: .leading, spacing: 8) {
                     FilterListHeader()
                     VStack(spacing: 4) {
@@ -196,6 +200,10 @@ struct ParametricFilterEditor: View {
                         .frame(maxWidth: .infinity, minHeight: 150)
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: Bool.self) { geometry in
+                geometry.size.width >= 640
+            } action: { showsColumns = $0 }
             .padding(.vertical, 4)
         }
     }

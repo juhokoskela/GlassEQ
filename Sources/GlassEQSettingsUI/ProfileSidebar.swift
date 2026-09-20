@@ -31,10 +31,11 @@ struct ProfileSidebar: View {
                 }
         }
         .listStyle(.sidebar)
+        .disabled(controller.snapshot.programmeComparison.isActive)
         // Removing the toggle after the column width modifier drops the width back to a system
         // minimum, so the order here matters.
         .toolbar(removing: .sidebarToggle)
-        .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 4) {
                 Button(localized("New Profile"), systemImage: "plus") {

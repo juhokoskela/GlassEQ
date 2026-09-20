@@ -2150,7 +2150,7 @@ final class GlassEQAppModel {
         case .playingNow:
             localized("Comparing the draft with \(activeProfile.name)")
         case .filtersOff:
-            localized("Comparing the draft with its filters off")
+            localized("Comparing filters off and filters on")
         }
         startProgrammeComparisonPolling()
         notifyModelDidChange()

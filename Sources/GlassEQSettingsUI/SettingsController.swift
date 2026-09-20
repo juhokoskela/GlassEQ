@@ -167,7 +167,8 @@ final class SettingsController {
     }
 
     func selectProfile(_ id: UUID) {
-        guard let profile = snapshot.profiles.first(where: { $0.id == id }) else {
+        guard !snapshot.programmeComparison.isActive,
+              let profile = snapshot.profiles.first(where: { $0.id == id }) else {
             return
         }
         selectedProfileID = id
