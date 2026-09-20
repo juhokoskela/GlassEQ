@@ -791,9 +791,10 @@ private func runTransition(
         warmupSeconds: 0,
         blendSeconds: 3_600
     )
-    precondition(transition.beginTransition(to: EQProcessor(
+    var candidate: EQProcessor? = EQProcessor(
         renderConfiguration: incomingConfiguration
-    )))
+    )
+    precondition(transition.beginTransition(to: &candidate))
 
     for _ in 0..<warmupIterations {
         samples = originalSamples

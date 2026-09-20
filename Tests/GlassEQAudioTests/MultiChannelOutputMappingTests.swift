@@ -522,7 +522,7 @@ struct MultiChannelOutputMappingTests {
         sourceChannelOffset: Int,
         preampGains: (left: Float, right: Float),
         incomingPreampGains: (left: Float, right: Float)? = nil,
-        transition: EQTransitionRenderResult = EQTransitionRenderResult()
+        transition: borrowing EQTransitionRenderResult = EQTransitionRenderResult()
     ) -> (samples: [Float], saturated: UInt64) {
         var inputOffset = 0
         var samples = samples

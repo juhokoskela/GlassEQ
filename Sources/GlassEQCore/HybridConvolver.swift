@@ -19,6 +19,7 @@ struct PreparedConvolutionKernel: Sendable {
     let directCoefficientsReversed: [Float]
     let tailSpectrumReal: [Float]
     let tailSpectrumImaginary: [Float]
+    fileprivate let transform: RealFloatDFTSetup
 
     init(impulseResponse: [Float]) throws {
         guard !impulseResponse.isEmpty,
@@ -34,6 +35,7 @@ struct PreparedConvolutionKernel: Sendable {
         )
 
         let setup = try RealFloatDFTSetup()
+        self.transform = setup
         var spectrumReal = [Float](
             repeating: 0,
             count: Self.tailPartitionCount * Self.packedBinCount
@@ -45,19 +47,22 @@ struct PreparedConvolutionKernel: Sendable {
         var outputImaginary = inputEven
 
         for partition in 0..<Self.tailPartitionCount {
-            clear(&inputEven)
-            clear(&inputOdd)
+            inputEven.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+            inputOdd.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
             let sourceStart = Self.directTapCount + partition * Self.tailPartitionFrames
             for pair in 0..<(Self.tailPartitionFrames / 2) {
                 inputEven[pair] = padded[sourceStart + pair * 2]
                 inputOdd[pair] = padded[sourceStart + pair * 2 + 1]
             }
-            setup.forward(
-                even: &inputEven,
-                odd: &inputOdd,
-                outputReal: &outputReal,
-                outputImaginary: &outputImaginary
-            )
+            inputEven.withUnsafeBufferPointer { even in
+                inputOdd.withUnsafeBufferPointer { odd in
+                    outputReal.withUnsafeMutableBufferPointer { real in
+                        outputImaginary.withUnsafeMutableBufferPointer { imaginary in
+                            setup.forward(even: even, odd: odd, outputReal: real, outputImaginary: imaginary)
+                        }
+                    }
+                }
+            }
             let destinationStart = partition * Self.packedBinCount
             for bin in 0..<Self.packedBinCount {
                 spectrumReal[destinationStart + bin] = outputReal[bin] * 0.5
@@ -70,7 +75,7 @@ struct PreparedConvolutionKernel: Sendable {
     }
 }
 
-struct RealtimeHybridConvolver: Sendable {
+struct RealtimeHybridConvolver: ~Copyable, Sendable {
     private static let outputRingFrames = 1_024
     private static let outputRingMask = outputRingFrames - 1
     private static let inverseGuardFrames = 16
@@ -78,54 +83,12 @@ struct RealtimeHybridConvolver: Sendable {
         - inverseGuardFrames
 
     private let kernel: PreparedConvolutionKernel
-    private let transform: RealFloatDFTSetup
+    private var scratch = ConvolutionScratch()
     private var directHistory: InlineArray<1024, Float> = .init(repeating: 0)
     private var directWriteIndex = 0
     private var tailInputBlock: InlineArray<256, Float> = .init(repeating: 0)
     private var tailInputCount = 0
-    private var fftInputEven = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var fftInputOdd = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var fftOutputReal = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var fftOutputImaginary = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var inputSpectrumReal = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.tailPartitionCount
-            * PreparedConvolutionKernel.packedBinCount
-    )
-    private var inputSpectrumImaginary = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.tailPartitionCount
-            * PreparedConvolutionKernel.packedBinCount
-    )
     private var inputSpectrumWriteIndex = -1
-    private var accumulatorReal = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var accumulatorImaginary = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var inverseOutputEven = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
-    private var inverseOutputOdd = [Float](
-        repeating: 0,
-        count: PreparedConvolutionKernel.packedBinCount
-    )
     private var tailOverlap: InlineArray<256, Float> = .init(repeating: 0)
     private var tailOutputRing: InlineArray<1024, Float> = .init(repeating: 0)
     private var jobActive = false
@@ -135,9 +98,8 @@ struct RealtimeHybridConvolver: Sendable {
     private var jobDueFrame: Int64 = 0
     private var absoluteFrame: Int64 = 0
 
-    init(kernel: PreparedConvolutionKernel, prewarm: Bool = true) throws {
+    init(kernel: PreparedConvolutionKernel, prewarm: Bool = true) {
         self.kernel = kernel
-        self.transform = try RealFloatDFTSetup()
         precondition(directHistory.count == PreparedConvolutionKernel.directTapCount * 2)
         precondition(tailInputBlock.count == PreparedConvolutionKernel.tailPartitionFrames)
         precondition(tailOverlap.count == PreparedConvolutionKernel.tailPartitionFrames)
@@ -275,22 +237,12 @@ struct RealtimeHybridConvolver: Sendable {
     }
 
     mutating func reset() {
-        // Touch every mutable heap buffer so copies detach during preparation, before publication.
+        scratch.reset()
         directHistory = .init(repeating: 0)
         directWriteIndex = 0
         tailInputBlock = .init(repeating: 0)
         tailInputCount = 0
-        clear(&fftInputEven)
-        clear(&fftInputOdd)
-        clear(&fftOutputReal)
-        clear(&fftOutputImaginary)
-        clear(&inputSpectrumReal)
-        clear(&inputSpectrumImaginary)
         inputSpectrumWriteIndex = -1
-        clear(&accumulatorReal)
-        clear(&accumulatorImaginary)
-        clear(&inverseOutputEven)
-        clear(&inverseOutputOdd)
         tailOverlap = .init(repeating: 0)
         tailOutputRing = .init(repeating: 0)
         jobActive = false
@@ -347,33 +299,33 @@ struct RealtimeHybridConvolver: Sendable {
     private mutating func beginTailJob() {
         precondition(!jobActive)
         for pair in 0..<(PreparedConvolutionKernel.tailPartitionFrames / 2) {
-            fftInputEven[pair] = tailInputBlock[pair * 2]
-            fftInputOdd[pair] = tailInputBlock[pair * 2 + 1]
+            scratch.fftInputEven[pair] = tailInputBlock[pair * 2]
+            scratch.fftInputOdd[pair] = tailInputBlock[pair * 2 + 1]
         }
         let zeroPairStart = PreparedConvolutionKernel.tailPartitionFrames / 2
         for pair in zeroPairStart..<PreparedConvolutionKernel.packedBinCount {
-            fftInputEven[pair] = 0
-            fftInputOdd[pair] = 0
+            scratch.fftInputEven[pair] = 0
+            scratch.fftInputOdd[pair] = 0
         }
         tailInputCount = 0
 
-        transform.forward(
-            even: &fftInputEven,
-            odd: &fftInputOdd,
-            outputReal: &fftOutputReal,
-            outputImaginary: &fftOutputImaginary
+        kernel.transform.forward(
+            even: UnsafeBufferPointer(scratch.fftInputEven),
+            odd: UnsafeBufferPointer(scratch.fftInputOdd),
+            outputReal: scratch.fftOutputReal,
+            outputImaginary: scratch.fftOutputImaginary
         )
         inputSpectrumWriteIndex = (inputSpectrumWriteIndex + 1)
             % PreparedConvolutionKernel.tailPartitionCount
         let destinationStart = inputSpectrumWriteIndex
             * PreparedConvolutionKernel.packedBinCount
         for bin in 0..<PreparedConvolutionKernel.packedBinCount {
-            inputSpectrumReal[destinationStart + bin] = fftOutputReal[bin] * 0.5
-            inputSpectrumImaginary[destinationStart + bin] = fftOutputImaginary[bin] * 0.5
+            scratch.inputSpectrumReal[destinationStart + bin] = scratch.fftOutputReal[bin] * 0.5
+            scratch.inputSpectrumImaginary[destinationStart + bin] = scratch.fftOutputImaginary[bin] * 0.5
         }
 
-        clear(&accumulatorReal)
-        clear(&accumulatorImaginary)
+        scratch.accumulatorReal.update(repeating: 0)
+        scratch.accumulatorImaginary.update(repeating: 0)
         jobActive = true
         jobInputSpectrumIndex = inputSpectrumWriteIndex
         jobNextPartition = 0
@@ -390,53 +342,38 @@ struct RealtimeHybridConvolver: Sendable {
         let inputStart = spectrumIndex * PreparedConvolutionKernel.packedBinCount
         let kernelStart = partition * PreparedConvolutionKernel.packedBinCount
 
-        accumulatorReal[0] += inputSpectrumReal[inputStart]
+        scratch.accumulatorReal[0] += scratch.inputSpectrumReal[inputStart]
             * kernel.tailSpectrumReal[kernelStart]
-        accumulatorImaginary[0] += inputSpectrumImaginary[inputStart]
+        scratch.accumulatorImaginary[0] += scratch.inputSpectrumImaginary[inputStart]
             * kernel.tailSpectrumImaginary[kernelStart]
-        inputSpectrumReal.withUnsafeMutableBufferPointer { inputReal in
-            inputSpectrumImaginary.withUnsafeMutableBufferPointer { inputImaginary in
-                kernel.tailSpectrumReal.withUnsafeBufferPointer { kernelReal in
-                    kernel.tailSpectrumImaginary.withUnsafeBufferPointer { kernelImaginary in
-                        accumulatorReal.withUnsafeMutableBufferPointer { accumulatorReal in
-                            accumulatorImaginary.withUnsafeMutableBufferPointer { accumulatorImaginary in
-                                var input = DSPSplitComplex(
-                                    realp: inputReal.baseAddress! + inputStart + 1,
-                                    imagp: inputImaginary.baseAddress! + inputStart + 1
-                                )
-                                var coefficients = DSPSplitComplex(
-                                    realp: .init(mutating: kernelReal.baseAddress! + kernelStart + 1),
-                                    imagp: .init(mutating: kernelImaginary.baseAddress! + kernelStart + 1)
-                                )
-                                var accumulator = DSPSplitComplex(
-                                    realp: accumulatorReal.baseAddress! + 1,
-                                    imagp: accumulatorImaginary.baseAddress! + 1
-                                )
-                                vDSP_zvma(
-                                    &input,
-                                    1,
-                                    &coefficients,
-                                    1,
-                                    &accumulator,
-                                    1,
-                                    &accumulator,
-                                    1,
-                                    vDSP_Length(PreparedConvolutionKernel.packedBinCount - 1)
-                                )
-                            }
-                        }
-                    }
-                }
+        kernel.tailSpectrumReal.withUnsafeBufferPointer { kernelReal in
+            kernel.tailSpectrumImaginary.withUnsafeBufferPointer { kernelImaginary in
+                var input = DSPSplitComplex(
+                    realp: scratch.inputSpectrumReal.baseAddress! + inputStart + 1,
+                    imagp: scratch.inputSpectrumImaginary.baseAddress! + inputStart + 1
+                )
+                var coefficients = DSPSplitComplex(
+                    realp: .init(mutating: kernelReal.baseAddress! + kernelStart + 1),
+                    imagp: .init(mutating: kernelImaginary.baseAddress! + kernelStart + 1)
+                )
+                var accumulator = DSPSplitComplex(
+                    realp: scratch.accumulatorReal.baseAddress! + 1,
+                    imagp: scratch.accumulatorImaginary.baseAddress! + 1
+                )
+                vDSP_zvma(
+                    &input, 1, &coefficients, 1, &accumulator, 1, &accumulator, 1,
+                    vDSP_Length(PreparedConvolutionKernel.packedBinCount - 1)
+                )
             }
         }
     }
 
     private mutating func finishTailJob() {
-        transform.inverse(
-            real: &accumulatorReal,
-            imaginary: &accumulatorImaginary,
-            outputEven: &inverseOutputEven,
-            outputOdd: &inverseOutputOdd
+        kernel.transform.inverse(
+            real: UnsafeBufferPointer(scratch.accumulatorReal),
+            imaginary: UnsafeBufferPointer(scratch.accumulatorImaginary),
+            outputEven: scratch.inverseOutputEven,
+            outputOdd: scratch.inverseOutputOdd
         )
         let scale = 1 / Float(PreparedConvolutionKernel.transformFrames)
         for frame in 0..<PreparedConvolutionKernel.tailPartitionFrames {
@@ -455,8 +392,8 @@ struct RealtimeHybridConvolver: Sendable {
     private func unpackedInverseSample(_ frame: Int) -> Float {
         let pair = frame / 2
         return frame.isMultiple(of: 2)
-            ? inverseOutputEven[pair]
-            : inverseOutputOdd[pair]
+            ? scratch.inverseOutputEven[pair]
+            : scratch.inverseOutputOdd[pair]
     }
 }
 
@@ -520,62 +457,75 @@ private final class RealFloatDFTSetup: @unchecked Sendable {
     }
 
     func forward(
-        even: inout [Float],
-        odd: inout [Float],
-        outputReal: inout [Float],
-        outputImaginary: inout [Float]
+        even: UnsafeBufferPointer<Float>,
+        odd: UnsafeBufferPointer<Float>,
+        outputReal: UnsafeMutableBufferPointer<Float>,
+        outputImaginary: UnsafeMutableBufferPointer<Float>
     ) {
-        execute(
-            setup: forwardSetup,
-            inputReal: &even,
-            inputImaginary: &odd,
-            outputReal: &outputReal,
-            outputImaginary: &outputImaginary
+        vDSP_DFT_Execute(
+            forwardSetup, even.baseAddress!, odd.baseAddress!,
+            outputReal.baseAddress!, outputImaginary.baseAddress!
         )
     }
 
     func inverse(
-        real: inout [Float],
-        imaginary: inout [Float],
-        outputEven: inout [Float],
-        outputOdd: inout [Float]
+        real: UnsafeBufferPointer<Float>,
+        imaginary: UnsafeBufferPointer<Float>,
+        outputEven: UnsafeMutableBufferPointer<Float>,
+        outputOdd: UnsafeMutableBufferPointer<Float>
     ) {
-        execute(
-            setup: inverseSetup,
-            inputReal: &real,
-            inputImaginary: &imaginary,
-            outputReal: &outputEven,
-            outputImaginary: &outputOdd
+        vDSP_DFT_Execute(
+            inverseSetup, real.baseAddress!, imaginary.baseAddress!,
+            outputEven.baseAddress!, outputOdd.baseAddress!
         )
-    }
-
-    private func execute(
-        setup: vDSP_DFT_Setup,
-        inputReal: inout [Float],
-        inputImaginary: inout [Float],
-        outputReal: inout [Float],
-        outputImaginary: inout [Float]
-    ) {
-        inputReal.withUnsafeBufferPointer { inputRealBuffer in
-            inputImaginary.withUnsafeBufferPointer { inputImaginaryBuffer in
-                outputReal.withUnsafeMutableBufferPointer { outputRealBuffer in
-                    outputImaginary.withUnsafeMutableBufferPointer { outputImaginaryBuffer in
-                        vDSP_DFT_Execute(
-                            setup,
-                            inputRealBuffer.baseAddress!,
-                            inputImaginaryBuffer.baseAddress!,
-                            outputRealBuffer.baseAddress!,
-                            outputImaginaryBuffer.baseAddress!
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 
-private func clear(_ values: inout [Float]) {
-    for index in values.indices {
-        values[index] = 0
+// The noncopyable convolver exclusively owns this allocation. Region views stay within its
+// mutating render methods; neither the pointers nor their storage are shared with another bank.
+private struct ConvolutionScratch: ~Copyable, @unchecked Sendable {
+    private let storage: UnsafeMutableBufferPointer<Float>
+    let fftInputEven: UnsafeMutableBufferPointer<Float>
+    let fftInputOdd: UnsafeMutableBufferPointer<Float>
+    let fftOutputReal: UnsafeMutableBufferPointer<Float>
+    let fftOutputImaginary: UnsafeMutableBufferPointer<Float>
+    let inputSpectrumReal: UnsafeMutableBufferPointer<Float>
+    let inputSpectrumImaginary: UnsafeMutableBufferPointer<Float>
+    let accumulatorReal: UnsafeMutableBufferPointer<Float>
+    let accumulatorImaginary: UnsafeMutableBufferPointer<Float>
+    let inverseOutputEven: UnsafeMutableBufferPointer<Float>
+    let inverseOutputOdd: UnsafeMutableBufferPointer<Float>
+
+    init() {
+        let bins = PreparedConvolutionKernel.packedBinCount
+        let spectrumBins = PreparedConvolutionKernel.tailPartitionCount * bins
+        let storage = UnsafeMutableBufferPointer<Float>.allocate(capacity: 8 * bins + 2 * spectrumBins)
+        storage.initialize(repeating: 0)
+        var offset = 0
+        func region(count: Int) -> UnsafeMutableBufferPointer<Float> {
+            defer { offset += count }
+            return UnsafeMutableBufferPointer(rebasing: storage[offset..<(offset + count)])
+        }
+        self.storage = storage
+        self.fftInputEven = region(count: bins)
+        self.fftInputOdd = region(count: bins)
+        self.fftOutputReal = region(count: bins)
+        self.fftOutputImaginary = region(count: bins)
+        self.inputSpectrumReal = region(count: spectrumBins)
+        self.inputSpectrumImaginary = region(count: spectrumBins)
+        self.accumulatorReal = region(count: bins)
+        self.accumulatorImaginary = region(count: bins)
+        self.inverseOutputEven = region(count: bins)
+        self.inverseOutputOdd = region(count: bins)
+        precondition(offset == storage.count)
+    }
+
+    deinit {
+        storage.deinitialize()
+        storage.deallocate()
+    }
+
+    mutating func reset() {
+        storage.update(repeating: 0)
     }
 }

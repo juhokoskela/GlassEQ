@@ -749,3 +749,59 @@ The unchanged advertised range does not establish that macOS will grant 32 frame
 No reliable workaround for sustained playback is established. Reconnecting restored 32-frame callbacks before music playback in the isolation test, but that result does not show that requesting a small buffer before playback preserves it during listening. GlassEQ continues to show the selected and active sizes separately; the reported 256-frame size reflects the observed Core Audio result.
 
 As of 2026-09-15, Apple Feedback **FB24790758** is awaiting a response. Output settings show an inline notice on macOS 27 for Bluetooth and Bluetooth LE routes, describing the possible 256-frame result. The notice uses “may” because the hardware reproduction covers AirPods Pro 2. No application buffer-policy change has been made for this finding.
+
+
+## 2026-09-20: owned convolution scratch and comparison API removal
+
+The comparison cleanup removes the unused reference-kind API and attenuation-dB reporting. Comparison always auditions the draft against that draft with its filters off. Matching still uses the same linear gains, smoothing, parallel rendering, and exit ramp. The public/IPC changes are recorded in `ReleaseNotes-unreleased.md`.
+
+The remaining ten mutable convolver Arrays and the outer convolver Array have been replaced with exclusive storage. Each convolver owns one 135,168-byte allocation: eight 256-Float regions and two 15,872-Float spectrum histories. The four measured inline buffers remain unchanged. Prepared configurations retain only immutable kernels and their paired DFT setups; each processor allocates, touches, and prewarms its own history before publication. The convolver slot stride is 10,520 bytes, but a processor move transfers its bank pointer, not those slots or their sample storage.
+
+### Ownership and realtime audit
+
+`EQProcessor`, `RealtimeHybridConvolver`, the convolver bank, `RealtimeEQTransition`, and `EQTransitionRenderResult` are noncopyable. Compiler-negative probes rejected explicit copies of all three public owning types. Adoption exchanges optional ownership slots only after validation succeeds. Rejected candidates remain in their publication boxes for off-thread reclamation. Both audio backends take retired processors out of the result before its callback scope ends; the separate-clock backend retains its playback-watermark rule. Completed transitions now require the publication box to exist instead of silently dropping retirement ownership when that invariant is broken.
+
+The optimized release `GlassEQCore.o` was disassembled with `llvm-objdump`. Its convolution channel loop (including the inlined direct head and tail accumulation), `accumulateTailPartition`, `beginTailJob`, and `finishTailJob` have no retain/release, uniqueness, Array-copy, malloc, or memcpy calls. Tail accumulation calls `vDSP_zvma`; forward/inverse transforms call the prewarmed `vDSP_DFT_Execute`. Accumulator clearing remains bounded in-place zeroing. `reset()` uses three in-place `bzero` calls and scalar stores, with a 16-byte stack frame and no large temporary. Both adoption entry points contain no calls after changing slot assignment to `swap`.
+
+The audit caught a 10,520-byte temporary memcpy when testing an optional convolver through the bank's borrowing subscript. Checking presence directly inside the bank removes that temporary. Swift 6.4 also emitted a reference to private bank metadata in optimized client destruction code, causing a release link failure. Giving the internal bank `@usableFromInline` visibility fixes that compiler boundary without exposing a public storage API.
+
+The transition's private alternate-sample Array and the biquad state Array still have compiler-generated uniqueness checks. They are constructed independently, never exposed, and now sit inside noncopyable owners, so no operation can share their mutable storage. This is distinct from claiming that every generated CoW branch disappeared. The new scratch and convolver slot storage have no CoW mechanism at all.
+
+A separate optimized offline lifetime harness interposed `malloc`, `calloc`, `realloc`, `free`, `posix_memalign`, `malloc_zone_malloc`, and `malloc_zone_free`, with positive allocation/free controls. Across 4,000 render calls with chunks `[1, 7, 16, 63, 128, 255, 256, 257, 480, 511]`, it observed **zero allocations and zero frees** in marked callback intervals. Those intervals included comparison entry, selection, exit, successful retirement transfers, and wrong-rate/busy adoption rejection. All three retired processors were released outside the marked intervals. This is an offline DSP/handoff check, not a HAL or physical-route trial.
+
+### Release measurements
+
+Measured on Mac17,9 / Apple M5 Pro, macOS 27.0 `26A428`, Apple Swift 6.4 `swiftlang-6.4.0.34.1`, targeting arm64 macOS 26. Baseline: `94580ef`. Candidate includes comparison cleanup `e1b3db5` and the owned-storage change. Both standalone offline executables link their corresponding optimized release `GlassEQCore.o` and use the same harness compiled with `-O -whole-module-optimization -swift-version 6 -target arm64-apple-macos26.0`. These numbers describe those executables, not an installed app or acoustic latency. No process tap was created.
+
+An initial seven-pair series used 20,000 short-block or 4,000 large-block iterations and showed substantial run-to-run noise. A second series used five alternating baseline/candidate pairs, 200,000 short-block or 12,000 large-block iterations, and at least 8,192 warm-up calls. Each sample times DSP only; buffer refill is outside the interval. Inputs are stereo; FIR cases use a 16,384-tap magnitude-curve kernel. All checksums matched exactly. Comparison cases include both changes, so their timing cannot be attributed solely to scratch storage.
+
+| Case | Baseline median mean (ns/call) | Candidate median mean (ns/call) | Mean paired change, 95% bootstrap interval |
+| --- | ---: | ---: | ---: |
+| `graphic31-16f-48k` | 3,945 | 3,929 | -6.8% [-21.0%, +1.7%] |
+| `graphic31-16f-192k` | 3,832 | 3,728 | -10.7% [-28.3%, -1.1%] |
+| `graphic31-blend-16f` | 8,740 | 8,643 | -6.7% [-19.3%, +1.5%] |
+| `graphic31-comparison-16f` | 4,710 | 4,591 | -1.9% [-7.0%, +1.4%] |
+| `fir-16f-48k` | 1,485 | 1,346 | -8.8% [-20.0%, -0.9%] |
+| `fir-16f-192k` | 1,500 | 1,397 | -7.5% [-15.4%, -1.4%] |
+| `fir-480f-48k` | 44,179 | 41,386 | -6.8% [-7.9%, -5.8%] |
+| `fir-irregular` | 18,204 | 17,329 | -3.6% [-9.1%, +2.5%] |
+| `fir-blend-16f` | 3,151 | 3,166 | -2.4% [-6.8%, +3.5%] |
+| `fir-comparison-16f` | 1,829 | 1,758 | -5.5% [-9.1%, -1.9%] |
+
+Negative changes mean less elapsed time. The clearest repeated steady-state result is the 480-frame FIR case, about 6.8% faster in the longer series. The 16-frame FIR results favor the change, but their intervals are wide. Irregular and blending results are inconclusive in the longer series. The untouched graphic-31 controls also moved: the 192 kHz control's paired estimate was -10.7% despite a much smaller median shift. Scheduling/frequency variation and code layout remain confounders; a bootstrap interval does not remove them. Sub-2% differences remain non-evidence, and this run does not justify precise small-effect claims even above that threshold. The adoption decision rests on eliminating shareable mutable scratch and its render-time allocation paths, with no observed output change.
+
+Exact measured SHA-256 values:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `baseline/bench-long` | `6af74a5e1c7bdd6b67755e534b979bdd8f1d00816b69d7ba0af59a6162eed17a` |
+| `candidate/bench-long` | `a89ff30ab8035d8d5c2b52ed65ae2f8b7d62abc31049f38d398d5ca80bb0cb0b` |
+| `baseline/GlassEQCore.o` | `2bd7532444d5f0de64aba8027fa79c763b984874b28e2237863fd018d00a1e8b` |
+| `candidate/GlassEQCore.o` | `70a33e0581d3afda47f36080a303c9644258afabc421da1907f9d959908610e9` |
+| `Bench-long.swift` | `96db1843c4ad83d0b3aa967b5b43883a68f3a817e376986176187db75c6d717d` |
+
+Raw series, harness sources, allocator audit, compiler-negative probes, disassembly, and summaries are retained locally under `/tmp/glasseq-owned-dsp/`.
+
+### Regression coverage
+
+The full suite passed 763 tests across 33 suites. Address Sanitizer passed the 157 core tests, including independent channel/processor histories from one prepared kernel, reset after filling the complete spectrum ring, boundary impulses, irregular render chunks, and comparison transitions. The ownership regression checks wrong-rate and busy rejection, successful consumption of both comparison slots, and transfer of the retired processor. Physical playback and route-transition validation were not performed for this change.

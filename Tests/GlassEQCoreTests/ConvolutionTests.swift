@@ -307,13 +307,84 @@ struct ConvolutionTests {
         }
     }
 
+    @Test
+    func sharedPreparedKernelKeepsChannelAndProcessorHistoryIndependent() throws {
+        var impulse = [Float](repeating: 0, count: PreparedConvolutionKernel.tapCount)
+        for tap in [0, 511, 512, 767, 768, impulse.count - 1] {
+            impulse[tap] = 0.125
+        }
+        let profile = EQProfile(
+            name: "Shared kernel",
+            mode: .convolution,
+            filters: [],
+            convolution: .impulseResponse(ImpulseResponseSource(sampleRate: 48_000, samples: impulse))
+        )
+        let prepared = try EQRenderConfiguration.prepare(profile: profile, sampleRate: 48_000, channelCount: 2)
+        var active = EQProcessor(renderConfiguration: prepared)
+        var independent = EQProcessor(renderConfiguration: prepared)
+        var activeOutput = [Float](repeating: 0, count: (impulse.count + 513) * 2)
+        activeOutput[0] = 1
+        var independentOutput = [Float](repeating: 0, count: activeOutput.count)
+        let chunks = [1, 7, 63, 256, 257, 480]
+        var frame = 0
+        var chunkIndex = 0
+        while frame < activeOutput.count / 2 {
+            let count = min(chunks[chunkIndex % chunks.count], activeOutput.count / 2 - frame)
+            activeOutput.withUnsafeMutableBufferPointer {
+                _ = active.processInterleavedWithDiagnostics(
+                    UnsafeMutableBufferPointer(rebasing: $0[(frame * 2)..<((frame + count) * 2)]),
+                    frameCount: count, channelCount: 2
+                )
+            }
+            independentOutput.withUnsafeMutableBufferPointer {
+                _ = independent.processInterleavedWithDiagnostics(
+                    UnsafeMutableBufferPointer(rebasing: $0[(frame * 2)..<((frame + count) * 2)]),
+                    frameCount: count, channelCount: 2
+                )
+            }
+            frame += count
+            chunkIndex += 1
+        }
+        let maximumError = (0..<(activeOutput.count / 2)).map { frame in
+            abs(activeOutput[frame * 2] - (frame < impulse.count ? impulse[frame] : 0))
+        }.max()!
+        #expect(maximumError < 0.000_01)
+        #expect(stride(from: 1, to: activeOutput.count, by: 2).allSatisfy { activeOutput[$0] == 0 })
+        #expect(independentOutput.allSatisfy { $0 == 0 })
+
+        active.applyPreparedConfiguration(prepared)
+        var silence = [Float](repeating: 0, count: activeOutput.count)
+        active.processInterleaved(&silence, channelCount: 2)
+        #expect(silence.allSatisfy { $0 == 0 })
+    }
+
+    @Test
+    func resetClearsAllScratchAndScheduledTailState() throws {
+        var impulse = [Float](repeating: 0, count: PreparedConvolutionKernel.tapCount)
+        for tap in [0, 511, 512, 767, 768, impulse.count - 1] {
+            impulse[tap] = 0.125
+        }
+        let kernel = try PreparedConvolutionKernel(impulseResponse: impulse)
+        var convolver = RealtimeHybridConvolver(kernel: kernel)
+        for frame in 0..<(impulse.count * 2 + 123) {
+            _ = convolver.processSample(Float(sin(Double(frame) * 0.1)) * 0.25)
+        }
+        convolver.reset()
+        var maximumError: Float = 0
+        for frame in 0..<(impulse.count + 513) {
+            let output = convolver.processSample(frame == 0 ? 1 : 0)
+            maximumError = max(maximumError, abs(output.sample - (frame < impulse.count ? impulse[frame] : 0)))
+        }
+        #expect(maximumError < 0.000_01)
+    }
+
     private func render(
         input: [Float],
         impulse: [Float],
         chunkSizes: [Int]
     ) throws -> [Float] {
         let kernel = try PreparedConvolutionKernel(impulseResponse: impulse)
-        var convolver = try RealtimeHybridConvolver(kernel: kernel)
+        var convolver = RealtimeHybridConvolver(kernel: kernel)
         var output = input
         var timing = EQRenderWorkTiming()
         var frame = 0
@@ -385,8 +456,8 @@ struct ConvolutionTests {
         )
 
         #expect(configuration.isNumericallySafe)
-        #expect(configuration.convolvers.count == 2)
-        #expect(configuration.convolvers.allSatisfy { $0 == nil })
+        #expect(configuration.convolutionKernels.count == 2)
+        #expect(configuration.convolutionKernels.allSatisfy { $0 == nil })
     }
 
 }
