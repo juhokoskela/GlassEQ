@@ -9,6 +9,9 @@ final class RealtimePCMRateConverter {
     let historyOutputFrames: Int
 
     private let converter: AudioConverterRef
+    #if DEBUG
+    var fillFailuresRemainingForTesting = 0
+    #endif
 
     init(inputSampleRate: Double, outputSampleRate: Double, channelCount: Int) throws {
         self.inputSampleRate = inputSampleRate
@@ -35,8 +38,7 @@ final class RealtimePCMRateConverter {
             )
         }
 
-        let latencyFrames: Int
-        let historyOutputFrames: Int
+        var primeInfo = AudioConverterPrimeInfo()
         do {
             var quality = UInt32(kAudioConverterQuality_Max)
             try withUnsafePointer(to: &quality) { value in
@@ -65,7 +67,6 @@ final class RealtimePCMRateConverter {
                 )
             }
 
-            var primeInfo = AudioConverterPrimeInfo()
             var primeInfoSize = UInt32(MemoryLayout<AudioConverterPrimeInfo>.size)
             try withUnsafeMutablePointer(to: &primeInfo) { value in
                 try checkOSStatus(
@@ -78,21 +79,17 @@ final class RealtimePCMRateConverter {
                     operation: "AudioConverterGetProperty(prime info)"
                 )
             }
-            latencyFrames = Int(primeInfo.trailingFrames)
-            // Flush the complete filter window, including fractional sample-rate phase,
-            // using silence through the realtime-safe fill API rather than AudioConverterReset.
-            historyOutputFrames = Int(ceil(
-                (Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames))
-                    * outputSampleRate / inputSampleRate
-            )) + 1
         } catch {
             AudioConverterDispose(converter)
             throw error
         }
 
         self.converter = converter
-        self.latencyFrames = latencyFrames
-        self.historyOutputFrames = historyOutputFrames
+        self.latencyFrames = Int(primeInfo.trailingFrames)
+        self.historyOutputFrames = Int((
+            (Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames))
+                * outputSampleRate / inputSampleRate
+        ).rounded(.up)) + 1
     }
 
     deinit {
@@ -105,7 +102,14 @@ final class RealtimePCMRateConverter {
         outputFrames: inout UInt32,
         outputData: UnsafeMutablePointer<AudioBufferList>
     ) -> OSStatus {
-        AudioConverterFillComplexBufferRealtimeSafe(
+        #if DEBUG
+        if fillFailuresRemainingForTesting > 0 {
+            fillFailuresRemainingForTesting -= 1
+            outputFrames = 0
+            return kAudioConverterErr_UnspecifiedError
+        }
+        #endif
+        return AudioConverterFillComplexBufferRealtimeSafe(
             converter,
             inputProc,
             inputContext,

@@ -162,7 +162,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     private enum AdaptivePlaybackRenderRecoveryAction {
-        case restart(output: AudioOutputDevice, profile: EQProfile, expectation: OutputRebuildExpectation)
+        case restart(output: AudioOutputDevice, profile: EQProfile, expectation: OutputRebuildExpectation, settingsPolicy: OutputDeviceSettingsPolicy)
         case fail(AudioEngineFailure)
     }
 
@@ -445,6 +445,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             )
         }
 
+        // The output IOProc must be stopped and destroyed before replacing converter storage.
         func configurePlayback(
             primeFrames: Int,
             outputSampleRate: Double
@@ -754,7 +755,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     )
                     recordWriteResult(writeResult)
                     armCompletedDSPTransitionForPlayback(
-                        writeResult: writeResult,
+                        writtenFrames: writeResult.writtenFrames,
                         firstWrittenSequence: firstWrittenSequence
                     )
                     frameOffset += chunkFrames
@@ -847,7 +848,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 playbackResampler.reset()
                 publishAdaptivePlaybackMetrics()
                 if sampleRateConverterFlushFramesRemaining > 0 {
-                    if !flushSampleRateConverter(frameCount: frameCount) {
+                    if flushSampleRateConverter(frameCount: frameCount) {
+                        recordPlaybackRenderHealth()
+                    } else {
                         recordAdaptivePlaybackRenderFailure()
                     }
                     clear(outputData: outputData)
@@ -900,12 +903,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             var adaptiveRenderFailed = false
             switch result {
             case .rendered:
-                adaptivePlaybackRenderFailureActive.store(false, ordering: .releasing)
-                adaptivePlaybackRenderHealthGeneration.wrappingAdd(1, ordering: .releasing)
+                recordPlaybackRenderHealth()
                 completeDSPTransitionAfterPlayback()
             case .underrun(let frames):
-                adaptivePlaybackRenderFailureActive.store(false, ordering: .releasing)
-                adaptivePlaybackRenderHealthGeneration.wrappingAdd(1, ordering: .releasing)
+                recordPlaybackRenderHealth()
                 underrunFrames = frames
             case .failed:
                 adaptiveRenderFailed = true
@@ -932,6 +933,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         #if DEBUG
+        func failConverterFillsForTesting(_ count: Int) {
+            playbackSampleRateConverter?.fillFailuresRemainingForTesting = count
+        }
+
         func simulateRenderStallForTesting() {
             freezePlayedFramesForTesting.store(true, ordering: .releasing)
         }
@@ -947,6 +952,11 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private func signalPlaybackInstability(_ reason: PlaybackBufferInstabilityReason) {
             latestPlaybackInstabilityReason.store(reason.rawValue, ordering: .relaxed)
             playbackInstabilityGeneration.wrappingAdd(1, ordering: .releasing)
+        }
+
+        private func recordPlaybackRenderHealth() {
+            adaptivePlaybackRenderFailureActive.store(false, ordering: .releasing)
+            adaptivePlaybackRenderHealthGeneration.wrappingAdd(1, ordering: .releasing)
         }
 
         private func recordAdaptivePlaybackRenderFailure() {
@@ -1068,29 +1078,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             return .rendered
         }
 
+        // Drain the complete filter window through the realtime-safe fill API. A failed
+        // fill may consume nothing: keep its budget and let control-thread recovery handle
+        // persistent failures. Work per callback is limited to its requested output size.
         private func flushSampleRateConverter(frameCount: Int) -> Bool {
-            guard let converter = playbackSampleRateConverter,
-                  frameCount <= adaptiveOutputSamples.count / channelCount,
-                  let outputBase = adaptiveOutputSamples.baseAddress else {
-                return false
-            }
             let frames = min(frameCount, sampleRateConverterFlushFramesRemaining)
-            var convertedFrames = UInt32(frames)
-            var outputData = AudioBufferList(
-                mNumberBuffers: 1,
-                mBuffers: AudioBuffer(
-                    mNumberChannels: UInt32(channelCount),
-                    mDataByteSize: UInt32(frames * channelCount * MemoryLayout<Float>.size),
-                    mData: outputBase
-                )
-            )
-            let status = converter.fill(
-                inputProc: Self.sampleRateConverterInputProc,
-                inputContext: Unmanaged.passUnretained(self).toOpaque(),
-                outputFrames: &convertedFrames,
-                outputData: &outputData
-            )
-            guard status == noErr, convertedFrames == frames else { return false }
+            guard case .rendered = fillSampleRateConverter(frameCount: frames) else { return false }
             sampleRateConverterFlushFramesRemaining -= frames
             return true
         }
@@ -1102,50 +1095,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             destinationLeftChannel: Int,
             destinationRightChannel: Int
         ) -> AdaptivePlaybackRenderResult {
-            guard let sampleRateConverter = playbackSampleRateConverter,
-                  frameCount <= adaptiveOutputSamples.count / channelCount,
-                  let outputBase = adaptiveOutputSamples.baseAddress else {
-                clear(outputBuffers: outputBuffers)
-                return .failed
-            }
-
             sampleRateConverterInputRatio = ratio
-            sampleRateConverterInputResult = .rendered
-            var convertedFrameCount = UInt32(frameCount)
-            var convertedData = AudioBufferList(
-                mNumberBuffers: 1,
-                mBuffers: AudioBuffer(
-                    mNumberChannels: UInt32(channelCount),
-                    mDataByteSize: UInt32(frameCount * channelCount * MemoryLayout<Float>.size),
-                    mData: outputBase
-                )
-            )
-            let status = withUnsafeMutablePointer(to: &convertedData) { outputData in
-                sampleRateConverter.fill(
-                    inputProc: Self.sampleRateConverterInputProc,
-                    inputContext: Unmanaged.passUnretained(self).toOpaque(),
-                    outputFrames: &convertedFrameCount,
-                    outputData: outputData
-                )
-            }
-            guard status == noErr else {
+            let result = fillSampleRateConverter(frameCount: frameCount)
+            guard case .rendered = result else {
                 clear(outputBuffers: outputBuffers)
-                return switch sampleRateConverterInputResult {
-                case .rendered:
-                    .failed
-                case .underrun(let frames):
-                    .underrun(frames: frames)
-                case .failed:
-                    .failed
-                }
+                return result
             }
-            guard convertedFrameCount == frameCount else {
-                clear(outputBuffers: outputBuffers)
-                return .failed
-            }
-
             let outputSamples = UnsafeBufferPointer(
-                start: outputBase,
+                start: adaptiveOutputSamples.baseAddress,
                 count: frameCount * channelCount
             )
             writeInterleaved(
@@ -1159,6 +1116,38 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 to: outputBuffers
             )
             return .rendered
+        }
+
+        private func fillSampleRateConverter(frameCount: Int) -> AdaptivePlaybackRenderResult {
+            guard let converter = playbackSampleRateConverter,
+                  frameCount <= adaptiveOutputSamples.count / channelCount,
+                  let outputBase = adaptiveOutputSamples.baseAddress else {
+                return .failed
+            }
+            sampleRateConverterInputResult = .rendered
+            var convertedFrames = UInt32(frameCount)
+            var outputData = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: UInt32(channelCount),
+                    mDataByteSize: UInt32(frameCount * channelCount * MemoryLayout<Float>.size),
+                    mData: outputBase
+                )
+            )
+            let status = converter.fill(
+                inputProc: Self.sampleRateConverterInputProc,
+                inputContext: Unmanaged.passUnretained(self).toOpaque(),
+                outputFrames: &convertedFrames,
+                outputData: &outputData
+            )
+            guard status == noErr else {
+                return switch sampleRateConverterInputResult {
+                case .rendered: .failed
+                case .underrun(let frames): .underrun(frames: frames)
+                case .failed: .failed
+                }
+            }
+            return convertedFrames == frameCount ? .rendered : .failed
         }
 
         private static let sampleRateConverterInputProc: AudioConverterComplexInputDataProcRealtimeSafe = {
@@ -1313,7 +1302,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         private func armCompletedDSPTransitionForPlayback(
-            writeResult: RingBufferWriteResult,
+            writtenFrames: Int,
             firstWrittenSequence: UInt64
         ) {
             guard activeDSPConfigPointer != 0,
@@ -1324,7 +1313,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             guard let completionFrameOffset = box.playbackCompletionFrameOffset else {
                 return
             }
-            guard completionFrameOffset < writeResult.writtenFrames else {
+            guard completionFrameOffset < writtenFrames else {
                 // The incoming tail was dropped. Wait for the next committed frame of the new bank.
                 box.playbackCompletionFrameOffset = 0
                 return
@@ -1597,13 +1586,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     private let cleanupLedger = CoreAudioResourceCleanupLedger()
     private let restorationStoreURL: URL
     private let playbackBufferCalibrationStoreURL: URL
-    private let playbackBufferAdaptationQueue = DispatchQueue(
-        label: "com.glasseq.playback-buffer-adaptation",
+    private let playbackMaintenanceQueue = DispatchQueue(
+        label: "com.glasseq.playback-maintenance",
         qos: .userInitiated
     )
-    private let playbackBufferAdaptationQueueKey = DispatchSpecificKey<Void>()
-    private let playbackBufferAdaptationTimer: DispatchSourceTimer
-    private let playbackBufferAdaptationTimerRunning = Mutex(false)
+    private let playbackMaintenanceQueueKey = DispatchSpecificKey<Void>()
+    private let playbackMaintenanceTimer: DispatchSourceTimer
+    private let playbackMaintenanceTimerRunning = Mutex(false)
 
     public var state: AudioEngineState {
         control.withLock { $0.state }
@@ -1630,12 +1619,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         self.playbackBufferCalibrationStoreURL = PersistedPlaybackBufferCalibrationStore.defaultURL(
             nextTo: restorationStoreURL
         )
-        let timer = DispatchSource.makeTimerSource(queue: playbackBufferAdaptationQueue)
-        self.playbackBufferAdaptationTimer = timer
-        playbackBufferAdaptationQueue.setSpecific(key: playbackBufferAdaptationQueueKey, value: ())
+        let timer = DispatchSource.makeTimerSource(queue: playbackMaintenanceQueue)
+        self.playbackMaintenanceTimer = timer
+        playbackMaintenanceQueue.setSpecific(key: playbackMaintenanceQueueKey, value: ())
         Self.restorePersistedDeviceSettings(at: restorationStoreURL)
         timer.setEventHandler { [weak self] in
-            self?.serviceAdaptivePlaybackBuffering()
+            self?.servicePlaybackMaintenance()
         }
         timer.schedule(deadline: .now() + .milliseconds(250), repeating: .milliseconds(250), leeway: .milliseconds(50))
     }
@@ -1656,14 +1645,14 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     deinit {
         stop()
-        playbackBufferAdaptationTimer.setEventHandler {}
-        playbackBufferAdaptationTimerRunning.withLock { isRunning in
+        playbackMaintenanceTimer.setEventHandler {}
+        playbackMaintenanceTimerRunning.withLock { isRunning in
             if !isRunning {
-                playbackBufferAdaptationTimer.resume()
+                playbackMaintenanceTimer.resume()
             }
             isRunning = false
         }
-        playbackBufferAdaptationTimer.cancel()
+        playbackMaintenanceTimer.cancel()
     }
 
     public func start(output: AudioOutputDevice, profile: EQProfile) throws {
@@ -1692,9 +1681,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         profile: EQProfile
     ) throws {
         try requireCompletedCoreAudioCleanup(operation: "prepare an output handoff")
-        pausePlaybackBufferAdaptation()
+        pausePlaybackMaintenance()
         defer {
-            updatePlaybackBufferAdaptationTimer()
+            updatePlaybackMaintenanceTimer()
         }
 
         do {
@@ -1750,9 +1739,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     @discardableResult
     func activatePreparedOutputHandoff() throws -> AudioOutputDevice {
-        pausePlaybackBufferAdaptation()
+        pausePlaybackMaintenance()
         defer {
-            updatePlaybackBufferAdaptationTimer()
+            updatePlaybackMaintenanceTimer()
         }
 
         do {
@@ -1796,7 +1785,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     func quiesceOutputForCombinedHandoff() throws {
         traceDiagnostic { "compatibility quiesce begin" }
-        pausePlaybackBufferAdaptation()
+        pausePlaybackMaintenance()
         control.withLock { state in
             state.runtime?.muteOutputForTransition()
             stopOutputHalfLocked(&state)
@@ -1812,7 +1801,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             stopLocked(&state)
         }
         retryCoreAudioCleanup()
-        updatePlaybackBufferAdaptationTimer()
+        updatePlaybackMaintenanceTimer()
     }
 
     private func start(
@@ -1822,9 +1811,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         outputSettingsPolicy: OutputDeviceSettingsPolicy = .adaptiveLowLatency
     ) throws {
         try requireCompletedCoreAudioCleanup(operation: "start compatibility audio")
-        pausePlaybackBufferAdaptation()
+        pausePlaybackMaintenance()
         defer {
-            updatePlaybackBufferAdaptationTimer()
+            updatePlaybackMaintenanceTimer()
         }
         var previousState = AudioEngineState.stopped
         var previousStatus = AudioEngineStatus.stopped
@@ -2126,12 +2115,12 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
     }
 
     public func stop() {
-        pausePlaybackBufferAdaptation()
+        pausePlaybackMaintenance()
         control.withLock { state in
             stopLocked(&state)
         }
         retryCoreAudioCleanup()
-        updatePlaybackBufferAdaptationTimer()
+        updatePlaybackMaintenanceTimer()
     }
 
     public func snapshotMetrics() -> AudioEngineMetrics {
@@ -3160,94 +3149,129 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         return min(targetFrames, Self.runtimeRingCapacityFrames / 2)
     }
 
-    private func updatePlaybackBufferAdaptationTimer() {
+    private func updatePlaybackMaintenanceTimer() {
         let shouldRun = control.withLock { state in
-            guard case .running = state.state,
-                  state.activeOutputSettingsPolicy == .adaptiveLowLatency,
-                  let output = state.activeOutput else {
+            guard case .running = state.state, state.activeOutput != nil else {
                 return false
             }
-            return Self.shouldAdaptPlaybackBuffer(for: output)
+            return true
         }
-        setPlaybackBufferAdaptationTimerRunning(shouldRun)
+        setPlaybackMaintenanceTimerRunning(shouldRun)
     }
 
-    private func pausePlaybackBufferAdaptation() {
-        setPlaybackBufferAdaptationTimerRunning(false)
-        if DispatchQueue.getSpecific(key: playbackBufferAdaptationQueueKey) == nil {
-            playbackBufferAdaptationQueue.sync {}
+    private func pausePlaybackMaintenance() {
+        setPlaybackMaintenanceTimerRunning(false)
+        if DispatchQueue.getSpecific(key: playbackMaintenanceQueueKey) == nil {
+            playbackMaintenanceQueue.sync {}
         }
     }
 
-    private func setPlaybackBufferAdaptationTimerRunning(_ shouldRun: Bool) {
-        playbackBufferAdaptationTimerRunning.withLock { isRunning in
+    private func setPlaybackMaintenanceTimerRunning(_ shouldRun: Bool) {
+        playbackMaintenanceTimerRunning.withLock { isRunning in
             guard isRunning != shouldRun else {
                 return
             }
             isRunning = shouldRun
             if shouldRun {
-                playbackBufferAdaptationTimer.resume()
+                playbackMaintenanceTimer.resume()
             } else {
-                playbackBufferAdaptationTimer.suspend()
+                playbackMaintenanceTimer.suspend()
             }
         }
     }
 
-    private func serviceAdaptivePlaybackBuffering() {
-        let now = ContinuousClock().now
-        guard let action = control.withLock({ state -> PlaybackBufferAdaptationAction? in
-            guard let runtime = state.runtime,
-                  let output = state.activeOutput,
-                  state.activeOutputSettingsPolicy == .adaptiveLowLatency,
-                  Self.shouldAdaptPlaybackBuffer(for: output) else {
-                return nil
-            }
-
-            if let recoveryGeneration = state.adaptivePlaybackRenderRecoveryHealthGeneration,
-               runtime.playbackRenderHealthGeneration() != recoveryGeneration {
-                state.adaptivePlaybackRenderRecoveryAttempts = 0
-                state.adaptivePlaybackRenderRecoveryHealthGeneration = nil
-            }
-
-            let instability = runtime.playbackInstabilitySnapshot()
-            let evidence = state.playbackBufferAdaptationEvidence.observe(
-                instabilityGeneration: instability.generation,
-                reason: instability.reason,
-                timestampDiscontinuities: runtime.playbackTimestampDiscontinuityCount(),
-                at: now
-            )
-            if evidence.observedDisturbance {
-                if state.playbackBufferCalibrationProbe != nil {
-                    state.playbackBufferCalibrationProbe?.startedAt = now
-                    state.playbackBufferStableSince = nil
-                } else {
-                    state.playbackBufferStableSince = now
-                }
-            }
-            if let reason = evidence.escalationReason {
-                state.playbackBufferStableSince = nil
-                return .renegotiate(PlaybackBufferRenegotiationPreparation(
-                    outputRebuildGeneration: state.outputRebuildGeneration,
-                    reason: reason,
-                    output: output,
-                    runtime: runtime
-                ))
-            }
-
-            if let probe = state.playbackBufferCalibrationProbe,
-               probe.hasCompletedProbation(at: now) {
-                return .stabilize(probe)
-            }
-            if let stableSince = state.playbackBufferStableSince,
-               stableSince.duration(to: now) >= PlaybackBufferAdaptationPolicy.decayDelay {
-                state.playbackBufferStableSince = nil
-                return .decay(PlaybackBufferDecayPreparation(
-                    outputRebuildGeneration: state.outputRebuildGeneration,
-                    output: output,
-                    runtime: runtime
-                ))
-            }
+    private static func nextPlaybackMaintenanceAction(
+        _ state: inout ControlState,
+        at now: ContinuousClock.Instant
+    ) -> PlaybackBufferAdaptationAction? {
+        guard case .running = state.state,
+              let runtime = state.runtime,
+              let output = state.activeOutput else {
             return nil
+        }
+
+        if let recoveryGeneration = state.adaptivePlaybackRenderRecoveryHealthGeneration,
+           runtime.playbackRenderHealthGeneration() != recoveryGeneration {
+            state.adaptivePlaybackRenderRecoveryAttempts = 0
+            state.adaptivePlaybackRenderRecoveryHealthGeneration = nil
+        }
+
+        if runtime.hasActiveAdaptivePlaybackRenderFailure() {
+            return .renegotiate(PlaybackBufferRenegotiationPreparation(
+                outputRebuildGeneration: state.outputRebuildGeneration,
+                reason: .adaptiveRenderFailure,
+                output: output,
+                runtime: runtime
+            ))
+        }
+        guard state.activeOutputSettingsPolicy == .adaptiveLowLatency,
+              Self.shouldAdaptPlaybackBuffer(for: output) else {
+            return nil
+        }
+
+        let instability = runtime.playbackInstabilitySnapshot()
+        let evidence = state.playbackBufferAdaptationEvidence.observe(
+            instabilityGeneration: instability.generation,
+            reason: instability.reason,
+            timestampDiscontinuities: runtime.playbackTimestampDiscontinuityCount(),
+            at: now
+        )
+        if evidence.observedDisturbance {
+            if state.playbackBufferCalibrationProbe != nil {
+                state.playbackBufferCalibrationProbe?.startedAt = now
+                state.playbackBufferStableSince = nil
+            } else {
+                state.playbackBufferStableSince = now
+            }
+        }
+        if evidence.escalationReason == .underrun {
+            state.playbackBufferStableSince = nil
+            return .renegotiate(PlaybackBufferRenegotiationPreparation(
+                outputRebuildGeneration: state.outputRebuildGeneration,
+                reason: .underrun,
+                output: output,
+                runtime: runtime
+            ))
+        }
+
+        if let probe = state.playbackBufferCalibrationProbe,
+           probe.hasCompletedProbation(at: now) {
+            return .stabilize(probe)
+        }
+        if let stableSince = state.playbackBufferStableSince,
+           stableSince.duration(to: now) >= PlaybackBufferAdaptationPolicy.decayDelay {
+            state.playbackBufferStableSince = nil
+            return .decay(PlaybackBufferDecayPreparation(
+                outputRebuildGeneration: state.outputRebuildGeneration,
+                output: output,
+                runtime: runtime
+            ))
+        }
+        return nil
+    }
+
+    #if DEBUG
+    static func playbackRequestsRecoveryForTesting(
+        runtime: AudioRuntime,
+        output: AudioOutputDevice,
+        preservingSettings: Bool
+    ) -> Bool {
+        var state = ControlState()
+        state.state = .running(output: output)
+        state.runtime = runtime
+        state.activeOutput = output
+        state.activeOutputSettingsPolicy = preservingSettings ? .preserveCurrent : .adaptiveLowLatency
+        if case .renegotiate(let preparation) = nextPlaybackMaintenanceAction(&state, at: .now) {
+            return preparation.reason == .adaptiveRenderFailure
+        }
+        return false
+    }
+    #endif
+
+    private func servicePlaybackMaintenance() {
+        let now = ContinuousClock().now
+        guard let action = control.withLock({ state in
+            Self.nextPlaybackMaintenanceAction(&state, at: now)
         }) else {
             return
         }
@@ -3828,7 +3852,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                         generation: state.outputRebuildGeneration,
                         runtime: preparation.runtime,
                         profileRevision: state.profileRevision
-                    )
+                    ),
+                    settingsPolicy: state.activeOutputSettingsPolicy
                 )
             }
 
@@ -3847,12 +3872,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         switch action {
-        case .restart(let output, let profile, let expectation):
+        case .restart(let output, let profile, let expectation, let settingsPolicy):
             do {
                 try start(
                     output: output,
                     profile: profile,
-                    expectation: expectation
+                    expectation: expectation,
+                    outputSettingsPolicy: settingsPolicy
                 )
             } catch {
                 let failure = control.withLock { state in
@@ -3864,7 +3890,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 runtimeFailureHandler.withLock { $0 }?(failure)
             }
         case .fail(let failure):
-            updatePlaybackBufferAdaptationTimer()
+            updatePlaybackMaintenanceTimer()
             runtimeFailureHandler.withLock { $0 }?(failure)
         }
     }

@@ -64,7 +64,7 @@ struct SeparateClockDSPTransitionTests {
     }
 
     @Test(arguments: [0, 128, 512])
-    func overflowDoesNotCompleteAnUnplayedFade(acceptedTailFrames: Int) throws {
+    func discardedFadeWaitsForDestinationBankPlayback(acceptedTailFrames: Int) throws {
         let active = EQRenderConfiguration(
             profile: EQProfile(name: "Active", mode: .parametric, preampDB: -12, filters: []),
             sampleRate: 48_000,
@@ -98,6 +98,11 @@ struct SeparateClockDSPTransitionTests {
         for callback in 0..<9 {
             withInterleavedBuffer(frames: 128, repeating: 0) { output in
                 runtime.playback(outputData: output, outputSampleTime: Double(callback * 128))
+                if runtime.dspTransitionProgress().hasCompleted(target) {
+                    let samples = UnsafeMutableAudioBufferListPointer(output)[0].mData!
+                        .assumingMemoryBound(to: Float.self)
+                    #expect(abs(samples[64 * 2] - 0.25) < 0.000_001)
+                }
             }
             #expect(!runtime.dspTransitionProgress().hasCompleted(target))
         }
@@ -112,6 +117,11 @@ struct SeparateClockDSPTransitionTests {
         for callback in 9..<18 {
             withInterleavedBuffer(frames: 128, repeating: 0) { output in
                 runtime.playback(outputData: output, outputSampleTime: Double(callback * 128))
+                if runtime.dspTransitionProgress().hasCompleted(target) {
+                    let samples = UnsafeMutableAudioBufferListPointer(output)[0].mData!
+                        .assumingMemoryBound(to: Float.self)
+                    #expect(abs(samples[64 * 2] - 0.25) < 0.000_001)
+                }
             }
             if runtime.dspTransitionProgress().hasCompleted(target) {
                 break

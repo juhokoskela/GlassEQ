@@ -100,7 +100,9 @@ struct OutputDiagnosticsReport {
                 id: .reliability,
                 title: localized("Reliability"),
                 symbol: "checkmark.shield",
-                note: localized("Failure categories can overlap."),
+                note: usesSeparateClockDiagnostics
+                    ? localized("Buffered discards include priming and recovery. Failure categories can overlap.")
+                    : localized("Failure categories can overlap."),
                 rows: reliabilityRows
             ),
             Section(
@@ -248,7 +250,8 @@ struct OutputDiagnosticsReport {
             Row(id: "capturedFrames", title: localized("Captured Frames"), value: localizedInteger(snapshot.metrics.capturedFrames)),
             Row(id: "playedFrames", title: localized("Played Frames"), value: localizedInteger(snapshot.metrics.playedFrames)),
             Row(id: "underruns", title: localized("Underrun Events / Frames"), value: underrunDetailLabel),
-            Row(id: "droppedFrames", title: localized("Dropped Input / Buffered"), value: droppedFramesLabel),
+            Row(id: "droppedInputFrames", title: localized("Capture Frames Dropped"), value: localizedInteger(snapshot.metrics.droppedInputFrames)),
+            Row(id: "droppedBufferedFrames", title: localized("Buffered Frames Discarded"), value: localizedInteger(snapshot.metrics.droppedBufferedFrames)),
             Row(id: "saturatedSamples", title: localized("Saturated Samples"), value: localizedInteger(snapshot.metrics.saturatedSamples)),
             Row(id: "deadlineMisses", title: localized("Deadline Misses"), value: deadlineMissesLabel),
             Row(id: "discontinuities", title: localized("Discontinuities"), value: discontinuityLabel)
@@ -362,12 +365,6 @@ struct OutputDiagnosticsReport {
     private var underrunDetailLabel: String {
         localized(
             "\(localizedInteger(snapshot.metrics.playbackUnderrunEvents)) / \(localizedInteger(snapshot.metrics.playbackUnderrunFrames))"
-        )
-    }
-
-    private var droppedFramesLabel: String {
-        localized(
-            "\(localizedInteger(snapshot.metrics.droppedInputFrames)) / \(localizedInteger(snapshot.metrics.droppedBufferedFrames))"
         )
     }
 

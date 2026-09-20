@@ -19,24 +19,18 @@ struct SeparateClockStallExperimentTests {
         #expect(after.adaptivePlaybackRenderFailures == 0)
         #expect(after.playbackUnderrunEvents == before.playbackUnderrunEvents)
         #expect(after.droppedBufferedFrames > before.droppedBufferedFrames)
-        #expect(recovery.suffix(16).allSatisfy { !$0.isSilent })
-        #expect(recovery.suffix(16).allSatisfy { $0.bufferedFrames < experiment.primeFrames })
         let baselineAge = try #require(baseline.last?.midpointAgeMS)
-        #expect(recovery.suffix(16).allSatisfy { abs(($0.midpointAgeMS ?? .infinity) - baselineAge) < 2 })
+        try experiment.expectSettled(recovery, baselineAge: baselineAge)
         if stalledCallbacks >= 100 {
             #expect(stalled.currentBufferedFrames == SeparateClockAudioBackend.runtimeRingCapacityFrames)
             #expect(stalled.droppedInputFrames > before.droppedInputFrames)
             #expect(recovery.first?.isSilent == true)
             #expect(recovery.filter { !$0.isSilent }.allSatisfy {
-                abs(($0.midpointAgeMS ?? .infinity) - baselineAge) < 2
+                $0.midpointAgeMS.map { abs($0 - baselineAge) < 2 } == true
             })
         } else {
             #expect(stalled.droppedInputFrames == before.droppedInputFrames)
         }
-        try experiment.report(
-            scenario: "playback-stall-\(stalledCallbacks * 20)ms",
-            baseline: baseline, recovery: recovery, before: before
-        )
     }
 
     @Test(arguments: [48_000.0, 24_000.0, 16_000.0])
@@ -48,18 +42,15 @@ struct SeparateClockStallExperimentTests {
         #expect(starvation.suffix(16).allSatisfy { $0.isSilent })
         #expect(experiment.runtime.snapshotMetrics().playbackUnderrunEvents > before.playbackUnderrunEvents)
         let recovery = experiment.run(callbacks: 64)
-        #expect(recovery.suffix(16).allSatisfy { !$0.isSilent })
         let baselineAge = try #require(baseline.last?.midpointAgeMS)
-        #expect(recovery.suffix(16).allSatisfy { abs(($0.midpointAgeMS ?? .infinity) - baselineAge) < 2 })
+        try experiment.expectSettled(recovery, baselineAge: baselineAge)
         #expect(experiment.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 0)
-        try experiment.report(scenario: "capture-stall-500ms", baseline: baseline, recovery: recovery, before: before)
     }
 
     @Test(arguments: [48_000.0, 24_000.0, 16_000.0], [12, 100])
     func alternatingStalls(outputRate: Double, playbackStallCallbacks: Int) throws {
         let experiment = try StallExperiment(outputRate: outputRate)
         let baseline = experiment.run(callbacks: 32)
-        let before = experiment.runtime.snapshotMetrics()
         for _ in 0..<6 {
             _ = experiment.run(callbacks: 8, capture: false)
             _ = experiment.run(callbacks: 12)
@@ -74,20 +65,14 @@ struct SeparateClockStallExperimentTests {
         #expect(after.droppedBufferedFrames == settled.droppedBufferedFrames)
         #expect(after.droppedInputFrames == settled.droppedInputFrames)
         #expect(recovery.allSatisfy { !$0.isSilent })
-        #expect(recovery.suffix(16).allSatisfy { $0.bufferedFrames < experiment.primeFrames })
         let baselineAge = try #require(baseline.last?.midpointAgeMS)
-        #expect(recovery.suffix(16).allSatisfy { abs(($0.midpointAgeMS ?? .infinity) - baselineAge) < 2 })
-        try experiment.report(
-            scenario: "six-alternating-stalls-\(playbackStallCallbacks * 20)ms-playback",
-            baseline: baseline, recovery: recovery, before: before
-        )
+        try experiment.expectSettled(recovery, baselineAge: baselineAge)
     }
 
     @Test(arguments: [48_000.0, 24_000.0, 16_000.0])
     func sourceStopsWhileRingIsFull(outputRate: Double) throws {
         let experiment = try StallExperiment(outputRate: outputRate)
-        let baseline = experiment.run(callbacks: 32)
-        let before = experiment.runtime.snapshotMetrics()
+        _ = experiment.run(callbacks: 32)
         _ = experiment.run(callbacks: 100, playback: false)
         let full = experiment.runtime.snapshotMetrics()
         _ = experiment.run(callbacks: 20, playback: false, silentSource: true)
@@ -95,7 +80,6 @@ struct SeparateClockStallExperimentTests {
         let recovery = experiment.run(callbacks: 64, silentSource: true)
         #expect(recovery.allSatisfy { $0.isSilent })
         #expect(experiment.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 0)
-        try experiment.report(scenario: "source-stops-during-overflow", baseline: baseline, recovery: recovery, before: before)
     }
 
     @Test(arguments: [48_000.0, 24_000.0, 16_000.0])
@@ -110,18 +94,59 @@ struct SeparateClockStallExperimentTests {
         #expect(recovery.allSatisfy { $0.isSilent })
         #expect(experiment.runtime.snapshotMetrics().playedFrames > before.playedFrames)
         #expect(experiment.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 0)
-        try experiment.report(scenario: "source-stops-small-callbacks", baseline: baseline, recovery: recovery, before: before)
         let resumed = experiment.run(callbacks: 128)
         let baselineAge = try #require(baseline.last?.midpointAgeMS)
-        #expect(resumed.suffix(16).allSatisfy { !$0.isSilent })
-        #expect(resumed.suffix(16).allSatisfy { abs(($0.midpointAgeMS ?? .infinity) - baselineAge) < 2 })
+        try experiment.expectSettled(resumed, baselineAge: baselineAge)
     }
+
+    #if DEBUG
+    @Test(arguments: [false, true])
+    func transientFlushFailureRetriesWithoutReplayingHistory(preservingSettings: Bool) throws {
+        let experiment = try StallExperiment(outputRate: 24_000)
+        _ = experiment.run(callbacks: 32)
+        _ = experiment.run(callbacks: 100, playback: false)
+        experiment.runtime.failConverterFillsForTesting(1)
+        let health = experiment.runtime.playbackRenderHealthGeneration()
+        let first = experiment.run(callbacks: 1, silentSource: true)
+        #expect(first.allSatisfy { $0.isSilent })
+        #expect(experiment.requestsRecovery(preservingSettings: preservingSettings))
+        #expect(experiment.runtime.playbackRenderHealthGeneration() == health)
+        // The successful retry clears failure state even if capture remains stopped.
+        let retry = experiment.run(callbacks: 1, capture: false)
+        #expect(retry.allSatisfy { $0.isSilent })
+        #expect(!experiment.requestsRecovery(preservingSettings: preservingSettings))
+        #expect(experiment.runtime.playbackRenderHealthGeneration() > health)
+        let recovery = experiment.run(callbacks: 64, silentSource: true)
+        #expect(recovery.allSatisfy { $0.isSilent })
+        #expect(experiment.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func persistentFlushFailureRequestsRecoveryWithoutAdaptingSettings(preservingSettings: Bool) throws {
+        let experiment = try StallExperiment(outputRate: 24_000)
+        let baseline = experiment.run(callbacks: 32)
+        _ = experiment.run(callbacks: 100, playback: false)
+        experiment.runtime.failConverterFillsForTesting(100)
+        let health = experiment.runtime.playbackRenderHealthGeneration()
+        let failed = experiment.run(callbacks: 16)
+        #expect(failed.allSatisfy { $0.isSilent })
+        #expect(experiment.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 16)
+        #expect(experiment.runtime.playbackRenderHealthGeneration() == health)
+        #expect(experiment.requestsRecovery(preservingSettings: preservingSettings))
+        // Exercise runtime replacement as performed by the control-thread restart, without HAL.
+        try experiment.runtime.configurePlayback(primeFrames: experiment.primeFrames, outputSampleRate: experiment.outputRate)
+        experiment.runtime.reprimePlayback()
+        let recovery = experiment.run(callbacks: 64)
+        try experiment.expectSettled(recovery, baselineAge: #require(baseline.last?.midpointAgeMS))
+        #expect(!experiment.requestsRecovery(preservingSettings: preservingSettings))
+        #expect(experiment.runtime.playbackRenderHealthGeneration() > health)
+    }
+    #endif
 
     @Test(arguments: [48_000.0, 24_000.0, 16_000.0], [false, true])
     func transitionDuringOverflow(outputRate: Double, convolution: Bool) throws {
         let experiment = try StallExperiment(outputRate: outputRate, preampDB: -12)
         _ = experiment.run(callbacks: 32)
-        let before = experiment.runtime.snapshotMetrics()
         _ = experiment.run(callbacks: 100, playback: false)
         let written = experiment.runtime.ringBuffer.nextWriteSequence()
         var profile = EQProfile.flatParametric
@@ -146,6 +171,10 @@ struct SeparateClockStallExperimentTests {
         for callback in 0..<64 {
             recovery += experiment.run(callbacks: 1)
             if completedAt == nil && experiment.runtime.dspTransitionProgress().hasCompleted(target) {
+                let output = try #require(recovery.last)
+                #expect(!output.isSilent)
+                let age = try #require(output.midpointAgeMS)
+                #expect((0..<100).contains(age))
                 completedAt = callback + 1
             }
         }
@@ -157,10 +186,6 @@ struct SeparateClockStallExperimentTests {
             $0.midpointAgeMS.map { (0..<100).contains($0) } ?? false
         })
         #expect(experiment.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 0)
-        try experiment.report(
-            scenario: convolution ? "FIR-transition-during-overflow" : "bypass-transition-during-overflow",
-            baseline: [], recovery: recovery, before: before, completedAt: completedAt
-        )
     }
 }
 
@@ -171,7 +196,6 @@ private final class StallExperiment {
     struct Observation {
         var isSilent: Bool
         var midpointAgeMS: Double?
-        var lastNonzeroFrame: Int?
         var bufferedFrames: Int
     }
 
@@ -181,12 +205,16 @@ private final class StallExperiment {
     let outputRate: Double
     let outputFrames: Int
     private var sourceFrame = 0
+    private var input: [Float]
+    private var output: [Float]
 
     init(outputRate: Double, preampDB: Double = 0, captureFrames: Int = 960, primeFrames: Int = 3_072) throws {
         self.captureFrames = captureFrames
         self.primeFrames = primeFrames
         self.outputRate = outputRate
         self.outputFrames = Int(Double(captureFrames) * outputRate / 48_000)
+        self.input = [Float](repeating: 0, count: captureFrames * 2)
+        self.output = [Float](repeating: 0, count: outputFrames * 2)
         runtime = SeparateClockAudioBackend.AudioRuntime(
             renderConfiguration: EQRenderConfiguration(
                 profile: EQProfile(name: "Timestamp signal", mode: .parametric, preampDB: preampDB, filters: []),
@@ -202,36 +230,30 @@ private final class StallExperiment {
         var observations: [Observation] = []
         for _ in 0..<callbacks {
             if capture {
-                var input = [Float](repeating: 0, count: captureFrames * 2)
-                if !silentSource {
-                    for frame in 0..<captureFrames {
-                        let signal = Float(0.1 + Double(sourceFrame + frame) / 1_000_000)
-                        input[frame * 2] = signal
-                        input[frame * 2 + 1] = -signal
-                    }
+                for frame in 0..<captureFrames {
+                    let signal: Float = silentSource ? 0 : Float(0.1 + Double(sourceFrame + frame) / 1_000_000)
+                    input[frame * 2] = signal
+                    input[frame * 2 + 1] = -signal
                 }
-                withBuffer(&input) { runtime.capture(inputData: UnsafePointer($0)) }
+                Self.withBuffer(&input) { runtime.capture(inputData: UnsafePointer($0)) }
             }
             if playback {
-                var output = [Float](repeating: .nan, count: outputFrames * 2)
-                withBuffer(&output) {
+                for index in output.indices { output[index] = .nan }
+                Self.withBuffer(&output) {
                     runtime.playback(outputData: $0, outputSampleTime: Double(sourceFrame) * outputRate / 48_000)
                 }
                 #expect(output.allSatisfy { $0.isFinite })
                 #expect(stride(from: 0, to: output.count, by: 2).allSatisfy {
                     abs(output[$0] + output[$0 + 1]) < 0.000_001
                 })
-                let lastNonzero = stride(from: output.count - 2, through: 0, by: -2).first {
-                    abs(output[$0]) > 0.000_1
-                }.map { $0 / 2 }
+                let isSilent = output.allSatisfy { abs($0) <= 0.000_1 }
                 let midpoint = Double(output[(outputFrames / 2) * 2])
                 let age = midpoint > 0.05
                     ? (Double(sourceFrame + captureFrames) - (midpoint - 0.1) * 1_000_000) / 48
                     : nil
                 observations.append(Observation(
-                    isSilent: lastNonzero == nil,
+                    isSilent: isSilent,
                     midpointAgeMS: age,
-                    lastNonzeroFrame: lastNonzero,
                     bufferedFrames: runtime.ringBuffer.occupancyFrames()
                 ))
             }
@@ -240,71 +262,37 @@ private final class StallExperiment {
         return observations
     }
 
-    func report(
-        scenario: String, baseline: [Observation], recovery: [Observation],
-        before: AudioEngineMetrics, completedAt: Int? = nil
-    ) throws {
-        let after = runtime.snapshotMetrics()
-        let baselineAge = baseline.last?.midpointAgeMS
-        let freshCallback = baselineAge.flatMap { baselineAge in
-            recovery.firstIndex { observation in
-                observation.midpointAgeMS.map { abs($0 - baselineAge) < 20 } ?? false
-            }.map { $0 + 1 }
-        }
-        let lastAudible = recovery.enumerated().compactMap { index, observation in
-            observation.lastNonzeroFrame.map { Double(index * outputFrames + $0 + 1) / outputRate * 1_000 }
-        }.last
-        let report = Report(
-            scenario: scenario, outputRate: outputRate,
-            baselineAgeMS: baselineAge,
-            firstRecoveryAgeMS: baseline.isEmpty ? nil : recovery.first?.midpointAgeMS,
-            settledAgeMS: baseline.isEmpty ? nil : recovery.last?.midpointAgeMS,
-            freshAtCallback: freshCallback,
-            firstNonSilentCallback: recovery.firstIndex { !$0.isSilent }.map { $0 + 1 },
-            lastNonSilentEndMS: lastAudible,
-            completionCallback: completedAt,
-            droppedInput: after.droppedInputFrames - before.droppedInputFrames,
-            droppedBuffered: after.droppedBufferedFrames - before.droppedBufferedFrames,
-            underruns: after.playbackUnderrunEvents - before.playbackUnderrunEvents,
-            renderFailures: after.adaptivePlaybackRenderFailures - before.adaptivePlaybackRenderFailures,
-            timestampJumps: after.playbackTimestampDiscontinuities - before.playbackTimestampDiscontinuities,
-            finalBufferedMin: recovery.suffix(16).map(\.bufferedFrames).min() ?? 0,
-            finalBufferedMax: recovery.suffix(16).map(\.bufferedFrames).max() ?? 0
+    #if DEBUG
+    func requestsRecovery(preservingSettings: Bool) -> Bool {
+        SeparateClockAudioBackend.playbackRequestsRecoveryForTesting(
+            runtime: runtime,
+            output: AudioOutputDevice(
+                id: 42, uid: "offline-stall-fixture", name: "Offline fixture",
+                nominalSampleRate: outputRate, outputChannelCount: 2,
+                bufferFrameSize: UInt32(outputFrames)
+            ),
+            preservingSettings: preservingSettings
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(report)
-        print("RING_EXPERIMENT \(String(decoding: data, as: UTF8.self))")
+    }
+    #endif
+
+    func expectSettled(_ observations: [Observation], baselineAge: Double) throws {
+        #expect(observations.count >= 16)
+        for observation in observations.suffix(16) {
+            #expect(!observation.isSilent)
+            #expect(observation.bufferedFrames < primeFrames)
+            let age = try #require(observation.midpointAgeMS)
+            #expect(abs(age - baselineAge) < 2)
+        }
     }
 
-    private struct Report: Encodable {
-        var scenario: String
-        var outputRate: Double
-        var baselineAgeMS: Double?
-        var firstRecoveryAgeMS: Double?
-        var settledAgeMS: Double?
-        var freshAtCallback: Int?
-        var firstNonSilentCallback: Int?
-        var lastNonSilentEndMS: Double?
-        var completionCallback: Int?
-        var droppedInput: UInt64
-        var droppedBuffered: UInt64
-        var underruns: UInt64
-        var renderFailures: UInt64
-        var timestampJumps: UInt64
-        var finalBufferedMin: Int
-        var finalBufferedMax: Int
-    }
-
-    private func withBuffer(_ samples: inout [Float], _ body: (UnsafeMutablePointer<AudioBufferList>) -> Void) {
-        let buffers = AudioBufferList.allocate(maximumBuffers: 1)
-        defer { free(buffers.unsafeMutablePointer) }
+    private static func withBuffer(_ samples: inout [Float], _ body: (UnsafeMutablePointer<AudioBufferList>) -> Void) {
         samples.withUnsafeMutableBufferPointer {
-            buffers[0] = AudioBuffer(
+            var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
                 mNumberChannels: 2,
                 mDataByteSize: UInt32($0.count * MemoryLayout<Float>.stride), mData: $0.baseAddress
-            )
-            body(buffers.unsafeMutablePointer)
+            ))
+            body(&buffer)
         }
     }
 }
