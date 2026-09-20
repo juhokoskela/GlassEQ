@@ -22,45 +22,20 @@ public enum EQProgrammeComparisonSelection: UInt8, Codable, Equatable, Sendable 
     case reference
 }
 
-/// What the draft is compared against.
-public enum EQProgrammeComparisonReference: String, Codable, Equatable, Sendable, CaseIterable {
-    /// The profile currently processing the output.
-    case playingNow
-    /// The draft with its filters removed and its preamp kept.
-    case filtersOff
-}
-
 public struct EQProgrammeComparisonSnapshot: Codable, Equatable, Sendable {
     public var isActive: Bool
     public var isReady: Bool
-    public var reference: EQProgrammeComparisonReference
     public var selection: EQProgrammeComparisonSelection
-    public var equalizedAttenuationDB: Double
-    public var referenceAttenuationDB: Double
 
     public init(
         isActive: Bool = false,
         isReady: Bool = false,
-        reference: EQProgrammeComparisonReference = .playingNow,
-        selection: EQProgrammeComparisonSelection = .equalized,
-        equalizedAttenuationDB: Double = 0,
-        referenceAttenuationDB: Double = 0
+        selection: EQProgrammeComparisonSelection = .equalized
     ) {
         self.isActive = isActive
         self.isReady = isReady
-        self.reference = reference
         self.selection = selection
-        self.equalizedAttenuationDB = equalizedAttenuationDB
-        self.referenceAttenuationDB = referenceAttenuationDB
     }
-}
-
-struct ProgrammeLoudnessMatch: Equatable, Sendable {
-    var isReady = false
-    var equalizedGain: Float = 1
-    var referenceGain: Float = 1
-    var equalizedAttenuationDB = 0.0
-    var referenceAttenuationDB = 0.0
 }
 
 struct ProgrammeLoudnessGains: Equatable, Sendable {
@@ -177,14 +152,14 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
             finishSegment()
         }
         advanceSmoothedGains()
-        return ProgrammeLoudnessGains(
+        return gains
+    }
+
+    var gains: ProgrammeLoudnessGains {
+        ProgrammeLoudnessGains(
             equalized: Float(currentEqualizedGain),
             reference: Float(currentReferenceGain)
         )
-    }
-
-    var snapshot: ProgrammeLoudnessMatch {
-        currentMatch()
     }
 
     private mutating func finishSegment() {
@@ -292,16 +267,6 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         currentReferenceGain += (
             targetReferenceGain - currentReferenceGain
         ) * gainSmoothingCoefficient
-    }
-
-    private func currentMatch() -> ProgrammeLoudnessMatch {
-        ProgrammeLoudnessMatch(
-            isReady: isReady,
-            equalizedGain: Float(currentEqualizedGain),
-            referenceGain: Float(currentReferenceGain),
-            equalizedAttenuationDB: 20 * log10(max(currentEqualizedGain, .leastNonzeroMagnitude)),
-            referenceAttenuationDB: 20 * log10(max(currentReferenceGain, .leastNonzeroMagnitude))
-        )
     }
 }
 

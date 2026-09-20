@@ -2106,10 +2106,7 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func startProgrammeComparison(
-        profile: EQProfile,
-        reference: EQProgrammeComparisonReference
-    ) throws {
+    func startProgrammeComparison(profile: EQProfile) throws {
         guard !programmeComparison.isActive else {
             return
         }
@@ -2128,14 +2125,8 @@ final class GlassEQAppModel {
             )
         }
 
-        let referenceProfile = switch reference {
-        case .playingNow:
-            activeProfile
-        case .filtersOff:
-            profile.filtersOffReference
-        }
         engine.setProgrammeComparisonSelection(.equalized)
-        guard engine.beginProgrammeComparison(profile: profile, reference: referenceProfile) else {
+        guard engine.beginProgrammeComparison(profile: profile, reference: profile.filtersOffReference) else {
             throw SettingsCommandFailure(
                 message: localized("The audio engine could not start A/B comparison.")
             )
@@ -2143,15 +2134,9 @@ final class GlassEQAppModel {
 
         programmeComparison = EQProgrammeComparisonSnapshot(
             isActive: true,
-            reference: reference,
             selection: .equalized
         )
-        statusMessage = switch reference {
-        case .playingNow:
-            localized("Comparing the draft with \(activeProfile.name)")
-        case .filtersOff:
-            localized("Comparing the draft with its filters off")
-        }
+        statusMessage = localized("Comparing filters off and filters on")
         startProgrammeComparisonPolling()
         notifyModelDidChange()
     }
@@ -2197,7 +2182,6 @@ final class GlassEQAppModel {
                 }
                 var next = self.engine.snapshotProgrammeComparison()
                 next.isActive = true
-                next.reference = self.programmeComparison.reference
                 guard next != self.programmeComparison else {
                     continue
                 }

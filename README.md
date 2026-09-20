@@ -58,7 +58,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 
 - **Four EQ modes:** parametric, 10-band graphic, 31-band graphic, and convolution (a minimum-phase FIR built from a response curve or impulse response).
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
-- **Live frequency-response graph** while you edit, and a loudness-matched A/B between the draft and the playing profile or the draft with its filters off.
+- **Live frequency-response graph** while you edit. Click **Compare** to switch between **Filters off** and **Filters on**, with their volumes matched.
 - **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
@@ -99,11 +99,13 @@ If you'd like to help get there, the **Sponsor** button at the top of this repos
 
 ### Pinned toolchain
 
-- Xcode: 26.5, build 17F42.
-- SDK: macOS 26.5.
-- Swift: Xcode-bundled Swift 6.3 / local Swift 6.3.1 command-line toolchain.
-- SwiftPM: `// swift-tools-version: 6.3`.
+- Xcode: 27.0, build 27A266a.
+- SDK: macOS 27.0.
+- Swift: Xcode-bundled Swift 6.4.
+- SwiftPM: `// swift-tools-version: 6.4`.
 - Deployment target: macOS 26.0.
+
+CI uses the `xcode-27` runner and selects Xcode 27.0 explicitly. Swift 6.3.3 crashes while optimizing the noncopyable DSP storage, so building requires Swift 6.4 or later.
 
 ### Setup
 

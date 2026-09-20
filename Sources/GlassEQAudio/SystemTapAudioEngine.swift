@@ -679,6 +679,8 @@ struct ExtremeDurationSnapshot {
 }
 
 final class RealtimeExtremeDurationTracker: @unchecked Sendable {
+    private typealias Buckets = InlineArray<513, UInt64>
+
     private static let fineBucketCount = 256
     private static let fineBucketWidthNanoseconds: UInt64 = 250
     private static let coarseBucketCount = 256
@@ -695,14 +697,16 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
     private let publishedP9999Nanoseconds = Atomic<UInt64>(0)
     private let publishedMaximumNanoseconds = Atomic<UInt64>(0)
     private var localGeneration: UInt64 = 0
-    private var bucketGenerations = [UInt64](repeating: .max, count: bucketCount)
-    private var bucketCounts = [UInt64](repeating: 0, count: bucketCount)
+    private var bucketGenerations: Buckets = .init(repeating: .max)
+    private var bucketCounts: Buckets = .init(repeating: 0)
     private var observations: UInt64 = 0
     private var maximumNanoseconds: UInt64 = 0
     private let publishPhase: UInt64
 
     init(publishPhase: UInt64 = 0) {
         self.publishPhase = publishPhase % Self.publishInterval
+        precondition(bucketGenerations.count == Self.bucketCount)
+        precondition(bucketCounts.count == Self.bucketCount)
     }
 
     func record(_ nanoseconds: UInt64) {
@@ -1301,8 +1305,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
         private let programmeComparisonActive = Atomic<Bool>(false)
         private let programmeComparisonReady = Atomic<Bool>(false)
-        private let equalizedAttenuationMilliDB = Atomic<Int64>(0)
-        private let referenceAttenuationMilliDB = Atomic<Int64>(0)
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
@@ -1573,7 +1575,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     sourceChannelOffset: inputChannelOffset
                 )
 
-                let transitionResult = dspTransition.processInterleavedWithDiagnostics(
+                var transitionResult = dspTransition.processInterleavedWithDiagnostics(
                     samples,
                     frameCount: frameCount,
                     channelCount: channelCount
@@ -1634,7 +1636,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     destinationRightChannel: channelPair.right,
                     to: outputBuffers
                 )
-                finishDSPTransition(transitionResult)
+                finishDSPTransition(&transitionResult)
             }
             #if DEBUG
             if !freezePlayedFramesForTesting.load(ordering: .relaxed) {
@@ -1955,13 +1957,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             EQProgrammeComparisonSnapshot(
                 isActive: programmeComparisonActive.load(ordering: .acquiring),
                 isReady: programmeComparisonReady.load(ordering: .acquiring),
-                selection: selectedProgrammeComparisonBranch(),
-                equalizedAttenuationDB: Double(
-                    equalizedAttenuationMilliDB.load(ordering: .relaxed)
-                ) / 1_000,
-                referenceAttenuationDB: Double(
-                    referenceAttenuationMilliDB.load(ordering: .relaxed)
-                ) / 1_000
+                selection: selectedProgrammeComparisonBranch()
             )
         }
 
@@ -2019,42 +2015,39 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
-            guard let processor = box.processor else {
+            guard box.processor != nil else {
                 pushRetiredDSPConfigBox(rawPointer)
                 return
             }
             let didBegin: Bool
-            if let referenceProcessor = box.comparisonReferenceProcessor {
+            if box.comparisonReferenceProcessor != nil {
                 didBegin = dspTransition.beginProgrammeComparison(
-                    equalizedProcessor: processor,
-                    referenceProcessor: referenceProcessor
+                    equalizedProcessor: &box.processor,
+                    referenceProcessor: &box.comparisonReferenceProcessor
                 )
             } else {
-                didBegin = dspTransition.beginTransition(to: processor)
+                didBegin = dspTransition.beginTransition(to: &box.processor)
             }
             guard didBegin else {
                 pushRetiredDSPConfigBox(rawPointer)
                 return
             }
-            box.processor = nil
-            box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
         }
 
-        private func finishDSPTransition(_ result: EQTransitionRenderResult) {
-            guard result.completedTransition,
-                  activeDSPConfigPointer != 0,
-                  let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer) else {
-                return
-            }
+        private func finishDSPTransition(_ result: inout EQTransitionRenderResult) {
+            guard result.completedTransition else { return }
+            // Every adopted bank retains its publication box until its retired processors return.
+            precondition(activeDSPConfigPointer != 0)
+            let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer)!
             let rawPointer = activeDSPConfigPointer
             activeDSPConfigPointer = 0
             let box = Unmanaged<PreparedDSPConfigBox>
                 .fromOpaque(pointer)
                 .takeUnretainedValue()
             let transitionID = box.transitionID
-            box.retiredProcessor = result.retiredProcessor
-            box.secondRetiredProcessor = result.secondRetiredProcessor
+            box.retiredProcessor = result.retiredProcessor.take()
+            box.secondRetiredProcessor = result.secondRetiredProcessor.take()
             activeSystemSoundPreampGains = box.systemSoundPreampGains
             pushRetiredDSPConfigBox(rawPointer)
             completedDSPTransitions.store(transitionID, ordering: .releasing)
@@ -2073,14 +2066,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ) {
             programmeComparisonActive.store(snapshot.isActive, ordering: .releasing)
             programmeComparisonReady.store(snapshot.isReady, ordering: .releasing)
-            equalizedAttenuationMilliDB.store(
-                Int64((snapshot.equalizedAttenuationDB * 1_000).rounded()),
-                ordering: .relaxed
-            )
-            referenceAttenuationMilliDB.store(
-                Int64((snapshot.referenceAttenuationDB * 1_000).rounded()),
-                ordering: .relaxed
-            )
         }
 
         private func incomingSystemSoundPreampGains() -> (left: Float, right: Float)? {
@@ -5397,7 +5382,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         sourceChannelOffset: Int,
         preampGains: (left: Float, right: Float),
         incomingPreampGains: (left: Float, right: Float)? = nil,
-        transition: EQTransitionRenderResult = EQTransitionRenderResult()
+        transition: borrowing EQTransitionRenderResult = EQTransitionRenderResult()
     ) -> UInt64 {
         guard frameCount > 0,
               channelCount > 0,

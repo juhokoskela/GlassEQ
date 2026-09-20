@@ -878,7 +878,7 @@ struct EQCoreTests {
     }
 
     @Test
-    func processorCopiesKeepIndependentMutableState() {
+    func processorsPreparedFromOneConfigurationKeepIndependentMutableState() {
         let profile = EQProfile(
             name: "Stateful",
             mode: .parametric,
@@ -887,24 +887,74 @@ struct EQCoreTests {
                 EQFilter(kind: .peak, frequency: 220, gainDB: 6, q: 2)
             ]
         )
-        var original = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
-        var copied = original
+        let prepared = EQRenderConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2)
+        var original = EQProcessor(renderConfiguration: prepared)
+        var independent = EQProcessor(renderConfiguration: prepared)
         var warmed = makeStereoTestBlock(frameCount: 256, sampleRate: 48_000)
         original.processInterleaved(&warmed, channelCount: 2)
 
         var originalNext = makeStereoTestBlock(frameCount: 64, sampleRate: 48_000)
-        var copiedNext = originalNext
+        var independentNext = originalNext
         var freshNext = originalNext
         var fresh = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
 
         original.processInterleaved(&originalNext, channelCount: 2)
-        copied.processInterleaved(&copiedNext, channelCount: 2)
+        independent.processInterleaved(&independentNext, channelCount: 2)
         fresh.processInterleaved(&freshNext, channelCount: 2)
 
-        let copiedFreshDelta = zip(copiedNext, freshNext).map { abs($0 - $1) }.max() ?? 0
-        let copiedOriginalDelta = zip(copiedNext, originalNext).map { abs($0 - $1) }.max() ?? 0
-        #expect(copiedFreshDelta < 0.000_001)
-        #expect(copiedOriginalDelta > 0.000_001)
+        let independentFreshDelta = zip(independentNext, freshNext).map { abs($0 - $1) }.max() ?? 0
+        let independentOriginalDelta = zip(independentNext, originalNext).map { abs($0 - $1) }.max() ?? 0
+        #expect(independentFreshDelta < 0.000_001)
+        #expect(independentOriginalDelta > 0.000_001)
+    }
+
+    @Test
+    func transitionTransfersCandidatesOnlyWhenAccepted() {
+        let prepared = EQRenderConfiguration(profile: .flatParametric, sampleRate: 48_000, channelCount: 2)
+        let mismatched = EQRenderConfiguration(profile: .flatParametric, sampleRate: 96_000, channelCount: 2)
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(renderConfiguration: prepared),
+            maximumFrameCount: 4, channelCount: 2, sampleRate: 48_000,
+            warmupSeconds: 0, blendSeconds: 4.0 / 48_000
+        )
+        var equalized: EQProcessor? = EQProcessor(renderConfiguration: prepared)
+        var reference: EQProcessor? = EQProcessor(renderConfiguration: mismatched)
+        let acceptedMismatch = transition.beginProgrammeComparison(
+            equalizedProcessor: &equalized, referenceProcessor: &reference
+        )
+        #expect(!acceptedMismatch)
+        let keptBothCandidates = equalized != nil && reference != nil
+        #expect(keptBothCandidates)
+        let acceptedWrongRate = transition.beginTransition(to: &reference)
+        #expect(!acceptedWrongRate)
+        let keptWrongRate = reference != nil
+        #expect(keptWrongRate)
+
+        reference = EQProcessor(renderConfiguration: prepared)
+        let accepted = transition.beginProgrammeComparison(
+            equalizedProcessor: &equalized, referenceProcessor: &reference
+        )
+        #expect(accepted)
+        let transferredBothCandidates = equalized == nil && reference == nil
+        #expect(transferredBothCandidates)
+        var next: EQProcessor? = EQProcessor(renderConfiguration: prepared)
+        let acceptedWhileBusy = transition.beginTransition(to: &next)
+        #expect(!acceptedWhileBusy)
+        let keptBusyCandidate = next != nil
+        #expect(keptBusyCandidate)
+
+        var samples = [Float](repeating: 0.25, count: 8)
+        var result = EQTransitionRenderResult()
+        samples.withUnsafeMutableBufferPointer {
+            result = transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 2)
+        }
+        #expect(result.completedTransition == true)
+        var retired = result.retiredProcessor.take()
+        let transferredRetiredProcessor = retired != nil && result.retiredProcessor == nil
+        #expect(transferredRetiredProcessor)
+        var retiredSamples = [Float](repeating: 0.25, count: 8)
+        retired?.processInterleaved(&retiredSamples, channelCount: 2)
+        #expect(retiredSamples == samples)
     }
 
     @Test
@@ -928,16 +978,18 @@ struct EQCoreTests {
             warmupSeconds: 0,
             blendSeconds: 0.004
         )
-        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
             profile: incoming,
             sampleRate: 1_000,
             channelCount: 1
-        )))
+        ))
+        let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
         var samples = [Float](repeating: 0.25, count: 4)
 
-        let result = samples.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var result = EQTransitionRenderResult()
+        samples.withUnsafeMutableBufferPointer {
+            result = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
@@ -948,9 +1000,10 @@ struct EQCoreTests {
         #expect(abs(samples[1] - 0.314_814_8) < 0.000_001)
         #expect(abs(samples[2] - 0.435_185_2) < 0.000_001)
         #expect(abs(samples[3] - 0.5) < 0.000_001)
-        #expect(result.completedTransition)
-        #expect(result.retiredProcessor != nil)
-        #expect(!transition.isTransitioning)
+        #expect(result.completedTransition == true)
+        let resultRetiredProcessorReturned = result.retiredProcessor != nil
+        #expect(resultRetiredProcessorReturned)
+        #expect(transition.isTransitioning == false)
     }
 
     @Test
@@ -974,16 +1027,18 @@ struct EQCoreTests {
             warmupSeconds: 0.004,
             blendSeconds: 0.004
         )
-        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
             profile: incoming,
             sampleRate: 1_000,
             channelCount: 1
-        )))
+        ))
+        let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
         var warmup = [Float](repeating: 0.25, count: 4)
 
-        let warmupResult = warmup.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var warmupResult = EQTransitionRenderResult()
+        warmup.withUnsafeMutableBufferPointer {
+            warmupResult = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
@@ -991,8 +1046,8 @@ struct EQCoreTests {
         }
 
         #expect(warmup == [0.25, 0.25, 0.25, 0.25])
-        #expect(!warmupResult.completedTransition)
-        #expect(transition.isTransitioning)
+        #expect(warmupResult.completedTransition == false)
+        #expect(transition.isTransitioning == true)
     }
 
     @Test
@@ -1017,9 +1072,10 @@ struct EQCoreTests {
             warmupSeconds: 0,
             blendSeconds: 4.0 / 48_000
         )
-        let didBegin = transition.beginTransition(to: EQProcessor(
+        var candidate: EQProcessor? = EQProcessor(
             renderConfiguration: incomingConfiguration
-        ))
+        )
+        let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
 
         var renderedFrames = 0
@@ -1030,15 +1086,16 @@ struct EQCoreTests {
                 PreparedConvolutionKernel.tapCount - 1 - renderedFrames
             )
             var samples = [Float](repeating: 0.25, count: frameCount)
-            let result = samples.withUnsafeMutableBufferPointer {
-                transition.processInterleavedWithDiagnostics(
+            var result = EQTransitionRenderResult()
+            samples.withUnsafeMutableBufferPointer {
+                result = transition.processInterleavedWithDiagnostics(
                     $0,
                     frameCount: frameCount,
                     channelCount: 1
                 )
             }
             #expect(samples.allSatisfy { abs($0 - 0.25) < 0.000_001 })
-            #expect(!result.completedTransition)
+            #expect(result.completedTransition == false)
             #expect(result.workTiming.directHeadHostTicks > 0)
             #expect(result.workTiming.tailDeadlineMisses == 0)
             observedTailCompletion = observedTailCompletion
@@ -1048,8 +1105,9 @@ struct EQCoreTests {
         #expect(observedTailCompletion)
 
         var blend = [Float](repeating: 0.25, count: 4)
-        let blendResult = blend.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var blendResult = EQTransitionRenderResult()
+        blend.withUnsafeMutableBufferPointer {
+            blendResult = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
@@ -1057,7 +1115,7 @@ struct EQCoreTests {
         }
         #expect(abs(blend[0] - 0.25) < 0.000_01)
         #expect(abs(blend[3] - 0.5) < 0.000_01)
-        #expect(blendResult.completedTransition)
+        #expect(blendResult.completedTransition == true)
     }
 
     @Test
@@ -1084,24 +1142,26 @@ struct EQCoreTests {
             blendSeconds: 0.004
         )
 
-        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
             profile: incoming,
             sampleRate: 1_000,
             channelCount: 1
-        )))
+        ))
+        let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
 
         var samples = [Float](repeating: 0.1, count: 4)
-        let result = samples.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var result = EQTransitionRenderResult()
+        samples.withUnsafeMutableBufferPointer {
+            result = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
             )
         }
 
-        #expect(result.completedTransition)
-        #expect(!transition.isTransitioning)
+        #expect(result.completedTransition == true)
+        #expect(transition.isTransitioning == false)
     }
 
     @Test
@@ -1126,16 +1186,18 @@ struct EQCoreTests {
             warmupSeconds: 0,
             blendSeconds: 0.004
         )
-        let didBegin = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
             profile: bypassed,
             sampleRate: 1_000,
             channelCount: 1
-        )))
+        ))
+        let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
         var samples = [Float](repeating: 0.25, count: 4)
 
-        let result = samples.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var result = EQTransitionRenderResult()
+        samples.withUnsafeMutableBufferPointer {
+            result = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
@@ -1144,18 +1206,19 @@ struct EQCoreTests {
 
         #expect(abs(samples[0] - 0.5) < 0.000_001)
         #expect(abs(samples[3] - 0.25) < 0.000_001)
-        #expect(result.completedTransition)
+        #expect(result.completedTransition == true)
 
         var steadyState = [Float](repeating: 0.25, count: 4)
-        let steadyStateResult = steadyState.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var steadyStateResult = EQTransitionRenderResult()
+        steadyState.withUnsafeMutableBufferPointer {
+            steadyStateResult = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
             )
         }
         #expect(steadyState == [0.25, 0.25, 0.25, 0.25])
-        #expect(!steadyStateResult.completedTransition)
+        #expect(steadyStateResult.completedTransition == false)
     }
 
     @Test
@@ -1175,8 +1238,9 @@ struct EQCoreTests {
         var samples: [Float] = [1, -1, 0.99, -0.99]
         let frameCount = samples.count
 
-        let result = samples.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var result = EQTransitionRenderResult()
+        samples.withUnsafeMutableBufferPointer {
+            result = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: frameCount,
                 channelCount: 1
@@ -1268,10 +1332,9 @@ struct EQCoreTests {
             }
         }
 
-        let match = matcher.snapshot
-        #expect(match.isReady)
-        #expect(abs(match.equalizedAttenuationDB + 6.0206) < 0.02)
-        #expect(abs(match.referenceAttenuationDB) < 0.000_001)
+        #expect(matcher.isReady)
+        #expect(abs(matcher.gains.equalized - 0.5) < 0.001)
+        #expect(abs(matcher.gains.reference - 1) < 0.000_001)
     }
 
     @Test
@@ -1314,36 +1377,40 @@ struct EQCoreTests {
             blendSeconds: 4.0 / 48_000
         )
 
-        let didBeginComparison = transition.beginProgrammeComparison(
-            equalizedProcessor: EQProcessor(configuration: EQConfiguration(
+        var equalizedCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
                 profile: equalized,
                 sampleRate: 48_000,
                 channelCount: 1
-            )),
-            referenceProcessor: EQProcessor(configuration: EQConfiguration(
+            ))
+        var referenceCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
                 profile: reference,
                 sampleRate: 48_000,
                 channelCount: 1
             ))
+        let didBeginComparison = transition.beginProgrammeComparison(
+            equalizedProcessor: &equalizedCandidate,
+            referenceProcessor: &referenceCandidate
         )
         #expect(didBeginComparison)
         var entry = [Float](repeating: 0.25, count: 4)
-        let entryResult = entry.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var entryResult = EQTransitionRenderResult()
+        entry.withUnsafeMutableBufferPointer {
+            entryResult = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
             )
         }
-        #expect(entryResult.completedTransition)
+        #expect(entryResult.completedTransition == true)
         #expect(entryResult.programmeComparison.isActive)
         #expect(abs(entry[0] - 0.25) < 0.000_001)
         #expect(abs(entry[3] - 0.5) < 0.000_001)
 
         transition.setProgrammeComparisonSelection(.reference)
         var comparison = [Float](repeating: 0.25, count: 4)
-        let comparisonResult = comparison.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var comparisonResult = EQTransitionRenderResult()
+        comparison.withUnsafeMutableBufferPointer {
+            comparisonResult = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
@@ -1353,31 +1420,35 @@ struct EQCoreTests {
         #expect(abs(comparison[0] - 0.5) < 0.000_001)
         #expect(abs(comparison[3] - 0.25) < 0.000_001)
 
-        let didBeginExit = transition.beginTransition(to: EQProcessor(configuration: EQConfiguration(
+        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
             profile: active,
             sampleRate: 48_000,
             channelCount: 1
-        )))
+        ))
+        let didBeginExit = transition.beginTransition(to: &candidate)
         #expect(didBeginExit)
         var exitSelection = [Float](repeating: 0.25, count: 4)
-        _ = exitSelection.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        exitSelection.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
             )
         }
         var exitProfile = [Float](repeating: 0.25, count: 4)
-        let exitResult = exitProfile.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics(
+        var exitResult = EQTransitionRenderResult()
+        exitProfile.withUnsafeMutableBufferPointer {
+            exitResult = transition.processInterleavedWithDiagnostics(
                 $0,
                 frameCount: 4,
                 channelCount: 1
             )
         }
-        #expect(exitResult.completedTransition)
-        #expect(exitResult.retiredProcessor != nil)
-        #expect(exitResult.secondRetiredProcessor != nil)
+        #expect(exitResult.completedTransition == true)
+        let exitResultRetiredProcessorReturned = exitResult.retiredProcessor != nil
+        #expect(exitResultRetiredProcessorReturned)
+        let exitResultSecondRetiredProcessorReturned = exitResult.secondRetiredProcessor != nil
+        #expect(exitResultSecondRetiredProcessorReturned)
         #expect(!exitResult.programmeComparison.isActive)
         #expect(abs(exitProfile[0] - 0.5) < 0.000_001)
         #expect(abs(exitProfile[3] - 0.25) < 0.000_001)
@@ -1395,12 +1466,12 @@ struct EQCoreTests {
             convolution: .impulseResponse(ImpulseResponseSource(sampleRate: 48_000, samples: impulse))
         )
         let draftConfiguration = EQConfiguration(profile: draft, sampleRate: 48_000, channelCount: 1)
-        let referenceProcessor = EQProcessor(renderConfiguration: try EQRenderConfiguration.prepare(
+        var referenceProcessor: EQProcessor? = EQProcessor(renderConfiguration: try EQRenderConfiguration.prepare(
             profile: reference,
             sampleRate: 48_000,
             channelCount: 1
         ))
-        let requiredWarmupFrames = referenceProcessor.requiredWarmupFrames
+        let requiredWarmupFrames = (referenceProcessor?.requiredWarmupFrames)!
         var transition = RealtimeEQTransition(
             activeProcessor: EQProcessor(configuration: draftConfiguration),
             maximumFrameCount: 480,
@@ -1408,18 +1479,19 @@ struct EQCoreTests {
             sampleRate: 48_000,
             blendSeconds: 4.0 / 48_000
         )
+        var equalizedCandidate: EQProcessor? = EQProcessor(configuration: draftConfiguration)
         let didBeginComparison = transition.beginProgrammeComparison(
-            equalizedProcessor: EQProcessor(configuration: draftConfiguration),
-            referenceProcessor: referenceProcessor
+            equalizedProcessor: &equalizedCandidate,
+            referenceProcessor: &referenceProcessor
         )
         #expect(didBeginComparison)
         for frameCount in [480, 480, 4] {
             var samples = [Float](repeating: 0.25, count: frameCount)
-            _ = samples.withUnsafeMutableBufferPointer {
-                transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
+            samples.withUnsafeMutableBufferPointer {
+                _ = transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
             }
         }
-        #expect(!transition.isTransitioning)
+        #expect(transition.isTransitioning == false)
         transition.setProgrammeComparisonSelection(.reference)
 
         let chunkSizes = [1, 63, 127, 480]
@@ -1429,8 +1501,8 @@ struct EQCoreTests {
         while renderedFrames < requiredWarmupFrames {
             let frameCount = min(chunkSizes[chunkIndex % chunkSizes.count], requiredWarmupFrames - renderedFrames)
             var samples = [Float](repeating: 0.25, count: frameCount)
-            _ = samples.withUnsafeMutableBufferPointer {
-                transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
+            samples.withUnsafeMutableBufferPointer {
+                _ = transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
             }
             stayedAudible = stayedAudible && samples.allSatisfy { abs($0 - 0.25) < 0.000_001 }
             renderedFrames += frameCount
@@ -1439,8 +1511,8 @@ struct EQCoreTests {
         #expect(stayedAudible)
 
         var blend = [Float](repeating: 0.25, count: 4)
-        _ = blend.withUnsafeMutableBufferPointer {
-            transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 1)
+        blend.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 1)
         }
         #expect(abs(blend[0] - 0.25) < 0.000_001)
         #expect(abs(blend[3] - 0.125) < 0.000_001)
@@ -1470,21 +1542,24 @@ struct EQCoreTests {
             warmupSeconds: 0,
             blendSeconds: Double(blockFrames) / sampleRate
         )
-        let didBegin = transition.beginProgrammeComparison(
-            equalizedProcessor: EQProcessor(configuration: EQConfiguration(
+        var equalizedCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
                 profile: equalized,
                 sampleRate: sampleRate,
                 channelCount: 1
-            )),
-            referenceProcessor: EQProcessor(configuration: EQConfiguration(
+            ))
+        var referenceCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
                 profile: reference,
                 sampleRate: sampleRate,
                 channelCount: 1
             ))
+        let didBegin = transition.beginProgrammeComparison(
+            equalizedProcessor: &equalizedCandidate,
+            referenceProcessor: &referenceCandidate
         )
         #expect(didBegin)
 
         var lastResult = EQTransitionRenderResult()
+        var lastOutputPeak: Float = 0
         for block in 0..<40 {
             var samples = (0..<blockFrames).map { frame in
                 Float(sin(
@@ -1493,19 +1568,20 @@ struct EQCoreTests {
                         / sampleRate
                 )) * 0.1
             }
-            lastResult = samples.withUnsafeMutableBufferPointer {
-                transition.processInterleavedWithDiagnostics(
+            samples.withUnsafeMutableBufferPointer {
+                lastResult = transition.processInterleavedWithDiagnostics(
                     $0,
                     frameCount: blockFrames,
                     channelCount: 1
                 )
             }
+            lastOutputPeak = samples.map(abs).max() ?? 0
         }
 
         #expect(lastResult.programmeComparison.isActive)
         #expect(lastResult.programmeComparison.isReady)
-        #expect(lastResult.programmeComparison.equalizedAttenuationDB < -5.9)
-        #expect(abs(lastResult.programmeComparison.referenceAttenuationDB) < 0.001)
+        #expect(lastOutputPeak > 0.099)
+        #expect(lastOutputPeak < 0.101)
     }
 
     @Test

@@ -41,12 +41,12 @@ final class SettingsController {
     var selectedProfileID: UUID
     var tab = EditorSection.editor
     var editChannel = EQEditChannel.left
-    var comparisonReference = EQProgrammeComparisonReference.playingNow
     var isImportSheetPresented = false
     var importRoute = ProfileImportRoute.text
     var isNewProfileSheetPresented = false
     var profilePendingDeletion: EQProfile?
     private(set) var draftEditGeneration = 0
+    private(set) var comparisonStartTask: Task<Void, Never>?
 
     // The stored copy of the selected profile as of the last reconciled snapshot. Comparing the
     // draft against it separates local edits from stored changes that arrived from the app.
@@ -78,7 +78,15 @@ final class SettingsController {
     }
 
     var isEditingLocked: Bool {
-        isProfileStoreProtected || snapshot.programmeComparison.isActive
+        isProfileStoreProtected || isComparisonInProgress
+    }
+
+    var isStartingProgrammeComparison: Bool {
+        comparisonStartTask != nil
+    }
+
+    var isComparisonInProgress: Bool {
+        isStartingProgrammeComparison || snapshot.programmeComparison.isActive
     }
 
     var draftName: String {
@@ -124,7 +132,7 @@ final class SettingsController {
             draftProfile.channelMode
         }
         set {
-            guard newValue != draftProfile.channelMode else {
+            guard !isEditingLocked, newValue != draftProfile.channelMode else {
                 return
             }
             draftProfile = draftProfile.convertedToChannelMode(newValue, editedChannel: editChannel)
@@ -164,11 +172,12 @@ final class SettingsController {
     }
 
     func canDeleteProfile(_ id: UUID) -> Bool {
-        settingsCanDeleteProfile(snapshot, id: id)
+        !isStartingProgrammeComparison && settingsCanDeleteProfile(snapshot, id: id)
     }
 
     func selectProfile(_ id: UUID) {
-        guard let profile = snapshot.profiles.first(where: { $0.id == id }) else {
+        guard !isComparisonInProgress,
+              let profile = snapshot.profiles.first(where: { $0.id == id }) else {
             return
         }
         selectedProfileID = id
@@ -184,10 +193,12 @@ final class SettingsController {
     }
 
     func applyDraft() {
+        guard !isStartingProgrammeComparison else { return }
         perform(.applyProfile(draftProfile))
     }
 
     func revertDraft() {
+        guard !isComparisonInProgress else { return }
         draftProfile = storedProfile
         draftEditGeneration &+= 1
     }
@@ -201,7 +212,12 @@ final class SettingsController {
     }
 
     func startProgrammeComparison() {
-        perform(.startProgrammeComparison(draftProfile, reference: comparisonReference))
+        guard !isEditingLocked else { return }
+        let draft = draftProfile
+        comparisonStartTask = Task { @MainActor in
+            defer { comparisonStartTask = nil }
+            await dispatch(.startProgrammeComparison(draft))
+        }
     }
 
     func stopProgrammeComparison() {
@@ -375,10 +391,17 @@ final class SettingsController {
         guard response?.snapshot != nil else {
             return response
         }
-        reconcileAfterCommand(
-            dispatchedSelection: dispatchedSelection,
-            dispatchedDraft: dispatchedDraft
-        )
+        switch command {
+        case .createProfile, .duplicateProfile, .deleteProfile,
+             .applyProfile, .useProfileForCurrentOutput, .setFallback,
+             .importProfile, .importParsedProfile, .resetUnsupportedProfileStore:
+            reconcileAfterCommand(
+                dispatchedSelection: dispatchedSelection,
+                dispatchedDraft: dispatchedDraft
+            )
+        default:
+            reconcileWithSnapshot()
+        }
         return response
     }
 }

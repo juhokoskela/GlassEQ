@@ -2227,7 +2227,7 @@ struct GlassEQAppModelLifecycleTests {
         draft.filters = [
             EQFilter(kind: .peak, frequency: 1_000, gainDB: 5, q: 1)
         ]
-        try model.startProgrammeComparison(profile: draft, reference: .filtersOff)
+        try model.startProgrammeComparison(profile: draft)
 
         #expect(engine.programmeComparisonCalls == [draft])
         #expect(engine.programmeComparisonReferences == [draft.filtersOffReference])
@@ -2238,22 +2238,33 @@ struct GlassEQAppModelLifecycleTests {
         model.selectProgrammeComparison(.reference)
         #expect(engine.programmeComparisonSelections == [.equalized, .reference])
         #expect(model.settingsSnapshot().programmeComparison.selection == .reference)
+        let settingsModel = model.inProcessSettingsViewModel()
 
         engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
             isActive: true,
             isReady: true,
-            selection: .reference,
-            equalizedAttenuationDB: -3.25
+            selection: .reference
         )
         await waitUntil {
             model.settingsSnapshot().programmeComparison.isReady
         }
-        #expect(
-            abs(
-                model.settingsSnapshot().programmeComparison.equalizedAttenuationDB
-                    + 3.25
-            ) < 0.001
-        )
+        #expect(settingsModel.snapshot.programmeComparison.isReady)
+
+        let publishedComparison = model.programmeComparison
+        let publishedRevision = settingsModel.profileSnapshotRevision
+        let nextPoll = engine.snapshotProgrammeComparisonCallCount + 1
+        await waitUntil {
+            engine.snapshotProgrammeComparisonCallCount >= nextPoll
+        }
+        #expect(engine.snapshotProgrammeComparisonCallCount >= nextPoll)
+        #expect(model.programmeComparison == publishedComparison)
+        #expect(settingsModel.profileSnapshotRevision == publishedRevision)
+
+        engine.programmeComparisonSnapshot.isReady = false
+        await waitUntil {
+            !model.programmeComparison.isReady
+        }
+        #expect(!settingsModel.snapshot.programmeComparison.isReady)
 
         model.stopProgrammeComparison()
 
@@ -2261,40 +2272,6 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.updateDSPCalls.last == active)
         #expect(!model.settingsSnapshot().programmeComparison.isActive)
         #expect(model.activeProfile == active)
-    }
-
-    @Test
-    func playingNowReferenceComparesTheDraftWithTheActiveProfile() async throws {
-        let active = makeProfile(name: "Active")
-        let output = makeOutput(uid: "comparison-reference-output", name: "Comparison Reference Output")
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero
-        )
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        var draft = active
-        draft.filters = [EQFilter(kind: .peak, frequency: 2_000, gainDB: -4, q: 1)]
-        try model.startProgrammeComparison(profile: draft, reference: .playingNow)
-
-        #expect(engine.programmeComparisonCalls == [draft])
-        #expect(engine.programmeComparisonReferences == [active])
-        #expect(model.settingsSnapshot().programmeComparison.reference == .playingNow)
-
-        engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(isActive: true, isReady: true)
-        await waitUntil {
-            model.settingsSnapshot().programmeComparison.isReady
-        }
-        #expect(model.settingsSnapshot().programmeComparison.reference == .playingNow)
     }
 
     @Test
@@ -2318,7 +2295,7 @@ struct GlassEQAppModelLifecycleTests {
 
         var draft = active
         draft.preampDB = -6
-        try model.startProgrammeComparison(profile: draft, reference: .filtersOff)
+        try model.startProgrammeComparison(profile: draft)
         model.selectProgrammeComparison(.reference)
         #expect(model.settingsSnapshot().programmeComparison.isActive)
 
@@ -2366,7 +2343,7 @@ struct GlassEQAppModelLifecycleTests {
 
         var comparisonProfile = firstProfile
         comparisonProfile.preampDB = -6
-        try model.startProgrammeComparison(profile: comparisonProfile, reference: .filtersOff)
+        try model.startProgrammeComparison(profile: comparisonProfile)
         model.selectProgrammeComparison(.reference)
 
         lookup.result = .success(secondOutput)
@@ -2414,7 +2391,7 @@ struct GlassEQAppModelLifecycleTests {
 
         var comparisonProfile = active
         comparisonProfile.preampDB = -6
-        try model.startProgrammeComparison(profile: comparisonProfile, reference: .filtersOff)
+        try model.startProgrammeComparison(profile: comparisonProfile)
         model.selectProgrammeComparison(.reference)
 
         engine.emitRuntimeFailure(adaptiveRenderFailure)
@@ -4492,7 +4469,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         #expect(throws: SettingsCommandFailure.self) {
-            try model.startProgrammeComparison(profile: impulse, reference: .playingNow)
+            try model.startProgrammeComparison(profile: impulse)
         }
         #expect(model.profileStore == store)
         #expect(model.activeProfile == fallback)
@@ -6349,6 +6326,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonReferences: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
+    private var _snapshotProgrammeComparisonCallCount = 0
     private var _dspTransitionProgress = DSPTransitionProgress()
     private var _pendingDSPTransitionIDs: [UInt64] = []
     private var _deferDSPTransitionCompletion = false
@@ -6482,6 +6460,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var programmeComparisonSnapshot: EQProgrammeComparisonSnapshot {
         get { withLock { _programmeComparisonSnapshot } }
         set { withLock { _programmeComparisonSnapshot = newValue } }
+    }
+
+    var snapshotProgrammeComparisonCallCount: Int {
+        withLock { _snapshotProgrammeComparisonCallCount }
     }
 
     private(set) var stopCallCount: Int {
@@ -6876,7 +6858,8 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
         withLock {
-            _programmeComparisonSnapshot
+            _snapshotProgrammeComparisonCallCount += 1
+            return _programmeComparisonSnapshot
         }
     }
 

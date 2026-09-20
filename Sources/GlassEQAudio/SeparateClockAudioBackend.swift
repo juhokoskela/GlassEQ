@@ -358,8 +358,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         )
         private let programmeComparisonActive = Atomic<Bool>(false)
         private let programmeComparisonReady = Atomic<Bool>(false)
-        private let equalizedAttenuationMilliDB = Atomic<Int64>(0)
-        private let referenceAttenuationMilliDB = Atomic<Int64>(0)
         private let stopping = Atomic<Bool>(false)
         private let captureInCallback = Atomic<Bool>(false)
         private let playbackInCallback = Atomic<Bool>(false)
@@ -656,13 +654,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             EQProgrammeComparisonSnapshot(
                 isActive: programmeComparisonActive.load(ordering: .acquiring),
                 isReady: programmeComparisonReady.load(ordering: .acquiring),
-                selection: selectedProgrammeComparisonBranch(),
-                equalizedAttenuationDB: Double(
-                    equalizedAttenuationMilliDB.load(ordering: .relaxed)
-                ) / 1_000,
-                referenceAttenuationDB: Double(
-                    referenceAttenuationMilliDB.load(ordering: .relaxed)
-                ) / 1_000
+                selection: selectedProgrammeComparisonBranch()
             )
         }
 
@@ -738,7 +730,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                         frameCount: chunkFrames,
                         channelCount: channelCount
                     )
-                    let transitionResult = dspTransition.processInterleavedWithDiagnostics(
+                    var transitionResult = dspTransition.processInterleavedWithDiagnostics(
                         chunkSamples,
                         frameCount: chunkFrames,
                         channelCount: channelCount
@@ -751,7 +743,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                     }
                     saturatedSampleCount += transitionResult.saturatedSamples
                     prepareCompletedDSPTransition(
-                        transitionResult,
+                        &transitionResult,
                         renderedFrameCount: chunkFrames
                     )
                     let firstWrittenSequence = ringBuffer.nextWriteSequence()
@@ -1237,43 +1229,39 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
             let pointer = UnsafeRawPointer(bitPattern: rawPointer)!
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
-            guard let processor = box.processor else {
+            guard box.processor != nil else {
                 pushRetiredDSPConfigBox(rawPointer)
                 return
             }
             let didBegin: Bool
-            if let referenceProcessor = box.comparisonReferenceProcessor {
+            if box.comparisonReferenceProcessor != nil {
                 didBegin = dspTransition.beginProgrammeComparison(
-                    equalizedProcessor: processor,
-                    referenceProcessor: referenceProcessor
+                    equalizedProcessor: &box.processor,
+                    referenceProcessor: &box.comparisonReferenceProcessor
                 )
             } else {
-                didBegin = dspTransition.beginTransition(to: processor)
+                didBegin = dspTransition.beginTransition(to: &box.processor)
             }
             guard didBegin else {
                 pushRetiredDSPConfigBox(rawPointer)
                 return
             }
-            box.processor = nil
-            box.comparisonReferenceProcessor = nil
             activeDSPConfigPointer = rawPointer
         }
 
         private func prepareCompletedDSPTransition(
-            _ result: EQTransitionRenderResult,
+            _ result: inout EQTransitionRenderResult,
             renderedFrameCount: Int
         ) {
-            guard result.completedTransition,
-                  activeDSPConfigPointer != 0,
-                  let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer),
-                  let blendStartFrame = result.blendStartFrame,
-                  result.blendFrameCount > 0,
-                  renderedFrameCount > 0 else {
-                return
-            }
+            guard result.completedTransition else { return }
+            // Keep retirement ownership in the publication box until playback passes the blend.
+            precondition(activeDSPConfigPointer != 0)
+            precondition(result.blendStartFrame != nil && result.blendFrameCount > 0 && renderedFrameCount > 0)
+            let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer)!
+            let blendStartFrame = result.blendStartFrame!
             let box = Unmanaged<PreparedDSPConfigBox>.fromOpaque(pointer).takeUnretainedValue()
-            box.retiredProcessor = result.retiredProcessor
-            box.secondRetiredProcessor = result.secondRetiredProcessor
+            box.retiredProcessor = result.retiredProcessor.take()
+            box.secondRetiredProcessor = result.secondRetiredProcessor.take()
             box.playbackCompletionFrameOffset = min(
                 max(result.blendFrameCount - blendStartFrame - 1, 0),
                 renderedFrameCount - 1
@@ -1354,14 +1342,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         ) {
             programmeComparisonActive.store(snapshot.isActive, ordering: .releasing)
             programmeComparisonReady.store(snapshot.isReady, ordering: .releasing)
-            equalizedAttenuationMilliDB.store(
-                Int64((snapshot.equalizedAttenuationDB * 1_000).rounded()),
-                ordering: .relaxed
-            )
-            referenceAttenuationMilliDB.store(
-                Int64((snapshot.referenceAttenuationDB * 1_000).rounded()),
-                ordering: .relaxed
-            )
         }
 
         private func pushRetiredDSPConfigBox(_ rawPointer: UInt) {
