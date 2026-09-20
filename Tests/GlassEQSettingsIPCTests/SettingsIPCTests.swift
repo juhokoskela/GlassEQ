@@ -265,6 +265,22 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
+    func compareStartsWithTheCurrentDraftAndFiltersOff() async {
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse())
+        let model = GlassEQSettingsViewModel(client: client)
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4.5
+
+        await withCheckedContinuation { continuation in
+            client.onPerform = { continuation.resume() }
+            controller.startProgrammeComparison()
+        }
+
+        #expect(client.commands == [.startProgrammeComparison(controller.draftProfile, reference: .filtersOff)])
+    }
+
+    @Test
+    @MainActor
     func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() async {
         let original = EQProfile(name: "Original", mode: .parametric, filters: [])
         let duplicate = EQProfile(name: "Duplicate", mode: .parametric, filters: [])
@@ -1548,12 +1564,14 @@ private final class ReentrantCancellingSettingsCommandClient: SettingsCommanding
 private final class ScriptedSettingsCommandClient: SettingsCommanding {
     let response: SettingsCommandResponse
     var onPerform: () -> Void = {}
+    private(set) var commands: [SettingsCommand] = []
 
     init(response: SettingsCommandResponse) {
         self.response = response
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+        commands.append(command)
         onPerform()
         return response
     }

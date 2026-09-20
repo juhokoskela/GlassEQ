@@ -10,7 +10,7 @@ struct ApplyBar: View {
         let programmeComparison = controller.snapshot.programmeComparison
         HStack(spacing: 8) {
             if programmeComparison.isActive {
-                Text(comparisonStatus(programmeComparison))
+                Text(programmeComparison.isReady ? localized("Volume matched") : localized("Matching volume…"))
                     .foregroundStyle(.secondary)
                     .font(.caption.weight(.medium))
             } else {
@@ -24,89 +24,55 @@ struct ApplyBar: View {
 
             if programmeComparison.isActive {
                 Picker(localized("Listening to"), selection: $controller.programmeComparisonSelection) {
-                    Text(localized("Draft"))
-                        .tag(EQProgrammeComparisonSelection.equalized)
-                    Text(programmeComparison.reference.title)
+                    Text(localized("Filters off"))
                         .tag(EQProgrammeComparisonSelection.reference)
+                    Text(localized("Current filters applied"))
+                        .tag(EQProgrammeComparisonSelection.equalized)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 200)
-
-                Button(localized("Stop")) {
-                    controller.stopProgrammeComparison()
-                }
-            } else {
-                Picker(localized("Compare with"), selection: $controller.comparisonReference) {
-                    ForEach(EQProgrammeComparisonReference.allCases, id: \.self) { reference in
-                        Text(reference.title).tag(reference)
-                    }
-                }
-                .labelsHidden()
                 .fixedSize()
 
+                Button(localized("Done")) {
+                    controller.stopProgrammeComparison()
+                }
+                .keyboardShortcut(.cancelAction)
+                .help(localized("End comparison and return to normal playback."))
+            } else {
                 Button(localized("Compare")) {
                     controller.startProgrammeComparison()
                 }
                 .disabled(isReadOnly || !controller.snapshot.isRunning)
-                .help(localized("Switches between the draft and a loudness-matched reference: the profile playing now, or the draft with its filters off."))
-            }
+                .help(localized("Compare the current filters with filters off at a matched volume."))
 
-            Divider()
-                .frame(height: 20)
-                .padding(.horizontal, 4)
+                Divider()
+                    .frame(height: 20)
+                    .padding(.horizontal, 4)
 
-            Button(localized("Revert")) {
-                controller.revertDraft()
-            }
-            .disabled(!hasUnsavedDraft || programmeComparison.isActive)
+                Button(localized("Revert")) {
+                    controller.revertDraft()
+                }
+                .disabled(!hasUnsavedDraft)
 
-            Button(localized("Apply")) {
-                controller.applyDraft()
-            }
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(isReadOnly || !hasUnsavedDraft)
-            .buttonStyle(.borderedProminent)
+                Button(localized("Apply")) {
+                    controller.applyDraft()
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(isReadOnly || !hasUnsavedDraft)
+                .buttonStyle(.borderedProminent)
 
-            Button(localized("Use for This Output")) {
-                controller.useDraftForCurrentOutput()
+                Button(localized("Use for This Output")) {
+                    controller.useDraftForCurrentOutput()
+                }
+                .disabled(isReadOnly || !controller.hasCurrentOutput)
+                .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
             }
-            .disabled(isReadOnly || !controller.hasCurrentOutput)
-            .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .background(.bar)
         .overlay(alignment: .top) {
             Divider()
-        }
-    }
-
-    private func comparisonStatus(_ programmeComparison: EQProgrammeComparisonSnapshot) -> String {
-        guard programmeComparison.isReady else {
-            return localized("Measuring the current programme…")
-        }
-        if programmeComparison.equalizedAttenuationDB < -0.05 {
-            return localized(
-                "Matched · Draft \(localizedDecibels(programmeComparison.equalizedAttenuationDB))"
-            )
-        }
-        if programmeComparison.referenceAttenuationDB < -0.05 {
-            return localized(
-                "Matched · \(programmeComparison.reference.title) \(localizedDecibels(programmeComparison.referenceAttenuationDB))"
-            )
-        }
-        return localized("Matched · no level adjustment needed")
-    }
-}
-
-private extension EQProgrammeComparisonReference {
-    var title: String {
-        switch self {
-        case .playingNow:
-            localized("Playing now")
-        case .filtersOff:
-            localized("Filters off")
         }
     }
 }
