@@ -2198,7 +2198,9 @@ final class GlassEQAppModel {
                 var next = self.engine.snapshotProgrammeComparison()
                 next.isActive = true
                 next.reference = self.programmeComparison.reference
-                guard next != self.programmeComparison else {
+                // Settings displays readiness and selection, not continuously changing gains.
+                guard next.isReady != self.programmeComparison.isReady
+                        || next.selection != self.programmeComparison.selection else {
                     continue
                 }
                 self.programmeComparison = next

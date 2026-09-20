@@ -2238,6 +2238,7 @@ struct GlassEQAppModelLifecycleTests {
         model.selectProgrammeComparison(.reference)
         #expect(engine.programmeComparisonSelections == [.equalized, .reference])
         #expect(model.settingsSnapshot().programmeComparison.selection == .reference)
+        let settingsModel = model.inProcessSettingsViewModel()
 
         engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
             isActive: true,
@@ -2254,6 +2255,25 @@ struct GlassEQAppModelLifecycleTests {
                     + 3.25
             ) < 0.001
         )
+        #expect(settingsModel.snapshot.programmeComparison.isReady)
+
+        let publishedComparison = model.programmeComparison
+        let publishedRevision = settingsModel.profileSnapshotRevision
+        let nextPoll = engine.snapshotProgrammeComparisonCallCount + 1
+        engine.programmeComparisonSnapshot.equalizedAttenuationDB = -6
+        engine.programmeComparisonSnapshot.referenceAttenuationDB = -1
+        await waitUntil {
+            engine.snapshotProgrammeComparisonCallCount >= nextPoll
+        }
+        #expect(engine.snapshotProgrammeComparisonCallCount >= nextPoll)
+        #expect(model.programmeComparison == publishedComparison)
+        #expect(settingsModel.profileSnapshotRevision == publishedRevision)
+
+        engine.programmeComparisonSnapshot.isReady = false
+        await waitUntil {
+            !model.programmeComparison.isReady
+        }
+        #expect(!settingsModel.snapshot.programmeComparison.isReady)
 
         model.stopProgrammeComparison()
 
@@ -6349,6 +6369,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _programmeComparisonReferences: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
+    private var _snapshotProgrammeComparisonCallCount = 0
     private var _dspTransitionProgress = DSPTransitionProgress()
     private var _pendingDSPTransitionIDs: [UInt64] = []
     private var _deferDSPTransitionCompletion = false
@@ -6482,6 +6503,10 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     var programmeComparisonSnapshot: EQProgrammeComparisonSnapshot {
         get { withLock { _programmeComparisonSnapshot } }
         set { withLock { _programmeComparisonSnapshot = newValue } }
+    }
+
+    var snapshotProgrammeComparisonCallCount: Int {
+        withLock { _snapshotProgrammeComparisonCallCount }
     }
 
     private(set) var stopCallCount: Int {
@@ -6876,7 +6901,8 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot {
         withLock {
-            _programmeComparisonSnapshot
+            _snapshotProgrammeComparisonCallCount += 1
+            return _programmeComparisonSnapshot
         }
     }
 
