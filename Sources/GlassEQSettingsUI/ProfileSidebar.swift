@@ -31,7 +31,7 @@ struct ProfileSidebar: View {
                 }
         }
         .listStyle(.sidebar)
-        .disabled(controller.snapshot.programmeComparison.isActive)
+        .disabled(controller.isComparisonInProgress)
         // Removing the toggle after the column width modifier drops the width back to a system
         // minimum, so the order here matters.
         .toolbar(removing: .sidebarToggle)

@@ -69,6 +69,7 @@ struct ApplyBar: View {
                 .disabled(isReadOnly || !hasUnsavedDraft)
                 .buttonStyle(.borderedProminent)
             }
+            .disabled(controller.isStartingProgrammeComparison)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
