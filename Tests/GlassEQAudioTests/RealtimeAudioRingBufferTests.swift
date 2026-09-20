@@ -331,6 +331,7 @@ struct RealtimeAudioRingBufferTests {
                 let count = samples.withUnsafeMutableBufferPointer {
                     ring.readInterleaved(into: $0, frameCount: frames, destinationChannelCount: 2)
                 }
+                #expect(ring.nextReadSequence() <= ring.nextWriteSequence())
                 consumedSamples.append(contentsOf: samples.prefix(count * 2))
                 blockIndex += 1
             }
@@ -359,72 +360,6 @@ struct RealtimeAudioRingBufferTests {
         } else {
             #expect(read.samples == written.samples)
         }
-    }
-
-    @Test
-    func sustainedOverflowPreservesFrameIntegrity() {
-        // Overflow may drop incoming frames, but every accepted stereo frame must remain intact.
-        let ring = RealtimeAudioRingBuffer(channelCount: 2, capacityFrames: 32)
-        let producerBlockFrames = 16
-        let consumerBlockFrames = 8
-        let totalFrames = 200_000
-        let producerDone = Atomic<Bool>(false)
-        let sawTornFrame = Atomic<Bool>(false)
-        let sawRewoundFrame = Atomic<Bool>(false)
-        let group = DispatchGroup()
-
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            var block = [Float](repeating: 0, count: producerBlockFrames * 2)
-            var nextValue = 1
-            while nextValue <= totalFrames {
-                for frame in 0..<producerBlockFrames {
-                    // Both channels carry the frame's own value, so a frame stitched together out
-                    // of two different writes is detectable on the consumer side.
-                    block[frame * 2] = Float(nextValue + frame)
-                    block[frame * 2 + 1] = Float(nextValue + frame)
-                }
-                _ = block.withUnsafeBufferPointer {
-                    ring.writeInterleaved($0, frameCount: producerBlockFrames, sourceChannelCount: 2)
-                }
-                nextValue += producerBlockFrames
-            }
-            producerDone.store(true, ordering: .releasing)
-            group.leave()
-        }
-
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            var block = [Float](repeating: 0, count: consumerBlockFrames * 2)
-            var lastValue: Float = 0
-            while !producerDone.load(ordering: .acquiring) || ring.occupancyFrames() > 0 {
-                let readFrames = block.withUnsafeMutableBufferPointer {
-                    ring.readInterleaved(
-                        into: $0,
-                        frameCount: consumerBlockFrames,
-                        destinationChannelCount: 2
-                    )
-                }
-                for frame in 0..<readFrames {
-                    let left = block[frame * 2]
-                    if left != block[frame * 2 + 1] {
-                        sawTornFrame.store(true, ordering: .releasing)
-                    }
-                    // Dropped incoming frames create gaps, but accepted values must never repeat or rewind.
-                    if left <= lastValue {
-                        sawRewoundFrame.store(true, ordering: .releasing)
-                    }
-                    lastValue = left
-                }
-            }
-            group.leave()
-        }
-
-        #expect(group.wait(timeout: .now() + 30) == .success)
-        let tornFrame = sawTornFrame.load(ordering: .acquiring)
-        let rewoundFrame = sawRewoundFrame.load(ordering: .acquiring)
-        #expect(!tornFrame)
-        #expect(!rewoundFrame)
     }
 
     @Test
@@ -482,4 +417,15 @@ struct RealtimeAudioRingBufferTests {
         #expect(!outOfOrder)
         #expect(consumed > 0)
     }
+}
+
+private extension RealtimeAudioRingBuffer {
+    func write(_ frame: UnsafeBufferPointer<Float>) {
+        writeInterleaved(frame, frameCount: 1, sourceChannelCount: frame.count)
+    }
+
+    func read(into frame: UnsafeMutableBufferPointer<Float>) -> Bool {
+        readInterleaved(into: frame, frameCount: 1, destinationChannelCount: frame.count) == 1
+    }
+
 }

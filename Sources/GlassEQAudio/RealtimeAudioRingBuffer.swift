@@ -9,12 +9,12 @@ struct RingBufferWriteResult: Equatable, Sendable {
 // Single producer and single consumer. Capture owns writeFrame; playback owns readFrame,
 // including reset and trimming. Release/acquire cursor publication keeps the producer from
 // reusing samples until playback has finished copying them, and hides uncommitted writes.
-public final class RealtimeAudioRingBuffer: @unchecked Sendable {
+final class RealtimeAudioRingBuffer: @unchecked Sendable {
     private static let maximumChannelCount = 256
     private static let maximumStorageSampleCount = 1_048_576
 
-    public let channelCount: Int
-    public let capacityFrames: Int
+    let channelCount: Int
+    let capacityFrames: Int
 
     private let storageFrameCapacity: Int
     private let storage: UnsafeMutableBufferPointer<Float>
@@ -25,7 +25,7 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
     private let nextReadFrameSequence = Atomic<UInt64>(0)
     private let nextWriteFrameSequence = Atomic<UInt64>(0)
 
-    public init(channelCount: Int, capacityFrames: Int) {
+    init(channelCount: Int, capacityFrames: Int) {
         self.channelCount = min(max(channelCount, 1), Self.maximumChannelCount)
         let maximumStorageFrameCapacity = Self.maximumStorageSampleCount / self.channelCount
         self.capacityFrames = min(max(capacityFrames, 2), maximumStorageFrameCapacity - 1)
@@ -40,17 +40,8 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
     }
 
     /// Discards currently published frames on the consumer thread and returns their count.
-    @discardableResult
-    public func reset() -> Int {
+    func reset() -> Int {
         trimToLatestFrames(0)
-    }
-
-    public func write(_ frame: UnsafeBufferPointer<Float>) {
-        writeInterleaved(frame, frameCount: 1, sourceChannelCount: frame.count)
-    }
-
-    public func read(into frame: UnsafeMutableBufferPointer<Float>) -> Bool {
-        readInterleaved(into: frame, frameCount: 1, destinationChannelCount: frame.count) == 1
     }
 
     @discardableResult
@@ -69,13 +60,14 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         let read = readFrame.load(ordering: .acquiring)
         let availableFrames = capacityFrames - occupancyFrames(read: read, write: write)
         let framesToWrite = min(requestedFrames, availableFrames)
+        guard framesToWrite > 0 else {
+            return RingBufferWriteResult(writtenFrames: 0, droppedInputFrames: requestedFrames)
+        }
 
         if sourceChannelCount == channelCount,
-           let source = samples.baseAddress,
-           let destination = storage.baseAddress {
-            copyMatchingChannels(
+           let source = samples.baseAddress {
+            copyIntoStorage(
                 source: source,
-                destination: destination,
                 storageFrame: write,
                 frameCount: framesToWrite
             )
@@ -91,8 +83,9 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
             }
         }
 
-        writeFrame.store(advance(write, by: framesToWrite), ordering: .releasing)
+        // Publish the sequence before making these samples visible to playback.
         nextWriteFrameSequence.wrappingAdd(UInt64(framesToWrite), ordering: .releasing)
+        writeFrame.store(advance(write, by: framesToWrite), ordering: .releasing)
         return RingBufferWriteResult(
             writtenFrames: framesToWrite,
             droppedInputFrames: requestedFrames - framesToWrite
@@ -115,10 +108,8 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         let framesToRead = min(requestedFrames, occupancyFrames(read: read, write: write))
 
         if destinationChannelCount == channelCount,
-           let source = storage.baseAddress,
            let destination = samples.baseAddress {
-            copyMatchingChannels(
-                source: source,
+            copyFromStorage(
                 destination: destination,
                 storageFrame: read,
                 frameCount: framesToRead
@@ -157,14 +148,13 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         nextWriteFrameSequence.load(ordering: .acquiring)
     }
 
-    public func occupancyFrames() -> Int {
+    func occupancyFrames() -> Int {
         let read = readFrame.load(ordering: .acquiring)
         let write = writeFrame.load(ordering: .acquiring)
         return occupancyFrames(read: read, write: write)
     }
 
     // Consumer-only; returns the number of buffered frames discarded.
-    @discardableResult
     func trimToLatestFrames(_ frames: Int) -> Int {
         let targetFrames = min(max(frames, 0), capacityFrames)
         let read = readFrame.load(ordering: .relaxed)
@@ -196,57 +186,25 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         (frame + distance) % storageFrameCapacity
     }
 
-    // Write path copies linear source into wrapped storage; read path below copies
-    // wrapped storage back out. The pointer overloads keep those directions distinct.
-    private func copyMatchingChannels(
-        source: UnsafePointer<Float>,
-        destination: UnsafeMutablePointer<Float>,
-        storageFrame: Int,
-        frameCount: Int
-    ) {
-        guard frameCount > 0 else {
-            return
-        }
-
-        let firstFrameCount = min(frameCount, storageFrameCapacity - storageFrame)
-        let firstSampleCount = firstFrameCount * channelCount
-        destination
-            .advanced(by: storageFrame * channelCount)
-            .update(from: source, count: firstSampleCount)
-
-        let remainingFrames = frameCount - firstFrameCount
-        guard remainingFrames > 0 else {
-            return
-        }
-
-        destination.update(
-            from: source.advanced(by: firstSampleCount),
-            count: remainingFrames * channelCount
-        )
+    private func wrapSplit(storageFrame: Int, frameCount: Int) -> (firstSamples: Int, remainingSamples: Int) {
+        let firstFrames = min(frameCount, storageFrameCapacity - storageFrame)
+        return (firstFrames * channelCount, (frameCount - firstFrames) * channelCount)
     }
 
-    private func copyMatchingChannels(
-        source: UnsafeMutablePointer<Float>,
-        destination: UnsafeMutablePointer<Float>,
-        storageFrame: Int,
-        frameCount: Int
-    ) {
-        copyMatchingChannels(
-            source: UnsafePointer(source).advanced(by: storageFrame * channelCount),
-            destination: destination,
-            storageFrame: 0,
-            frameCount: min(frameCount, storageFrameCapacity - storageFrame)
-        )
+    private func copyIntoStorage(source: UnsafePointer<Float>, storageFrame: Int, frameCount: Int) {
+        guard frameCount > 0 else { return }
+        let split = wrapSplit(storageFrame: storageFrame, frameCount: frameCount)
+        let destination = storage.baseAddress!
+        destination.advanced(by: storageFrame * channelCount).update(from: source, count: split.firstSamples)
+        destination.update(from: source.advanced(by: split.firstSamples), count: split.remainingSamples)
+    }
 
-        let firstFrameCount = min(frameCount, storageFrameCapacity - storageFrame)
-        let remainingFrames = frameCount - firstFrameCount
-        guard remainingFrames > 0 else {
-            return
-        }
-
-        destination
-            .advanced(by: firstFrameCount * channelCount)
-            .update(from: source, count: remainingFrames * channelCount)
+    private func copyFromStorage(destination: UnsafeMutablePointer<Float>, storageFrame: Int, frameCount: Int) {
+        guard frameCount > 0 else { return }
+        let split = wrapSplit(storageFrame: storageFrame, frameCount: frameCount)
+        let source = storage.baseAddress!
+        destination.update(from: source.advanced(by: storageFrame * channelCount), count: split.firstSamples)
+        destination.advanced(by: split.firstSamples).update(from: source, count: split.remainingSamples)
     }
 
     private func zeroFill(
