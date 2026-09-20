@@ -102,10 +102,10 @@ struct SeparateClockDSPTransitionTests {
             #expect(!runtime.dspTransitionProgress().hasCompleted(target))
         }
 
-        // Refill enough to prime after underrun and cover resampler read-ahead. If the end
-        // of the fade was dropped, the first new committed frame provides its watermark.
-        withInterleavedBuffer(frames: 1_024, repeating: 0.25) { input in
-            runtime.capture(inputData: UnsafePointer(input))
+        // Overflow discards queued fade samples without completing it. Refill without
+        // another overflow; the first played frame of the new bank may now complete it.
+        #expect(runtime.ringBuffer.occupancyFrames() == 0)
+        withInterleavedBuffer(frames: capacity, repeating: 0.25) { input in
             runtime.capture(inputData: UnsafePointer(input))
         }
         #expect(!runtime.dspTransitionProgress().hasCompleted(target))

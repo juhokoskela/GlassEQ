@@ -855,3 +855,35 @@ The full debug suite completed 770 tests with three recorded known issues, all f
 Local evidence is retained in `.build/stall-experiment/debug-results.json`, `release-results.json`, `debug.log`, and `release.log`. The isolated package is `/var/folders/32/jftc5wb534g1pzhpzhsf35340000gn/T/glasseq-stall-release-8xk0x7gk`. The optimized test executable at `.build/out/Products/Release/GlassEQAudioTests.xctest/Contents/MacOS/GlassEQAudioTests` under that package has SHA-256 `cb97c95cd7609a8ada949b874f9d8a34782edc165aab3b68c7649393ec4ca62d`. The harness SHA-256 is `738f2eea8f99a67916b7a37a087a783ac3051df00275b21ec5d99db57bfbfba1`.
 
 Separately, Juho reported successful AirPods Pro headset-mode entry and exit with the experimental app. That is user-reported hardware evidence for route transitions; it does not establish behavior during a full-ring stall. This automated run did not alter the connected route or play audio through the AirPods.
+
+## September 20, 2026: playback flush after capture overflow
+
+The follow-up to `6d779f9` removes the stale fragment in the same offline fixture. Capture now requests a playback reset after rejecting input. Playback remains the only owner of the read cursor: it discards queued frames and re-primes from subsequent capture. This reuses the existing atomic reset flag, so repeated overflows coalesce without a queue, gate, or retry loop.
+
+Resetting only the ring and Hermite history was insufficient. Direct 48 kHz playback became silent, but the Core Audio converter still emitted approximately 1.6–1.7 ms of retained signal at 24 and 16 kHz when playback resumed after priming. The final candidate feeds zeros through `AudioConverterFillComplexBufferRealtimeSafe` and discards its output before allowing captured audio through. Setup computes the drain length from the reported leading and trailing prime frames, converted to output frames and rounded up with one additional phase frame. Each callback drains at most its requested output frame count. This avoids calling `AudioConverterReset`, which lacks the fill API's explicit realtime contract.
+
+### Observed recovery
+
+The original 27 stall cases and three added small-callback cases pass without known issues. Debug and optimized builds produce identical reports for all 30 cases.
+
+| Fault | Candidate result across 48/24/16 kHz output |
+| --- | --- |
+| Playback withheld for 2 or 2.4 seconds | First four resumed callbacks are silent. Fresh output starts on callback 5, at 80 ms in this 20 ms fixture, with midpoint age within 2 ms of baseline. No stale midpoint precedes it. |
+| Source silent for 400 ms while the ring remains full | Every recovery callback is silent at the fixture's absolute `0.0001` threshold. The previous 64–65.7 ms fragment is absent. |
+| Small callbacks, source stops during overflow | Capture uses 48 frames and playback uses 48/24/16 frames per 1 ms tick, with a 192-frame priming target. After 1.8 seconds of withheld playback and another 320 ms of silent capture, all 128 recovery callbacks are silent. Playback makes progress, and a later signal resumes at baseline age. The converted paths drain history across multiple callbacks. |
+| Bypass or FIR transition during overflow | Completion remains pending during rejected capture and completes on callback 5, when non-silent playback resumes. A separate regression covers fades with zero, 128, or 512 accepted tail frames, including a completion watermark discarded by the reset. |
+| Short playback stall, capture starvation, repeated alternating stalls | Existing recovery assertions still pass. Settled sample age and occupancy match the previous experiment, with no continuing drops or added underruns after settling. |
+
+The full-ring 20 ms cases discard 82,688 buffered frames: the reset removes the 81,920-frame ring, and priming later trims 768 frames. This deliberately trades retained audio for silence while fresh input accumulates. The 80 ms recovery interval depends on this fixture's reservoir and scheduling; it is not a device-latency guarantee. If capture remains stopped, priming continues to return silence.
+
+### Ownership and realtime audit
+
+The producer publishes the reset after its partial write. Playback acquires and clears the request before resetting the ring. An overflow concurrent with playback can be handled on the next callback; capture never moves the read cursor or overwrites unread storage. Converter drain progress is playback-owned and is initialized during configuration while playback is stopped.
+
+The new callback path uses existing input/output scratch, stack buffer descriptors, bounded zeroing, and at most one conversion fill per playback callback. It performs no property lookup, converter replacement, allocation, logging, lock acquisition, or wait in the added Swift code. In the optimized test executable, the drain helper has an 80-byte stack frame and calls only the realtime-safe fill API on its normal path; the zero-input branch calls `bzero`. Neither adds retain/release or allocation calls. This inspection does not measure the converter's internal allocations or prove hardware deadline compliance.
+
+`swift build` and the full debug suite passed (771 tests, no known issues). The isolated optimized package ran 35 parameter cases across the stall and DSP-transition fixtures. As in the preceding experiment, isolation avoids the existing full-package release-test linker failure; production Core and Audio sources were copied byte-for-byte and verified against the checkout.
+
+Evidence is retained under `.build/overflow-recovery-experiment/`: debug and release logs, sorted JSON reports, full debug-suite output, optimized disassembly, and indirect-symbol mappings. The isolated package is `/var/folders/32/jftc5wb534g1pzhpzhsf35340000gn/T/glasseq-overflow-release-lg3u_myk`. Its optimized test executable has SHA-256 `9cb68e34b8e121cb79314fc79c6404ad95b3d5adaa8a1c2a27760902700e427f`; the stall fixture has SHA-256 `5492e88ff017cf8914f28a27b5437370fa67d9f33c09f90edc987591ff7bfb22`.
+
+These runs created no tap and did not change or use the connected AirPods route. HAL scheduling, acoustic recovery, and headset entry/exit with this follow-up candidate remain separate hardware checks.

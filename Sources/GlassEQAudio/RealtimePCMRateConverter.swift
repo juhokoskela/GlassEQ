@@ -6,6 +6,7 @@ final class RealtimePCMRateConverter {
     let outputSampleRate: Double
     let channelCount: Int
     let latencyFrames: Int
+    let historyOutputFrames: Int
 
     private let converter: AudioConverterRef
 
@@ -35,6 +36,7 @@ final class RealtimePCMRateConverter {
         }
 
         let latencyFrames: Int
+        let historyOutputFrames: Int
         do {
             var quality = UInt32(kAudioConverterQuality_Max)
             try withUnsafePointer(to: &quality) { value in
@@ -77,6 +79,12 @@ final class RealtimePCMRateConverter {
                 )
             }
             latencyFrames = Int(primeInfo.trailingFrames)
+            // Flush the complete filter window, including fractional sample-rate phase,
+            // using silence through the realtime-safe fill API rather than AudioConverterReset.
+            historyOutputFrames = Int(ceil(
+                (Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames))
+                    * outputSampleRate / inputSampleRate
+            )) + 1
         } catch {
             AudioConverterDispose(converter)
             throw error
@@ -84,6 +92,7 @@ final class RealtimePCMRateConverter {
 
         self.converter = converter
         self.latencyFrames = latencyFrames
+        self.historyOutputFrames = historyOutputFrames
     }
 
     deinit {

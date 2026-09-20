@@ -301,6 +301,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private var playbackResampler: HermitePlaybackResampler
         private var playbackSampleRatePlan: PlaybackSampleRatePlan
         private var playbackSampleRateConverter: RealtimePCMRateConverter?
+        private var sampleRateConverterFlushFramesRemaining = 0
         private var sampleRateConverterInputRatio = 1.0
         private var sampleRateConverterInputResult = AdaptivePlaybackRenderResult.rendered
         private var outputTimestampTracker = OutputCallbackTimestampTracker()
@@ -474,6 +475,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             sampleRateConverterInputSamples.deallocate()
             sampleRateConverterInputSamples = inputSamples
             playbackSampleRateConverter = sampleRateConverter
+            sampleRateConverterFlushFramesRemaining = 0
             playbackSampleRatePlan = sampleRatePlan
             playbackTransitionLatencyFrames.store(
                 Self.playbackTransitionReadAheadFrames
@@ -799,6 +801,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
             if pendingPlaybackReset.exchange(false, ordering: .acquiringAndReleasing) {
                 droppedBufferedFrames.wrappingAdd(UInt64(ringBuffer.reset()), ordering: .relaxed)
+                sampleRateConverterFlushFramesRemaining = playbackSampleRateConverter?.historyOutputFrames ?? 0
+                beginPlaybackReprime()
             }
             if pendingPlaybackClockReset.exchange(false, ordering: .acquiringAndReleasing) {
                 pendingPlaybackTargetRetarget.store(false, ordering: .releasing)
@@ -842,6 +846,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 playbackRateServo.beginPriming()
                 playbackResampler.reset()
                 publishAdaptivePlaybackMetrics()
+                if sampleRateConverterFlushFramesRemaining > 0 {
+                    if !flushSampleRateConverter(frameCount: frameCount) {
+                        recordAdaptivePlaybackRenderFailure()
+                    }
+                    clear(outputData: outputData)
+                    return
+                }
                 let bufferedFrames = ringBuffer.occupancyFrames()
                 let primeFrames = playbackPrimeFrames.load(ordering: .acquiring)
                 updateMaxBufferedFrames(bufferedFrames)
@@ -905,10 +916,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 playbackUnderrunFrames.wrappingAdd(UInt64(underrunFrames), ordering: .relaxed)
                 signalPlaybackInstability(.underrun)
             } else if adaptiveRenderFailed {
-                adaptivePlaybackRenderFailures.wrappingAdd(1, ordering: .relaxed)
-                if !adaptivePlaybackRenderFailureActive.exchange(true, ordering: .acquiringAndReleasing) {
-                    signalPlaybackInstability(.adaptiveRenderFailure)
-                }
+                recordAdaptivePlaybackRenderFailure()
             }
             if underrunFrames > 0 || adaptiveRenderFailed {
                 beginPlaybackReprime()
@@ -939,6 +947,13 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private func signalPlaybackInstability(_ reason: PlaybackBufferInstabilityReason) {
             latestPlaybackInstabilityReason.store(reason.rawValue, ordering: .relaxed)
             playbackInstabilityGeneration.wrappingAdd(1, ordering: .releasing)
+        }
+
+        private func recordAdaptivePlaybackRenderFailure() {
+            adaptivePlaybackRenderFailures.wrappingAdd(1, ordering: .relaxed)
+            if !adaptivePlaybackRenderFailureActive.exchange(true, ordering: .acquiringAndReleasing) {
+                signalPlaybackInstability(.adaptiveRenderFailure)
+            }
         }
 
         private func renderAdaptivePlayback(
@@ -1053,6 +1068,33 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             return .rendered
         }
 
+        private func flushSampleRateConverter(frameCount: Int) -> Bool {
+            guard let converter = playbackSampleRateConverter,
+                  frameCount <= adaptiveOutputSamples.count / channelCount,
+                  let outputBase = adaptiveOutputSamples.baseAddress else {
+                return false
+            }
+            let frames = min(frameCount, sampleRateConverterFlushFramesRemaining)
+            var convertedFrames = UInt32(frames)
+            var outputData = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: UInt32(channelCount),
+                    mDataByteSize: UInt32(frames * channelCount * MemoryLayout<Float>.size),
+                    mData: outputBase
+                )
+            )
+            let status = converter.fill(
+                inputProc: Self.sampleRateConverterInputProc,
+                inputContext: Unmanaged.passUnretained(self).toOpaque(),
+                outputFrames: &convertedFrames,
+                outputData: &outputData
+            )
+            guard status == noErr, convertedFrames == frames else { return false }
+            sampleRateConverterFlushFramesRemaining -= frames
+            return true
+        }
+
         private func renderSampleRateConvertedPlayback(
             outputBuffers: UnsafeMutableAudioBufferListPointer,
             frameCount: Int,
@@ -1152,11 +1194,17 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
                 start: inputBase,
                 count: frameCount * channelCount
             )
-            let result = renderAdaptiveFrames(
-                into: inputSamples,
-                frameCount: frameCount,
-                ratio: sampleRateConverterInputRatio
-            )
+            let result: AdaptivePlaybackRenderResult
+            if sampleRateConverterFlushFramesRemaining > 0 {
+                inputSamples.initialize(repeating: 0)
+                result = .rendered
+            } else {
+                result = renderAdaptiveFrames(
+                    into: inputSamples,
+                    frameCount: frameCount,
+                    ratio: sampleRateConverterInputRatio
+                )
+            }
             sampleRateConverterInputResult = result
             guard case .rendered = result else {
                 requestedFrames.pointee = 0
@@ -1206,6 +1254,9 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         private func recordWriteResult(_ result: RingBufferWriteResult) {
             if result.droppedInputFrames > 0 {
                 droppedInputFrames.wrappingAdd(UInt64(result.droppedInputFrames), ordering: .relaxed)
+                // Only playback may discard queued audio. Publish after the partial write so
+                // its next reset also removes the accepted prefix preceding this gap.
+                pendingPlaybackReset.store(true, ordering: .releasing)
             }
         }
 
