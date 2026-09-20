@@ -99,11 +99,13 @@ If you'd like to help get there, the **Sponsor** button at the top of this repos
 
 ### Pinned toolchain
 
-- Xcode: 26.5, build 17F42.
-- SDK: macOS 26.5.
-- Swift: Xcode-bundled Swift 6.3 / local Swift 6.3.1 command-line toolchain.
-- SwiftPM: `// swift-tools-version: 6.3`.
+- Xcode: 27.0, build 27A266a.
+- SDK: macOS 27.0.
+- Swift: Xcode-bundled Swift 6.4.
+- SwiftPM: `// swift-tools-version: 6.4`.
 - Deployment target: macOS 26.0.
+
+CI uses the `xcode-27` runner and selects Xcode 27.0 explicitly. Swift 6.3.3 crashes while optimizing the noncopyable DSP storage, so building requires Swift 6.4 or later.
 
 ### Setup
 
