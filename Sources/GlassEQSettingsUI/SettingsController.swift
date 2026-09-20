@@ -374,10 +374,17 @@ final class SettingsController {
         guard response?.snapshot != nil else {
             return response
         }
-        reconcileAfterCommand(
-            dispatchedSelection: dispatchedSelection,
-            dispatchedDraft: dispatchedDraft
-        )
+        switch command {
+        case .createProfile, .duplicateProfile, .deleteProfile,
+             .applyProfile, .useProfileForCurrentOutput, .setFallback,
+             .importProfile, .importParsedProfile, .resetUnsupportedProfileStore:
+            reconcileAfterCommand(
+                dispatchedSelection: dispatchedSelection,
+                dispatchedDraft: dispatchedDraft
+            )
+        default:
+            reconcileWithSnapshot()
+        }
         return response
     }
 }

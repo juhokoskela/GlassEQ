@@ -266,17 +266,96 @@ struct SettingsIPCTests {
     @Test
     @MainActor
     func compareStartsWithTheCurrentDraftAndFiltersOff() async {
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse())
-        let model = GlassEQSettingsViewModel(client: client)
+        let snapshot = SettingsSnapshotDTO.disconnected
+        var reply = snapshot
+        reply.programmeComparison = EQProgrammeComparisonSnapshot(isActive: true, reference: .filtersOff)
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: reply))
+        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
         let controller = SettingsController(model: model)
         controller.draftProfile.preampDB = -4.5
+        let draft = controller.draftProfile
 
         await withCheckedContinuation { continuation in
             client.onPerform = { continuation.resume() }
             controller.startProgrammeComparison()
         }
 
-        #expect(client.commands == [.startProgrammeComparison(controller.draftProfile, reference: .filtersOff)])
+        #expect(client.commands == [.startProgrammeComparison(draft, reference: .filtersOff)])
+    }
+
+    @Test
+    @MainActor
+    func comparisonRepliesPreserveTheSelectedDraftUntilApply() async {
+        let first = EQProfile(name: "First", mode: .parametric, filters: [])
+        let second = EQProfile(name: "Second", mode: .parametric, filters: [])
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [first, second]
+        snapshot.selectedProfileID = first.id
+        snapshot.draftProfile = first
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: snapshot))
+        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
+        let controller = SettingsController(model: model)
+        controller.selectProfile(second.id)
+        controller.draftProfile.preampDB = -4.5
+        controller.draftProfile.filters = [EQFilter(kind: .peak, frequency: 1_000, gainDB: 3, q: 1)]
+        let draft = controller.draftProfile
+        let commands: [SettingsCommand] = [
+            .startProgrammeComparison(draft, reference: .filtersOff),
+            .selectProgrammeComparison(.reference),
+            .selectProgrammeComparison(.equalized),
+            .stopProgrammeComparison
+        ]
+        let comparisonStates = [
+            EQProgrammeComparisonSnapshot(isActive: true, reference: .filtersOff),
+            EQProgrammeComparisonSnapshot(isActive: true, isReady: true, reference: .filtersOff, selection: .reference),
+            EQProgrammeComparisonSnapshot(isActive: true, isReady: true, reference: .filtersOff),
+            EQProgrammeComparisonSnapshot()
+        ]
+
+        for (command, comparison) in zip(commands, comparisonStates) {
+            snapshot.programmeComparison = comparison
+            client.response = SettingsCommandResponse(snapshot: snapshot)
+
+            await controller.dispatch(command)
+            controller.reconcileWithSnapshot()
+
+            #expect(controller.snapshot.programmeComparison == comparison)
+            #expect(controller.selectedProfileID == second.id)
+            #expect(controller.draftProfile == draft)
+            #expect(controller.hasUnsavedDraft)
+        }
+
+        snapshot.profiles = [first, draft]
+        snapshot.selectedProfileID = draft.id
+        snapshot.draftProfile = draft
+        client.response = SettingsCommandResponse(snapshot: snapshot)
+
+        await controller.dispatch(.applyProfile(controller.draftProfile))
+
+        #expect(client.commands == commands + [.applyProfile(draft)])
+        #expect(controller.draftProfile == draft)
+        #expect(!controller.hasUnsavedDraft)
+    }
+
+    @Test(arguments: [
+        SettingsCommand.resetDiagnostics,
+        .setAggregateBufferMode(.automatic),
+        .retryAutomaticAggregateBuffer,
+        .retryAudioEngine,
+        .openPrivacySettings
+    ])
+    @MainActor
+    func transientCommandSnapshotPreservesUnsavedDraft(command: SettingsCommand) async {
+        let snapshot = SettingsSnapshotDTO.disconnected
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: snapshot))
+        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4.5
+
+        await controller.dispatch(command)
+
+        #expect(controller.draftProfile.preampDB == -4.5)
+        #expect(controller.hasUnsavedDraft)
     }
 
     @Test
@@ -1562,7 +1641,7 @@ private final class ReentrantCancellingSettingsCommandClient: SettingsCommanding
 
 @MainActor
 private final class ScriptedSettingsCommandClient: SettingsCommanding {
-    let response: SettingsCommandResponse
+    var response: SettingsCommandResponse
     var onPerform: () -> Void = {}
     private(set) var commands: [SettingsCommand] = []
 
