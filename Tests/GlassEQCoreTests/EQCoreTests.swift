@@ -1268,10 +1268,9 @@ struct EQCoreTests {
             }
         }
 
-        let match = matcher.snapshot
-        #expect(match.isReady)
-        #expect(abs(match.equalizedAttenuationDB + 6.0206) < 0.02)
-        #expect(abs(match.referenceAttenuationDB) < 0.000_001)
+        #expect(matcher.isReady)
+        #expect(abs(matcher.gains.equalized - 0.5) < 0.001)
+        #expect(abs(matcher.gains.reference - 1) < 0.000_001)
     }
 
     @Test
@@ -1485,6 +1484,7 @@ struct EQCoreTests {
         #expect(didBegin)
 
         var lastResult = EQTransitionRenderResult()
+        var lastOutputPeak: Float = 0
         for block in 0..<40 {
             var samples = (0..<blockFrames).map { frame in
                 Float(sin(
@@ -1500,12 +1500,13 @@ struct EQCoreTests {
                     channelCount: 1
                 )
             }
+            lastOutputPeak = samples.map(abs).max() ?? 0
         }
 
         #expect(lastResult.programmeComparison.isActive)
         #expect(lastResult.programmeComparison.isReady)
-        #expect(lastResult.programmeComparison.equalizedAttenuationDB < -5.9)
-        #expect(abs(lastResult.programmeComparison.referenceAttenuationDB) < 0.001)
+        #expect(lastOutputPeak > 0.099)
+        #expect(lastOutputPeak < 0.101)
     }
 
     @Test

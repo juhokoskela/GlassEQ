@@ -300,7 +300,7 @@ struct SettingsIPCTests {
     func compareStartsWithTheCurrentDraftAndFiltersOff() async {
         let snapshot = SettingsSnapshotDTO.disconnected
         var reply = snapshot
-        reply.programmeComparison = EQProgrammeComparisonSnapshot(isActive: true, reference: .filtersOff)
+        reply.programmeComparison = EQProgrammeComparisonSnapshot(isActive: true)
         let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: reply))
         let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
         let controller = SettingsController(model: model)
@@ -312,7 +312,7 @@ struct SettingsIPCTests {
             controller.startProgrammeComparison()
         }
 
-        #expect(client.commands == [.startProgrammeComparison(draft, reference: .filtersOff)])
+        #expect(client.commands == [.startProgrammeComparison(draft)])
     }
 
     @Test(arguments: [false, true])
@@ -332,14 +332,14 @@ struct SettingsIPCTests {
         controller.draftProfile.filters = [EQFilter(kind: .peak, frequency: 1_000, gainDB: 3, q: 1)]
         let draft = controller.draftProfile
         var commands: [SettingsCommand] = [
-            .startProgrammeComparison(draft, reference: .filtersOff),
+            .startProgrammeComparison(draft),
             .selectProgrammeComparison(.reference),
             .selectProgrammeComparison(.equalized)
         ]
         var comparisonStates = [
-            EQProgrammeComparisonSnapshot(isActive: true, reference: .filtersOff),
-            EQProgrammeComparisonSnapshot(isActive: true, isReady: true, reference: .filtersOff, selection: .reference),
-            EQProgrammeComparisonSnapshot(isActive: true, isReady: true, reference: .filtersOff)
+            EQProgrammeComparisonSnapshot(isActive: true),
+            EQProgrammeComparisonSnapshot(isActive: true, isReady: true, selection: .reference),
+            EQProgrammeComparisonSnapshot(isActive: true, isReady: true)
         ]
         if stopBeforeApply {
             commands.append(.stopProgrammeComparison)
@@ -742,7 +742,7 @@ struct SettingsIPCTests {
     func programmeComparisonCommandsRoundTrip() throws {
         let profile = EQProfile(name: "Draft", mode: .parametric, filters: [])
         let commands: [SettingsCommand] = [
-            .startProgrammeComparison(profile, reference: .filtersOff),
+            .startProgrammeComparison(profile),
             .selectProgrammeComparison(.reference),
             .stopProgrammeComparison
         ]
@@ -1440,8 +1440,7 @@ struct SettingsIPCTests {
             programmeComparison: EQProgrammeComparisonSnapshot(
                 isActive: true,
                 isReady: true,
-                selection: .reference,
-                equalizedAttenuationDB: -2.5
+                selection: .reference
             ),
             activeProfileID: profileID,
             activeProfileName: "Flat",

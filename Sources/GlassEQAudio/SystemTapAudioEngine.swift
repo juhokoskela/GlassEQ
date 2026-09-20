@@ -1305,8 +1305,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
         private let programmeComparisonActive = Atomic<Bool>(false)
         private let programmeComparisonReady = Atomic<Bool>(false)
-        private let equalizedAttenuationMilliDB = Atomic<Int64>(0)
-        private let referenceAttenuationMilliDB = Atomic<Int64>(0)
         private let pendingDSPConfigPointer = Atomic<UInt>(0)
         private let retiredDSPConfigHeadPointer = Atomic<UInt>(0)
         private var activeDSPConfigPointer: UInt = 0
@@ -1959,13 +1957,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             EQProgrammeComparisonSnapshot(
                 isActive: programmeComparisonActive.load(ordering: .acquiring),
                 isReady: programmeComparisonReady.load(ordering: .acquiring),
-                selection: selectedProgrammeComparisonBranch(),
-                equalizedAttenuationDB: Double(
-                    equalizedAttenuationMilliDB.load(ordering: .relaxed)
-                ) / 1_000,
-                referenceAttenuationDB: Double(
-                    referenceAttenuationMilliDB.load(ordering: .relaxed)
-                ) / 1_000
+                selection: selectedProgrammeComparisonBranch()
             )
         }
 
@@ -2077,14 +2069,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ) {
             programmeComparisonActive.store(snapshot.isActive, ordering: .releasing)
             programmeComparisonReady.store(snapshot.isReady, ordering: .releasing)
-            equalizedAttenuationMilliDB.store(
-                Int64((snapshot.equalizedAttenuationDB * 1_000).rounded()),
-                ordering: .relaxed
-            )
-            referenceAttenuationMilliDB.store(
-                Int64((snapshot.referenceAttenuationDB * 1_000).rounded()),
-                ordering: .relaxed
-            )
         }
 
         private func incomingSystemSoundPreampGains() -> (left: Float, right: Float)? {

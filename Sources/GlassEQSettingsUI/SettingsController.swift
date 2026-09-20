@@ -201,7 +201,7 @@ final class SettingsController {
     }
 
     func startProgrammeComparison() {
-        perform(.startProgrammeComparison(draftProfile, reference: .filtersOff))
+        perform(.startProgrammeComparison(draftProfile))
     }
 
     func stopProgrammeComparison() {

@@ -166,15 +166,12 @@ public struct RealtimeEQTransition: Sendable {
         guard isProgrammeComparisonActive else {
             return EQProgrammeComparisonSnapshot()
         }
-        let match = programmeLoudnessMatcher.snapshot
         return EQProgrammeComparisonSnapshot(
             isActive: isProgrammeComparisonActive,
             isReady: comparisonReferenceProcessor != nil
                 && comparisonWarmupFramesRemaining == 0
-                && match.isReady,
-            selection: comparisonSelection,
-            equalizedAttenuationDB: match.equalizedAttenuationDB,
-            referenceAttenuationDB: match.referenceAttenuationDB
+                && programmeLoudnessMatcher.isReady,
+            selection: comparisonSelection
         )
     }
 
@@ -447,7 +444,7 @@ public struct RealtimeEQTransition: Sendable {
             if comparisonExitRequested,
                comparisonSelection == .equalized,
                comparisonSelectionBlendedFrames >= blendFrameCount {
-                let gain = programmeLoudnessMatcher.snapshot.equalizedGain
+                let gain = programmeLoudnessMatcher.gains.equalized
                 if abs(gain - 1) < 0.000_001 {
                     shouldFinishComparison = true
                 } else {
