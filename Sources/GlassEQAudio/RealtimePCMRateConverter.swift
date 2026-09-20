@@ -9,9 +9,6 @@ final class RealtimePCMRateConverter {
     let historyOutputFrames: Int
 
     private let converter: AudioConverterRef
-    #if DEBUG
-    var fillFailuresRemainingForTesting = 0
-    #endif
 
     init(inputSampleRate: Double, outputSampleRate: Double, channelCount: Int) throws {
         self.inputSampleRate = inputSampleRate
@@ -102,13 +99,6 @@ final class RealtimePCMRateConverter {
         outputFrames: inout UInt32,
         outputData: UnsafeMutablePointer<AudioBufferList>
     ) -> OSStatus {
-        #if DEBUG
-        if fillFailuresRemainingForTesting > 0 {
-            fillFailuresRemainingForTesting -= 1
-            outputFrames = 0
-            return kAudioConverterErr_UnspecifiedError
-        }
-        #endif
         return AudioConverterFillComplexBufferRealtimeSafe(
             converter,
             inputProc,

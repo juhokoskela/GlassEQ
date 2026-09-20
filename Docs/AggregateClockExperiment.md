@@ -909,3 +909,5 @@ Converter rendering and flushing share one buffer/fill helper. Diagnostics separ
 The isolated optimized package passed 23 tests covering 51 parameter cases across the ring, stall, and transition suites. Production Core and Audio sources matched the checkout byte-for-byte. Its executable has SHA-256 `f20fcd3e1d0b5550b7ff273bde794bf5dcb6f88773c9b339ccf07eadaee4af4f`. Optimized disassembly shows bounded `memmove` calls in the directional copies, the realtime-safe fill call in the shared converter helper, and `bzero` in its silent-input branch, with no added allocation or retain/release calls in those paths. Converter internals and hardware deadlines were not profiled.
 
 Logs, the isolated package path, and disassembly are retained in `.build/ring-review-validation/`. No physical audio, AirPods transition, or HAL failure-recovery trial was performed during this follow-up.
+
+The temporary converter fault-injection hooks and their two debug-only tests were subsequently removed. The retained stall and overflow regressions are now named `SeparateClockPlaybackRecoveryTests`, with no experiment reporting or converter error injection in production sources.

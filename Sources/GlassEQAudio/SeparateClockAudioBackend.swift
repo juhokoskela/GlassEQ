@@ -933,10 +933,6 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         #if DEBUG
-        func failConverterFillsForTesting(_ count: Int) {
-            playbackSampleRateConverter?.fillFailuresRemainingForTesting = count
-        }
-
         func simulateRenderStallForTesting() {
             freezePlayedFramesForTesting.store(true, ordering: .releasing)
         }
@@ -3180,98 +3176,73 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
     }
 
-    private static func nextPlaybackMaintenanceAction(
-        _ state: inout ControlState,
-        at now: ContinuousClock.Instant
-    ) -> PlaybackBufferAdaptationAction? {
-        guard case .running = state.state,
-              let runtime = state.runtime,
-              let output = state.activeOutput else {
-            return nil
-        }
-
-        if let recoveryGeneration = state.adaptivePlaybackRenderRecoveryHealthGeneration,
-           runtime.playbackRenderHealthGeneration() != recoveryGeneration {
-            state.adaptivePlaybackRenderRecoveryAttempts = 0
-            state.adaptivePlaybackRenderRecoveryHealthGeneration = nil
-        }
-
-        if runtime.hasActiveAdaptivePlaybackRenderFailure() {
-            return .renegotiate(PlaybackBufferRenegotiationPreparation(
-                outputRebuildGeneration: state.outputRebuildGeneration,
-                reason: .adaptiveRenderFailure,
-                output: output,
-                runtime: runtime
-            ))
-        }
-        guard state.activeOutputSettingsPolicy == .adaptiveLowLatency,
-              Self.shouldAdaptPlaybackBuffer(for: output) else {
-            return nil
-        }
-
-        let instability = runtime.playbackInstabilitySnapshot()
-        let evidence = state.playbackBufferAdaptationEvidence.observe(
-            instabilityGeneration: instability.generation,
-            reason: instability.reason,
-            timestampDiscontinuities: runtime.playbackTimestampDiscontinuityCount(),
-            at: now
-        )
-        if evidence.observedDisturbance {
-            if state.playbackBufferCalibrationProbe != nil {
-                state.playbackBufferCalibrationProbe?.startedAt = now
-                state.playbackBufferStableSince = nil
-            } else {
-                state.playbackBufferStableSince = now
-            }
-        }
-        if evidence.escalationReason == .underrun {
-            state.playbackBufferStableSince = nil
-            return .renegotiate(PlaybackBufferRenegotiationPreparation(
-                outputRebuildGeneration: state.outputRebuildGeneration,
-                reason: .underrun,
-                output: output,
-                runtime: runtime
-            ))
-        }
-
-        if let probe = state.playbackBufferCalibrationProbe,
-           probe.hasCompletedProbation(at: now) {
-            return .stabilize(probe)
-        }
-        if let stableSince = state.playbackBufferStableSince,
-           stableSince.duration(to: now) >= PlaybackBufferAdaptationPolicy.decayDelay {
-            state.playbackBufferStableSince = nil
-            return .decay(PlaybackBufferDecayPreparation(
-                outputRebuildGeneration: state.outputRebuildGeneration,
-                output: output,
-                runtime: runtime
-            ))
-        }
-        return nil
-    }
-
-    #if DEBUG
-    static func playbackRequestsRecoveryForTesting(
-        runtime: AudioRuntime,
-        output: AudioOutputDevice,
-        preservingSettings: Bool
-    ) -> Bool {
-        var state = ControlState()
-        state.state = .running(output: output)
-        state.runtime = runtime
-        state.activeOutput = output
-        state.activeOutputSettingsPolicy = preservingSettings ? .preserveCurrent : .adaptiveLowLatency
-        if case .renegotiate(let preparation) = nextPlaybackMaintenanceAction(&state, at: .now) {
-            return preparation.reason == .adaptiveRenderFailure
-        }
-        return false
-    }
-    #endif
-
     private func servicePlaybackMaintenance() {
         let now = ContinuousClock().now
-        guard let action = control.withLock({ state in
-            Self.nextPlaybackMaintenanceAction(&state, at: now)
+        guard let action = control.withLock({ state -> PlaybackBufferAdaptationAction? in
+            guard case .running = state.state,
+                  let runtime = state.runtime,
+                  let output = state.activeOutput else {
+                return nil
+            }
+
+            if let recoveryGeneration = state.adaptivePlaybackRenderRecoveryHealthGeneration,
+               runtime.playbackRenderHealthGeneration() != recoveryGeneration {
+                state.adaptivePlaybackRenderRecoveryAttempts = 0
+                state.adaptivePlaybackRenderRecoveryHealthGeneration = nil
+            }
+
+            if runtime.hasActiveAdaptivePlaybackRenderFailure() {
+                return .renegotiate(PlaybackBufferRenegotiationPreparation(
+                    outputRebuildGeneration: state.outputRebuildGeneration,
+                    reason: .adaptiveRenderFailure,
+                    output: output,
+                    runtime: runtime
+                ))
+            }
+            guard state.activeOutputSettingsPolicy == .adaptiveLowLatency,
+                  Self.shouldAdaptPlaybackBuffer(for: output) else {
+                return nil
+            }
+
+            let instability = runtime.playbackInstabilitySnapshot()
+            let evidence = state.playbackBufferAdaptationEvidence.observe(
+                instabilityGeneration: instability.generation,
+                reason: instability.reason,
+                timestampDiscontinuities: runtime.playbackTimestampDiscontinuityCount(),
+                at: now
+            )
+            if evidence.observedDisturbance {
+                if state.playbackBufferCalibrationProbe != nil {
+                    state.playbackBufferCalibrationProbe?.startedAt = now
+                    state.playbackBufferStableSince = nil
+                } else {
+                    state.playbackBufferStableSince = now
+                }
+            }
+            if evidence.escalationReason == .underrun {
+                state.playbackBufferStableSince = nil
+                return .renegotiate(PlaybackBufferRenegotiationPreparation(
+                    outputRebuildGeneration: state.outputRebuildGeneration,
+                    reason: .underrun,
+                    output: output,
+                    runtime: runtime
+                ))
+            }
+
+            if let probe = state.playbackBufferCalibrationProbe,
+               probe.hasCompletedProbation(at: now) {
+                return .stabilize(probe)
+            }
+            if let stableSince = state.playbackBufferStableSince,
+               stableSince.duration(to: now) >= PlaybackBufferAdaptationPolicy.decayDelay {
+                state.playbackBufferStableSince = nil
+                return .decay(PlaybackBufferDecayPreparation(
+                    outputRebuildGeneration: state.outputRebuildGeneration,
+                    output: output,
+                    runtime: runtime
+                ))
+            }
+            return nil
         }) else {
             return
         }
