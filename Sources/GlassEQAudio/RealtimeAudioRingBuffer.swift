@@ -4,28 +4,28 @@ import Synchronization
 struct RingBufferWriteResult: Equatable, Sendable {
     var writtenFrames: Int
     var droppedInputFrames: Int
-    var droppedBufferedFrames: Int
 }
 
-public final class RealtimeAudioRingBuffer: @unchecked Sendable {
+// Single producer and single consumer. Capture owns writeFrame; playback owns readFrame,
+// including reset and trimming. Release/acquire cursor publication keeps the producer from
+// reusing samples until playback has finished copying them, and hides uncommitted writes.
+final class RealtimeAudioRingBuffer: @unchecked Sendable {
     private static let maximumChannelCount = 256
     private static let maximumStorageSampleCount = 1_048_576
 
-    public let channelCount: Int
-    public let capacityFrames: Int
+    let channelCount: Int
+    let capacityFrames: Int
 
     private let storageFrameCapacity: Int
     private let storage: UnsafeMutableBufferPointer<Float>
     private let readFrame = Atomic<Int>(0)
     private let writeFrame = Atomic<Int>(0)
-    // These monotonic positions count frames committed to storage. Reads, overwrites, trims, and
+    // These monotonic positions count frames committed to storage. Reads, trims, and
     // resets advance the read side, so a consumer can tell when a captured frame has left the ring.
     private let nextReadFrameSequence = Atomic<UInt64>(0)
     private let nextWriteFrameSequence = Atomic<UInt64>(0)
-    private let overwriteGate = Atomic<Bool>(false)
-    private let overwriteGateContentionFailures = Atomic<UInt64>(0)
 
-    public init(channelCount: Int, capacityFrames: Int) {
+    init(channelCount: Int, capacityFrames: Int) {
         self.channelCount = min(max(channelCount, 1), Self.maximumChannelCount)
         let maximumStorageFrameCapacity = Self.maximumStorageSampleCount / self.channelCount
         self.capacityFrames = min(max(capacityFrames, 2), maximumStorageFrameCapacity - 1)
@@ -39,30 +39,9 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         storage.deallocate()
     }
 
-    @discardableResult
-    public func reset() -> Bool {
-        guard enterOverwriteGate() else {
-            return false
-        }
-        defer {
-            leaveOverwriteGate()
-        }
-        let read = readFrame.load(ordering: .acquiring)
-        let write = writeFrame.load(ordering: .acquiring)
-        nextReadFrameSequence.wrappingAdd(
-            UInt64(occupancyFrames(read: read, write: write)),
-            ordering: .releasing
-        )
-        readFrame.store(write, ordering: .releasing)
-        return true
-    }
-
-    public func write(_ frame: UnsafeBufferPointer<Float>) {
-        writeInterleaved(frame, frameCount: 1, sourceChannelCount: frame.count)
-    }
-
-    public func read(into frame: UnsafeMutableBufferPointer<Float>) -> Bool {
-        readInterleaved(into: frame, frameCount: 1, destinationChannelCount: frame.count) == 1
+    /// Discards currently published frames on the consumer thread and returns their count.
+    func reset() -> Int {
+        trimToLatestFrames(0)
     }
 
     @discardableResult
@@ -74,53 +53,28 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         let sourceChannelCount = max(sourceChannelCount, 1)
         let requestedFrames = min(frameCount, samples.count / sourceChannelCount)
         guard requestedFrames > 0 else {
-            return RingBufferWriteResult(writtenFrames: 0, droppedInputFrames: 0, droppedBufferedFrames: 0)
+            return RingBufferWriteResult(writtenFrames: 0, droppedInputFrames: 0)
         }
 
-        let framesToWrite = min(requestedFrames, capacityFrames)
-        let firstSourceFrame = requestedFrames - framesToWrite
-
         let write = writeFrame.load(ordering: .relaxed)
-        let retainedFrames = max(0, capacityFrames - framesToWrite)
-        var droppedFrames = max(
-            0,
-            occupancyFrames(read: readFrame.load(ordering: .acquiring), write: write) - retainedFrames
-        )
-        if droppedFrames > 0 {
-            guard enterOverwriteGate() else {
-                return RingBufferWriteResult(
-                    writtenFrames: 0,
-                    droppedInputFrames: requestedFrames,
-                    droppedBufferedFrames: 0
-                )
-            }
-            defer {
-                leaveOverwriteGate()
-            }
-            let gatedRead = readFrame.load(ordering: .acquiring)
-            droppedFrames = max(0, occupancyFrames(read: gatedRead, write: write) - retainedFrames)
-            if droppedFrames > 0 {
-                readFrame.store(advance(gatedRead, by: droppedFrames), ordering: .releasing)
-                nextReadFrameSequence.wrappingAdd(
-                    UInt64(droppedFrames),
-                    ordering: .releasing
-                )
-            }
+        let read = readFrame.load(ordering: .acquiring)
+        let availableFrames = capacityFrames - occupancyFrames(read: read, write: write)
+        let framesToWrite = min(requestedFrames, availableFrames)
+        guard framesToWrite > 0 else {
+            return RingBufferWriteResult(writtenFrames: 0, droppedInputFrames: requestedFrames)
         }
 
         if sourceChannelCount == channelCount,
-           let source = samples.baseAddress,
-           let destination = storage.baseAddress {
-            copyMatchingChannels(
-                source: source.advanced(by: firstSourceFrame * channelCount),
-                destination: destination,
+           let source = samples.baseAddress {
+            copyIntoStorage(
+                source: source,
                 storageFrame: write,
                 frameCount: framesToWrite
             )
         } else {
             var storageFrame = write
             for frameOffset in 0..<framesToWrite {
-                let sourceBase = (firstSourceFrame + frameOffset) * sourceChannelCount
+                let sourceBase = frameOffset * sourceChannelCount
                 let storageBase = storageFrame * channelCount
                 for channel in 0..<channelCount {
                     storage[storageBase + channel] = samples[sourceBase + min(channel, sourceChannelCount - 1)]
@@ -129,12 +83,12 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
             }
         }
 
-        writeFrame.store(advance(write, by: framesToWrite), ordering: .releasing)
+        // Publish the sequence before making these samples visible to playback.
         nextWriteFrameSequence.wrappingAdd(UInt64(framesToWrite), ordering: .releasing)
+        writeFrame.store(advance(write, by: framesToWrite), ordering: .releasing)
         return RingBufferWriteResult(
             writtenFrames: framesToWrite,
-            droppedInputFrames: firstSourceFrame,
-            droppedBufferedFrames: droppedFrames
+            droppedInputFrames: requestedFrames - framesToWrite
         )
     }
 
@@ -149,23 +103,13 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
             return 0
         }
 
-        guard enterOverwriteGate() else {
-            zeroFill(samples, startFrame: 0, frameCount: requestedFrames, channelCount: destinationChannelCount)
-            return 0
-        }
-        defer {
-            leaveOverwriteGate()
-        }
-
-        let read = readFrame.load(ordering: .acquiring)
+        let read = readFrame.load(ordering: .relaxed)
         let write = writeFrame.load(ordering: .acquiring)
         let framesToRead = min(requestedFrames, occupancyFrames(read: read, write: write))
 
         if destinationChannelCount == channelCount,
-           let source = storage.baseAddress,
            let destination = samples.baseAddress {
-            copyMatchingChannels(
-                source: source,
+            copyFromStorage(
                 destination: destination,
                 storageFrame: read,
                 frameCount: framesToRead
@@ -204,44 +148,26 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         nextWriteFrameSequence.load(ordering: .acquiring)
     }
 
-    public func occupancyFrames() -> Int {
+    func occupancyFrames() -> Int {
         let read = readFrame.load(ordering: .acquiring)
         let write = writeFrame.load(ordering: .acquiring)
         return occupancyFrames(read: read, write: write)
     }
 
-    /// Times a caller exhausted its spin budget waiting for the overwrite gate. Any non-zero value
-    /// means a realtime callback lost a full buffer to contention rather than to a real over/underrun,
-    /// so this is the counter to check first when playback clicks under load.
-    public func overwriteGateContentionFailureCount() -> UInt64 {
-        overwriteGateContentionFailures.load(ordering: .relaxed)
-    }
-
-    func resetOverwriteGateContentionFailureCount() {
-        overwriteGateContentionFailures.store(0, ordering: .relaxed)
-    }
-
-    @discardableResult
-    func trimToLatestFrames(_ frames: Int) -> Bool {
-        guard enterOverwriteGate() else {
-            return false
-        }
-        defer {
-            leaveOverwriteGate()
-        }
-
+    // Consumer-only; returns the number of buffered frames discarded.
+    func trimToLatestFrames(_ frames: Int) -> Int {
         let targetFrames = min(max(frames, 0), capacityFrames)
-        let read = readFrame.load(ordering: .acquiring)
+        let read = readFrame.load(ordering: .relaxed)
         let write = writeFrame.load(ordering: .acquiring)
         let occupancy = occupancyFrames(read: read, write: write)
         guard occupancy > targetFrames else {
-            return true
+            return 0
         }
 
         let droppedFrames = occupancy - targetFrames
         readFrame.store(advance(read, by: droppedFrames), ordering: .releasing)
         nextReadFrameSequence.wrappingAdd(UInt64(droppedFrames), ordering: .releasing)
-        return true
+        return droppedFrames
     }
 
     private func occupancyFrames(read: Int, write: Int) -> Int {
@@ -260,92 +186,25 @@ public final class RealtimeAudioRingBuffer: @unchecked Sendable {
         (frame + distance) % storageFrameCapacity
     }
 
-    // `readFrame` has two writers: the playback thread consuming frames, and the capture thread
-    // dropping the oldest frames when the ring overflows. The gate serialises only that update.
-    //
-    // A holder never blocks, allocates, or makes a syscall — the capture side holds it for a few
-    // atomic ops, the playback side for a single memcpy — so contention always clears well inside
-    // a callback deadline and a bounded spin is safe on a realtime thread. Giving up costs a whole
-    // callback (silence out, or an incoming capture block dropped), which is why the spin exists
-    // rather than failing on the first missed exchange.
-    // A reader holds the gate across one callback-sized memcpy. Leave ample headroom over the
-    // normal 1,024–2,048-frame copy while keeping the wait bounded on a realtime thread.
-    private static let overwriteGateSpinLimit = 4_096
-
-    private func enterOverwriteGate() -> Bool {
-        for _ in 0..<Self.overwriteGateSpinLimit {
-            // Test-and-test-and-set: only attempt the exchange once the gate looks free, so a
-            // spinning thread stops stealing the cache line the holder needs in order to release.
-            guard !overwriteGate.load(ordering: .relaxed) else {
-                continue
-            }
-            if overwriteGate.compareExchange(
-                expected: false,
-                desired: true,
-                ordering: .acquiringAndReleasing
-            ).exchanged {
-                return true
-            }
-        }
-        overwriteGateContentionFailures.wrappingAdd(1, ordering: .relaxed)
-        return false
+    private func wrapSplit(storageFrame: Int, frameCount: Int) -> (firstSamples: Int, remainingSamples: Int) {
+        let firstFrames = min(frameCount, storageFrameCapacity - storageFrame)
+        return (firstFrames * channelCount, (frameCount - firstFrames) * channelCount)
     }
 
-    private func leaveOverwriteGate() {
-        overwriteGate.store(false, ordering: .releasing)
+    private func copyIntoStorage(source: UnsafePointer<Float>, storageFrame: Int, frameCount: Int) {
+        guard frameCount > 0 else { return }
+        let split = wrapSplit(storageFrame: storageFrame, frameCount: frameCount)
+        let destination = storage.baseAddress!
+        destination.advanced(by: storageFrame * channelCount).update(from: source, count: split.firstSamples)
+        destination.update(from: source.advanced(by: split.firstSamples), count: split.remainingSamples)
     }
 
-    // Write path copies linear source into wrapped storage; read path below copies
-    // wrapped storage back out. The pointer overloads keep those directions distinct.
-    private func copyMatchingChannels(
-        source: UnsafePointer<Float>,
-        destination: UnsafeMutablePointer<Float>,
-        storageFrame: Int,
-        frameCount: Int
-    ) {
-        guard frameCount > 0 else {
-            return
-        }
-
-        let firstFrameCount = min(frameCount, storageFrameCapacity - storageFrame)
-        let firstSampleCount = firstFrameCount * channelCount
-        destination
-            .advanced(by: storageFrame * channelCount)
-            .update(from: source, count: firstSampleCount)
-
-        let remainingFrames = frameCount - firstFrameCount
-        guard remainingFrames > 0 else {
-            return
-        }
-
-        destination.update(
-            from: source.advanced(by: firstSampleCount),
-            count: remainingFrames * channelCount
-        )
-    }
-
-    private func copyMatchingChannels(
-        source: UnsafeMutablePointer<Float>,
-        destination: UnsafeMutablePointer<Float>,
-        storageFrame: Int,
-        frameCount: Int
-    ) {
-        copyMatchingChannels(
-            source: UnsafePointer(source).advanced(by: storageFrame * channelCount),
-            destination: destination,
-            storageFrame: 0,
-            frameCount: min(frameCount, storageFrameCapacity - storageFrame)
-        )
-
-        let firstFrameCount = min(frameCount, storageFrameCapacity - storageFrame)
-        let remainingFrames = frameCount - firstFrameCount
-        guard remainingFrames > 0 else {
-            return
-        }
-
-        destination
-            .advanced(by: firstFrameCount * channelCount)
-            .update(from: source, count: remainingFrames * channelCount)
+    private func copyFromStorage(destination: UnsafeMutablePointer<Float>, storageFrame: Int, frameCount: Int) {
+        guard frameCount > 0 else { return }
+        let split = wrapSplit(storageFrame: storageFrame, frameCount: frameCount)
+        let source = storage.baseAddress!
+        destination.update(from: source.advanced(by: storageFrame * channelCount), count: split.firstSamples)
+        destination.advanced(by: split.firstSamples).update(from: source, count: split.remainingSamples)
     }
 
     private func zeroFill(

@@ -19,19 +19,19 @@ struct RealtimeAudioRingBufferTests {
         _ = twoFrames.withUnsafeBufferPointer {
             ring.writeInterleaved($0, frameCount: 2, sourceChannelCount: 1)
         }
-        #expect(ring.nextReadSequence() == 2)
-        #expect(ring.nextWriteSequence() == 6)
+        #expect(ring.nextReadSequence() == 0)
+        #expect(ring.nextWriteSequence() == 4)
 
         var output = [Float](repeating: 0, count: 1)
         output.withUnsafeMutableBufferPointer {
             _ = ring.readInterleaved(into: $0, frameCount: 1, destinationChannelCount: 1)
         }
-        #expect(ring.nextReadSequence() == 3)
+        #expect(ring.nextReadSequence() == 1)
 
-        #expect(ring.trimToLatestFrames(1))
-        #expect(ring.nextReadSequence() == 5)
-        #expect(ring.reset())
-        #expect(ring.nextReadSequence() == 6)
+        #expect(ring.trimToLatestFrames(1) == 2)
+        #expect(ring.nextReadSequence() == 3)
+        #expect(ring.reset() == 1)
+        #expect(ring.nextReadSequence() == 4)
     }
 
     @Test
@@ -78,7 +78,7 @@ struct RealtimeAudioRingBufferTests {
     }
 
     @Test
-    func dropsOldestFrameWhenFull() {
+    func dropsIncomingFrameWhenFull() {
         let ring = RealtimeAudioRingBuffer(channelCount: 1, capacityFrames: 2)
         let one: [Float] = [1]
         let two: [Float] = [2]
@@ -90,13 +90,13 @@ struct RealtimeAudioRingBufferTests {
         three.withUnsafeBufferPointer { ring.write($0) }
 
         _ = output.withUnsafeMutableBufferPointer { ring.read(into: $0) }
-        #expect(output == [2])
+        #expect(output == [1])
         _ = output.withUnsafeMutableBufferPointer { ring.read(into: $0) }
-        #expect(output == [3])
+        #expect(output == [2])
     }
 
     @Test
-    func overwriteAfterReadAdvancesFromCurrentReadFrame() {
+    func partialWriteUsesOnlySpaceReleasedByPlayback() {
         let ring = RealtimeAudioRingBuffer(channelCount: 1, capacityFrames: 4)
         let first: [Float] = [1, 2, 3]
         let second: [Float] = [4, 5, 6, 7]
@@ -116,9 +116,10 @@ struct RealtimeAudioRingBufferTests {
             ring.readInterleaved(into: $0, frameCount: 4, destinationChannelCount: 1)
         }
 
-        #expect(result == RingBufferWriteResult(writtenFrames: 4, droppedInputFrames: 0, droppedBufferedFrames: 2))
+        #expect(result.writtenFrames == 2)
+        #expect(result.droppedInputFrames == 2)
         #expect(readFrames == 4)
-        #expect(output == [4, 5, 6, 7])
+        #expect(output == [2, 3, 4, 5])
     }
 
     @Test
@@ -148,7 +149,7 @@ struct RealtimeAudioRingBufferTests {
     }
 
     @Test
-    func blockWriteDropsOldestFramesWhenOverCapacity() {
+    func blockWriteDropsIncomingTailWhenOverCapacity() {
         let ring = RealtimeAudioRingBuffer(channelCount: 1, capacityFrames: 3)
         let input: [Float] = [1, 2, 3, 4, 5]
         var output = [Float](repeating: 0, count: 3)
@@ -161,8 +162,9 @@ struct RealtimeAudioRingBufferTests {
         }
 
         #expect(readFrames == 3)
-        #expect(output == [3, 4, 5])
-        #expect(result == RingBufferWriteResult(writtenFrames: 3, droppedInputFrames: 2, droppedBufferedFrames: 0))
+        #expect(output == [1, 2, 3])
+        #expect(result.writtenFrames == 3)
+        #expect(result.droppedInputFrames == 2)
     }
 
     @Test
@@ -212,7 +214,7 @@ struct RealtimeAudioRingBufferTests {
     }
 
     @Test
-    func blockWriteReportsDroppedBufferedFramesOnOverrun() {
+    func fullRingRejectsIncomingBlockWithoutAdvancingEitherSequence() {
         let ring = RealtimeAudioRingBuffer(channelCount: 1, capacityFrames: 4)
         let first: [Float] = [1, 2, 3, 4]
         let second: [Float] = [5, 6]
@@ -224,8 +226,11 @@ struct RealtimeAudioRingBufferTests {
             ring.writeInterleaved($0, frameCount: 2, sourceChannelCount: 1)
         }
 
-        #expect(result == RingBufferWriteResult(writtenFrames: 2, droppedInputFrames: 0, droppedBufferedFrames: 2))
+        #expect(result.writtenFrames == 0)
+        #expect(result.droppedInputFrames == 2)
         #expect(ring.occupancyFrames() == 4)
+        #expect(ring.nextReadSequence() == 0)
+        #expect(ring.nextWriteSequence() == 4)
     }
 
     @Test
@@ -238,7 +243,7 @@ struct RealtimeAudioRingBufferTests {
             ring.writeInterleaved($0, frameCount: 2, sourceChannelCount: 2)
         }
 
-        #expect(ring.reset())
+        #expect(ring.reset() == 2)
         #expect(ring.occupancyFrames() == 0)
 
         let readFrames = output.withUnsafeMutableBufferPointer {
@@ -258,7 +263,7 @@ struct RealtimeAudioRingBufferTests {
             ring.writeInterleaved($0, frameCount: 5, sourceChannelCount: 1)
         }
 
-        #expect(ring.trimToLatestFrames(2))
+        #expect(ring.trimToLatestFrames(2) == 3)
         #expect(ring.occupancyFrames() == 2)
 
         let readFrames = output.withUnsafeMutableBufferPointer {
@@ -268,90 +273,103 @@ struct RealtimeAudioRingBufferTests {
         #expect(output == [4, 5])
     }
 
-    @Test
-    func uncontendedGateUseReportsNoContentionFailures() {
-        let ring = RealtimeAudioRingBuffer(channelCount: 2, capacityFrames: 4)
-        let input: [Float] = [1, 10, 2, 20, 3, 30, 4, 40, 5, 50]
-        var output = [Float](repeating: 0, count: 8)
-
-        _ = input.withUnsafeBufferPointer {
-            ring.writeInterleaved($0, frameCount: 5, sourceChannelCount: 2)
-        }
-        _ = output.withUnsafeMutableBufferPointer {
-            ring.readInterleaved(into: $0, frameCount: 4, destinationChannelCount: 2)
-        }
-        #expect(ring.reset())
-        #expect(ring.trimToLatestFrames(0))
-
-        #expect(ring.overwriteGateContentionFailureCount() == 0)
-    }
-
-    @Test
-    func sustainedOverflowContentionPreservesFrameIntegrity() {
-        // The producer writes half-capacity blocks while a smaller consumer runs concurrently.
-        // Once the ring fills, overflow writes and reads repeatedly contend for the gate.
-        let ring = RealtimeAudioRingBuffer(channelCount: 2, capacityFrames: 32)
-        let producerBlockFrames = 16
-        let consumerBlockFrames = 8
+    @Test(arguments: [false, true])
+    func concurrentIrregularBlocksPreserveAcceptedFrames(discardBacklog: Bool) throws {
+        let ring = RealtimeAudioRingBuffer(channelCount: 2, capacityFrames: 64)
         let totalFrames = 200_000
         let producerDone = Atomic<Bool>(false)
-        let sawTornFrame = Atomic<Bool>(false)
-        let sawRewoundFrame = Atomic<Bool>(false)
+        let cancelled = Atomic<Bool>(false)
+        defer { cancelled.store(true, ordering: .relaxed) }
+        let accepted = Mutex((samples: [Float](), droppedFrames: 0))
+        let consumed = Mutex((samples: [Float](), discardedFrames: 0, sequenceOvertookWrite: false))
         let group = DispatchGroup()
 
         group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            var block = [Float](repeating: 0, count: producerBlockFrames * 2)
-            var nextValue = 1
-            while nextValue <= totalFrames {
-                for frame in 0..<producerBlockFrames {
-                    // Both channels carry the frame's own value, so a frame stitched together out
-                    // of two different writes is detectable on the consumer side.
-                    block[frame * 2] = Float(nextValue + frame)
-                    block[frame * 2 + 1] = Float(nextValue + frame)
+        let producer = Thread {
+            var samples = [Float](repeating: 0, count: 129 * 2)
+            var acceptedSamples: [Float] = []
+            var droppedFrames = 0
+            var nextFrame = 1
+            var blockIndex = 0
+            while nextFrame <= totalFrames && !cancelled.load(ordering: .relaxed) {
+                let frames = min([1, 16, 63, 129][blockIndex % 4], totalFrames - nextFrame + 1)
+                for frame in 0..<frames {
+                    samples[frame * 2] = Float(nextFrame + frame)
+                    samples[frame * 2 + 1] = -Float(nextFrame + frame)
                 }
-                _ = block.withUnsafeBufferPointer {
-                    ring.writeInterleaved($0, frameCount: producerBlockFrames, sourceChannelCount: 2)
+                let result = samples.withUnsafeBufferPointer {
+                    ring.writeInterleaved($0, frameCount: frames, sourceChannelCount: 2)
                 }
-                nextValue += producerBlockFrames
+                acceptedSamples.append(contentsOf: samples.prefix(result.writtenFrames * 2))
+                droppedFrames += result.droppedInputFrames
+                nextFrame += frames
+                blockIndex += 1
             }
+            accepted.withLock { $0 = (acceptedSamples, droppedFrames) }
             producerDone.store(true, ordering: .releasing)
             group.leave()
         }
 
         group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            var block = [Float](repeating: 0, count: consumerBlockFrames * 2)
-            var lastValue: Float = 0
-            while !producerDone.load(ordering: .acquiring) || ring.occupancyFrames() > 0 {
-                let readFrames = block.withUnsafeMutableBufferPointer {
-                    ring.readInterleaved(
-                        into: $0,
-                        frameCount: consumerBlockFrames,
-                        destinationChannelCount: 2
-                    )
+        let consumer = Thread {
+            var samples = [Float](repeating: 0, count: 32 * 2)
+            var consumedSamples: [Float] = []
+            var discardedFrames = 0
+            var sequenceOvertookWrite = false
+            var blockIndex = 0
+            while !cancelled.load(ordering: .relaxed) {
+                if producerDone.load(ordering: .acquiring) && ring.occupancyFrames() == 0 {
+                    break
                 }
-                for frame in 0..<readFrames {
-                    let left = block[frame * 2]
-                    if left != block[frame * 2 + 1] {
-                        sawTornFrame.store(true, ordering: .releasing)
+                if discardBacklog {
+                    if blockIndex.isMultiple(of: 53) {
+                        discardedFrames += ring.reset()
+                    } else if blockIndex.isMultiple(of: 17) {
+                        discardedFrames += ring.trimToLatestFrames(16)
                     }
-                    // The producer may skip frames past us, but a value must never repeat or go
-                    // backwards — that would mean `readFrame` was clobbered by the other thread.
-                    if left <= lastValue {
-                        sawRewoundFrame.store(true, ordering: .releasing)
-                    }
-                    lastValue = left
                 }
+                let frames = [7, 32, 3][blockIndex % 3]
+                let count = samples.withUnsafeMutableBufferPointer {
+                    ring.readInterleaved(into: $0, frameCount: frames, destinationChannelCount: 2)
+                }
+                if ring.nextReadSequence() > ring.nextWriteSequence() {
+                    sequenceOvertookWrite = true
+                }
+                consumedSamples.append(contentsOf: samples.prefix(count * 2))
+                blockIndex += 1
             }
+            consumed.withLock { $0 = (consumedSamples, discardedFrames, sequenceOvertookWrite) }
             group.leave()
         }
 
-        #expect(group.wait(timeout: .now() + 30) == .success)
-        let tornFrame = sawTornFrame.load(ordering: .acquiring)
-        let rewoundFrame = sawRewoundFrame.load(ordering: .acquiring)
-        #expect(!tornFrame)
-        #expect(!rewoundFrame)
+        // Dedicated peers must make progress independently of the test runner's shared
+        // Dispatch pools. An empty-ring spin must not starve a lower-priority producer.
+        producer.qualityOfService = .userInitiated
+        consumer.qualityOfService = .userInitiated
+        producer.start()
+        consumer.start()
+        try #require(group.wait(timeout: .now() + 30) == .success)
+        let written = accepted.withLock { $0 }
+        let read = consumed.withLock { $0 }
+        #expect(!read.sequenceOvertookWrite)
+        #expect(written.samples.count > 0)
+        #expect(written.samples.count / 2 + written.droppedFrames == totalFrames)
+        #expect(read.samples.count / 2 + read.discardedFrames == written.samples.count / 2)
+        #expect(ring.nextReadSequence() == UInt64(written.samples.count / 2))
+        #expect(ring.nextWriteSequence() == ring.nextReadSequence())
+        if discardBacklog {
+            let acceptedFrames = Set(stride(from: 0, to: written.samples.count, by: 2).map { written.samples[$0] })
+            var previous: Float = 0
+            for index in stride(from: 0, to: read.samples.count, by: 2) {
+                let frame = read.samples[index]
+                #expect(acceptedFrames.contains(frame))
+                #expect(frame > previous)
+                #expect(read.samples[index + 1] == -frame)
+                previous = frame
+            }
+        } else {
+            #expect(read.samples == written.samples)
+        }
     }
 
     @Test
@@ -409,4 +427,15 @@ struct RealtimeAudioRingBufferTests {
         #expect(!outOfOrder)
         #expect(consumed > 0)
     }
+}
+
+private extension RealtimeAudioRingBuffer {
+    func write(_ frame: UnsafeBufferPointer<Float>) {
+        writeInterleaved(frame, frameCount: 1, sourceChannelCount: frame.count)
+    }
+
+    func read(into frame: UnsafeMutableBufferPointer<Float>) -> Bool {
+        readInterleaved(into: frame, frameCount: 1, destinationChannelCount: frame.count) == 1
+    }
+
 }
