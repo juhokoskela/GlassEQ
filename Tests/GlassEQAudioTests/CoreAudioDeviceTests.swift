@@ -1,26 +1,12 @@
 import CoreAudio
 import Foundation
 @testable import GlassEQAudio
-@testable import GlassEQCore
+import GlassEQCore
 import Synchronization
 import Testing
 
 @Suite
 struct CoreAudioDeviceTests {
-    @Test
-    func inlineBufferCapacitiesMatchDSPConstants() {
-        #expect(RealtimeHybridConvolver.DirectHistory(repeating: 0).count
-            == PreparedConvolutionKernel.directTapCount * 2)
-        #expect(RealtimeHybridConvolver.TailInputBlock(repeating: 0).count
-            == PreparedConvolutionKernel.tailPartitionFrames)
-        #expect(RealtimeHybridConvolver.TailOverlap(repeating: 0).count
-            == PreparedConvolutionKernel.tailPartitionFrames)
-        #expect(RealtimeHybridConvolver.TailOutputRing(repeating: 0).count
-            == RealtimeHybridConvolver.outputRingFrames)
-        #expect(RealtimeExtremeDurationTracker.Buckets(repeating: 0).count
-            == RealtimeExtremeDurationTracker.bucketCount)
-    }
-
     @Test
     func coreAudioCleanupRetainsFailedResourcesForRetry() {
         let counts = Mutex((aggregateDestroyAttempts: 0, tapDestroyAttempts: 0, completionCount: 0))

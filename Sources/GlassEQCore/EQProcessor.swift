@@ -393,6 +393,8 @@ public struct EQProcessor: Sendable {
     }
 
     private mutating func resetConvolversForExclusiveRenderOwnership() {
+        // Detach the outer array and each convolver's scratch arrays from the prepared
+        // configuration on the publishing thread. Render handoffs must preserve this ownership.
         for index in convolvers.indices {
             convolvers[index]?.reset()
         }

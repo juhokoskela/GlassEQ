@@ -679,14 +679,14 @@ struct ExtremeDurationSnapshot {
 }
 
 final class RealtimeExtremeDurationTracker: @unchecked Sendable {
-    typealias Buckets = InlineArray<513, UInt64>
+    private typealias Buckets = InlineArray<513, UInt64>
 
     private static let fineBucketCount = 256
     private static let fineBucketWidthNanoseconds: UInt64 = 250
     private static let coarseBucketCount = 256
     private static let coarseBucketWidthNanoseconds: UInt64 = 4_000
     private static let overflowBucket = fineBucketCount + coarseBucketCount
-    static let bucketCount = overflowBucket + 1
+    private static let bucketCount = overflowBucket + 1
     private static let publishInterval: UInt64 = 1_024
 
     private let requestedGeneration = Atomic<UInt64>(0)
@@ -705,6 +705,8 @@ final class RealtimeExtremeDurationTracker: @unchecked Sendable {
 
     init(publishPhase: UInt64 = 0) {
         self.publishPhase = publishPhase % Self.publishInterval
+        precondition(bucketGenerations.count == Self.bucketCount)
+        precondition(bucketCounts.count == Self.bucketCount)
     }
 
     func record(_ nanoseconds: UInt64) {

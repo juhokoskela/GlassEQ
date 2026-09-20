@@ -71,12 +71,7 @@ struct PreparedConvolutionKernel: Sendable {
 }
 
 struct RealtimeHybridConvolver: Sendable {
-    typealias DirectHistory = InlineArray<1024, Float>
-    typealias TailInputBlock = InlineArray<256, Float>
-    typealias TailOverlap = InlineArray<256, Float>
-    typealias TailOutputRing = InlineArray<1024, Float>
-
-    static let outputRingFrames = 1_024
+    private static let outputRingFrames = 1_024
     private static let outputRingMask = outputRingFrames - 1
     private static let inverseGuardFrames = 16
     private static let partitionWorkFrames = PreparedConvolutionKernel.tailPartitionFrames
@@ -84,9 +79,9 @@ struct RealtimeHybridConvolver: Sendable {
 
     private let kernel: PreparedConvolutionKernel
     private let transform: RealFloatDFTSetup
-    private var directHistory: DirectHistory = .init(repeating: 0)
+    private var directHistory: InlineArray<1024, Float> = .init(repeating: 0)
     private var directWriteIndex = 0
-    private var tailInputBlock: TailInputBlock = .init(repeating: 0)
+    private var tailInputBlock: InlineArray<256, Float> = .init(repeating: 0)
     private var tailInputCount = 0
     private var fftInputEven = [Float](
         repeating: 0,
@@ -131,8 +126,8 @@ struct RealtimeHybridConvolver: Sendable {
         repeating: 0,
         count: PreparedConvolutionKernel.packedBinCount
     )
-    private var tailOverlap: TailOverlap = .init(repeating: 0)
-    private var tailOutputRing: TailOutputRing = .init(repeating: 0)
+    private var tailOverlap: InlineArray<256, Float> = .init(repeating: 0)
+    private var tailOutputRing: InlineArray<1024, Float> = .init(repeating: 0)
     private var jobActive = false
     private var jobInputSpectrumIndex = 0
     private var jobNextPartition = 0
@@ -143,6 +138,10 @@ struct RealtimeHybridConvolver: Sendable {
     init(kernel: PreparedConvolutionKernel, prewarm: Bool = true) throws {
         self.kernel = kernel
         self.transform = try RealFloatDFTSetup()
+        precondition(directHistory.count == PreparedConvolutionKernel.directTapCount * 2)
+        precondition(tailInputBlock.count == PreparedConvolutionKernel.tailPartitionFrames)
+        precondition(tailOverlap.count == PreparedConvolutionKernel.tailPartitionFrames)
+        precondition(tailOutputRing.count == Self.outputRingFrames)
         if prewarm {
             prewarmAndReset()
         }
@@ -276,6 +275,7 @@ struct RealtimeHybridConvolver: Sendable {
     }
 
     mutating func reset() {
+        // Touch every mutable heap buffer so copies detach during preparation, before publication.
         directHistory = .init(repeating: 0)
         directWriteIndex = 0
         tailInputBlock = .init(repeating: 0)
@@ -490,6 +490,9 @@ private extension EQRenderWorkTiming {
     }
 }
 
+// Accelerate permits concurrent execution of shared setups, but not creation or destruction
+// while any sharing setup executes. Both setups are created before publication and stay owned
+// together through each call. Their owner must be reclaimed outside the render callback.
 private final class RealFloatDFTSetup: @unchecked Sendable {
     private let forwardSetup: vDSP_DFT_Setup
     private let inverseSetup: vDSP_DFT_Setup
