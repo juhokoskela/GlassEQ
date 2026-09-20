@@ -805,3 +805,53 @@ Raw series, harness sources, allocator audit, compiler-negative probes, disassem
 ### Regression coverage
 
 The full suite passed 763 tests across 33 suites. Address Sanitizer passed the 157 core tests, including independent channel/processor histories from one prepared kernel, reset after filling the complete spectrum ring, boundary impulses, irregular render chunks, and comparison transitions. The ownership regression checks wrong-rate and busy rejection, successful consumption of both comparison slots, and transfer of the retired processor. Physical playback and route-transition validation were not performed for this change.
+
+## September 20, 2026: playback-owned ring stall experiment
+
+The single-producer/single-consumer ring on `b118a1fc92b09ea07e5daac6d33e82fffef5130d` recovered from synthetic stalls without stuck playback or transitions, but retaining queued audio during overflow exposed a freshness failure. After the source had been silent for 400 ms, resumed playback emitted another 64–65.7 ms of old signal. The simpler ownership model removes the spin gate; it does not by itself provide acceptable freshness after overflow.
+
+### Method and boundary
+
+`Tests/GlassEQAudioTests/SeparateClockStallExperimentTests.swift` drives the real `SeparateClockAudioBackend.AudioRuntime`, including DSP, ring, occupancy servo, Hermite resampler, and Core Audio PCM converter. It does not create a device, process tap, or live audio callback. The app's control loop, watchdog, route rebuilding, adaptive target escalation, and HAL scheduling are outside this experiment.
+
+Each synthetic tick advances 20 ms of source and device time. Capture supplies 960 stereo frames at 48 kHz. Playback requests 960, 480, or 320 frames at 48, 24, or 16 kHz respectively. The ring uses its production capacity of 81,920 frames; this fixture selects a 3,072-frame priming reservoir and 1,024-frame DSP scratch buffer. These selected callback sizes and reservoir are not measurements of the connected AirPods configuration.
+
+The left input is `0.1 + sourceFrame / 1_000_000`; the right is its negative. The harness checks finite output and stereo agreement. During unity-gain playback, it decodes each output block's midpoint to estimate source-sample age relative to the end of that tick's capture horizon. This is a synthetic sample-age measurement, not acoustic latency or callback execution time. Baseline midpoint age was 54.0 ms at 48 kHz and approximately 55.0 ms with rate conversion.
+
+A stall omits one side's callback while advancing both timelines. Playback resumption therefore also exercises the timestamp-discontinuity path. There are no sleeps or scheduler-priority manipulations. Each case has 32 baseline ticks, injected faults, and 64 recovery ticks (1.28 seconds). The experiment ran on macOS 27.0 `26A428`, Apple Swift 6.4 `swiftlang-6.4.0.34.1`, arm64.
+
+### Results
+
+All 27 parameter cases produced identical JSON reports in debug and optimized builds.
+
+| Fault | Observed recovery across 48/24/16 kHz output |
+| --- | --- |
+| Playback withheld for 500 ms, without filling the ring | Playback trimmed 23,999 buffered frames. The first resumed midpoint was back at baseline age. No input loss or underrun. |
+| Playback withheld for 2 seconds, filling the ring | First resumed midpoint was 411.3–412.3 ms old. Midpoint age returned to baseline on callback 4. Rejected input totaled 17,151 frames, including the first recovery capture; playback trimmed 78,848 frames. |
+| Playback withheld for 2.4 seconds | First resumed midpoint was 811.3–812.3 ms old. Midpoint age returned to baseline on callback 4. Rejected input totaled 36,351 frames; playback trimmed 78,848 frames. |
+| Capture withheld for 500 ms | One underrun, followed by silence during priming. Non-silent output at baseline age resumed on callback 4. |
+| Six alternating capture/playback stalls | Each cycle withheld capture for 160 ms, restored both sides for 240 ms, withheld playback for either 240 ms or 2 seconds, then restored both for 240 ms. Both variants produced six underruns and six timestamp discontinuities. After the last cycle, no additional drops, trims, or underruns occurred during the final 1.28 seconds. |
+| Source becomes silent after the ring fills | After 2 seconds without playback, the source supplied silence for another 400 ms while playback remained withheld. Resumption emitted old nonzero signal for 64.0 ms at 48 kHz, 65.625 ms at 24 kHz, and 65.6875 ms at 16 kHz. |
+| Bypass or FIR transition while the ring is full | The complete fade was dropped. Completion stayed pending while writes were rejected, then completed on resumed callback 4. Settled output also decoded to recent unity-gain samples. The FIR destination was a full-length identity impulse. |
+
+Callback 4 covers the 60–80 ms interval after resumption in this fixture. The stale-signal duration uses an absolute sample threshold of `0.0001`. Its roughly 64 ms duration follows the selected 3,072-frame reservoir; other targets can produce different durations.
+
+Every case ended with 2,111 frames buffered after each of the final 16 playback calls. No adaptive render failures, nonfinite samples, or stereo mismatches were observed. The source-silence freshness assertion deliberately remains an expected failure at all three rates: it requires silence after the first resumed callback, allowing one callback for existing converter history. Passing recovery assertions must not be interpreted as passing this freshness requirement.
+
+### Interpretation and verification
+
+Playback trims to the newest frames still present in the ring. Once capture has rejected newer input, those retained frames can already be old. Trimming restores the occupancy target but cannot restore missing freshness. In the source-silence case, the old fragment was emitted without an underrun or render failure, so those counters alone would miss the problem.
+
+Keep the single-owner cursor design as the basis for the next experiment. A narrow producer-to-consumer overflow notification could let playback discard stale queued audio and re-prime from subsequent input. That would trade the stale fragment for silence during priming, without allowing capture to modify the read cursor. It has not been implemented or verified here; converter history also needs to be checked with the same signal.
+
+Run the fixture with:
+
+```sh
+swift test --filter SeparateClockStallExperimentTests
+```
+
+The full debug suite completed 770 tests with three recorded known issues, all from the source-silence assertion. The normal `swift test -c release --filter SeparateClockStallExperimentTests` command failed while linking the existing `GlassEQCoreTests` target, with a missing private `ConvolutionScratch` metadata symbol. Optimized validation instead used a temporary Swift package containing byte-for-byte copies of `Sources/GlassEQCore`, `Sources/GlassEQAudio`, and this test file. It linked Accelerate, CoreAudio, and AudioToolbox and ran only this fixture with `swift test -c release`. Its 27 cases completed with the same three known issues. Production sources were not changed during this experiment.
+
+Local evidence is retained in `.build/stall-experiment/debug-results.json`, `release-results.json`, `debug.log`, and `release.log`. The isolated package is `/var/folders/32/jftc5wb534g1pzhpzhsf35340000gn/T/glasseq-stall-release-8xk0x7gk`. The optimized test executable at `.build/out/Products/Release/GlassEQAudioTests.xctest/Contents/MacOS/GlassEQAudioTests` under that package has SHA-256 `cb97c95cd7609a8ada949b874f9d8a34782edc165aab3b68c7649393ec4ca62d`. The harness SHA-256 is `738f2eea8f99a67916b7a37a087a783ac3051df00275b21ec5d99db57bfbfba1`.
+
+Separately, Juho reported successful AirPods Pro headset-mode entry and exit with the experimental app. That is user-reported hardware evidence for route transitions; it does not establish behavior during a full-ring stall. This automated run did not alter the connected route or play audio through the AirPods.
