@@ -15,7 +15,7 @@ This checklist tracks the work required to move GlassEQ from the technical alpha
 - [x] Reserve the GlassEQ name and logo for the official distribution.
 - [x] Change the source license from MIT to `GPL-3.0-or-later` and update the repository license notice and README.
 - [x] Publish a trademark policy. Third-party builds must use a different name and logo and must not imply that Juho Koskela signed, published, or supports them.
-- [ ] Add the GPL and trademark notices to the About window and release documentation.
+- [x] Add the GPL and trademark notices to the About window and release documentation.
 - [ ] Have the licensing, subscription, privacy, refund, and trademark terms reviewed before taking payments.
 
 The GPL permits redistribution of official binaries, so the paid product cannot rely on download scarcity. The value of the commercial offering is the trusted signed build, notarization, automatic updates, and support. Server-controlled downloads and updates are enforceable service boundaries. A secret embedded in the open-source client is not.
@@ -153,12 +153,14 @@ Automatic crash uploading is not required for v1. Local diagnostics and an expli
 
 ## Product and legal UI
 
-- [ ] Add About GlassEQ with the version, build, copyright, source link, and official website.
-- [ ] Add License, Privacy, Credits, Check for Updates, Manage License, Renew, and Export Support Report actions.
-- [ ] Explain what the license and update services receive, how long the service retains it, and how the user can request deletion where applicable.
-- [ ] Preserve the promise that audio, profiles, device details, and diagnostics remain local unless the user explicitly exports a report.
-- [ ] Attribute AutoEq and include its MIT notice.
-- [ ] Add the GPL notice and third-party notices to the app and distribution.
+- [x] Add About GlassEQ with the version, build, copyright, source link, and official website.
+- [x] Add License, Privacy, Credits, and Manage License actions. The About window reaches them from the menu bar popover, the app menu, and Settings.
+- [ ] Add Check for Updates, Renew, and Export Support Report actions once the update feed, the billing portal, and the support report exist.
+- [x] Explain what the license service receives and how to ask for deletion. Describe update checks once Sparkle is integrated.
+- [ ] Decide the license service's retention period and state it in the About window's Privacy section.
+- [x] Preserve the promise that audio, profiles, device details, and diagnostics remain local unless the user explicitly exports a report.
+- [x] Attribute AutoEq and include its MIT notice.
+- [x] Add the GPL notice and third-party notices to the app and distribution.
 - [ ] Complete keyboard, VoiceOver, contrast, reduced-motion, window-resizing, and menu-bar discoverability checks.
 
 ## Release acceptance matrix

@@ -37,6 +37,7 @@ BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build/release-app}"
 ICON_FILE="$ROOT_DIR/Sources/GlassEQApp/Resources/GlassEQ.icns"
 MIGRATION_PLIST="$ROOT_DIR/Sources/GlassEQApp/Resources/container-migration.plist"
 LICENSE_FILE="$ROOT_DIR/LICENSE"
+TRADEMARKS_FILE="$ROOT_DIR/TRADEMARKS.md"
 SOURCE_REPOSITORY_URL="https://github.com/juhokoskela/GlassEQ"
 
 fail() {
@@ -163,6 +164,7 @@ capture_source_revision() {
     local source_status
 
     [[ -f "$LICENSE_FILE" ]] || fail "release checkout is missing LICENSE"
+    [[ -f "$TRADEMARKS_FILE" ]] || fail "release checkout is missing TRADEMARKS.md"
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "release builds require a Git checkout"
     [[ ! -f "$ROOT_DIR/.gitmodules" ]] || fail "release source packaging does not yet support Git submodules"
 
@@ -211,6 +213,8 @@ create_source_archive() {
         echo "Build inputs: version $VERSION, build $BUILD, channel $RELEASE_CHANNEL, architecture $ARCH, release label $RELEASE_LABEL."
         echo
         echo "GlassEQ is licensed under GPL-3.0-or-later. See \`LICENSE\` for the full license."
+        echo
+        echo "The GlassEQ name and logo are trademarks of Juho Koskela. See \`TRADEMARKS.md\` for the policy that applies to redistributed and modified builds."
     } > "$SOURCE_NOTICE_PATH"
 }
 
@@ -221,6 +225,7 @@ verify_release_archive() {
     unzip -Z1 "$ZIP_PATH" | grep -Fx "$APP_NAME.app/" >/dev/null || fail "release archive is missing $APP_NAME.app"
     unzip -Z1 "$ZIP_PATH" | grep -Fx "LICENSE" >/dev/null || fail "release archive is missing LICENSE"
     unzip -Z1 "$ZIP_PATH" | grep -Fx "SOURCE.md" >/dev/null || fail "release archive is missing SOURCE.md"
+    unzip -Z1 "$ZIP_PATH" | grep -Fx "TRADEMARKS.md" >/dev/null || fail "release archive is missing TRADEMARKS.md"
     unzip -Z1 "$ZIP_PATH" | grep -Fx "$SOURCE_ARCHIVE_NAME" >/dev/null || fail "release archive is missing Corresponding Source"
     unzip -p "$ZIP_PATH" LICENSE | cmp -s - "$LICENSE_FILE" || fail "release archive contains the wrong license"
     unzip -p "$ZIP_PATH" "$APP_NAME.app/Contents/Resources/LICENSE" | cmp -s - "$LICENSE_FILE" ||
@@ -416,6 +421,7 @@ if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     xcrun stapler validate "$PACKAGE_APP_DIR"
 fi
 cp "$LICENSE_FILE" "$PACKAGE_DIR/LICENSE"
+cp "$TRADEMARKS_FILE" "$PACKAGE_DIR/TRADEMARKS.md"
 create_source_archive
 
 rm -f "$ZIP_PATH"
