@@ -127,6 +127,30 @@ struct LaunchRecordStoreTests {
         #expect(previous == LaunchRecord(startedAt: bStartedAt, version: "B", processIdentifier: 101))
     }
 
+    @Test(arguments: [4_095, 4_096, 4_097, 65_536])
+    func oversizedMarkersAreIgnoredWithoutHidingValidRecords(byteCount: Int) throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        _ = LaunchRecordStore.beginRun(
+            in: directory, startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            version: "Older", processIdentifier: 100, isProcessAlive: dead)
+        _ = LaunchRecordStore.beginRun(
+            in: directory, startedAt: Date(timeIntervalSince1970: 1_700_000_900),
+            version: "Newer", processIdentifier: 101, isProcessAlive: { _ in true })
+        let url = LaunchRecordStore.recordURL(in: directory, processIdentifier: 101)
+        var data = try Data(contentsOf: url)
+        data.append(Data(repeating: 0x20, count: byteCount - data.count))
+        try data.write(to: url)
+
+        let previous = LaunchRecordStore.beginRun(
+            in: directory, version: "Current", processIdentifier: 102, isProcessAlive: dead)
+
+        #expect(previous?.version == (byteCount <= 4_096 ? "Newer" : "Older"))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: LaunchRecordStore.recordURL(in: directory, processIdentifier: 102).path))
+    }
+
     @Test
     func theNewestDeadRecordWinsWhenSeveralAreLeftBehind() throws {
         let directory = temporaryDirectory()

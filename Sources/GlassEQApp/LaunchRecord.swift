@@ -15,6 +15,7 @@ struct LaunchRecord: Codable, Equatable {
 /// remove each other's marker.
 enum LaunchRecordStore {
     static let directoryName = "LaunchRecords"
+    static let maximumRecordBytes = 4_096
 
     static func defaultDirectory(besideStoreAt storeURL: URL) -> URL {
         storeURL.deletingLastPathComponent().appending(path: directoryName, directoryHint: .isDirectory)
@@ -82,9 +83,22 @@ enum LaunchRecordStore {
     }
 
     private static func read(at url: URL) -> LaunchRecord? {
-        guard let data = try? Data(contentsOf: url) else {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
             return nil
         }
+        defer { try? handle.close() }
+        var data = Data()
+        do {
+            while data.count <= maximumRecordBytes {
+                guard let chunk = try handle.read(upToCount: maximumRecordBytes + 1 - data.count), !chunk.isEmpty else {
+                    break
+                }
+                data.append(chunk)
+            }
+        } catch {
+            return nil
+        }
+        guard data.count <= maximumRecordBytes else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(LaunchRecord.self, from: data)
