@@ -347,7 +347,7 @@ final class AggregateBufferPolicyStore {
         for route in routes {
             let previous = change.previous.first { $0.route == route }
             let imported = change.imported.first { $0.route == route }
-            guard previous != imported, record(for: route) == imported else { continue }
+            guard previous != imported, record(for: route)?.mode == imported?.mode else { continue }
             records.removeAll { $0.route == route }
             if let previous { records.append(previous) }
         }

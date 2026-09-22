@@ -2334,11 +2334,11 @@ struct GlassEQAppModelLifecycleTests {
         let exportURL = storeURL.deletingLastPathComponent().appendingPathComponent("export.json")
         let panels = FakeLibraryBackupPanels(exportURL: exportURL)
 
-        let response = try await libraryBackupPanelResponse(
-            for: .exportLibrary, model: model, chooseExportDestination: panels.chooseExportDestination,
+        let response = try await model.performSettingsCommand(
+            .exportLibrary, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
 
-        #expect(response?.libraryMessage == "Saved 2 profiles to export.json.")
+        #expect(response.libraryMessage == "Saved 2 profiles to export.json.")
         #expect(panels.suggestedNames.first?.hasPrefix("GlassEQ Library ") == true)
         let backup = try ProfileLibraryBackupCodec.read(from: exportURL)
         #expect(backup.profileStore == model.profileStore)
@@ -2354,11 +2354,11 @@ struct GlassEQAppModelLifecycleTests {
         let model = makeModel(storeURL: storeURL)
         let panels = FakeLibraryBackupPanels(exportURL: nil, importURL: nil)
 
-        let export = try await libraryBackupPanelResponse(
-            for: .exportLibrary, model: model, chooseExportDestination: panels.chooseExportDestination,
+        let export = try await model.performSettingsCommand(
+            .exportLibrary, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
-        let choose = try await libraryBackupPanelResponse(
-            for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+        let choose = try await model.performSettingsCommand(
+            .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
 
         #expect(export == SettingsCommandResponse())
@@ -2384,10 +2384,10 @@ struct GlassEQAppModelLifecycleTests {
         let importURL = try writeLibraryFile(incoming, beside: storeURL)
         let panels = FakeLibraryBackupPanels(importURL: importURL)
 
-        let choose = try await libraryBackupPanelResponse(
-            for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+        let choose = try await model.performSettingsCommand(
+            .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
-        let preview = try #require(choose?.libraryImportPreview)
+        let preview = try #require(choose.libraryImportPreview)
         #expect(preview.filename == "library.json")
         #expect(preview.profileCount == 2)
         #expect(preview.merge.addedProfiles == 1)
@@ -2420,8 +2420,8 @@ struct GlassEQAppModelLifecycleTests {
         let incoming = ProfileStore(profiles: [theirs], fallbackProfileID: theirs.id)
         let panels = FakeLibraryBackupPanels(importURL: try writeLibraryFile(incoming, beside: storeURL))
 
-        _ = try await libraryBackupPanelResponse(
-            for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+        _ = try await model.performSettingsCommand(
+            .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
         let applied = try await model.performSettingsCommand(.applyLibraryImport(.replace))
 
@@ -2452,8 +2452,8 @@ struct GlassEQAppModelLifecycleTests {
         let theirs = makeProfile(name: "Theirs")
         let panels = FakeLibraryBackupPanels(
             importURL: try writeLibraryFile(ProfileStore(profiles: [theirs]), beside: storeURL))
-        _ = try await libraryBackupPanelResponse(
-            for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+        _ = try await model.performSettingsCommand(
+            .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
         try ProfilePersistence.save(current, to: storeURL)
         try FileManager.default.setAttributes(
@@ -2485,8 +2485,8 @@ struct GlassEQAppModelLifecycleTests {
         let theirs = makeProfile(name: "Theirs")
         let panels = FakeLibraryBackupPanels(
             importURL: try writeLibraryFile(ProfileStore(profiles: [theirs]), beside: storeURL))
-        _ = try await libraryBackupPanelResponse(
-            for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+        _ = try await model.performSettingsCommand(
+            .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
             chooseBackupToImport: panels.chooseBackupToImport)
         #expect(model.pendingLibraryImport != nil)
 
@@ -2508,8 +2508,8 @@ struct GlassEQAppModelLifecycleTests {
         await #expect(
             throws: ProfileLibraryBackupError.unsupportedVersion(version: 9, maximum: 1)
         ) {
-            _ = try await libraryBackupPanelResponse(
-                for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+            _ = try await model.performSettingsCommand(
+                .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
                 chooseBackupToImport: panels.chooseBackupToImport)
         }
         #expect(model.pendingLibraryImport == nil)
@@ -2543,13 +2543,13 @@ struct GlassEQAppModelLifecycleTests {
             importURL: try writeLibraryFile(ProfileStore(profiles: [makeProfile(name: "Theirs")]), beside: storeURL))
 
         await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await libraryBackupPanelResponse(
-                for: .exportLibrary, model: model, chooseExportDestination: panels.chooseExportDestination,
+            _ = try await model.performSettingsCommand(
+                .exportLibrary, chooseExportDestination: panels.chooseExportDestination,
                 chooseBackupToImport: panels.chooseBackupToImport)
         }
         await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await libraryBackupPanelResponse(
-                for: .chooseLibraryBackup, model: model, chooseExportDestination: panels.chooseExportDestination,
+            _ = try await model.performSettingsCommand(
+                .chooseLibraryBackup, chooseExportDestination: panels.chooseExportDestination,
                 chooseBackupToImport: panels.chooseBackupToImport)
         }
         #expect(panels.suggestedNames.isEmpty)
@@ -2635,8 +2635,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.activeProfile == active)
     }
 
-    @Test
-    func applyingAProfileEndsTheProgrammeComparison() async throws {
+    @Test(arguments: [false, true])
+    func applyingAProfileOrBufferChoiceEndsTheProgrammeComparison(changingBuffer: Bool) async throws {
         let active = makeProfile(name: "Active")
         let output = makeOutput(uid: "comparison-apply-output", name: "Comparison Apply Output")
         let engine = FakeAudioEngine()
@@ -2660,12 +2660,17 @@ struct GlassEQAppModelLifecycleTests {
         model.selectProgrammeComparison(.reference)
         #expect(model.settingsSnapshot().programmeComparison.isActive)
 
-        try model.apply(profile: draft)
-
+        if changingBuffer {
+            try model.setAggregateBufferMode(.frames32)
+            #expect(await waitUntil { engine.startCalls.count == 2 && model.lifecycleState == .running })
+            #expect(engine.startCalls.last?.aggregateBufferFrameSize == 32)
+        } else {
+            try model.apply(profile: draft)
+            #expect(engine.updateDSPCalls.last == draft)
+        }
         #expect(!model.settingsSnapshot().programmeComparison.isActive)
         #expect(engine.programmeComparisonSelections.last == .equalized)
-        #expect(engine.updateDSPCalls.last == draft)
-        #expect(model.activeProfile == draft)
+        #expect(model.activeProfile == (changingBuffer ? active : draft))
     }
 
     @Test
@@ -5206,9 +5211,8 @@ struct GlassEQAppModelLifecycleTests {
         var pickerCallCount = 0
 
         await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single),
-                model: model,
+            _ = try await model.performSettingsCommand(
+                .chooseImportFiles(mode: .single),
                 picker: { _ in
                     pickerCallCount += 1
                     return nil
@@ -5226,9 +5230,8 @@ struct GlassEQAppModelLifecycleTests {
         let picker = BlockingSettingsFileImportPicker()
 
         let pickerTask = Task { @MainActor in
-            try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single),
-                model: model,
+            try await model.performSettingsCommand(
+                .chooseImportFiles(mode: .single),
                 picker: picker.choose(mode:)
             )
         }
@@ -6344,14 +6347,7 @@ private final class CancellableInProcessSettingsClient: SettingsCommanding {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(
-            for: command,
-            model: model,
-            picker: picker.choose(mode:)
-        ) {
-            return response
-        }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, picker: picker.choose(mode:))
     }
 }
 
@@ -8773,6 +8769,28 @@ private func writeLibraryFile(_ store: ProfileStore, beside storeURL: URL) throw
 
 @MainActor @Suite
 struct LibraryImportRegressionTests {
+    @Test
+    func bufferChoiceRefusesAnIncompatibleImpulseResponse() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let profile = makeImpulseResponseProfile(name: "Room", sampleRate: 48_000)
+        let model = makeModel(
+            store: ProfileStore(profiles: [profile]), storeURL: url, engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)), observers: observers)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.lifecycleState == .running })
+        engine.processingSampleRate = 44_100
+        try model.setAggregateBufferMode(.frames32)
+        #expect(!model.isRunning)
+        #expect(model.lifecycleState == .stopped)
+        #expect(engine.startCalls.count == 1)
+        await model.cleanupForTerminationAndWait()
+    }
+
     @Test(arguments: [1, 2], [false, true])
     func failedMigrationBackupProtectsTheStoreFromLaterSaves(schema: Int, danglingReferences: Bool) async throws {
         let url = temporaryAppStoreURL()
@@ -8801,6 +8819,91 @@ struct LibraryImportRegressionTests {
         #expect(try Data(contentsOf: url) == original)
         await model.cleanupForTerminationAndWait()
         #expect(ProfilePersistence.load(from: url).store.schemaVersion == ProfileStore.currentSchemaVersion)
+    }
+
+    @Test(arguments: ["merge", "backup", "save"])
+    func failedImportsReschedulePendingEdits(failure: String) async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let original = makeProfile(name: "Original")
+        let model = makeModel(
+            store: ProfileStore(profiles: [original]), storeURL: url, saveDelay: .milliseconds(50),
+            writeProfileStore: { store, url in
+                if failure == "save", store.profiles.first?.name == "Imported" { throw TestAudioError.startFailed }
+                try ProfilePersistence.save(store, to: url)
+            })
+        var edited = original
+        edited.name = "Unsaved edit"
+        try model.apply(profile: edited)
+        let incoming =
+            failure == "merge" ? makeStore(profileCount: 64) : ProfileStore(profiles: [makeProfile(name: "Imported")])
+        if failure == "backup" {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: url))
+        }
+        _ = model.stageLibraryImport(
+            ProfileLibraryBackup(createdAt: Date(), appVersion: nil, profileStore: incoming), filename: "library.json")
+        await #expect(throws: (any Error).self) {
+            try await model.applyLibraryImport(mode: failure == "merge" ? .merge : .replace)
+        }
+        #expect(await waitUntil { ProfilePersistence.load(from: url).store.profiles == [edited] })
+        await model.cleanupForTerminationAndWait()
+    }
+
+    @Test
+    func failedReplacementsDoNotPruneCommittedBackups() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: url)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for index in 0..<LibraryBackupFile.automaticBackupsToKeep {
+            try Data().write(to: directory.appendingPathComponent("GlassEQ Library \(index).json"))
+        }
+        let before = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        let model = makeModel(
+            storeURL: url,
+            writeProfileStore: { store, url in
+                if store.profiles.first?.name == "Imported" { throw TestAudioError.startFailed }
+                try ProfilePersistence.save(store, to: url)
+            })
+        for _ in 0..<12 {
+            _ = model.stageLibraryImport(
+                ProfileLibraryBackup(
+                    createdAt: Date(), appVersion: nil,
+                    profileStore: ProfileStore(profiles: [makeProfile(name: "Imported")])), filename: "library.json")
+            await #expect(throws: (any Error).self) { try await model.applyLibraryImport(mode: .replace) }
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == before)
+        #expect(await model.flushStoreBeforeQuit())
+        await model.cleanupForTerminationAndWait()
+    }
+
+    @Test
+    func bufferImportReschedulesTheFirstStart() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        engine.blockStart(for: output.uid)
+        defer { engine.unblockStart(for: output.uid) }
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            storeURL: url, engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { engine.startCalls.count == 1 })
+        let preferences = AggregateBufferPolicyStore(url: url.appendingPathExtension("preferences"))
+        try preferences.setMode(.frames128, for: try #require(try engine.aggregateRouteFingerprint(for: output)))
+        _ = model.stageLibraryImport(
+            ProfileLibraryBackup(
+                createdAt: Date(), appVersion: nil, profileStore: model.profileStore,
+                bufferPreferences: try preferences.exportDocument()), filename: "library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        engine.unblockStart(for: output.uid)
+        try #require(await waitUntil { model.lifecycleState == .running && engine.startCalls.count == 2 })
+        #expect(engine.startCalls.last?.aggregateBufferFrameSize == 128)
+        await model.cleanupForTerminationAndWait()
     }
 
     @Test(arguments: [(1, false, false), (3, false, false), (1, true, false), (3, true, false), (1, false, true)])

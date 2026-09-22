@@ -809,7 +809,7 @@ final class GlassEQAppModel {
     private struct ProfileRollback: Sendable {
         enum Scope: Sendable {
             case profile
-            case library
+            case library(bufferPolicyImport: AggregateBufferPolicyStore.ImportChange?)
         }
 
         var profileStore: ProfileStore
@@ -817,7 +817,6 @@ final class GlassEQAppModel {
         var selectedProfileID: UUID
         var draftProfile: EQProfile
         var scope: Scope
-        var bufferPolicyImport: AggregateBufferPolicyStore.ImportChange?
     }
 
     private struct PendingAggregateBufferIncrease: Sendable {
@@ -893,21 +892,25 @@ final class GlassEQAppModel {
             switch previous.scope {
             case .profile:
                 profileIDs = [profileID]
-            case .library:
+            case .library(let bufferPolicyImport):
                 let previousIDs = Set(previous.profileStore.profiles.map(\.id))
                 profileIDs =
                     previous.profileStore.profiles.map(\.id)
                     + attempted.profileStore.profiles.map(\.id).filter { !previousIDs.contains($0) }
                 libraryChange = LibraryChange(
                     previous: previous.profileStore, attempted: attempted.profileStore,
-                    bufferPolicyImport: previous.bufferPolicyImport)
+                    bufferPolicyImport: bufferPolicyImport)
             }
+            let previousProfiles = Dictionary(
+                uniqueKeysWithValues: previous.profileStore.profiles.enumerated().map { ($0.element.id, $0) })
+            let attemptedProfiles = Dictionary(
+                uniqueKeysWithValues: attempted.profileStore.profiles.map { ($0.id, $0) })
             profileChanges = profileIDs.map { id in
                 ProfileChange(
                     profileID: id,
-                    previous: previous.profileStore.profiles.first { $0.id == id },
-                    previousIndex: previous.profileStore.profiles.firstIndex { $0.id == id },
-                    attempted: attempted.profileStore.profiles.first { $0.id == id }
+                    previous: previousProfiles[id]?.element,
+                    previousIndex: previousProfiles[id]?.offset,
+                    attempted: attemptedProfiles[id]
                 )
             }
             previousSelectedProfileID = previous.selectedProfileID
@@ -1572,7 +1575,8 @@ final class GlassEQAppModel {
         case .normal:
             return ""
         case .migrationBackupFailed:
-            return localized("The older profile library could not be backed up. Relaunch to retry before editing profiles.")
+            return localized(
+                "The older profile library could not be backed up. Relaunch to retry before editing profiles.")
         case .unsupportedSchema, .oversizedStore:
             return localized("Profile store is protected; reset profiles before editing it.")
         }
@@ -3156,7 +3160,10 @@ final class GlassEQAppModel {
             return
         }
 
-        if rebuildRoute && rebuildRouteWithSelectedBuffer(rollback: rollback) { return }
+        if rebuildRoute {
+            let rebuilt = rebuildRouteWithSelectedBuffer(rollback: rollback)
+            if rebuilt { return }
+        }
 
         if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
@@ -3472,7 +3479,7 @@ final class GlassEQAppModel {
             activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             if let reconciliation {
-                let bufferPreferencesRestored = restoreEngineProfileReconciliation(reconciliation, persist: true)
+                let bufferPreferencesRestored = restoreEngineProfileReconciliation(reconciliation)
                 confirmedEngineProfileState.acknowledge(reconciliation)
                 statusMessage = localized(
                     "Profile change was not applied; audio is still running with \(reconciliation.confirmation.activeProfile.name)."
@@ -4153,8 +4160,7 @@ final class GlassEQAppModel {
     }
 
     private func restoreEngineProfileReconciliation(
-        _ reconciliation: EngineProfileReconciliation,
-        persist: Bool
+        _ reconciliation: EngineProfileReconciliation
     ) -> Bool {
         var restoredStore = profileStore
         var bufferPreferencesRestored = true
@@ -4237,9 +4243,7 @@ final class GlassEQAppModel {
                 restoredStore.profiles.first(where: { $0.id == selectedProfileID })
                 ?? storedConfirmation
         }
-        if persist {
-            saveStore()
-        }
+        saveStore()
         return bufferPreferencesRestored
     }
 
@@ -4417,7 +4421,7 @@ final class GlassEQAppModel {
             createdAt: createdAt,
             appVersion: AppBuildInfo.current.displayVersion,
             profileStore: profileStore,
-            bufferPreferences: try? aggregateBufferPolicyStore.exportDocument()
+            bufferPreferences: try aggregateBufferPolicyStore.exportDocument()
         )
     }
 
@@ -4446,64 +4450,75 @@ final class GlassEQAppModel {
         pendingLibraryImport = nil
         try ensureProfileStoreWritable()
         await drainPendingSave()
-        try Task.checkCancellation()
-        let incoming = pending.backup.profileStore
-        let nextStore: ProfileStore
-        let message: String
-        switch mode {
-        case .merge:
-            let result = try ProfileLibraryMerge.merge(current: profileStore, incoming: incoming)
-            nextStore = result.store
-            message = Self.mergeMessage(result.summary, filename: pending.filename)
-        case .replace:
-            let backupURL = try writeAutomaticLibraryBackup()
-            nextStore = incoming
-            message = localized(
-                "Replaced the library with \(incoming.profiles.count) profiles from \(pending.filename). The previous library was saved as \(backupURL.lastPathComponent)."
-            )
-        }
-        // Persist before publishing. If an edit or cancellation wins during the write, restore
-        // the current library before returning; a debounced save would leave the refused import on disk.
-        let libraryBeforeSave = profileStore
-        try await storeWriter.saveAndSynchronize(nextStore)
-        if profileStore != libraryBeforeSave || pendingSaveTask != nil || Task.isCancelled {
-            do {
-                try await synchronizeStore()
-            } catch {
-                saveStore()
-                throw error
-            }
+        var automaticBackupURL: URL?
+        do {
             try Task.checkCancellation()
-            throw SettingsCommandFailure(
-                message: localized("The library changed while the import was being saved. Try again."))
-        }
-        var rollback = profileRollback(scope: .library)
-        let previousActive = activeProfile
-        let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
-        profileStore = nextStore
-        var outcome = message
-        if let preferences = pending.backup.bufferPreferences {
-            do {
-                rollback.bufferPolicyImport = try aggregateBufferPolicyStore.importDocument(
-                    preferences, replacingExisting: mode == .replace)
-            } catch {
-                lifecycleLog.record("Library import: buffer preferences could not be saved")
-                outcome += " " + localized("The buffer preferences in the library could not be saved.")
+            let libraryBeforeSave = profileStore
+            let incoming = pending.backup.profileStore
+            let nextStore: ProfileStore
+            let message: String
+            switch mode {
+            case .merge:
+                let result = try ProfileLibraryMerge.merge(current: profileStore, incoming: incoming)
+                nextStore = result.store
+                message = Self.mergeMessage(result.summary, filename: pending.filename)
+            case .replace:
+                let backupURL = try await writeAutomaticLibraryBackup()
+                automaticBackupURL = backupURL
+                nextStore = incoming
+                message = localized(
+                    "Replaced the library with \(incoming.profiles.count) profiles from \(pending.filename). The previous library was saved as \(backupURL.lastPathComponent)."
+                )
             }
-        }
+            // Persist before publishing. If an edit or cancellation wins during the write, restore
+            // the current library before returning; a debounced save would leave the refused import on disk.
+            try await storeWriter.saveAndSynchronize(nextStore)
+            if profileStore != libraryBeforeSave || pendingSaveTask != nil || Task.isCancelled {
+                try await synchronizeStore()
+                try Task.checkCancellation()
+                throw SettingsCommandFailure(
+                    message: localized("The library changed while the import was being saved. Try again."))
+            }
+            var rollback = profileRollback(scope: .library(bufferPolicyImport: nil))
+            let previousActive = activeProfile
+            let previousBufferSelections = aggregateBufferPolicyStore.selectionSnapshot()
+            let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
+            profileStore = nextStore
+            var outcome = message
+            if let preferences = pending.backup.bufferPreferences {
+                do {
+                    let change = try aggregateBufferPolicyStore.importDocument(
+                        preferences, replacingExisting: mode == .replace)
+                    rollback.scope = .library(bufferPolicyImport: change)
+                } catch {
+                    lifecycleLog.record("Library import: buffer preferences could not be saved")
+                    outcome += " " + localized("The buffer preferences in the library could not be saved.")
+                }
+            }
 
-        let nextActive = nextStore.profile(forOutputUID: currentOutputUID.isEmpty ? nil : currentOutputUID)
-        activeProfile = nextActive
-        selectedProfileID = nextActive.id
-        draftProfile = nextActive
-        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
-        let bufferChanged = activeAggregateRoute.map { aggregateBufferSelection(for: $0) } != previousBufferSelection
-        if nextActive != previousActive || bufferChanged {
-            synchronizeActiveProfileProcessing(rollback: rollback, rebuildRoute: bufferChanged)
+            let nextActive = nextStore.profile(forOutputUID: currentOutputUID.isEmpty ? nil : currentOutputUID)
+            activeProfile = nextActive
+            selectedProfileID = nextActive.id
+            draftProfile = nextActive
+            clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
+            let bufferChanged =
+                activeAggregateRoute.map { aggregateBufferSelection(for: $0) } != previousBufferSelection
+                || (hasPendingProfileReplacingEngineWork
+                    && aggregateBufferPolicyStore.selectionSnapshot() != previousBufferSelections)
+            if nextActive != previousActive || bufferChanged {
+                synchronizeActiveProfileProcessing(rollback: rollback, rebuildRoute: bufferChanged)
+            }
+            lifecycleLog.record("Library import applied (\(mode.rawValue)): \(nextStore.profiles.count) profiles")
+            notifyModelDidChange()
+            if let automaticBackupURL {
+                LibraryBackupFile.pruneAutomaticBackups(in: automaticBackupURL.deletingLastPathComponent())
+            }
+            return outcome
+        } catch {
+            if let automaticBackupURL { try? FileManager.default.removeItem(at: automaticBackupURL) }
+            saveStore()
+            throw error
         }
-        lifecycleLog.record("Library import applied (\(mode.rawValue)): \(nextStore.profiles.count) profiles")
-        notifyModelDidChange()
-        return outcome
     }
 
     /// Called only after checking the active profile's bypass and compatibility state.
@@ -4549,14 +4564,14 @@ final class GlassEQAppModel {
         return localized("Imported from \(filename): \(parts.joined(separator: ", ")).")
     }
 
-    private func writeAutomaticLibraryBackup() throws -> URL {
+    private func writeAutomaticLibraryBackup() async throws -> URL {
         let backup = try makeLibraryBackup()
         let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: storeURL)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let name = LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt)
-        let url = directory.appending(path: String(name.dropLast(5)) + " \(UUID().uuidString).json")
-        try ProfileLibraryBackupCodec.encode(backup).write(to: url, options: .atomic)
-        LibraryBackupFile.pruneAutomaticBackups(in: directory)
+        let name = LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt, identifier: UUID())
+        let url = directory.appending(path: name)
+        let data = try await LibraryBackupIO.encode(backup)
+        try await LibraryBackupIO.write(data, to: url)
         return url
     }
 

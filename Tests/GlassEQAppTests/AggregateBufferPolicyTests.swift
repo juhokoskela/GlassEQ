@@ -408,6 +408,25 @@ struct AggregateBufferPolicyTests {
     }
 
     @Test
+    func learnedCountersDoNotPreventImportRollback() throws {
+        let url = temporaryPolicyURL()
+        let importedURL = temporaryPolicyURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: importedURL)
+        }
+        let route = fingerprint(uid: "output", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames32, for: route)
+        let imported = AggregateBufferPolicyStore(url: importedURL)
+        try imported.setMode(.automatic, for: route)
+        let change = try store.importDocument(imported.exportDocument(), replacingExisting: true)
+        _ = try store.recordAutomaticFailure(for: route)
+        try store.restoreImport(change)
+        #expect(store.selection(for: route).mode == .frames32)
+    }
+
+    @Test
     func failedImportRollbackDoesNotPublishUnsavedPreferences() throws {
         let url = temporaryPolicyURL()
         defer { try? FileManager.default.removeItem(at: url) }

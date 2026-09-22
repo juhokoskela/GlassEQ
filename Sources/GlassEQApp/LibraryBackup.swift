@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import GlassEQCore
-import GlassEQSettingsIPC
 import GlassEQSettingsUI
 import UniformTypeIdentifiers
 
@@ -15,19 +14,19 @@ enum LibraryBackupFile {
     static let automaticBackupsDirectoryName = "Backups"
     static let automaticBackupsToKeep = 10
 
-    static func suggestedFilename(createdAt: Date) -> String {
+    static func suggestedFilename(createdAt: Date, identifier: UUID? = nil) -> String {
         let stamp = createdAt.formatted(
             Date.ISO8601FormatStyle(dateSeparator: .dash, timeSeparator: .omitted, timeZone: .gmt)
                 .year().month().day().dateTimeSeparator(.standard).time(includingFractionalSeconds: false)
         )
-        return "GlassEQ Library \(stamp).json"
+        let suffix = identifier.map { " \($0.uuidString)" } ?? ""
+        return "GlassEQ Library \(stamp)\(suffix).json"
     }
 
     static func automaticBackupsDirectory(besideStoreAt storeURL: URL) -> URL {
         storeURL.deletingLastPathComponent().appending(path: automaticBackupsDirectoryName, directoryHint: .isDirectory)
     }
 
-    /// Uses filesystem dates so older backups with local-time names are ordered correctly too.
     static func pruneAutomaticBackups(in directory: URL, keeping count: Int = automaticBackupsToKeep) {
         guard
             let urls = try? FileManager.default.contentsOfDirectory(
@@ -86,49 +85,19 @@ enum LibraryBackupPanels {
     }
 }
 
-/// Answers the two library commands that need a panel, or nil for every other command.
-@MainActor
-func libraryBackupPanelResponse(
-    for command: SettingsCommand,
-    model: GlassEQAppModel,
-    chooseExportDestination: @MainActor (String) async throws -> URL? = LibraryBackupPanels.chooseExportDestination,
-    chooseBackupToImport: @MainActor () async throws -> URL? = LibraryBackupPanels.chooseBackupToImport
-) async throws -> SettingsCommandResponse? {
-    switch command {
-    case .exportLibrary:
-        try model.beginSettingsCommand()
-        defer {
-            model.finishSettingsCommand()
-        }
-        let backup = try model.makeLibraryBackup()
-        let data = try ProfileLibraryBackupCodec.encode(backup)
-        guard
-            let url = try await chooseExportDestination(
-                LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
-        else {
-            return SettingsCommandResponse()
-        }
-        try data.write(to: url, options: .atomic)
-        model.lifecycleLog.record("Library exported: \(backup.profileStore.profiles.count) profiles")
-        return SettingsCommandResponse(
-            libraryMessage: localized(
-                "Saved \(backup.profileStore.profiles.count) profiles to \(url.lastPathComponent)."))
-
-    case .chooseLibraryBackup:
-        try model.beginSettingsCommand()
-        defer {
-            model.finishSettingsCommand()
-        }
-        try model.ensureProfileStoreWritable()
-        guard let url = try await chooseBackupToImport() else {
-            return SettingsCommandResponse()
-        }
+enum LibraryBackupIO {
+    @concurrent static func encode(_ backup: ProfileLibraryBackup) async throws -> Data {
         try Task.checkCancellation()
-        let backup = try ProfileLibraryBackupCodec.read(from: url)
-        let preview = model.stageLibraryImport(backup, filename: url.lastPathComponent)
-        return SettingsCommandResponse(libraryImportPreview: preview)
+        return try ProfileLibraryBackupCodec.encode(backup)
+    }
 
-    default:
-        return nil
+    @concurrent static func read(from url: URL) async throws -> ProfileLibraryBackup {
+        try Task.checkCancellation()
+        return try ProfileLibraryBackupCodec.read(from: url)
+    }
+
+    @concurrent static func write(_ data: Data, to url: URL) async throws {
+        try Task.checkCancellation()
+        try data.write(to: url, options: .atomic)
     }
 }
