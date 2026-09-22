@@ -806,10 +806,16 @@ final class GlassEQAppModel {
     }
 
     private struct ProfileRollback: Sendable {
+        enum Scope: Sendable {
+            case profile
+            case library
+        }
+
         var profileStore: ProfileStore
         var activeProfile: EQProfile
         var selectedProfileID: UUID
         var draftProfile: EQProfile
+        var scope: Scope
     }
 
     private struct PendingAggregateBufferIncrease: Sendable {
@@ -841,6 +847,18 @@ final class GlassEQAppModel {
     }
 
     private struct FailedEngineProfileAttempt: Sendable {
+        struct LibraryChange: Sendable {
+            var previous: ProfileStore
+            var attempted: ProfileStore
+        }
+
+        struct ProfileChange: Sendable {
+            var profileID: UUID
+            var previous: EQProfile?
+            var previousIndex: Int?
+            var attempted: EQProfile?
+        }
+
         struct MappingChange: Sendable {
             var outputUID: String
             var previous: OutputDeviceProfileMapping?
@@ -849,10 +867,8 @@ final class GlassEQAppModel {
         }
 
         var id = UUID()
-        var profileID: UUID
-        var previousProfile: EQProfile?
-        var previousProfileIndex: Int?
-        var attemptedProfile: EQProfile?
+        var profileChanges: [ProfileChange]
+        var libraryChange: LibraryChange?
         var previousSelectedProfileID: UUID
         var attemptedSelectedProfileID: UUID
         var previousDraftProfile: EQProfile
@@ -860,21 +876,35 @@ final class GlassEQAppModel {
         var mappingChanges: [MappingChange]
 
         init(profileID: UUID, previous: ProfileRollback?, attempted: ProfileRollback) {
-            self.profileID = profileID
-            attemptedProfile = attempted.profileStore.profiles.first { $0.id == profileID }
             attemptedSelectedProfileID = attempted.selectedProfileID
             attemptedDraftProfile = attempted.draftProfile
 
             guard let previous else {
-                previousProfile = attemptedProfile
-                previousProfileIndex = attempted.profileStore.profiles.firstIndex { $0.id == profileID }
+                profileChanges = []
                 previousSelectedProfileID = attempted.selectedProfileID
                 previousDraftProfile = attempted.draftProfile
                 mappingChanges = []
                 return
             }
-            previousProfile = previous.profileStore.profiles.first { $0.id == profileID }
-            previousProfileIndex = previous.profileStore.profiles.firstIndex { $0.id == profileID }
+            let profileIDs: [UUID]
+            switch previous.scope {
+            case .profile:
+                profileIDs = [profileID]
+            case .library:
+                let previousIDs = Set(previous.profileStore.profiles.map(\.id))
+                profileIDs =
+                    previous.profileStore.profiles.map(\.id)
+                    + attempted.profileStore.profiles.map(\.id).filter { !previousIDs.contains($0) }
+                libraryChange = LibraryChange(previous: previous.profileStore, attempted: attempted.profileStore)
+            }
+            profileChanges = profileIDs.map { id in
+                ProfileChange(
+                    profileID: id,
+                    previous: previous.profileStore.profiles.first { $0.id == id },
+                    previousIndex: previous.profileStore.profiles.firstIndex { $0.id == id },
+                    attempted: attempted.profileStore.profiles.first { $0.id == id }
+                )
+            }
             previousSelectedProfileID = previous.selectedProfileID
             previousDraftProfile = previous.draftProfile
             let outputUIDs = Set(previous.profileStore.outputMappings.map(\.outputDeviceUID))
@@ -2663,12 +2693,13 @@ final class GlassEQAppModel {
         )
     }
 
-    private func profileRollback() -> ProfileRollback {
+    private func profileRollback(scope: ProfileRollback.Scope = .profile) -> ProfileRollback {
         ProfileRollback(
             profileStore: profileStore,
             activeProfile: activeProfile,
             selectedProfileID: selectedProfileID,
-            draftProfile: draftProfile
+            draftProfile: draftProfile,
+            scope: scope
         )
     }
 
@@ -3109,7 +3140,7 @@ final class GlassEQAppModel {
             return
         }
 
-        if rebuildRoute && rebuildRouteWithSelectedBuffer() { return }
+        if rebuildRoute && rebuildRouteWithSelectedBuffer(rollback: rollback) { return }
 
         if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
@@ -4106,39 +4137,47 @@ final class GlassEQAppModel {
         _ reconciliation: EngineProfileReconciliation,
         persist: Bool
     ) {
+        var restoredStore = profileStore
         for failedAttempt in reconciliation.failedAttempts.reversed() {
-            if failedAttempt.previousProfile != failedAttempt.attemptedProfile,
-                profileStore.profiles.first(where: { $0.id == failedAttempt.profileID })
-                    == failedAttempt.attemptedProfile
-            {
-                profileStore.profiles.removeAll { $0.id == failedAttempt.profileID }
-                if let previousProfile = failedAttempt.previousProfile {
-                    let insertionIndex = min(
-                        failedAttempt.previousProfileIndex ?? profileStore.profiles.endIndex,
-                        profileStore.profiles.endIndex
-                    )
-                    profileStore.profiles.insert(
-                        previousProfile,
-                        at: insertionIndex
+            if let libraryChange = failedAttempt.libraryChange, restoredStore == libraryChange.attempted {
+                restoredStore = libraryChange.previous
+            }
+            let profileChanges = failedAttempt.profileChanges.filter { change in
+                change.previous != change.attempted
+                    && restoredStore.profiles.first(where: { $0.id == change.profileID }) == change.attempted
+            }
+            let changedIDs = Set(profileChanges.map(\.profileID))
+            restoredStore.profiles.removeAll { changedIDs.contains($0.id) }
+            for change in profileChanges {
+                if let previous = change.previous {
+                    restoredStore.profiles.insert(
+                        previous,
+                        at: min(
+                            change.previousIndex ?? restoredStore.profiles.endIndex, restoredStore.profiles.endIndex)
                     )
                 }
             }
+            if let libraryChange = failedAttempt.libraryChange,
+                restoredStore.fallbackProfileID == libraryChange.attempted.fallbackProfileID
+            {
+                restoredStore.fallbackProfileID = libraryChange.previous.fallbackProfileID
+            }
             for mappingChange in failedAttempt.mappingChanges.reversed() {
-                let currentMapping = profileStore.outputMappings.first {
+                let currentMapping = restoredStore.outputMappings.first {
                     $0.outputDeviceUID == mappingChange.outputUID
                 }
                 guard currentMapping == mappingChange.attempted else {
                     continue
                 }
-                profileStore.outputMappings.removeAll {
+                restoredStore.outputMappings.removeAll {
                     $0.outputDeviceUID == mappingChange.outputUID
                 }
                 if let previousMapping = mappingChange.previous {
-                    profileStore.outputMappings.insert(
+                    restoredStore.outputMappings.insert(
                         previousMapping,
                         at: min(
-                            mappingChange.previousIndex ?? profileStore.outputMappings.endIndex,
-                            profileStore.outputMappings.endIndex
+                            mappingChange.previousIndex ?? restoredStore.outputMappings.endIndex,
+                            restoredStore.outputMappings.endIndex
                         )
                     )
                 }
@@ -4151,22 +4190,23 @@ final class GlassEQAppModel {
             }
         }
         let confirmation = reconciliation.confirmation
-        let profileIDs = Set(profileStore.profiles.map(\.id))
+        let profileIDs = Set(restoredStore.profiles.map(\.id))
         let storedConfirmation =
-            profileStore.profiles.first {
+            restoredStore.profiles.first {
                 $0.id == confirmation.activeProfile.id
-            } ?? profileStore.profiles[0]
-        profileStore.outputMappings.removeAll { !profileIDs.contains($0.profileID) }
-        if !profileIDs.contains(profileStore.fallbackProfileID) {
-            profileStore.fallbackProfileID = storedConfirmation.id
+            } ?? restoredStore.profiles[0]
+        restoredStore.outputMappings.removeAll { !profileIDs.contains($0.profileID) }
+        if !profileIDs.contains(restoredStore.fallbackProfileID) {
+            restoredStore.fallbackProfileID = storedConfirmation.id
         }
+        profileStore = restoredStore
         activeProfile = confirmation.activeProfile
-        if !profileStore.profiles.contains(where: { $0.id == selectedProfileID }) {
+        if !restoredStore.profiles.contains(where: { $0.id == selectedProfileID }) {
             selectedProfileID = storedConfirmation.id
         }
-        if !profileStore.profiles.contains(where: { $0.id == draftProfile.id }) {
+        if !restoredStore.profiles.contains(where: { $0.id == draftProfile.id }) {
             draftProfile =
-                profileStore.profiles.first(where: { $0.id == selectedProfileID })
+                restoredStore.profiles.first(where: { $0.id == selectedProfileID })
                 ?? storedConfirmation
         }
         if persist {
@@ -4408,7 +4448,7 @@ final class GlassEQAppModel {
             throw SettingsCommandFailure(
                 message: localized("The library changed while the import was being saved. Try again."))
         }
-        let rollback = profileRollback()
+        let rollback = profileRollback(scope: .library)
         let previousActive = activeProfile
         let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
         profileStore = nextStore
@@ -4437,7 +4477,7 @@ final class GlassEQAppModel {
     }
 
     /// Called only after checking the active profile's bypass and compatibility state.
-    private func rebuildRouteWithSelectedBuffer() -> Bool {
+    private func rebuildRouteWithSelectedBuffer(rollback: ProfileRollback?) -> Bool {
         guard let activeAggregateRoute,
             lifecycleState == .running,
             isRunning,
@@ -4453,7 +4493,7 @@ final class GlassEQAppModel {
         scheduleEngineStart(
             output: output,
             profile: activeProfile,
-            rollback: nil,
+            rollback: rollback,
             aggregateBufferFrameSize: selection.frameSize
         )
         return true

@@ -8753,6 +8753,69 @@ private func writeLibraryFile(_ store: ProfileStore, beside storeURL: URL) throw
 
 @MainActor @Suite
 struct LibraryImportRegressionTests {
+    @Test(arguments: [(1, false, false), (3, false, false), (1, true, false), (3, true, false), (1, false, true)])
+    func rejectedReplacementRestoresTheWholeLibrary(
+        profileCount: Int, rebuildRoute: Bool, keepsLaterEdit: Bool
+    ) async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let output = makeOutput(uid: "import-output", name: "Import output")
+        let originalProfiles = [makeProfile(name: "Original fallback"), makeProfile(name: "Original active")]
+        let original = ProfileStore(
+            profiles: originalProfiles,
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: output.uid, profileID: originalProfiles[1].id)
+            ],
+            fallbackProfileID: originalProfiles[0].id
+        )
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: original, storeURL: url, engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)), observers: observers)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.lifecycleState == .running && engine.startCalls.count == 1 })
+        var previousSelection = model.selectedProfileID
+        var previousDraft = model.draftProfile
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        engine.startError = TestAudioError.startFailed
+        engine.startErrorPreservesRunningState = true
+        let incoming = makeStore(profileCount: profileCount)
+        let importedActive = incoming.profiles[0]
+        if keepsLaterEdit { engine.blockUpdate(for: importedActive.id) }
+        defer { engine.unblockUpdate(for: importedActive.id) }
+        let preferences = AggregateBufferPolicyStore(url: url.appendingPathExtension("imported-policy"))
+        try preferences.setMode(.frames128, for: try #require(try engine.aggregateRouteFingerprint(for: output)))
+        _ = model.stageLibraryImport(
+            ProfileLibraryBackup(
+                createdAt: Date(), appVersion: nil, profileStore: incoming,
+                bufferPreferences: rebuildRoute ? try preferences.exportDocument() : nil), filename: "library.json")
+
+        _ = try await model.performSettingsCommand(.applyLibraryImport(.replace))
+        var expectedStore = original
+        if keepsLaterEdit {
+            try #require(await waitUntil { engine.updateCalls.count == 1 })
+            try model.createProfile(kind: .parametric)
+            previousSelection = model.selectedProfileID
+            previousDraft = model.draftProfile
+            expectedStore.profiles.append(model.draftProfile)
+            engine.unblockUpdate(for: importedActive.id)
+        }
+        try #require(await waitUntil { model.statusMessage.contains("not applied") })
+
+        #expect(model.profileStore == expectedStore)
+        #expect(model.activeProfile == originalProfiles[1])
+        #expect(model.selectedProfileID == previousSelection)
+        #expect(model.draftProfile == previousDraft)
+        #expect(engine.state == .running(output: output))
+        #expect(await model.flushStoreBeforeQuit())
+        await model.cleanupForTerminationAndWait()
+        #expect(ProfilePersistence.load(from: url).store == expectedStore)
+    }
+
     @Test(arguments: [true, false])
     func bufferChangeChecksTheImportedProfileBeforeRebuilding(bypassed: Bool) async throws {
         let url = temporaryAppStoreURL()
