@@ -5042,18 +5042,21 @@ final class GlassEQAppModel {
         startObserver(sendInitialValue: true)
     }
 
-    func cleanupForTermination() {
-        guard prepareForTermination(shutdownSettings: true) else {
-            return
-        }
-        scheduleEngineStop(updateMetrics: false)
-    }
+    @ObservationIgnored private var terminationTask: Task<Void, Never>?
 
     func cleanupForTerminationAndWait() async {
-        await stopAcceptingSettingsCommandsAndWait()
-        guard prepareForTermination(shutdownSettings: false) else {
+        if let terminationTask {
+            await terminationTask.value
             return
         }
+        let task = Task { await self.performTerminationCleanup() }
+        terminationTask = task
+        await task.value
+    }
+
+    private func performTerminationCleanup() async {
+        await stopAcceptingSettingsCommandsAndWait()
+        prepareForTermination()
         await settingsCoordinator.shutdownAndWait()
         // The engine stop is queued before the Keychain checkpoint so a slow Security call can
         // never delay the return to dry playback.
@@ -5070,10 +5073,7 @@ final class GlassEQAppModel {
         lifecycleLog.record("Shutdown complete")
     }
 
-    private func prepareForTermination(shutdownSettings: Bool) -> Bool {
-        guard lifecycleState != .terminating else {
-            return false
-        }
+    private func prepareForTermination() {
         lifecycleState = .terminating
         engine.setPlaybackBufferRenegotiationHandler(nil)
         acceptsSettingsCommands = false
@@ -5086,11 +5086,7 @@ final class GlassEQAppModel {
         clearProgrammeComparisonSession()
         isRunning = false
         onboardingAudioCaptureState = .idle
-        if shutdownSettings {
-            settingsCoordinator.shutdown()
-        }
         notifyModelDidChange()
-        return true
     }
 
     private func audioEngineFailureCategory(_ error: Error) -> AudioEngineFailure.Category? {

@@ -2293,6 +2293,7 @@ struct GlassEQAppModelLifecycleTests {
         let recordsDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQAppTests-\(UUID().uuidString)")
             .appendingPathComponent(LaunchRecordStore.directoryName)
+        defer { try? FileManager.default.removeItem(at: recordsDirectory.deletingLastPathComponent()) }
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
         // Process 1 is launchd, which is alive, so a dead identifier is written by hand.
         _ = LaunchRecordStore.beginRun(
@@ -4168,7 +4169,7 @@ struct GlassEQAppModelLifecycleTests {
 
         model.start()
         let observer = observers.observers[0]
-        model.cleanupForTermination()
+        await model.cleanupForTerminationAndWait()
         model.start()
         model.retryAudioEngine()
         observer.emit(.success(output))
@@ -5138,8 +5139,8 @@ struct GlassEQAppModelLifecycleTests {
 
     @Test
     func debouncedProfileSavesCoalesceAndFlushPersistsLatestState() async throws {
-        let storeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GlassEQAppTests-\(UUID().uuidString).json")
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let model = makeModel(storeURL: storeURL, saveDelay: .milliseconds(100))
 
         try model.createProfile(kind: .parametric)
@@ -5813,6 +5814,7 @@ struct GlassEQAppModelLifecycleTests {
     func settingsHelperValidationChecksContainmentBundleIDAndSigningPolicy() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQHelperValidation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
         let helperURL =
             hostURL
@@ -8683,8 +8685,17 @@ struct LicenseActivationOnboardingTests {
         #expect(finished.value == nil)
         #expect(source.checkpointCount == 0)
 
+        let secondFinished = StopCountRecorder()
+        let secondCleanup = Task { @MainActor in
+            await model.cleanupForTerminationAndWait()
+            secondFinished.record(1)
+        }
+        await settleAsyncWork()
+        #expect(secondFinished.value == nil)
         source.releaseOperations()
         await cleanup.value
+        await secondCleanup.value
+        #expect(secondFinished.value == 1)
 
         #expect(model.licenseSnapshot?.content.state == .perpetual)
         #expect(source.checkpointCount == 1)
