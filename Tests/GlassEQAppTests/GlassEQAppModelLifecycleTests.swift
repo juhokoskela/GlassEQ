@@ -293,6 +293,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: replacementOutput.uid)
+        defer { engine.unblockStart(for: replacementOutput.uid) }
         lookup.result = .success(replacementOutput)
         observers.observers[0].emit(.success(replacementOutput))
         await waitUntil {
@@ -460,6 +461,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: secondOutput.uid)
+        defer { engine.unblockStart(for: secondOutput.uid) }
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
         await waitUntil {
@@ -563,6 +565,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.headsetPromotionCandidateUIDs = [output.uid]
         engine.headsetAggregatePromotionResult = .promoted(output)
         engine.blockHeadsetAggregatePromotion()
+        defer { engine.unblockHeadsetAggregatePromotion() }
         let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
@@ -645,6 +648,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.coldStartupPromotionCandidateUIDs = [output.uid]
         engine.coldStartupAggregatePromotionResult = .promoted(promotedOutput)
         engine.blockColdStartupAggregatePromotion()
+        defer { engine.unblockColdStartupAggregatePromotion() }
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
             engine: engine,
@@ -687,6 +691,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.coldStartupPromotionCandidateUIDs = [output.uid]
         engine.coldStartupAggregatePromotionResult = .promoted(promotedOutput)
         engine.blockColdStartupAggregatePromotion()
+        defer { engine.unblockColdStartupAggregatePromotion() }
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
             engine: engine,
@@ -736,6 +741,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.coldStartupPromotionCandidateUIDs = [output.uid]
         engine.coldStartupAggregatePromotionResult = .promoted(output)
         engine.blockColdStartupAggregatePromotion()
+        defer { engine.unblockColdStartupAggregatePromotion() }
         let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
@@ -1263,7 +1269,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async {
+    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async throws {
         let output = makeOutput(uid: "adaptive-aggregate", name: "Adaptive Aggregate")
         let engine = FakeAudioEngine()
         engine.reflectPreferredAggregateBufferFrameSize = true
@@ -1273,59 +1279,44 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             observers: observers,
             outputDelay: .zero,
+            renderWatchdogPollInterval: .seconds(30),
             aggregateBufferNotifier: notifier
         )
 
         model.start()
         observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running
-                && engine.startCalls.count == 1
-                && engine.startCalls[0].aggregateBufferFrameSize == 16
-        }
-        try? await Task.sleep(for: .milliseconds(30))
+        try #require(
+            await waitUntil {
+                model.lifecycleState == .running
+                    && engine.startCalls.count == 1
+                    && engine.startCalls[0].aggregateBufferFrameSize == 16
+            })
 
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 1
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.startCalls.count == 1)
+        for (index, frameSize) in [UInt32(32), 64, 128].enumerated() {
+            let baselineCount = engine.snapshotMetricsCallCount
+            try #require(await waitUntil { engine.snapshotMetricsCallCount > baselineCount })
 
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 2
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.startCalls[1].aggregateBufferFrameSize == 32
-                && notifier.calls.count == 1
-        }
-        try? await Task.sleep(for: .milliseconds(30))
+            var metrics = engine.metrics
+            metrics.qualifyingPairedTimestampDiscontinuities += 1
+            engine.metrics = metrics
+            let firstInterruptionCount = engine.snapshotMetricsCallCount
+            try #require(await waitUntil { engine.snapshotMetricsCallCount > firstInterruptionCount })
+            #expect(engine.startCalls.count == index + 1)
 
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 3
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.startCalls.count == 2)
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 4
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 3
-                && engine.startCalls[2].aggregateBufferFrameSize == 64
-                && notifier.calls.count == 2
-        }
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 6
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-
-        await waitUntil {
-            engine.startCalls.count == 4 && engine.startCalls.last?.aggregateBufferFrameSize == 128
+            metrics = engine.metrics
+            metrics.qualifyingPairedTimestampDiscontinuities += 1
+            engine.metrics = metrics
+            try #require(
+                await waitUntil {
+                    engine.startCalls.count == index + 2
+                        && engine.startCalls.last?.aggregateBufferFrameSize == frameSize
+                        && notifier.calls.count == index + 1
+                        && model.settingsSnapshot().aggregateBuffer.automaticFrameSize == frameSize
+                })
         }
         #expect(notifier.calls.count == 3)
         #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 128)
+        await model.cleanupForTerminationAndWait()
     }
 
     @Test
@@ -1482,6 +1473,7 @@ struct GlassEQAppModelLifecycleTests {
 
         try? await Task.sleep(for: .milliseconds(300))
         engine.blockPreferredAggregateBufferFrameSizeWrite(32)
+        defer { engine.unblockPreferredAggregateBufferFrameSizeWrite(32) }
         metrics = engine.metrics
         metrics.renderDeadlineMisses = 6
         engine.metrics = metrics
@@ -1823,6 +1815,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: secondOutput.uid)
+        defer { engine.unblockStart(for: secondOutput.uid) }
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
         await waitUntil {
@@ -1878,6 +1871,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: secondOutput.uid)
+        defer { engine.unblockStart(for: secondOutput.uid) }
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
         await waitUntil {
@@ -1987,6 +1981,7 @@ struct GlassEQAppModelLifecycleTests {
         )
 
         engine.blockStart(for: firstOutput.uid)
+        defer { engine.unblockStart(for: firstOutput.uid) }
         model.start()
         let observer = observers.observers[0]
         observer.emit(.success(firstOutput))
@@ -2061,6 +2056,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
         engine.blockUpdate(for: requestedProfile.id)
+        defer { engine.unblockUpdate(for: requestedProfile.id) }
         try model.apply(profile: requestedProfile)
         await waitUntil {
             engine.updateCalls.count == 1
@@ -2121,6 +2117,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: secondOutput.uid)
+        defer { engine.unblockStart(for: secondOutput.uid) }
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
         await waitUntil { engine.startCalls.count == 2 }
@@ -2182,6 +2179,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: secondOutput.uid)
+        defer { engine.unblockStart(for: secondOutput.uid) }
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
         await waitUntil { engine.startCalls.count == 2 }
@@ -3159,6 +3157,7 @@ struct GlassEQAppModelLifecycleTests {
         )
         let engine = FakeAudioEngine()
         engine.blockStart(for: initialOutput.uid)
+        defer { engine.unblockStart(for: initialOutput.uid) }
         let lookup = FakeDefaultOutputLookup(.success(initialOutput))
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
@@ -3232,7 +3231,8 @@ struct GlassEQAppModelLifecycleTests {
             engine: engine,
             lookup: lookup,
             observers: observers,
-            outputSleep: { await settlement.sleep(for: $0) }
+            outputSleep: { await settlement.sleep(for: $0) },
+            renderWatchdogPollInterval: .seconds(30)
         )
 
         model.start()
@@ -3617,6 +3617,7 @@ struct GlassEQAppModelLifecycleTests {
         let secondOutput = makeOutput(uid: "second-output", name: "Second Output", id: 300)
         let engine = FakeAudioEngine()
         engine.blockStart(for: firstOutput.uid)
+        defer { engine.unblockStart(for: firstOutput.uid) }
         let lookup = FakeDefaultOutputLookup(.success(firstOutput))
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
@@ -3661,6 +3662,7 @@ struct GlassEQAppModelLifecycleTests {
         let output = makeOutput(uid: "slow-start-output", name: "Slow Start Output", id: 200)
         let engine = FakeAudioEngine()
         engine.blockStart(for: output.uid)
+        defer { engine.unblockStart(for: output.uid) }
         let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
@@ -4084,6 +4086,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         engine.blockStart(for: output.uid)
+        defer { engine.unblockStart(for: output.uid) }
         model.handleWillSleep()
         model.handleDidWake()
         await waitUntil {
@@ -4553,6 +4556,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
         engine.blockUpdate(for: requested.id)
+        defer { engine.unblockUpdate(for: requested.id) }
 
         try model.useForCurrentOutput(profile: requested)
         await waitUntil { engine.updateCalls.count == 1 }
@@ -4599,6 +4603,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
         engine.blockUpdate(for: requested.id)
+        defer { engine.unblockUpdate(for: requested.id) }
 
         try model.apply(profile: requested)
         await waitUntil { engine.updateCalls.count == 1 }
@@ -4652,6 +4657,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
         engine.blockUpdate(for: requested.id)
+        defer { engine.unblockUpdate(for: requested.id) }
         try model.useForCurrentOutput(profile: requested)
         await waitUntil { engine.updateCalls.count == 1 }
         #expect(engine.waitUntilUpdateIsBlocked(for: requested.id, timeout: .now() + 1))
@@ -4695,6 +4701,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
         engine.blockUpdate(for: attempted.id)
+        defer { engine.unblockUpdate(for: attempted.id) }
 
         try model.apply(profile: attempted)
         await waitUntil { engine.updateCalls.count == 1 }
@@ -4736,6 +4743,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.updateError = TestAudioError.updateFailed
         engine.updateErrorPreservesRunningState = true
         engine.blockUpdate(for: requested.id)
+        defer { engine.unblockUpdate(for: requested.id) }
 
         try model.apply(profile: requested)
         await waitUntil { engine.updateCalls.count == 1 }
@@ -7572,7 +7580,7 @@ private final class FakeStartBlocker: @unchecked Sendable {
 
     func waitUntilUnblocked() {
         entered.signal()
-        _ = release.wait(timeout: .now() + 5)
+        release.wait()
     }
 
     func waitUntilEntered(timeout: DispatchTime) -> Bool {
@@ -7822,6 +7830,7 @@ struct LicenseEnforcementTests {
         let output = makeOutput(uid: "blocked-output", name: "Blocked Output")
         let engine = FakeAudioEngine()
         engine.blockStart(for: output.uid)
+        defer { engine.unblockStart(for: output.uid) }
         let observers = FakeDefaultOutputObserverFactory()
         let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
         let model = makeModel(
