@@ -75,7 +75,11 @@ enum LaunchRecordStore {
             return []
         }
         return urls.compactMap { url in
-            guard url.pathExtension == "json", let record = read(at: url) else {
+            guard url.pathExtension == "json" else { return nil }
+            guard let record = read(at: url) else {
+                if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                    try? FileManager.default.removeItem(at: url)
+                }
                 return nil
             }
             return (url, record)
@@ -83,22 +87,7 @@ enum LaunchRecordStore {
     }
 
     private static func read(at url: URL) -> LaunchRecord? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return nil
-        }
-        defer { try? handle.close() }
-        var data = Data()
-        do {
-            while data.count <= maximumRecordBytes {
-                guard let chunk = try handle.read(upToCount: maximumRecordBytes + 1 - data.count), !chunk.isEmpty else {
-                    break
-                }
-                data.append(chunk)
-            }
-        } catch {
-            return nil
-        }
-        guard data.count <= maximumRecordBytes else { return nil }
+        guard let data = try? BoundedFile.read(from: url, maximumBytes: maximumRecordBytes) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(LaunchRecord.self, from: data)

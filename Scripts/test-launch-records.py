@@ -46,6 +46,7 @@ def main():
         source = directory / "main.swift"
         source.write_text(SOURCE)
         subprocess.run(["xcrun", "swiftc", str(ROOT / "Sources/GlassEQApp/LaunchRecord.swift"),
+                        str(ROOT / "Sources/GlassEQApp/BoundedFile.swift"),
                         str(source), "-o", str(executable)], check=True)
         subprocess.run(["codesign", "--force", "--sign", "-", "--entitlements",
                         str(ROOT / "GlassEQ.entitlements"), str(contents.parent)], check=True)

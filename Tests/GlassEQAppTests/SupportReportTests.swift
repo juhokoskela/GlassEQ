@@ -146,6 +146,7 @@ struct LaunchRecordStoreTests {
             in: directory, version: "Current", processIdentifier: 102, isProcessAlive: dead)
 
         #expect(previous?.version == (byteCount <= 4_096 ? "Newer" : "Older"))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
         #expect(
             FileManager.default.fileExists(
                 atPath: LaunchRecordStore.recordURL(in: directory, processIdentifier: 102).path))

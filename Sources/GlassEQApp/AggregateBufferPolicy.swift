@@ -386,7 +386,7 @@ final class AggregateBufferPolicyStore {
     }
 
     private static func load(from url: URL) -> [Record] {
-        guard let data = try? readBoundedData(from: url) else {
+        guard let data = try? BoundedFile.read(from: url, maximumBytes: maximumStoreBytes) else {
             return []
         }
         return parse(data, discardingInvalidRecords: true) ?? []
@@ -421,23 +421,6 @@ final class AggregateBufferPolicyStore {
             )
             return record
         }
-    }
-
-    private static func readBoundedData(from url: URL) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var data = Data()
-        while data.count <= maximumStoreBytes {
-            let remaining = maximumStoreBytes + 1 - data.count
-            guard let chunk = try handle.read(upToCount: remaining), !chunk.isEmpty else {
-                break
-            }
-            data.append(chunk)
-        }
-        guard data.count <= maximumStoreBytes else {
-            throw PersistenceError.storeTooLarge
-        }
-        return data
     }
 
     nonisolated static func defaultFrameSize(isBluetooth: Bool) -> UInt32 {
