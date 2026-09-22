@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import SwiftUI
 
-/// Written when a run starts and removed when it ends cleanly, so the next launch can tell that the
+/// Written when a run starts and removed when it ends cleanly, so the next launch can tell that a
 /// previous one crashed or was killed. macOS tears the process tap down with the process, so the
 /// record is guidance for the user, not a recovery step.
 struct LaunchRecord: Codable, Equatable {
@@ -11,36 +11,63 @@ struct LaunchRecord: Codable, Equatable {
     let processIdentifier: Int32
 }
 
+/// One record file per process, named by its identifier, so two running copies never overwrite or
+/// remove each other's marker.
 enum LaunchRecordStore {
-    static let filename = "LaunchRecord.json"
+    static let directoryName = "LaunchRecords"
 
-    static func defaultURL(besideStoreAt storeURL: URL) -> URL {
-        storeURL.deletingLastPathComponent().appending(path: filename)
+    static func defaultDirectory(besideStoreAt storeURL: URL) -> URL {
+        storeURL.deletingLastPathComponent().appending(path: directoryName, directoryHint: .isDirectory)
     }
 
-    /// Replaces any record with this run's and returns the previous run's record when that run
-    /// never ended cleanly. A record whose process is still alive belongs to another running copy
-    /// and is not an unclean termination.
+    /// Writes this run's record and returns the newest record of a run that never ended cleanly.
+    /// Records of processes that are still alive belong to other running copies and are kept;
+    /// records of dead processes are removed once read.
     static func beginRun(
-        at url: URL,
+        in directory: URL,
         startedAt: Date = Date(),
         version: String?,
         processIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
         isProcessAlive: (Int32) -> Bool = { kill($0, 0) == 0 }
     ) -> LaunchRecord? {
-        let previous = read(at: url)
+        var unclean: LaunchRecord?
+        for (url, record) in existingRecords(in: directory) where !isProcessAlive(record.processIdentifier) {
+            try? FileManager.default.removeItem(at: url)
+            if unclean.map({ record.startedAt > $0.startedAt }) ?? true {
+                unclean = record
+            }
+        }
         write(
             LaunchRecord(startedAt: startedAt, version: version, processIdentifier: processIdentifier),
-            to: url
+            to: recordURL(in: directory, processIdentifier: processIdentifier)
         )
-        guard let previous, previous.processIdentifier != processIdentifier else {
-            return nil
-        }
-        return isProcessAlive(previous.processIdentifier) ? nil : previous
+        return unclean
     }
 
-    static func endRun(at url: URL) {
-        try? FileManager.default.removeItem(at: url)
+    static func endRun(
+        in directory: URL,
+        processIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier
+    ) {
+        try? FileManager.default.removeItem(at: recordURL(in: directory, processIdentifier: processIdentifier))
+    }
+
+    static func recordURL(in directory: URL, processIdentifier: Int32) -> URL {
+        directory.appending(path: "\(processIdentifier).json")
+    }
+
+    private static func existingRecords(in directory: URL) -> [(URL, LaunchRecord)] {
+        guard
+            let urls = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        else {
+            return []
+        }
+        return urls.compactMap { url in
+            guard url.pathExtension == "json", let record = read(at: url) else {
+                return nil
+            }
+            return (url, record)
+        }
     }
 
     private static func read(at url: URL) -> LaunchRecord? {
@@ -67,7 +94,6 @@ enum LaunchRecordStore {
 /// Shown in the menu bar popover after a run that crashed or was killed. macOS drops the tap with
 /// the process, so playback already came back; the notice says what to do if it did not.
 struct UncleanTerminationNotice: View {
-    let previousRun: LaunchRecord
     let showSupportReport: () -> Void
     let dismissNotice: () -> Void
 

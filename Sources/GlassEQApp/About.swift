@@ -72,6 +72,9 @@ enum LegalNotices {
         return text
     }
 
+    /// Read once; the sheet's body must not touch the file on every render.
+    static let bundledGPLText = gplText()
+
     static let autoEqCopyright = "Copyright (c) 2018-2022 Jaakko Pasanen"
 
     static let mitLicenseText = """
@@ -364,7 +367,7 @@ struct LicenseTextSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                Text(verbatim: LegalNotices.gplText() ?? localized("The license text is missing from this build."))
+                Text(verbatim: LegalNotices.bundledGPLText ?? localized("The license text is missing from this build."))
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)

@@ -733,14 +733,15 @@ final class GlassEQAppModel {
     var aboutPresentationGeneration = 0
     var supportReportPresentationGeneration = 0
     let lifecycleLog: LifecycleLog
-    private let launchRecordURL: URL
+    private let launchRecordsDirectory: URL
     private let storeURL: URL
     private(set) var pendingLibraryImport: PendingLibraryImport?
     let installLocationIssue: InstallLocationIssue?
     private(set) var isInstallLocationNoticeDismissed = false
-    /// The previous run's record when it crashed or was killed; cleared when the user dismisses
-    /// the notice.
+    /// The previous run's record when it crashed or was killed. Dismissing the notice hides it
+    /// without forgetting it, so the support report still says so.
     private(set) var previousRunEndedUncleanly: LaunchRecord?
+    private(set) var isUncleanTerminationNoticeDismissed = false
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
     /// The user's current processing intent. Unlike `hasStartedAudio`, an explicit stop clears it,
@@ -1062,7 +1063,7 @@ final class GlassEQAppModel {
         licenseStopTransitionTimeout: Duration = .milliseconds(500),
         licenseOperationCancellationGrace: Duration = .seconds(3),
         lifecycleLog: LifecycleLog = LifecycleLog(),
-        launchRecordURL: URL? = nil,
+        launchRecordsDirectory: URL? = nil,
         installLocationIssue: InstallLocationIssue? = InstallLocation.issue()
     ) {
         let loadResult: ProfileStoreLoadResult?
@@ -1136,7 +1137,8 @@ final class GlassEQAppModel {
         self.lifecycleLog = lifecycleLog
         self.storeURL = storeURL
         self.installLocationIssue = installLocationIssue
-        self.launchRecordURL = launchRecordURL ?? LaunchRecordStore.defaultURL(besideStoreAt: storeURL)
+        self.launchRecordsDirectory =
+            launchRecordsDirectory ?? LaunchRecordStore.defaultDirectory(besideStoreAt: storeURL)
         let licensingKind =
             switch licensing {
             case .disabled: "none"
@@ -1150,7 +1152,7 @@ final class GlassEQAppModel {
             lifecycleLog.record("Profile store: \(repairMessage)")
         }
         previousRunEndedUncleanly = LaunchRecordStore.beginRun(
-            at: self.launchRecordURL,
+            in: self.launchRecordsDirectory,
             version: AppBuildInfo.current.displayVersion
         )
         if let previousRun = previousRunEndedUncleanly {
@@ -1930,8 +1932,12 @@ final class GlassEQAppModel {
         lifecycleLog.record("Window requested: support report")
     }
 
+    var visiblePreviousRunEndedUncleanly: LaunchRecord? {
+        isUncleanTerminationNoticeDismissed ? nil : previousRunEndedUncleanly
+    }
+
     func dismissUncleanTerminationNotice() {
-        previousRunEndedUncleanly = nil
+        isUncleanTerminationNoticeDismissed = true
     }
 
     var visibleInstallLocationIssue: InstallLocationIssue? {
@@ -2875,11 +2881,6 @@ final class GlassEQAppModel {
         case .success(let output):
             lifecycleLog.record(
                 "Output: \(output.name), \(Int(output.nominalSampleRate)) Hz, \(output.outputChannelCount) channels")
-        case .failure(let error):
-            lifecycleLog.record("Output lookup failed: \(error.localizedDescription)")
-        }
-        switch result {
-        case .success(let output):
             diagnosticsObservedDeviceSampleRate = output.nominalSampleRate
             lastHandledDefaultOutputConfiguration = DefaultOutputConfiguration(output)
             refreshCurrentOutputMetadata(from: output)
@@ -2906,6 +2907,7 @@ final class GlassEQAppModel {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
         case .failure(let error):
+            lifecycleLog.record("Output lookup failed: \(error.localizedDescription)")
             diagnosticsObservedDeviceSampleRate = 0
             diagnosticsTransportType = nil
             diagnosticsLatencyMetadata = nil
@@ -4989,7 +4991,7 @@ final class GlassEQAppModel {
         if case let .provider(provider) = licensing {
             await provider.shutdown()
         }
-        LaunchRecordStore.endRun(at: launchRecordURL)
+        LaunchRecordStore.endRun(in: launchRecordsDirectory)
         lifecycleLog.record("Shutdown complete")
     }
 
@@ -5228,9 +5230,8 @@ private struct MenuBarView: View {
                 InstallLocationNotice(issue: issue, dismissNotice: model.dismissInstallLocationNotice)
             }
 
-            if let previousRun = model.previousRunEndedUncleanly {
+            if model.visiblePreviousRunEndedUncleanly != nil {
                 UncleanTerminationNotice(
-                    previousRun: previousRun,
                     showSupportReport: {
                         dismiss()
                         model.requestSupportReportPresentation()

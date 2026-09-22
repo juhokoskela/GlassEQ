@@ -43,70 +43,106 @@ struct LifecycleLogTests {
 
 @Suite
 struct LaunchRecordStoreTests {
-    private func temporaryRecordURL() -> URL {
+    private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appending(path: "GlassEQLaunchRecordTests-\(UUID().uuidString)")
-            .appending(path: LaunchRecordStore.filename)
+            .appending(path: LaunchRecordStore.directoryName)
     }
+
+    private let dead: (Int32) -> Bool = { _ in false }
 
     @Test
     func firstRunHasNoPreviousRecordAndWritesItsOwn() throws {
-        let url = temporaryRecordURL()
-        defer { LaunchRecordStore.endRun(at: url) }
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
 
-        let previous = LaunchRecordStore.beginRun(at: url, version: "v1.0 (1)", processIdentifier: 100)
+        let previous = LaunchRecordStore.beginRun(
+            in: directory, version: "v1.0 (1)", processIdentifier: 100, isProcessAlive: dead)
 
         #expect(previous == nil)
-        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: LaunchRecordStore.recordURL(in: directory, processIdentifier: 100).path))
     }
 
     @Test
     func cleanShutdownLeavesNothingForTheNextRun() {
-        let url = temporaryRecordURL()
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
 
-        _ = LaunchRecordStore.beginRun(at: url, version: "v1.0 (1)", processIdentifier: 100)
-        LaunchRecordStore.endRun(at: url)
-        let previous = LaunchRecordStore.beginRun(at: url, version: "v1.0 (1)", processIdentifier: 101)
-        LaunchRecordStore.endRun(at: url)
+        _ = LaunchRecordStore.beginRun(in: directory, version: "v1.0 (1)", processIdentifier: 100, isProcessAlive: dead)
+        LaunchRecordStore.endRun(in: directory, processIdentifier: 100)
+        let previous = LaunchRecordStore.beginRun(
+            in: directory, version: "v1.0 (1)", processIdentifier: 101, isProcessAlive: dead)
 
         #expect(previous == nil)
     }
 
     @Test
-    func aLeftoverRecordFromADeadProcessReportsTheUncleanRun() {
-        let url = temporaryRecordURL()
-        defer { LaunchRecordStore.endRun(at: url) }
+    func aLeftoverRecordFromADeadProcessReportsTheUncleanRunOnce() {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
 
-        _ = LaunchRecordStore.beginRun(at: url, startedAt: startedAt, version: "v1.0 (1)", processIdentifier: 100)
+        _ = LaunchRecordStore.beginRun(
+            in: directory, startedAt: startedAt, version: "v1.0 (1)", processIdentifier: 100, isProcessAlive: dead)
         let previous = LaunchRecordStore.beginRun(
-            at: url, version: "v1.0 (2)", processIdentifier: 101, isProcessAlive: { _ in false })
+            in: directory, version: "v1.0 (2)", processIdentifier: 101, isProcessAlive: dead)
+        let again = LaunchRecordStore.beginRun(
+            in: directory, version: "v1.0 (2)", processIdentifier: 102, isProcessAlive: { $0 == 101 })
 
         #expect(previous == LaunchRecord(startedAt: startedAt, version: "v1.0 (1)", processIdentifier: 100))
+        #expect(again == nil)
     }
 
     @Test
     func aRecordFromARunningProcessIsAnotherInstanceNotACrash() {
-        let url = temporaryRecordURL()
-        defer { LaunchRecordStore.endRun(at: url) }
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
 
-        _ = LaunchRecordStore.beginRun(at: url, version: "v1.0 (1)", processIdentifier: 100)
+        _ = LaunchRecordStore.beginRun(in: directory, version: "v1.0 (1)", processIdentifier: 100, isProcessAlive: dead)
         let previous = LaunchRecordStore.beginRun(
-            at: url, version: "v1.0 (1)", processIdentifier: 101, isProcessAlive: { $0 == 100 })
+            in: directory, version: "v1.0 (1)", processIdentifier: 101, isProcessAlive: { $0 == 100 })
 
         #expect(previous == nil)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: LaunchRecordStore.recordURL(in: directory, processIdentifier: 100).path))
     }
 
     @Test
-    func aRecordFromThisProcessIsIgnored() {
-        let url = temporaryRecordURL()
-        defer { LaunchRecordStore.endRun(at: url) }
+    func overlappingCopiesKeepTheirOwnMarkers() {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bStartedAt = Date(timeIntervalSince1970: 1_700_000_500)
 
-        _ = LaunchRecordStore.beginRun(at: url, version: "v1.0 (1)", processIdentifier: 100)
+        _ = LaunchRecordStore.beginRun(in: directory, version: "A", processIdentifier: 100, isProcessAlive: dead)
+        _ = LaunchRecordStore.beginRun(
+            in: directory, startedAt: bStartedAt, version: "B", processIdentifier: 101, isProcessAlive: { $0 == 100 })
+        LaunchRecordStore.endRun(in: directory, processIdentifier: 100)
+        // B crashes; nothing removes its record.
         let previous = LaunchRecordStore.beginRun(
-            at: url, version: "v1.0 (1)", processIdentifier: 100, isProcessAlive: { _ in false })
+            in: directory, version: "C", processIdentifier: 102, isProcessAlive: dead)
 
-        #expect(previous == nil)
+        #expect(previous == LaunchRecord(startedAt: bStartedAt, version: "B", processIdentifier: 101))
+    }
+
+    @Test
+    func theNewestDeadRecordWinsWhenSeveralAreLeftBehind() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let older = Date(timeIntervalSince1970: 1_700_000_000)
+        let newer = Date(timeIntervalSince1970: 1_700_000_900)
+
+        _ = LaunchRecordStore.beginRun(
+            in: directory, startedAt: newer, version: "N", processIdentifier: 100, isProcessAlive: dead)
+        _ = LaunchRecordStore.beginRun(
+            in: directory, startedAt: older, version: "O", processIdentifier: 101, isProcessAlive: { $0 == 100 })
+        let previous = LaunchRecordStore.beginRun(
+            in: directory, version: "C", processIdentifier: 102, isProcessAlive: dead)
+
+        #expect(previous?.version == "N")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path) == ["102.json"])
     }
 }
 
