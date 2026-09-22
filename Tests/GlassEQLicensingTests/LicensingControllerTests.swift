@@ -476,7 +476,7 @@ struct LicensingControllerTests {
             try await harness.controller.deactivateCurrent()
         }
         gate.open()
-        try await first.value
+        _ = try await first.value
         #expect(harness.service.calls.count == 1)
     }
 
@@ -1196,7 +1196,7 @@ struct LicensingControllerTests {
         #expect(harness.clock.pendingDeadlines.isEmpty)
 
         gate.open()
-        try await deactivation.value
+        _ = try await deactivation.value
         #expect(harness.store.activation == nil)
     }
 

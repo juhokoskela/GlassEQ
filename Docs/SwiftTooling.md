@@ -9,9 +9,10 @@ GlassEQ uses the Xcode-bundled `swift format` for layout and import ordering. Th
 The initial SwiftLint 0.65.1 run produced 13 selected-rule diagnostics and 48 analyzer warnings. Review led to these changes:
 
 - Reject invalid UTF-8 when converting the running Settings helper's executable path. Replacement decoding could change the path being compared. This is validation hardening; the lint finding did not demonstrate a signature or containment bypass.
-- Remove unused main-app profile-action wrappers, an obsolete rollback helper, an unused notification constant, a private sendability wrapper, an unused diagnostic conversion and label, and unused test-double controls. The Settings controller's active commands remain in place.
+- Remove unused main-app profile-action wrappers and their selected-profile accessor, an obsolete rollback helper, an unused notification constant, a private sendability wrapper, an unused diagnostic conversion and label, and unused test-double controls. The Settings controller's active commands remain in place.
 - Remove unnecessary imports and use the narrower AVFAudio and Dispatch imports where those modules own the referenced APIs.
 - Use `isEmpty`, loop `where` clauses, explicit drawing branches, static URLProtocol overrides, and a synthesized internal initializer where they preserve behavior.
+- Explicitly discard the results of two awaited licensing operations whose tests assert their side effects. This removes the compiler's unused-result warnings while preserving error propagation.
 
 Some findings require retaining the original code:
 

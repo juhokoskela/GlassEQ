@@ -1138,10 +1138,6 @@ final class GlassEQAppModel {
         }
     }
 
-    var selectedProfile: EQProfile {
-        profileStore.profiles.first(where: { $0.id == selectedProfileID }) ?? activeProfile
-    }
-
     var menuBarAccessibilityLabel: String {
         if activeProfile.isBypassed {
             return localized("GlassEQ disabled")
