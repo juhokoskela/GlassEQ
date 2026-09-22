@@ -29,7 +29,7 @@ func outputAddedLatencyLabel(_ snapshot: SettingsSnapshot) -> String {
     )
 }
 
-struct OutputDiagnosticsReport {
+public struct OutputDiagnosticsReport {
     enum SectionID: Hashable {
         case observation
         case timing
@@ -57,12 +57,20 @@ struct OutputDiagnosticsReport {
     let snapshot: SettingsSnapshot
     private(set) var sections: [Section] = []
 
-    init(snapshot: SettingsSnapshot) {
+    /// The row that names the output by its Core Audio UID. A support report leaves it out because
+    /// USB device UIDs can embed serial numbers.
+    public static let outputUIDRowID = "outputUID"
+
+    public init(snapshot: SettingsSnapshotDTO) {
         self.snapshot = snapshot
         sections = makeSections()
     }
 
     var text: String {
+        text(omittingRows: [])
+    }
+
+    public func text(omittingRows omittedRowIDs: Set<String>) -> String {
         var lines = [
             localized("GlassEQ audio diagnostics"),
             localized("Output: \(snapshot.currentOutputName)"),
@@ -72,7 +80,7 @@ struct OutputDiagnosticsReport {
         for section in sections {
             lines.append("")
             lines.append("## \(section.title)")
-            for row in section.rows {
+            for row in section.rows where !omittedRowIDs.contains(row.id) {
                 lines.append("\(row.title): \(row.value)")
             }
             if let note = section.note {
@@ -166,7 +174,7 @@ struct OutputDiagnosticsReport {
                 symbol: "point.3.connected.trianglepath.dotted",
                 rows: [
                     Row(
-                        id: "outputUID", title: localized("Output UID"),
+                        id: Self.outputUIDRowID, title: localized("Output UID"),
                         value: snapshot.currentOutputUID.isEmpty ? localized("Unavailable") : snapshot.currentOutputUID),
                     Row(id: "transport", title: localized("Transport"), value: diagnostics.route.transport),
                     Row(

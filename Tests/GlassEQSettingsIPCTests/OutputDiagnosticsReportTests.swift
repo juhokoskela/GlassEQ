@@ -31,3 +31,18 @@ struct OutputDiagnosticsReportTests {
         #expect(outputAddedLatencyLabel(snapshot) == localizedLatency(milliseconds: 10))
     }
 }
+
+@Suite
+struct OutputDiagnosticsReportTextTests {
+    @Test
+    func supportTextCanLeaveOutTheOutputUIDRow() {
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.currentOutputName = "USB DAC"
+        snapshot.currentOutputUID = "usb-serial-1234"
+        let report = OutputDiagnosticsReport(snapshot: snapshot)
+
+        #expect(report.text.contains("usb-serial-1234"))
+        #expect(!report.text(omittingRows: [OutputDiagnosticsReport.outputUIDRowID]).contains("usb-serial-1234"))
+        #expect(report.text(omittingRows: [OutputDiagnosticsReport.outputUIDRowID]).contains("USB DAC"))
+    }
+}

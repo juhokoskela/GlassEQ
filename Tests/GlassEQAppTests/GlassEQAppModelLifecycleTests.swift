@@ -2268,6 +2268,50 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func supportReportCommandRaisesTheWindowAndTheReportOmitsTheOutputUID() async throws {
+        let output = makeOutput(uid: "usb-serial-1234", name: "USB DAC")
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(lookup: FakeDefaultOutputLookup(.success(output)), observers: observers)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        await waitUntil { model.lifecycleState == .running }
+
+        let response = try await model.performSettingsCommand(.showSupportReport)
+        let text = SupportReport.text(model.supportReportInputs(generatedAt: Date(timeIntervalSince1970: 0)))
+
+        #expect(response.snapshot == nil)
+        #expect(model.supportReportPresentationGeneration == 1)
+        #expect(text.contains("Output: USB DAC"))
+        #expect(!text.contains("usb-serial-1234"))
+        #expect(text.contains("Previous run: quit cleanly"))
+        #expect(text.contains("Launch: "))
+        #expect(text.contains("Audio start requested"))
+        #expect(text.contains("Window requested: support report"))
+    }
+
+    @Test
+    func aStaleLaunchRecordSurfacesTheUncleanRunUntilDismissedAndACleanShutdownClearsIt() async {
+        let recordURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQAppTests-\(UUID().uuidString)")
+            .appendingPathComponent(LaunchRecordStore.filename)
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        _ = LaunchRecordStore.beginRun(at: recordURL, startedAt: startedAt, version: "v0.9 (1)", processIdentifier: 1)
+
+        let model = makeModel(launchRecordURL: recordURL)
+
+        #expect(model.previousRunEndedUncleanly?.startedAt == startedAt)
+        #expect(model.previousRunEndedUncleanly?.version == "v0.9 (1)")
+        #expect(FileManager.default.fileExists(atPath: recordURL.path))
+
+        model.dismissUncleanTerminationNotice()
+        #expect(model.previousRunEndedUncleanly == nil)
+
+        await model.cleanupForTerminationAndWait()
+        #expect(!FileManager.default.fileExists(atPath: recordURL.path))
+        #expect(model.lifecycleLog.entries.last?.message == "Shutdown complete")
+    }
+
+    @Test
     func sourceBuildsHaveNoLicenseSummary() {
         let model = makeModel(licensing: .disabled)
 
@@ -5884,7 +5928,8 @@ private func makeModel(
     licensing: LicensingSource = .disabled,
     licenseStopTransitionTimeout: Duration = .milliseconds(500),
     licenseOperationCancellationGrace: Duration = .seconds(3),
-    autoStart: Bool = false
+    autoStart: Bool = false,
+    launchRecordURL: URL? = nil
 ) -> GlassEQAppModel {
     let store = normalizedStore(store ?? ProfileStore(profiles: [makeProfile(name: "Fallback")]))
     return GlassEQAppModel(
@@ -5914,7 +5959,10 @@ private func makeModel(
         aggregateBufferNotifier: aggregateBufferNotifier,
         licensing: licensing,
         licenseStopTransitionTimeout: licenseStopTransitionTimeout,
-        licenseOperationCancellationGrace: licenseOperationCancellationGrace
+        licenseOperationCancellationGrace: licenseOperationCancellationGrace,
+        // The shared temporary directory would otherwise collect one record per test process.
+        launchRecordURL: launchRecordURL
+            ?? storeURL.deletingPathExtension().appendingPathExtension("launch-record.json")
     )
 }
 

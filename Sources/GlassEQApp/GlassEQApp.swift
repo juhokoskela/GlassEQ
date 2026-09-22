@@ -5,12 +5,14 @@ import GlassEQCore
 import GlassEQLicensing
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
+import ServiceManagement
 import SwiftUI
 
 private enum GlassEQWindowID {
     static let inProcessSettings = "in-process-settings"
     static let onboarding = "onboarding"
     static let about = "about"
+    static let supportReport = "support-report"
 }
 
 @main
@@ -22,7 +24,8 @@ struct GlassEQApp: App {
     // system audio capture prompt appears after GlassEQ has explained it.
     @State private var model = GlassEQAppModel(
         autoStart: OnboardingState.isComplete,
-        licensing: LicensingBootstrap.makeSource()
+        licensing: LicensingBootstrap.makeSource(),
+        lifecycleLog: LifecycleLog(streamsToStandardError: LifecycleLog.launchOptions())
     )
 
     var body: some Scene {
@@ -49,9 +52,26 @@ struct GlassEQApp: App {
                         generation: model.aboutPresentationGeneration,
                         windowID: GlassEQWindowID.about
                     )
+                    WindowPresenter(
+                        generation: model.supportReportPresentationGeneration,
+                        windowID: GlassEQWindowID.supportReport
+                    )
                 }
         }
         .menuBarExtraStyle(.window)
+
+        Window(localized("Support Report"), id: GlassEQWindowID.supportReport) {
+            SupportReportView(model: model)
+                .onAppear {
+                    model.foregroundWindowDidAppear()
+                }
+                .onDisappear {
+                    model.foregroundWindowDidDisappear()
+                }
+        }
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
 
         Window(localized("About GlassEQ"), id: GlassEQWindowID.about) {
             AboutView(model: model)
@@ -156,6 +176,7 @@ final class GlassEQAppDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
                 return
             }
+            model.lifecycleLog.record("Termination requested by macOS")
             await model.stopAcceptingSettingsCommandsAndWait()
             let shouldTerminate = await model.flushStoreBeforeQuit()
             if shouldTerminate {
@@ -597,7 +618,13 @@ final class GlassEQAppModel {
     var currentOutputSampleRate = 0.0
     var currentOutputChannelCount = 0
     var currentOutputBufferFrameSize: UInt32 = 0
-    var statusMessage = localized("Stopped")
+    var statusMessage = localized("Stopped") {
+        didSet {
+            if statusMessage != oldValue {
+                lifecycleLog.record("Status: \(statusMessage)")
+            }
+        }
+    }
     var isRunning = false
     var activeProfile: EQProfile {
         didSet {
@@ -616,7 +643,13 @@ final class GlassEQAppModel {
     var draftProfile: EQProfile
     var engineMetrics = AudioEngineMetrics()
     var programmeComparison = EQProgrammeComparisonSnapshot()
-    private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped
+    private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped {
+        didSet {
+            if lifecycleState != oldValue {
+                lifecycleLog.record("Lifecycle: \(lifecycleState)")
+            }
+        }
+    }
 
     private let engine: any AudioEngineControlling
     private let defaultOutputLookup: any DefaultOutputLookingUp
@@ -698,6 +731,12 @@ final class GlassEQAppModel {
     /// The step the guide opens on for the current `onboardingPresentationGeneration`.
     private(set) var onboardingRequestedStep = OnboardingStep.welcome
     var aboutPresentationGeneration = 0
+    var supportReportPresentationGeneration = 0
+    let lifecycleLog: LifecycleLog
+    private let launchRecordURL: URL
+    /// The previous run's record when it crashed or was killed; cleared when the user dismisses
+    /// the notice.
+    private(set) var previousRunEndedUncleanly: LaunchRecord?
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
     /// The user's current processing intent. Unlike `hasStartedAudio`, an explicit stop clears it,
@@ -1017,7 +1056,9 @@ final class GlassEQAppModel {
         aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
         licensing: LicensingSource = .disabled,
         licenseStopTransitionTimeout: Duration = .milliseconds(500),
-        licenseOperationCancellationGrace: Duration = .seconds(3)
+        licenseOperationCancellationGrace: Duration = .seconds(3),
+        lifecycleLog: LifecycleLog = LifecycleLog(),
+        launchRecordURL: URL? = nil
     ) {
         let loadResult: ProfileStoreLoadResult?
         let loadedStore: ProfileStore
@@ -1087,6 +1128,28 @@ final class GlassEQAppModel {
                 ? AggregateBufferNotifier.shared
                 : NoopAggregateBufferNotifier())
         self.profilePersistenceMode = persistenceMode
+        self.lifecycleLog = lifecycleLog
+        self.launchRecordURL = launchRecordURL ?? LaunchRecordStore.defaultURL(besideStoreAt: storeURL)
+        let licensingKind =
+            switch licensing {
+            case .disabled: "none"
+            case .provider: "provider"
+            case .invalidConfiguration: "invalid configuration"
+            }
+        lifecycleLog.record(
+            "Launch: \(AppBuildInfo.current.versionLine), setup guide \(OnboardingState.isComplete ? "completed" : "pending"), auto-start \(autoStart ? "on" : "off"), licensing \(licensingKind)"
+        )
+        if let loadResult, let repairMessage = Self.profileStoreLoadStatusMessage(loadResult.status) {
+            lifecycleLog.record("Profile store: \(repairMessage)")
+        }
+        previousRunEndedUncleanly = LaunchRecordStore.beginRun(
+            at: self.launchRecordURL,
+            version: AppBuildInfo.current.displayVersion
+        )
+        if let previousRun = previousRunEndedUncleanly {
+            lifecycleLog.record(
+                "Previous run did not quit cleanly; it started \(previousRun.startedAt.formatted(.iso8601))")
+        }
         engine.setPlaybackBufferRenegotiationHandler { [weak self] renegotiation in
             Task { @MainActor [weak self] in
                 self?.processPlaybackBufferRenegotiation(renegotiation)
@@ -1462,6 +1525,7 @@ final class GlassEQAppModel {
         }
         hasStartedAudio = true
         processingRequested = true
+        lifecycleLog.record("Audio start requested")
         guard processingIsLicensed else {
             blockProcessingForLicense()
             return
@@ -1515,6 +1579,7 @@ final class GlassEQAppModel {
         let wasLicensed = processingIsLicensed
         licenseSnapshot = snapshot
         lastAppliedLicenseSequence = snapshot.sequence
+        lifecycleLog.record("License: \(snapshot.content.state)")
         if snapshot.content.permitsProcessing {
             if !wasLicensed,
                 processingRequested,
@@ -1842,10 +1907,84 @@ final class GlassEQAppModel {
     func requestOnboardingPresentation(step: OnboardingStep = .welcome) {
         onboardingRequestedStep = step
         onboardingPresentationGeneration &+= 1
+        lifecycleLog.record("Window requested: setup guide at \(step)")
     }
 
     func requestAboutPresentation() {
         aboutPresentationGeneration &+= 1
+        lifecycleLog.record("Window requested: about")
+    }
+
+    func requestSupportReportPresentation() {
+        supportReportPresentationGeneration &+= 1
+        lifecycleLog.record("Window requested: support report")
+    }
+
+    func dismissUncleanTerminationNotice() {
+        previousRunEndedUncleanly = nil
+    }
+
+    func supportReportInputs(generatedAt: Date = Date()) -> SupportReportInputs {
+        let snapshot = settingsSnapshot()
+        let launchAtLogin = LaunchAtLoginModel()
+        return SupportReportInputs(
+            generatedAt: generatedAt,
+            build: AppBuildInfo.current,
+            operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            architecture: SupportReport.architecture,
+            modelIdentifier: SupportReport.modelIdentifier,
+            launchedWithDebugFlag: lifecycleLog.streamsToStandardError,
+            lifecycleState: "\(lifecycleState)",
+            statusMessage: statusMessage,
+            isRunning: isRunning,
+            onboardingIsComplete: OnboardingState.isComplete,
+            audioCaptureState: Self.describe(onboardingAudioCaptureState),
+            launchAtLoginStatus: Self.describe(launchAtLogin.status),
+            licenseSummary: licenseSummaryMessage,
+            previousRun: previousRunEndedUncleanly,
+            profileCount: profileStore.profiles.count,
+            activeProfileName: activeProfile.name,
+            activeProfileMode: activeProfile.mode.rawValue,
+            activeProfileIsBypassed: activeProfile.isBypassed,
+            currentOutputIsMapped: snapshot.currentOutputMappedProfileID != nil,
+            fallbackProfileName: profileStore.profiles.first { $0.id == profileStore.fallbackProfileID }?.name
+                ?? "none",
+            audioDiagnostics: OutputDiagnosticsReport(snapshot: snapshot)
+                .text(omittingRows: [OutputDiagnosticsReport.outputUIDRowID]),
+            recentEvents: lifecycleLog.text
+        )
+    }
+
+    private static func describe(_ state: OnboardingAudioCaptureState) -> String {
+        switch state {
+        case .idle:
+            "not requested"
+        case .pending:
+            "starting"
+        case .running(let outputName):
+            "running on \(outputName)"
+        case .permissionDenied:
+            "permission denied"
+        case .failed(let message):
+            "failed: \(message)"
+        case .bypassed:
+            "disabled by profile"
+        }
+    }
+
+    private static func describe(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .enabled:
+            "enabled"
+        case .requiresApproval:
+            "waiting for approval in System Settings"
+        case .notRegistered:
+            "off"
+        case .notFound:
+            "not found"
+        @unknown default:
+            "unknown"
+        }
     }
 
     // GlassEQ runs as an accessory and only shows a Dock icon while a regular window is open.
@@ -1855,6 +1994,7 @@ final class GlassEQAppModel {
         visibleForegroundWindowCount += 1
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        lifecycleLog.record("Window appeared; \(visibleForegroundWindowCount) open, Dock icon shown")
     }
 
     func foregroundWindowDidDisappear() {
@@ -1862,6 +2002,9 @@ final class GlassEQAppModel {
         if visibleForegroundWindowCount == 0 {
             NSApplication.shared.setActivationPolicy(.accessory)
         }
+        lifecycleLog.record(
+            "Window closed; \(visibleForegroundWindowCount) open\(visibleForegroundWindowCount == 0 ? ", back to menu bar only" : "")"
+        )
     }
 
     // Onboarding's permission step. The first call starts audio for the first time, which is
@@ -2709,6 +2852,13 @@ final class GlassEQAppModel {
 
         clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         let rollback = profileRollback()
+        switch result {
+        case .success(let output):
+            lifecycleLog.record(
+                "Output: \(output.name), \(Int(output.nominalSampleRate)) Hz, \(output.outputChannelCount) channels")
+        case .failure(let error):
+            lifecycleLog.record("Output lookup failed: \(error.localizedDescription)")
+        }
         switch result {
         case .success(let output):
             diagnosticsObservedDeviceSampleRate = output.nominalSampleRate
@@ -4149,6 +4299,7 @@ final class GlassEQAppModel {
     }
 
     func requestQuit() {
+        lifecycleLog.record("Quit requested")
         Task { @MainActor [weak self] in
             guard let self else {
                 NSApplication.shared.terminate(nil)
@@ -4664,6 +4815,8 @@ final class GlassEQAppModel {
         if case let .provider(provider) = licensing {
             await provider.shutdown()
         }
+        LaunchRecordStore.endRun(at: launchRecordURL)
+        lifecycleLog.record("Shutdown complete")
     }
 
     private func prepareForTermination(shutdownSettings: Bool) -> Bool {
@@ -4895,6 +5048,17 @@ private struct MenuBarView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel(Text(localized("License")))
                     .accessibilityValue(Text(licenseStatusMessage))
+            }
+
+            if let previousRun = model.previousRunEndedUncleanly {
+                UncleanTerminationNotice(
+                    previousRun: previousRun,
+                    showSupportReport: {
+                        dismiss()
+                        model.requestSupportReportPresentation()
+                    },
+                    dismissNotice: model.dismissUncleanTerminationNotice
+                )
             }
         }
         .padding()

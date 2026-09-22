@@ -254,6 +254,10 @@ final class SettingsController {
         perform(.showAbout)
     }
 
+    func showSupportReport() {
+        perform(.showSupportReport)
+    }
+
     func resetUnsupportedProfileStore() {
         perform(.resetUnsupportedProfileStore)
     }

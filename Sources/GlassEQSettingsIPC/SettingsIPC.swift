@@ -1099,6 +1099,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case resetUnsupportedProfileStore
     case showSetupGuide
     case showAbout
+    case showSupportReport
 }
 
 public struct SettingsCommandResponse: Codable, Equatable, Sendable {

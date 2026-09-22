@@ -222,10 +222,22 @@ struct AboutView: View {
                 }
             }
             AboutGroup(title: localized("Help")) {
-                Button(localized("Open Setup Guide")) {
-                    model.requestOnboardingPresentation()
+                Text(
+                    localized(
+                        "Questions and bug reports: contact@juhokoskela.fi, or an issue on GitHub. A support report gives either one the details it needs."
+                    )
+                )
+                .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button(localized("Support Report…")) {
+                        model.requestSupportReportPresentation()
+                    }
+                    .accessibilityHint(Text(localized("Opens a report you can review, copy, or save")))
+                    Button(localized("Open Setup Guide")) {
+                        model.requestOnboardingPresentation()
+                    }
+                    .accessibilityHint(Text(localized("Reopens the first-launch walkthrough")))
                 }
-                .accessibilityHint(Text(localized("Reopens the first-launch walkthrough")))
             }
         }
     }

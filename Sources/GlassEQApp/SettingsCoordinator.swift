@@ -1267,6 +1267,10 @@ extension GlassEQAppModel {
         case .showAbout:
             requestAboutPresentation()
             return SettingsCommandResponse()
+
+        case .showSupportReport:
+            requestSupportReportPresentation()
+            return SettingsCommandResponse()
         }
     }
 

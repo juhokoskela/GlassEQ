@@ -14,6 +14,7 @@ With no overrides, the script uses the beta channel and the version from the app
 
 - `.build/release-app/GlassEQ.app`
 - `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip`
+- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64-dSYMs.zip`
 
 `RELEASE_CHANNEL=alpha` selects an alpha build and label. Alpha and beta builds both require Apple Silicon and ad hoc signing. `RELEASE_CHANNEL=production` requires Developer ID signing, Hardened Runtime, and notarization. `RELEASE_LABEL` can override the archive label without changing the channel or its signing requirements.
 
@@ -82,6 +83,31 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 
 > GlassEQ captures system output audio so it can apply equalization before playback. System audio output stays completely local.
 
+## Support Reports and Debug Launches
+
+GlassEQ builds a support report from state it already holds: the app and macOS versions, the Mac model identifier, the engine and setup state, the audio route without its device UID, profile names only, and the last 200 lifecycle events. Users open it from About GlassEQ, from Settings → Output, or from the notice shown after a run that did not quit cleanly, then review, copy, or save it. Ask for it in every bug report.
+
+For a launch that shows nothing, run the executable from Terminal with the debug flag. It streams the same lifecycle events to stderr as they happen:
+
+```sh
+/Applications/GlassEQ.app/Contents/MacOS/GlassEQ --debug
+```
+
+The events also reach the unified log under the `com.glasseq.app` subsystem, which works for a Finder launch:
+
+```sh
+log stream --predicate 'subsystem == "com.glasseq.app"' --level info
+```
+
+## Crash Logs and Symbolication
+
+The release script writes `GlassEQ.dSYM` and `GlassEQSettings.dSYM` from the same link it packages, checks that their UUIDs match the shipped binaries, and zips them next to the app archive as `GlassEQ-<label>-macos26-arm64-dSYMs.zip`. Keep that archive with every release. A crash report from a build can only be symbolicated with the dSYMs of that exact build.
+
+macOS writes crash reports to `~/Library/Logs/DiagnosticReports/GlassEQ-*.ips` and shows them in Console under Crash Reports. To symbolicate one:
+
+1. Compare `dwarfdump --uuid GlassEQ.dSYM` with the UUID in the report's `Binary Images` entry for GlassEQ. They must match.
+2. Resolve frames with `atos -o GlassEQ.dSYM/Contents/Resources/DWARF/GlassEQ -arch arm64 -l <load address> <frame address>`, using the load address listed for the GlassEQ image in the report.
+
 ## Verification
 
 Run these before notarization:
@@ -104,6 +130,6 @@ spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 unzip -Z1 .build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip
 ```
 
-`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `TRADEMARKS.md`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
+`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-write`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `TRADEMARKS.md`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
 
 For manual sandbox verification, launch the packaged app and open Activity Monitor, then enable the `Sandbox` column. GlassEQ should show `Yes`.

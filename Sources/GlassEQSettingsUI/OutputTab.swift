@@ -169,6 +169,19 @@ struct OutputTab: View {
                 }
 
                 LabeledContent {
+                    Button(localized("Show Report")) {
+                        controller.showSupportReport()
+                    }
+                    .accessibilityHint(Text(localized("Opens a support report you can review, copy, or save")))
+                } label: {
+                    Text(localized("Support Report"))
+                    Text(
+                        localized(
+                            "App and macOS versions, engine state, route details, and recent events for a bug report. No profiles or license key."
+                        ))
+                }
+
+                LabeledContent {
                     Button(localized("Show About")) {
                         controller.showAbout()
                     }

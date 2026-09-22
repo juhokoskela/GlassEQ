@@ -132,14 +132,15 @@ License verification must run outside the realtime path. It must not make Core A
 
 ## Diagnostics and support
 
-- [ ] Add Copy Diagnostics and Export Support Report actions.
-- [ ] Include the app version and build, macOS version, Mac architecture, route metadata, current failure, recovery history, and bounded audio counters.
-- [ ] Let the user preview the report before copying, saving, or submitting it.
-- [ ] Exclude profile contents, imported impulse responses, license credentials, and other unnecessary personal data.
-- [ ] Detect an unclean previous termination and offer local recovery guidance on the next launch.
-- [ ] Retain release dSYMs and document the crash-symbolication process.
-- [ ] Choose a support route that paying users can access. GitHub issue creation is currently restricted, so an email address or support form is still needed.
-- [ ] Update the issue template for v1 builds and exported support reports.
+- [x] Add Copy Diagnostics and Export Support Report actions.
+- [x] Include the app version and build, macOS version, Mac architecture, route metadata, current failure, recovery history, and bounded audio counters.
+- [x] Let the user preview the report before copying, saving, or submitting it.
+- [x] Exclude profile contents, imported impulse responses, license credentials, and other unnecessary personal data.
+- [x] Detect an unclean previous termination and offer local recovery guidance on the next launch.
+- [x] Retain release dSYMs and document the crash-symbolication process.
+- [x] Choose a support route that paying users can access: contact@juhokoskela.fi, published in the About window, the support report, the README, and the issue template. A support form can replace it later without changing the app.
+- [x] Update the issue template for v1 builds and exported support reports.
+- [x] Add a `--debug` launch flag that streams lifecycle events to stderr for a Terminal launch.
 
 Automatic crash uploading is not required for v1. Local diagnostics and an explicit user-controlled report path preserve GlassEQ's no-telemetry policy.
 
