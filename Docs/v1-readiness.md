@@ -7,7 +7,7 @@ This checklist tracks the work required to move GlassEQ from the technical alpha
 - [x] Distribute the official app outside the Mac App Store.
 - [x] Gate the signed, notarized distribution and its update service behind either a perpetual license or a monthly subscription.
 - [x] Use Stripe Managed Payments as the merchant of record and billing authority.
-- [x] Price the perpetual license at EUR 29 and the monthly subscription at EUR 3 per month.
+- [x] Set base prices at EUR 29.99 and EUR 2.99 per month plus tax, with local-currency payment through Stripe Managed Payments Adaptive Pricing.
 - [x] Keep the monthly subscription genuinely month to month. Do not require annual prepayment.
 - [x] Keep audio, profiles, and device details local.
 - [x] Use Sparkle 2 for automatic updates.
@@ -26,12 +26,12 @@ The GPL permits redistribution of official binaries, so the paid product cannot 
 
 Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks, and international consumer tax handling through Managed Payments. GlassEQ owns license issuance and product access.
 
-- [ ] Receive Stripe purchase, subscription, refund, and chargeback events through a server-side webhook endpoint.
-- [ ] Process webhook events idempotently and verify their Stripe signatures.
+- [ ] Receive Stripe purchase, subscription, refund, and chargeback events through EventBridge and SQS Standard.
+- [ ] Validate the configured EventBridge source, AWS account, environment, and API version; process events idempotently and reconcile current Stripe state.
 - [ ] Issue a GlassEQ license key after a successful perpetual purchase or subscription start.
 - [x] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
 - [ ] Use the same entitlement service to authorize Sparkle archive downloads.
-- [ ] Keep all Stripe secret keys and webhook secrets on the server. The app must never contain or receive them.
+- [ ] Keep Stripe API secrets on the server. The app must never contain or receive them; EventBridge ingestion does not use a public webhook secret.
 - [ ] Store only the billing identifiers and entitlement state needed to operate licensing, updates, refunds, and account recovery.
 - [ ] Document the customer data exchanged with Stripe and the GlassEQ entitlement service.
 - [x] License one purchaser for two concurrently activated Macs under either payment plan.
@@ -42,8 +42,8 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 
 ### Perpetual licenses
 
-- [ ] Convert a completed EUR 29 Managed Payments purchase into a non-expiring GlassEQ entitlement.
-- [ ] Issue a server-signed entitlement that the app can verify locally with an embedded public key.
+- [ ] Convert a completed EUR 29.99 Managed Payments purchase into a non-expiring GlassEQ entitlement.
+- [x] Implement server-signed entitlement issuance and client verification. Production key provisioning and packaged-app interoperability remain release checks.
 - [x] Store the entitlement and license credential in Keychain.
 - [x] Keep an installed version working without recurring license checks.
 - [x] Include every official v1.x update, including security and compatibility fixes published for v1. A perpetual v1 license does not include v2.
@@ -55,7 +55,7 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 
 The app must never cut or mute system audio when a subscription expires. Expiry disables GlassEQ processing and returns the route to normal dry system playback. The app remains open so the user can renew, inspect profiles, export data, or retry verification.
 
-Stripe is the billing authority for the EUR 3 monthly subscription. The GlassEQ entitlement service maps Stripe subscription state to the signed entitlement consumed by the app. The app does not contact Stripe directly.
+Stripe is the billing authority for the EUR 2.99 monthly subscription (base price plus tax). Customers use Link to cancel subscriptions and update payment methods; GlassEQ provides entry points and refreshes entitlement state after billing changes. The GlassEQ entitlement service maps Stripe subscription state to the signed entitlement consumed by the app. The app does not contact Stripe directly.
 
 An active monthly subscription includes the current official GlassEQ release, including future major versions, on two concurrently activated Macs.
 
@@ -74,14 +74,14 @@ Proposed check policy:
 - [x] Grace runs from the signed timeline. The server sets `recovery_until` and `exp`, and the app evaluates them against its trusted-time floor, so detection time never extends the window.
 - [x] An authoritative expired response and a network outage share the signed window. A refund or chargeback denial is persisted so an offline relaunch cannot resurrect processing.
 - [x] Refresh is driven by the signed `refresh_after` claim. Launch refreshes only when it has passed, and a running app schedules the next check from the same claim.
-- [x] Security updates after a lapse follow the signed `security_updates_after_expiry` claim, which selects the security-only feed.
+- [x] Parse the signed `security_updates_after_expiry` claim. Sparkle security-only feed selection and server authorization remain pending.
 - [ ] Test clock changes, stale cached state, invalid signatures, replayed entitlements, account recovery, cancellation, renewal, refund, and service outages.
 
 License verification must run outside the realtime path. It must not make Core Audio ownership, route recovery, profile editing, or dry-playback restoration depend on a network response.
 
 ## First-time onboarding
 
-- [ ] Present a normal foreground window on first launch. Keep a Dock presence until onboarding finishes so the app cannot appear to launch invisibly.
+- [x] Present a normal foreground window on first launch. Keep a Dock presence until onboarding finishes so the app cannot appear to launch invisibly.
 - [ ] Explain that GlassEQ lives in the menu bar and show where to find it.
 - [ ] Explain system audio capture before asking macOS for permission.
 - [ ] Handle permission granted, denied, dismissed, and later revoked.
@@ -178,6 +178,10 @@ Automatic crash uploading is not required for v1. Local diagnostics and an expli
 - [ ] Downgrade and open a future-schema profile store without modifying it.
 - [ ] Run keyboard and VoiceOver checks on onboarding, licensing, update, recovery, and profile backup flows.
 - [ ] Soak the exact release artifact on representative hardware.
+
+## Implementation and verification tracking
+
+[LicensingAndUpdatesTodo.md](LicensingAndUpdatesTodo.md) records the current cross-project implementation inventory and remaining acceptance checks. Unchecked production-distribution items above require verification of the actual shipped artifact, even where the release script already implements the operation.
 
 ## Current verification baseline
 
