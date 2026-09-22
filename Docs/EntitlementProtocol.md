@@ -2,7 +2,7 @@
 
 This document defines the v1 protocol for licensing the official GlassEQ distribution. It covers server data, application credentials, signed offline entitlements, Stripe event processing, activation management, and update authorization.
 
-This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe checkout and webhook processing, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
+This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Checkout is implemented in the companion server. Billing event processing and fulfillment are being added separately; the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
 
 ## Product invariants
 
@@ -299,7 +299,7 @@ The primary key is `scope`, `credential_hash`, and `idempotency_key`. The servic
 | `processed_at` | Nullable completion time |
 | `outcome` | Bounded processing result |
 
-Do not retain the complete webhook body after processing unless an explicit operational or legal requirement justifies it.
+Do not retain the complete Stripe event body after processing unless an explicit operational or legal requirement justifies it.
 
 ### `access_tokens`
 
@@ -329,7 +329,7 @@ Management tokens expire after 15 minutes. Recovery tokens expire after 30 minut
 
 ## HTTP protocol
 
-The licensing API origin is `https://license.glasseq.app`. Requests and responses use UTF-8 JSON with `Content-Type: application/json`. The default maximum body size is 16 KiB. The Stripe webhook has a separate 1 MiB raw-body limit.
+The licensing API origin is `https://license.glasseq.app`. Requests and responses use UTF-8 JSON with `Content-Type: application/json`. The default maximum body size is 16 KiB. Stripe events arrive through the server's bounded EventBridge/SQS consumer rather than a public webhook.
 
 Bearer credentials use the `Authorization` header. License keys appear only in activation or management-session JSON bodies. No credential appears in a query string.
 
@@ -560,20 +560,16 @@ The new key is shown once. Rotation invalidates every saved copy of the previous
 
 The Stripe adapter uses one pinned API version and maps Stripe objects into the internal model. No Stripe status or identifier appears in an app entitlement. Managed Payments currently requires a preview API version, so production work must verify the current version and event contract again before launch.
 
-```http
-POST /v1/stripe/webhooks
-Stripe-Signature: ...
-```
+Stripe sends partner events to EventBridge, which routes them through SQS Standard to GlassEQServer. There is no public Stripe webhook endpoint or webhook signing secret. The queue accepts messages only from the configured EventBridge rule. The worker validates the exact partner source, AWS account/region, Stripe environment, API version, and supported event type before processing.
 
-The endpoint reads the raw body, enforces the 1 MiB limit, and verifies Stripe's signature with the official server library and its normal timestamp tolerance. It records the event ID before enqueueing work and returns a 2xx response promptly. Processing is idempotent by event ID and by the affected domain record.
-
-Stripe does not guarantee event order and can deliver duplicates. A worker fetches the current Checkout Session, Invoice, Subscription, Refund, or Dispute when the embedded event state is insufficient or could be stale. An older event never moves a subscription period or entitlement revision backwards.
+The worker retrieves current Stripe objects outside database transactions. Event IDs and domain-record locks prevent duplicate fulfillment; an SQS message is acknowledged only after its database transaction commits. Duplicates and out-of-order events must not create another license or move a subscription period backwards. Retries and dead-letter handling follow the server's `Docs/Billing.md` contract.
 
 Listen only for required events from the pinned Stripe version:
 
 - `checkout.session.completed`
 - `checkout.session.async_payment_succeeded`
 - `checkout.session.async_payment_failed`
+- `checkout.session.expired`
 - `invoice.paid`
 - `invoice.payment_failed`
 - `invoice.updated`
@@ -593,7 +589,11 @@ A perpetual purchase is fulfilled once only after the retrieved Checkout Session
 
 A monthly purchase is fulfilled only after the initial invoice is paid and the retrieved subscription is active. `incomplete`, `incomplete_expired`, `paused`, and unpaid initial states never receive a license.
 
-Fulfillment creates the license and first license key in one transaction. It stores a temporary encrypted delivery copy for the email worker and deletes that copy after successful delivery or its seven-day limit. The success page may show a pending state while webhook processing completes. Email recovery remains available if delivery fails.
+Fulfillment creates the license and first license key in one transaction. It stores a temporary encrypted delivery copy for the email worker and deletes that copy after successful delivery or its seven-day limit. The success page may show a pending state while queued fulfillment completes. Email recovery remains available if delivery fails.
+
+### Customer billing management
+
+Use Stripe Link for subscription cancellation and payment-method updates. The app and website link to that supported flow, then the app can refresh its entitlement. GlassEQ continues to own license-key recovery and activation-slot management. Verify re-purchase behavior for an ended subscription separately from management of an existing subscription.
 
 ### Subscription normalization
 
@@ -648,7 +648,7 @@ The server resolves the release ID from its own immutable release record and app
 
 The server does not trust a version, channel, file path, or release scope supplied by the client. A 403 maps to licensing or renewal UI, not a generic network error.
 
-Sparkle still verifies its EdDSA archive signature, and macOS still verifies the Apple code signature. Entitlement signing keys, Sparkle signing keys, Apple signing keys, Stripe secrets, and data-encryption keys remain separate.
+Sparkle still verifies its EdDSA archive signature, and macOS still verifies the Apple code signature. Entitlement signing keys, Sparkle signing keys, Apple signing keys, Stripe API secrets, and data-encryption keys remain separate.
 
 ## Application state and audio behavior
 
@@ -682,7 +682,7 @@ Renewal follows the ordinary startup path only when the user still wants process
 
 ## Key and secret management
 
-Keep the entitlement private key, reserved rollover key, Stripe API key, Stripe webhook secret, email lookup key, database encryption key, idempotency-response key, Sparkle private key, and Apple signing credentials outside the repository and release artifacts. Give the service access only to the secrets required by its deployed role.
+Keep the entitlement private key, reserved rollover key, Stripe API key, email lookup key, database encryption key, idempotency-response key, Sparkle private key, and Apple signing credentials outside the repository and release artifacts. Give the service access only to the secrets required by its deployed role.
 
 The first production app embeds public entitlement keys for one active signer and one reserved rollover signer. Store the reserved private key separately from the active service key. Switching to the reserved signer requires no client update. A later app release adds another public rollover key before the service begins using it.
 
@@ -741,7 +741,7 @@ Logs record opaque request IDs, result codes, and bounded timing. They never rec
 
 - [Stripe Smart Retries](https://docs.stripe.com/billing/revenue-recovery/smart-retries)
 - [Stripe subscription states](https://docs.stripe.com/billing/subscriptions/overview)
-- [Stripe webhook handling](https://docs.stripe.com/webhooks)
+- [Stripe EventBridge delivery](https://docs.stripe.com/event-destinations/eventbridge)
 - [Stripe Checkout fulfillment](https://docs.stripe.com/checkout/fulfillment)
 - [Stripe Checkout consent](https://docs.stripe.com/api/checkout/sessions/create)
 - [Stripe refund events](https://docs.stripe.com/refunds)
