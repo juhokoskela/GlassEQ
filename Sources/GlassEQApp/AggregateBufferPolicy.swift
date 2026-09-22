@@ -19,7 +19,12 @@ final class AggregateBufferPolicyStore {
         case tooManyRecords
     }
 
-    private struct Record: Codable, Equatable {
+    struct ImportChange: Sendable {
+        fileprivate var previous: [Record]
+        fileprivate var imported: [Record]
+    }
+
+    fileprivate struct Record: Codable, Equatable, Sendable {
         var route: AggregateAudioRouteFingerprint
         var mode: SettingsAggregateBufferMode
         var automaticFrameSize: UInt32
@@ -308,7 +313,8 @@ final class AggregateBufferPolicyStore {
 
     /// Adopts records from a backup's document. Merging keeps every route this Mac already knows
     /// and adds the rest. An unreadable document leaves the current records unchanged.
-    func importDocument(_ data: Data, replacingExisting: Bool) throws {
+    @discardableResult
+    func importDocument(_ data: Data, replacingExisting: Bool) throws -> ImportChange {
         guard let imported = Self.parse(data) else {
             throw PersistenceError.unreadableDocument
         }
@@ -322,13 +328,34 @@ final class AggregateBufferPolicyStore {
                 records.append(record)
             }
         }
+        let change = ImportChange(previous: previous, imported: records)
         guard records != previous else {
-            return
+            return change
         }
         do {
             try write()
         } catch {
             records = previous
+            throw error
+        }
+        return change
+    }
+
+    func restoreImport(_ change: ImportChange) throws {
+        let current = records
+        let routes = Set(change.previous.map(\.route)).union(change.imported.map(\.route))
+        for route in routes {
+            let previous = change.previous.first { $0.route == route }
+            let imported = change.imported.first { $0.route == route }
+            guard previous != imported, record(for: route) == imported else { continue }
+            records.removeAll { $0.route == route }
+            if let previous { records.append(previous) }
+        }
+        guard records != current else { return }
+        do {
+            try write()
+        } catch {
+            records = current
             throw error
         }
     }

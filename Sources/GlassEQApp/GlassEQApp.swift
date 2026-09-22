@@ -816,6 +816,7 @@ final class GlassEQAppModel {
         var selectedProfileID: UUID
         var draftProfile: EQProfile
         var scope: Scope
+        var bufferPolicyImport: AggregateBufferPolicyStore.ImportChange?
     }
 
     private struct PendingAggregateBufferIncrease: Sendable {
@@ -850,6 +851,7 @@ final class GlassEQAppModel {
         struct LibraryChange: Sendable {
             var previous: ProfileStore
             var attempted: ProfileStore
+            var bufferPolicyImport: AggregateBufferPolicyStore.ImportChange?
         }
 
         struct ProfileChange: Sendable {
@@ -895,7 +897,9 @@ final class GlassEQAppModel {
                 profileIDs =
                     previous.profileStore.profiles.map(\.id)
                     + attempted.profileStore.profiles.map(\.id).filter { !previousIDs.contains($0) }
-                libraryChange = LibraryChange(previous: previous.profileStore, attempted: attempted.profileStore)
+                libraryChange = LibraryChange(
+                    previous: previous.profileStore, attempted: attempted.profileStore,
+                    bufferPolicyImport: previous.bufferPolicyImport)
             }
             profileChanges = profileIDs.map { id in
                 ProfileChange(
@@ -3456,11 +3460,14 @@ final class GlassEQAppModel {
             activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             if let reconciliation {
-                restoreEngineProfileReconciliation(reconciliation, persist: true)
+                let bufferPreferencesRestored = restoreEngineProfileReconciliation(reconciliation, persist: true)
                 confirmedEngineProfileState.acknowledge(reconciliation)
                 statusMessage = localized(
                     "Profile change was not applied; audio is still running with \(reconciliation.confirmation.activeProfile.name)."
                 )
+                if !bufferPreferencesRestored {
+                    statusMessage += " " + localized("The previous buffer preferences could not be saved.")
+                }
             } else {
                 statusMessage = localized(
                     "Profile change was not applied; audio is still running with \(activeProfile.name).")
@@ -4136,9 +4143,18 @@ final class GlassEQAppModel {
     private func restoreEngineProfileReconciliation(
         _ reconciliation: EngineProfileReconciliation,
         persist: Bool
-    ) {
+    ) -> Bool {
         var restoredStore = profileStore
+        var bufferPreferencesRestored = true
         for failedAttempt in reconciliation.failedAttempts.reversed() {
+            if let bufferPolicyImport = failedAttempt.libraryChange?.bufferPolicyImport {
+                do {
+                    try aggregateBufferPolicyStore.restoreImport(bufferPolicyImport)
+                } catch {
+                    bufferPreferencesRestored = false
+                    lifecycleLog.record("Library rollback: buffer preferences could not be saved")
+                }
+            }
             if let libraryChange = failedAttempt.libraryChange, restoredStore == libraryChange.attempted {
                 restoredStore = libraryChange.previous
             }
@@ -4212,6 +4228,7 @@ final class GlassEQAppModel {
         if persist {
             saveStore()
         }
+        return bufferPreferencesRestored
     }
 
     private func reschedulePendingEngineStartWithActiveProfile(rollback: ProfileRollback? = nil) {
@@ -4448,14 +4465,15 @@ final class GlassEQAppModel {
             throw SettingsCommandFailure(
                 message: localized("The library changed while the import was being saved. Try again."))
         }
-        let rollback = profileRollback(scope: .library)
+        var rollback = profileRollback(scope: .library)
         let previousActive = activeProfile
         let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
         profileStore = nextStore
         var outcome = message
         if let preferences = pending.backup.bufferPreferences {
             do {
-                try aggregateBufferPolicyStore.importDocument(preferences, replacingExisting: mode == .replace)
+                rollback.bufferPolicyImport = try aggregateBufferPolicyStore.importDocument(
+                    preferences, replacingExisting: mode == .replace)
             } catch {
                 lifecycleLog.record("Library import: buffer preferences could not be saved")
                 outcome += " " + localized("The buffer preferences in the library could not be saved.")

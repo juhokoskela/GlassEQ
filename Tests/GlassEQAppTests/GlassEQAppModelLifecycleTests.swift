@@ -8777,6 +8777,15 @@ struct LibraryImportRegressionTests {
             ],
             fallbackProfileID: originalProfiles[0].id
         )
+        let policyURL = url.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
+        let activeRoute = AggregateAudioRouteFingerprint(
+            outputDeviceUID: output.uid, nativeOutputStreamIndex: 0, nominalSampleRate: output.nominalSampleRate)
+        let removedRoute = AggregateAudioRouteFingerprint(
+            outputDeviceUID: "removed-route", nativeOutputStreamIndex: 0, nominalSampleRate: 48_000)
+        let originalPolicy = AggregateBufferPolicyStore(url: policyURL)
+        try originalPolicy.setMode(.frames32, for: activeRoute)
+        try originalPolicy.setMode(.frames64, for: removedRoute)
+        let originalPreferences = try originalPolicy.exportDocument()
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
@@ -8797,11 +8806,15 @@ struct LibraryImportRegressionTests {
         if keepsLaterEdit { engine.blockUpdate(for: importedActive.id) }
         defer { engine.unblockUpdate(for: importedActive.id) }
         let preferences = AggregateBufferPolicyStore(url: url.appendingPathExtension("imported-policy"))
-        try preferences.setMode(.frames128, for: try #require(try engine.aggregateRouteFingerprint(for: output)))
+        try preferences.setMode(rebuildRoute ? .frames128 : .frames32, for: activeRoute)
+        try preferences.setMode(
+            .frames128,
+            for: AggregateAudioRouteFingerprint(
+                outputDeviceUID: "imported-route", nativeOutputStreamIndex: 0, nominalSampleRate: 48_000))
         _ = model.stageLibraryImport(
             ProfileLibraryBackup(
                 createdAt: Date(), appVersion: nil, profileStore: incoming,
-                bufferPreferences: rebuildRoute ? try preferences.exportDocument() : nil), filename: "library.json")
+                bufferPreferences: try preferences.exportDocument()), filename: "library.json")
 
         _ = try await model.performSettingsCommand(.applyLibraryImport(.replace))
         var expectedStore = original
@@ -8815,6 +8828,8 @@ struct LibraryImportRegressionTests {
         }
         try #require(await waitUntil { model.statusMessage.contains("not applied") })
 
+        #expect(try AggregateBufferPolicyStore(url: policyURL).exportDocument() == originalPreferences)
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == .frames32)
         #expect(model.profileStore == expectedStore)
         #expect(model.activeProfile == originalProfiles[1])
         #expect(model.selectedProfileID == previousSelection)

@@ -377,6 +377,51 @@ struct AggregateBufferPolicyTests {
         }
     }
 
+    @Test(arguments: [true, false], [true, false])
+    func importRollbackRestoresPreferencesAndPreservesLaterChoices(replacing: Bool, laterChoice: Bool) throws {
+        let url = temporaryPolicyURL()
+        let incomingURL = temporaryPolicyURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: incomingURL)
+        }
+        let saved = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        let removed = fingerprint(uid: "removed", stream: 0, sampleRate: 48_000)
+        let added = fingerprint(uid: "added", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames32, for: saved)
+        try store.setMode(.frames64, for: removed)
+        let original = try store.exportDocument()
+        let incoming = AggregateBufferPolicyStore(url: incomingURL)
+        try incoming.setMode(.frames128, for: saved)
+        try incoming.setMode(.frames64, for: added)
+        let change = try store.importDocument(incoming.exportDocument(), replacingExisting: replacing)
+        if laterChoice { try store.setMode(.frames16, for: added) }
+
+        try store.restoreImport(change)
+
+        #expect(store.selection(for: saved).mode == .frames32)
+        #expect(store.selection(for: removed).mode == .frames64)
+        #expect(store.selection(for: added).mode == (laterChoice ? .frames16 : .automatic))
+        #expect(try AggregateBufferPolicyStore(url: url).exportDocument() == store.exportDocument())
+        if !laterChoice { #expect(try store.exportDocument() == original) }
+    }
+
+    @Test
+    func failedImportRollbackDoesNotPublishUnsavedPreferences() throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames32, for: fingerprint(uid: "saved", stream: 0, sampleRate: 48_000))
+        let change = try store.importDocument(Data(#"{"schemaVersion":2,"records":[]}"#.utf8), replacingExisting: true)
+        let imported = try store.exportDocument()
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+
+        #expect(throws: (any Error).self) { try store.restoreImport(change) }
+        #expect(try store.exportDocument() == imported)
+    }
+
     private func fingerprint(
         uid: String,
         stream: Int,
