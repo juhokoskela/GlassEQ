@@ -362,20 +362,25 @@ final class AggregateBufferPolicyStore {
         guard let data = try? readBoundedData(from: url) else {
             return []
         }
-        return parse(data) ?? []
+        return parse(data, discardingInvalidRecords: true) ?? []
     }
 
-    private static func parse(_ data: Data) -> [Record]? {
+    private static func parse(_ data: Data, discardingInvalidRecords: Bool = false) -> [Record]? {
         guard data.count <= maximumStoreBytes,
             let document = try? JSONDecoder().decode(Document.self, from: data),
             [1, Document.schemaVersion].contains(document.schemaVersion),
-            document.records.count <= maximumRecordCount,
-            document.records.allSatisfy({ $0.route.isValid && [16, 32, 64, 128].contains($0.automaticFrameSize) })
+            document.records.count <= maximumRecordCount
         else {
             return nil
         }
+        let validRecords = document.records.filter {
+            $0.route.isValid && [16, 32, 64, 128].contains($0.automaticFrameSize)
+        }
+        guard discardingInvalidRecords || validRecords.count == document.records.count else {
+            return nil
+        }
         var seen: Set<AggregateAudioRouteFingerprint> = []
-        return document.records.filter { seen.insert($0.route).inserted }.map { record in
+        return validRecords.filter { seen.insert($0.route).inserted }.map { record in
             var record = record
             if document.schemaVersion == 1 {
                 // Schema 1 raised a route after one event, so its learned rung cannot satisfy

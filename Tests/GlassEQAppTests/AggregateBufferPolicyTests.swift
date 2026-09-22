@@ -344,6 +344,39 @@ struct AggregateBufferPolicyTests {
         #expect(store.selectionSnapshot().isEmpty)
     }
 
+    @Test(arguments: [true, false])
+    func corruptPersistedRecordDoesNotDiscardValidPreferences(invalidRoute: Bool) throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let route = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames128, for: route)
+        let original = try store.exportDocument()
+        var document = try #require(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        var records = try #require(document["records"] as? [[String: Any]])
+        records.append([
+            "route": [
+                "outputDeviceUID": invalidRoute ? "" : "corrupt", "nativeOutputStreamIndex": 0,
+                "nominalSampleRate": 48000,
+            ],
+            "mode": "frames32", "automaticFrameSize": invalidRoute ? 16 : 17,
+        ])
+        document["records"] = records
+        let corrupt = try JSONSerialization.data(withJSONObject: document)
+        try corrupt.write(to: url)
+
+        let reloaded = AggregateBufferPolicyStore(url: url)
+        #expect(reloaded.selection(for: route).mode == .frames128)
+        #expect(reloaded.selectionSnapshot().count == 1)
+        #expect(try Data(contentsOf: url) == corrupt)
+        try reloaded.setMode(.frames64, for: fingerprint(uid: "another", stream: 0, sampleRate: 48_000))
+        #expect(AggregateBufferPolicyStore(url: url).selection(for: route).mode == .frames128)
+        for replacing in [true, false] {
+            #expect(throws: (any Error).self) { try store.importDocument(corrupt, replacingExisting: replacing) }
+            #expect(try store.exportDocument() == original)
+        }
+    }
+
     private func fingerprint(
         uid: String,
         stream: Int,
