@@ -1,5 +1,5 @@
 import Foundation
-import OSLog
+import os
 
 /// A bounded, timestamped record of what the app did: launches, windows, route changes, engine
 /// failures, license state, and shutdown. The support report includes it, and a process launched

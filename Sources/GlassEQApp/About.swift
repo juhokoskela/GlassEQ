@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The identity of the running build, read once from Info.plist. A source build run without a
@@ -57,7 +56,6 @@ enum GlassEQLinks {
     static let trademarkPolicy = URL(string: "https://github.com/juhokoskela/GlassEQ/blob/main/TRADEMARKS.md")!
     static let gnuLicenses = URL(string: "https://www.gnu.org/licenses/")!
     static let autoEq = URL(string: "https://github.com/jaakkopasanen/AutoEq")!
-    static let contact = URL(string: "mailto:contact@juhokoskela.fi")!
 }
 
 enum LegalNotices {
