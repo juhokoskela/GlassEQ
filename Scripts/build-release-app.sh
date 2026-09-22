@@ -169,7 +169,6 @@ derive_paths() {
     DMG_STAGING_DIR="$BUILD_DIR/dmg"
     DMG_MOUNT_DIR="$BUILD_DIR/dmg-mount"
     DMG_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH.dmg"
-    DMG_CHECKSUM_PATH="$DMG_PATH.sha256"
     EVIDENCE_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-release-evidence.md"
 }
 
@@ -273,9 +272,9 @@ write_release_evidence() {
         echo
         echo "## Artifacts (SHA-256)"
         echo
-        echo "- $(basename "$ZIP_PATH"): $(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
-        echo "- $(basename "$DMG_PATH"): $(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
-        echo "- $(basename "$DSYM_ZIP_PATH"): $(shasum -a 256 "$DSYM_ZIP_PATH" | awk '{print $1}')"
+        echo "- $(basename "$ZIP_PATH"): $(awk '{print $1}' "${ZIP_PATH}.sha256")"
+        echo "- $(basename "$DMG_PATH"): $(awk '{print $1}' "${DMG_PATH}.sha256")"
+        echo "- $(basename "$DSYM_ZIP_PATH"): $(awk '{print $1}' "${DSYM_ZIP_PATH}.sha256")"
     } > "$EVIDENCE_PATH"
 }
 
@@ -316,7 +315,7 @@ copy_spm_resources() {
     fi
 }
 
-# Validates the keys file with the rules the app applies at launch: a non-empty JSON object whose
+# Applies stricter release validation to the keys file: a non-empty JSON object whose
 # values are canonical base64 of 32-byte Ed25519 public keys, and whose identifiers have no
 # whitespace. Keep the validated JSON in memory so embedding cannot reread a changed source file.
 ENTITLEMENT_PUBLIC_KEYS_JSON=""
@@ -357,7 +356,7 @@ embed_entitlement_public_keys() {
 
 licensing_summary() {
     if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
-        echo "embedded from $ENTITLEMENT_PUBLIC_KEYS_FILE"
+        echo "embedded public verification keys"
     else
         echo "none (unrestricted $RELEASE_CHANNEL build)"
     fi
@@ -541,7 +540,7 @@ APP_NOTARIZATION_ID="not notarized"
 DMG_NOTARIZATION_ID="not notarized"
 notarize() (
     local artifact="$1"
-    local result submission_status=0 id status
+    local submission_status=0 id status
     result="$(mktemp)"
     trap 'rm -f "$result"' EXIT
     xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$result" || submission_status=$?

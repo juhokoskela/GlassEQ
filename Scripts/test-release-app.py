@@ -66,7 +66,8 @@ class ReleaseChannelTests(unittest.TestCase):
             self.assertIn("Channel: production\n", result.stdout)
             self.assertIn("GlassEQ-production-1.2.3-macos26-arm64.zip", result.stdout)
             self.assertIn("GlassEQ-production-1.2.3-macos26-arm64.dmg", result.stdout)
-            self.assertIn("Licensing: embedded from", result.stdout)
+            self.assertIn("Licensing: embedded public verification keys", result.stdout)
+            self.assertNotIn(directory, result.stdout)
             for omitted in required:
                 with self.subTest(omitted=omitted):
                     result = self.dry_run("RELEASE_CHANNEL=production", *(item for item in required if item != omitted))
@@ -90,7 +91,7 @@ class ReleaseChannelTests(unittest.TestCase):
             valid = self.write_keys_file(directory, json.dumps({"k1": base64.b64encode(bytes(32)).decode()}))
             result = self.dry_run("RELEASE_CHANNEL=beta", valid)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Licensing: embedded from", result.stdout)
+            self.assertIn("Licensing: embedded public verification keys", result.stdout)
 
     def test_prerelease_builds_report_unrestricted_licensing(self):
         result = self.dry_run()
@@ -148,17 +149,24 @@ class ReleaseArtifactTests(unittest.TestCase):
                 subprocess.run(["shasum", "-a", "256", "-c", checksum.name], cwd=download,
                                check=True, capture_output=True)
 
-    def test_rejected_notarization_reports_the_submission_id(self):
+    def test_rejected_notarization_reports_the_submission_id_and_cleans_up(self):
         for status in (0, 1):
-            script = self.functions("fail", "notarize") + f'''
+            with tempfile.TemporaryDirectory() as directory:
+                result_path = Path(directory) / "notarization.json"
+                script = self.functions("fail", "notarize") + f'''
 xcrun() {{ echo '{{"status":"Invalid","id":"submission-id"}}'; return {status}; }}
 NOTARY_PROFILE=fixture
-result="$(notarize artifact.dmg)"
+TEMP_RESULT="$1"
+mktemp() {{ echo "$TEMP_RESULT"; }}
+submission="$(notarize artifact.dmg)"
 '''
-            result = subprocess.run(["bash", "-eu", "-c", script], capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("submission-id", result.stderr)
-            self.assertIn("Invalid", result.stderr)
+                result = subprocess.run(["/bin/bash", "-eu", "-c", script, "test", str(result_path)],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("submission-id", result.stderr)
+                self.assertIn("Invalid", result.stderr)
+                self.assertNotIn("unbound variable", result.stderr)
+                self.assertFalse(result_path.exists())
 
     def test_disk_image_detaches_when_verification_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -202,8 +210,8 @@ verify_disk_image
                         self.fail("mock attach did not start")
                     time.sleep(0.01)
                 os.killpg(process.pid, signal.SIGTERM)
-                process.communicate(timeout=5)
-                self.assertIn("detach", (Path(directory) / "operations").read_text())
+                _, stderr = process.communicate(timeout=5)
+                self.assertIn("detach", (Path(directory) / "operations").read_text(), stderr)
                 self.assertFalse((Path(directory) / "mount").exists())
             finally:
                 if process.poll() is None:
