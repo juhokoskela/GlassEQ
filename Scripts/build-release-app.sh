@@ -158,6 +158,8 @@ derive_paths() {
     SOURCE_NOTICE_PATH="$PACKAGE_DIR/SOURCE.md"
     ZIP_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH.zip"
     CHECKSUM_PATH="$ZIP_PATH.sha256"
+    DSYM_DIR="$BUILD_DIR/dSYMs"
+    DSYM_ZIP_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-dSYMs.zip"
 }
 
 capture_source_revision() {
@@ -255,6 +257,17 @@ copy_spm_resources() {
     fi
 }
 
+verify_dsym_matches() {
+    local binary="$1"
+    local dsym="$2"
+    local binary_uuid
+    local dsym_uuid
+    binary_uuid="$(dwarfdump --uuid "$binary" | awk '{print $2}')"
+    dsym_uuid="$(dwarfdump --uuid "$dsym" | awk '{print $2}')"
+    [[ -n "$binary_uuid" && "$binary_uuid" == "$dsym_uuid" ]] ||
+        fail "dSYM UUID for $(basename "$binary") ($dsym_uuid) does not match the packaged binary ($binary_uuid)"
+}
+
 verify_macho_arch() {
     local binary="$1"
     local archs
@@ -301,6 +314,7 @@ if is_dry_run; then
     echo "Hardened Runtime: $ENABLE_HARDENED_RUNTIME"
     echo "Notarize: $NOTARIZE"
     echo "Zip: $ZIP_PATH"
+    echo "dSYMs: $DSYM_ZIP_PATH"
     exit 0
 fi
 
@@ -315,6 +329,13 @@ swift build -c release --arch "$ARCH" --product "$SETTINGS_APP_NAME"
 BUILD_BIN_DIR="$(swift build -c release --arch "$ARCH" --show-bin-path)"
 EXECUTABLE_SOURCE="$BUILD_BIN_DIR/$APP_NAME"
 SETTINGS_EXECUTABLE_SOURCE="$BUILD_BIN_DIR/$SETTINGS_APP_NAME"
+
+# Symbols are linked from the object files SwiftPM keeps beside the release build. Crash reports
+# from a shipped build can only be symbolicated with the dSYMs made from this exact link.
+rm -rf "$DSYM_DIR"
+mkdir -p "$DSYM_DIR"
+dsymutil "$EXECUTABLE_SOURCE" -o "$DSYM_DIR/$APP_NAME.dSYM"
+dsymutil "$SETTINGS_EXECUTABLE_SOURCE" -o "$DSYM_DIR/$SETTINGS_APP_NAME.dSYM"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$HELPERS_DIR" "$SETTINGS_MACOS_DIR" "$SETTINGS_RESOURCES_DIR" "$DIST_DIR"
@@ -383,15 +404,17 @@ fi
 
 codesign --verify --strict --verbose=2 "$SETTINGS_APP_DIR" >/dev/null
 codesign --verify --strict --verbose=2 "$APP_DIR" >/dev/null
+verify_dsym_matches "$MACOS_DIR/$APP_NAME" "$DSYM_DIR/$APP_NAME.dSYM"
+verify_dsym_matches "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME" "$DSYM_DIR/$SETTINGS_APP_NAME.dSYM"
 verify_signed_entitlement "$APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$APP_DIR" com.apple.security.device.audio-input
-verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-only
+verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-write
 verify_signed_entitlement "$APP_DIR" com.apple.security.network.client
 verify_signed_entitlement_keys \
     "$APP_DIR" \
     com.apple.security.app-sandbox \
     com.apple.security.device.audio-input \
-    com.apple.security.files.user-selected.read-only \
+    com.apple.security.files.user-selected.read-write \
     com.apple.security.network.client
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.inherit
@@ -428,9 +451,12 @@ rm -f "$ZIP_PATH"
 ditto -c -k --norsrc --noextattr --noqtn --noacl "$PACKAGE_DIR" "$ZIP_PATH"
 verify_release_archive
 shasum -a 256 "$ZIP_PATH" > "$CHECKSUM_PATH"
+rm -f "$DSYM_ZIP_PATH"
+ditto -c -k --norsrc --noextattr --noqtn --noacl "$DSYM_DIR" "$DSYM_ZIP_PATH"
 
 echo "App: $APP_DIR"
 echo "Zip: $ZIP_PATH"
+echo "dSYMs: $DSYM_ZIP_PATH"
 echo "Source revision: $SOURCE_REVISION"
 echo "Corresponding Source: $SOURCE_ARCHIVE_NAME (inside the release Zip)"
 echo "Checksum: $CHECKSUM_PATH"
