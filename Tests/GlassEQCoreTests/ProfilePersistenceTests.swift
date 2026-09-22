@@ -222,7 +222,7 @@ struct ProfilePersistenceTests {
     }
 
     @Test
-    func loadLeavesSchemaOneStoreUntouchedWhenMigrationWriteFails() throws {
+    func loadProtectsSchemaOneStoreWhenMigrationBackupFails() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let profile = EQProfile(name: "Schema One", mode: .parametric, filters: [])
@@ -248,7 +248,7 @@ struct ProfilePersistenceTests {
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
-        #expect(result.status == .loaded)
+        #expect(result.status == .migrationBackupFailed)
         #expect(result.store == store)
         #expect(try Data(contentsOf: url) == schemaOneData)
         #expect(
@@ -544,7 +544,7 @@ struct ProfilePersistenceTests {
     }
 
     @Test(arguments: [1, 2])
-    func loadLeavesOldSchemaStoreUntouchedWhenReferenceRepairBackupFails(schemaVersion: Int) throws {
+    func loadUsesUniqueBackupWhenReferenceRepairBackupAlreadyExists(schemaVersion: Int) throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let profile = EQProfile(name: "Legacy", mode: .parametric, filters: [])
@@ -567,9 +567,13 @@ struct ProfilePersistenceTests {
         var repairedStore = store
         let summary = repairedStore.repairReferences()
         #expect(result.status == .repairedReferences(summary))
+        repairedStore.upgradeSchema()
         #expect(result.store == repairedStore)
-        #expect(try Data(contentsOf: url) == originalData)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == repairedStore)
         #expect(try Data(contentsOf: backupURL) == existingBackup)
+        let secondBackup = backupURL.deletingLastPathComponent().appendingPathComponent(
+            backupURL.deletingPathExtension().lastPathComponent + "-2.json")
+        #expect(try Data(contentsOf: secondBackup) == originalData)
     }
 
     @Test

@@ -8762,6 +8762,36 @@ private func writeLibraryFile(_ store: ProfileStore, beside storeURL: URL) throw
 
 @MainActor @Suite
 struct LibraryImportRegressionTests {
+    @Test(arguments: [1, 2], [false, true])
+    func failedMigrationBackupProtectsTheStoreFromLaterSaves(schema: Int, danglingReferences: Bool) async throws {
+        let url = temporaryAppStoreURL()
+        let directory = url.deletingLastPathComponent()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+            removeTemporaryStoreDirectory(for: url)
+        }
+        let profile = makeProfile(name: "Older library")
+        let store = ProfileStore(
+            schemaVersion: schema, profiles: [profile], fallbackProfileID: danglingReferences ? UUID() : profile.id)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let original = try ProfilePersistence.encoder.encode(store)
+        try original.write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        let model = GlassEQAppModel(
+            storeURL: url, engine: FakeAudioEngine(),
+            defaultOutputLookup: FakeDefaultOutputLookup(.success(makeOutput())),
+            observerFactory: FakeDefaultOutputObserverFactory(), autoStart: false,
+            installLifecycleObservers: false, registerAppDelegate: false,
+            launchRecordsDirectory: directory.appendingPathComponent("records"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try Data(contentsOf: url) == original)
+        await model.cleanupForTerminationAndWait()
+        #expect(ProfilePersistence.load(from: url).store.schemaVersion == ProfileStore.currentSchemaVersion)
+    }
+
     @Test(arguments: [(1, false, false), (3, false, false), (1, true, false), (3, true, false), (1, false, true)])
     func rejectedReplacementRestoresTheWholeLibrary(
         profileCount: Int, rebuildRoute: Bool, keepsLaterEdit: Bool

@@ -774,6 +774,7 @@ final class GlassEQAppModel {
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
+        case migrationBackupFailed
         case unsupportedSchema(version: Int, maximumSupported: Int)
         case oversizedStore(byteCount: Int, maximum: Int)
 
@@ -781,7 +782,7 @@ final class GlassEQAppModel {
             switch self {
             case .normal:
                 return false
-            case .unsupportedSchema, .oversizedStore:
+            case .unsupportedSchema, .oversizedStore, .migrationBackupFailed:
                 return true
             }
         }
@@ -1118,6 +1119,8 @@ final class GlassEQAppModel {
             persistenceMode = .unsupportedSchema(version: version, maximumSupported: maximumSupported)
         } else if case let .oversizedStore(byteCount, maximum) = loadResult?.status {
             persistenceMode = .oversizedStore(byteCount: byteCount, maximum: maximum)
+        } else if loadResult?.status == .migrationBackupFailed {
+            persistenceMode = .migrationBackupFailed
         } else {
             persistenceMode = .normal
         }
@@ -1532,6 +1535,13 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return .unprotected
+        case .migrationBackupFailed:
+            return SettingsProfileStoreProtectionDTO(
+                isProtected: true,
+                message: localized(
+                    "Profiles are read-only because the older library could not be backed up. Relaunch to retry."),
+                resetButtonTitle: localized("Back up and reset profiles")
+            )
         case let .unsupportedSchema(version, maximumSupported):
             return SettingsProfileStoreProtectionDTO(
                 isProtected: true,
@@ -1561,6 +1571,8 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return ""
+        case .migrationBackupFailed:
+            return localized("The older profile library could not be backed up. Relaunch to retry before editing profiles.")
         case .unsupportedSchema, .oversizedStore:
             return localized("Profile store is protected; reset profiles before editing it.")
         }
@@ -5165,6 +5177,9 @@ final class GlassEQAppModel {
             return localized("Profile store was invalid; backed it up and repaired valid profiles")
         case .recoveredDefaults:
             return localized("Profile store was invalid; backed it up and restored defaults")
+        case .migrationBackupFailed:
+            return localized(
+                "The older profile library could not be backed up; profiles are read-only until a backup succeeds.")
         case .backupFailed:
             return localized("Profile store was invalid; using defaults, but backup failed")
         case let .unsupportedSchemaVersion(version, maximumSupported):
