@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 for arg in "$@"; do
     case "$arg" in
-        VERSION=*|BUILD=*|RELEASE_CHANNEL=*|ARCH=*|RELEASE_LABEL=*|DRY_RUN=*|SIGN_IDENTITY=*|ENABLE_HARDENED_RUNTIME=*|NOTARIZE=*|NOTARY_PROFILE=*|BUILD_DIR=*)
+        VERSION=*|BUILD=*|RELEASE_CHANNEL=*|ARCH=*|RELEASE_LABEL=*|DRY_RUN=*|SIGN_IDENTITY=*|ENABLE_HARDENED_RUNTIME=*|NOTARIZE=*|NOTARY_PROFILE=*|BUILD_DIR=*|ENTITLEMENT_PUBLIC_KEYS_FILE=*)
             export "$arg"
             ;;
         *)
@@ -34,6 +34,10 @@ ENABLE_HARDENED_RUNTIME="${ENABLE_HARDENED_RUNTIME:-0}"
 NOTARIZE="${NOTARIZE:-0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/.build/release-app}"
+# A JSON object of key identifier to base64 Ed25519 public key. Production builds must embed one
+# so the app enforces licensing; a build without the dictionary runs unrestricted by design.
+ENTITLEMENT_PUBLIC_KEYS_FILE="${ENTITLEMENT_PUBLIC_KEYS_FILE:-}"
+ENTITLEMENT_PUBLIC_KEYS_INFO_KEY="GlassEQEntitlementPublicKeys"
 ICON_FILE="$ROOT_DIR/Sources/GlassEQApp/Resources/GlassEQ.icns"
 MIGRATION_PLIST="$ROOT_DIR/Sources/GlassEQApp/Resources/container-migration.plist"
 LICENSE_FILE="$ROOT_DIR/LICENSE"
@@ -135,6 +139,8 @@ validate_inputs() {
     [[ "$ENABLE_HARDENED_RUNTIME" == "1" || "$ENABLE_HARDENED_RUNTIME" == "true" ]] || fail "production builds require ENABLE_HARDENED_RUNTIME=1"
     [[ "$NOTARIZE" == "1" || "$NOTARIZE" == "true" ]] || fail "production builds require NOTARIZE=1"
     [[ -n "$NOTARY_PROFILE" ]] || fail "production notarization requires NOTARY_PROFILE"
+    [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]] ||
+        fail "production builds require ENTITLEMENT_PUBLIC_KEYS_FILE so the app enforces licensing"
 }
 
 derive_paths() {
@@ -160,6 +166,11 @@ derive_paths() {
     CHECKSUM_PATH="$ZIP_PATH.sha256"
     DSYM_DIR="$BUILD_DIR/dSYMs"
     DSYM_ZIP_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-dSYMs.zip"
+    DMG_STAGING_DIR="$BUILD_DIR/dmg"
+    DMG_MOUNT_DIR="$BUILD_DIR/dmg-mount"
+    DMG_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH.dmg"
+    DMG_CHECKSUM_PATH="$DMG_PATH.sha256"
+    EVIDENCE_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-release-evidence.md"
 }
 
 capture_source_revision() {
@@ -220,6 +231,56 @@ create_source_archive() {
     } > "$SOURCE_NOTICE_PATH"
 }
 
+verify_disk_image() {
+    local mounted_app="$DMG_MOUNT_DIR/$APP_NAME.app"
+    hdiutil verify -quiet "$DMG_PATH" || fail "disk image failed its integrity check"
+    rm -rf "$DMG_MOUNT_DIR"
+    mkdir -p "$DMG_MOUNT_DIR"
+    hdiutil attach -readonly -nobrowse -noautoopen -quiet -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH"
+    local failure=""
+    [[ -d "$mounted_app" ]] || failure="disk image is missing $APP_NAME.app"
+    [[ -n "$failure" || -L "$DMG_MOUNT_DIR/Applications" ]] || failure="disk image is missing the Applications link"
+    [[ -n "$failure" ]] || cmp -s "$DMG_MOUNT_DIR/LICENSE" "$LICENSE_FILE" || failure="disk image contains the wrong license"
+    [[ -n "$failure" || -f "$DMG_MOUNT_DIR/TRADEMARKS.md" ]] || failure="disk image is missing TRADEMARKS.md"
+    [[ -n "$failure" || -f "$DMG_MOUNT_DIR/SOURCE.md" ]] || failure="disk image is missing SOURCE.md"
+    [[ -n "$failure" || -f "$DMG_MOUNT_DIR/$SOURCE_ARCHIVE_NAME" ]] || failure="disk image is missing Corresponding Source"
+    [[ -n "$failure" ]] || codesign --verify --strict --verbose=2 "$mounted_app" >/dev/null 2>&1 || failure="the app inside the disk image fails signature verification"
+    if [[ -z "$failure" && "$RELEASE_CHANNEL" == "production" ]]; then
+        xcrun stapler validate "$mounted_app" >/dev/null 2>&1 || failure="the app inside the disk image is not stapled"
+    fi
+    hdiutil detach -quiet "$DMG_MOUNT_DIR" || hdiutil detach -force -quiet "$DMG_MOUNT_DIR"
+    rm -rf "$DMG_MOUNT_DIR"
+    [[ -z "$failure" ]] || fail "$failure"
+}
+
+write_release_evidence() {
+    {
+        echo "# GlassEQ release evidence"
+        echo
+        echo "- Release label: $RELEASE_LABEL"
+        echo "- Version: $VERSION ($BUILD)"
+        echo "- Channel: $RELEASE_CHANNEL"
+        echo "- Architecture: $ARCH"
+        echo "- Source revision: $SOURCE_REVISION"
+        echo "- Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "- Signing identity: $([[ "$SIGN_IDENTITY" == "-" ]] && echo "ad hoc" || echo "$SIGN_IDENTITY")"
+        echo "- Hardened Runtime: $ENABLE_HARDENED_RUNTIME"
+        echo "- App notarization submission: $APP_NOTARIZATION_ID"
+        echo "- Disk image notarization submission: $DMG_NOTARIZATION_ID"
+        echo "- Licensing: $(licensing_summary)"
+        echo "- Xcode: $(xcodebuild -version 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+        echo "- Swift: $(swift --version 2>&1 | head -n 1)"
+        echo "- $APP_NAME UUID: $(dwarfdump --uuid "$MACOS_DIR/$APP_NAME" | awk '{print $2}')"
+        echo "- $SETTINGS_APP_NAME UUID: $(dwarfdump --uuid "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME" | awk '{print $2}')"
+        echo
+        echo "## Artifacts (SHA-256)"
+        echo
+        echo "- $(basename "$ZIP_PATH"): $(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
+        echo "- $(basename "$DMG_PATH"): $(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+        echo "- $(basename "$DSYM_ZIP_PATH"): $(shasum -a 256 "$DSYM_ZIP_PATH" | awk '{print $1}')"
+    } > "$EVIDENCE_PATH"
+}
+
 verify_release_archive() {
     local source_root="$APP_NAME-$RELEASE_LABEL-source"
 
@@ -254,6 +315,58 @@ copy_spm_resources() {
 
     if [[ "$copied" -eq 0 && "$warn_missing" == "1" ]]; then
         echo "warning: SwiftPM resource bundle was not found next to $product_name" >&2
+    fi
+}
+
+validate_entitlement_public_keys_file() {
+    local file="$1"
+    local converted
+    local key_ids
+    local key_id
+    local decoded_length
+    [[ -f "$file" ]] || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' does not exist"
+    converted="$(mktemp)"
+    plutil -convert xml1 -o "$converted" "$file" 2>/dev/null ||
+        fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' is not a JSON object"
+    key_ids="$(/usr/libexec/PlistBuddy -c "Print" "$converted" 2>/dev/null | sed -n 's/^    \([^ ]*\) = .*$/\1/p')"
+    [[ -n "$key_ids" ]] || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' contains no keys"
+    for key_id in $key_ids; do
+        decoded_length="$(/usr/libexec/PlistBuddy -c "Print :$key_id" "$converted" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
+        [[ "$decoded_length" == "32" ]] ||
+            fail "ENTITLEMENT_PUBLIC_KEYS_FILE key '$key_id' is not a base64 32-byte public key"
+    done
+    rm -f "$converted"
+}
+
+embed_entitlement_public_keys() {
+    local plist="$1"
+    local file="$2"
+    local converted
+    converted="$(mktemp)"
+    plutil -convert xml1 -o "$converted" "$file"
+    /usr/libexec/PlistBuddy -c "Delete :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Add :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY dict" "$plist"
+    /usr/libexec/PlistBuddy -c "Merge $converted :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist"
+    rm -f "$converted"
+}
+
+# The licensing marker: a production build without the key dictionary would ship unrestricted.
+verify_licensing_marker() {
+    local plist="$1"
+    local key_count
+    key_count="$(/usr/libexec/PlistBuddy -c "Print :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist" 2>/dev/null | grep -c ' = ' || true)"
+    if [[ "$RELEASE_CHANNEL" == "production" ]]; then
+        [[ "$key_count" -ge 1 ]] || fail "production build is missing $ENTITLEMENT_PUBLIC_KEYS_INFO_KEY and would run unrestricted"
+    fi
+}
+
+licensing_summary() {
+    if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
+        echo "embedded from $ENTITLEMENT_PUBLIC_KEYS_FILE"
+    elif [[ "$RELEASE_CHANNEL" == "production" ]]; then
+        echo "required"
+    else
+        echo "none (unrestricted $RELEASE_CHANNEL build)"
     fi
 }
 
@@ -304,6 +417,9 @@ cd "$ROOT_DIR"
 RELEASE_LABEL="${RELEASE_LABEL:-$(default_release_label)}"
 BUILD_DIR="$(normalize_build_dir "$BUILD_DIR")"
 validate_inputs
+if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
+    validate_entitlement_public_keys_file "$ENTITLEMENT_PUBLIC_KEYS_FILE"
+fi
 derive_paths
 
 if is_dry_run; then
@@ -314,7 +430,9 @@ if is_dry_run; then
     echo "Hardened Runtime: $ENABLE_HARDENED_RUNTIME"
     echo "Notarize: $NOTARIZE"
     echo "Zip: $ZIP_PATH"
+    echo "Dmg: $DMG_PATH"
     echo "dSYMs: $DSYM_ZIP_PATH"
+    echo "Licensing: $(licensing_summary)"
     exit 0
 fi
 
@@ -366,6 +484,10 @@ verify_plist_value "$INFO_PLIST" GlassEQReleaseLabel "$RELEASE_LABEL"
 verify_plist_value "$SETTINGS_INFO_PLIST" CFBundleShortVersionString "$VERSION"
 verify_plist_value "$SETTINGS_INFO_PLIST" CFBundleVersion "$BUILD"
 verify_no_unresolved_plist_tokens "$INFO_PLIST" "$SETTINGS_INFO_PLIST"
+if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
+    embed_entitlement_public_keys "$INFO_PLIST" "$ENTITLEMENT_PUBLIC_KEYS_FILE"
+fi
+verify_licensing_marker "$INFO_PLIST"
 
 chmod +x "$MACOS_DIR/$APP_NAME"
 chmod +x "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
@@ -423,11 +545,25 @@ verify_signed_entitlement_keys \
     com.apple.security.app-sandbox \
     com.apple.security.inherit
 
+APP_NOTARIZATION_ID="not notarized"
+DMG_NOTARIZATION_ID="not notarized"
+notarize() {
+    local artifact="$1"
+    local result
+    result="$(mktemp)"
+    xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$result"
+    local status
+    status="$(plutil -extract status raw -o - "$result")"
+    [[ "$status" == "Accepted" ]] || fail "notarization of $(basename "$artifact") ended with status '$status'"
+    plutil -extract id raw -o - "$result"
+    rm -f "$result"
+}
+
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     NOTARY_ZIP="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-notary-submit.zip"
     rm -f "$NOTARY_ZIP"
     ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "$APP_DIR" "$NOTARY_ZIP"
-    xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+    APP_NOTARIZATION_ID="$(notarize "$NOTARY_ZIP")"
     xcrun stapler staple "$APP_DIR"
     codesign --verify --strict --verbose=2 "$SETTINGS_APP_DIR" >/dev/null
     codesign --verify --strict --verbose=2 "$APP_DIR" >/dev/null
@@ -454,9 +590,35 @@ shasum -a 256 "$ZIP_PATH" > "$CHECKSUM_PATH"
 rm -f "$DSYM_ZIP_PATH"
 ditto -c -k --norsrc --noextattr --noqtn --noacl "$DSYM_DIR" "$DSYM_ZIP_PATH"
 
+# The disk image is the supported delivery artifact: the app, an Applications link for the drag
+# install, and the same license and Corresponding Source access as the zip.
+rm -rf "$DMG_STAGING_DIR"
+mkdir -p "$DMG_STAGING_DIR"
+ditto "$PACKAGE_APP_DIR" "$DMG_STAGING_DIR/$APP_NAME.app"
+ln -s /Applications "$DMG_STAGING_DIR/Applications"
+cp "$LICENSE_FILE" "$DMG_STAGING_DIR/LICENSE"
+cp "$TRADEMARKS_FILE" "$DMG_STAGING_DIR/TRADEMARKS.md"
+cp "$SOURCE_NOTICE_PATH" "$DMG_STAGING_DIR/SOURCE.md"
+cp "$SOURCE_ARCHIVE_PATH" "$DMG_STAGING_DIR/$SOURCE_ARCHIVE_NAME"
+rm -f "$DMG_PATH"
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO -quiet "$DMG_PATH"
+if [[ "$RELEASE_CHANNEL" == "production" ]]; then
+    codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG_PATH"
+    DMG_NOTARIZATION_ID="$(notarize "$DMG_PATH")"
+    xcrun stapler staple "$DMG_PATH"
+    xcrun stapler validate "$DMG_PATH"
+    spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
+fi
+verify_disk_image
+shasum -a 256 "$DMG_PATH" > "$DMG_CHECKSUM_PATH"
+write_release_evidence
+
 echo "App: $APP_DIR"
 echo "Zip: $ZIP_PATH"
+echo "Dmg: $DMG_PATH"
 echo "dSYMs: $DSYM_ZIP_PATH"
+echo "Evidence: $EVIDENCE_PATH"
+echo "Licensing: $(licensing_summary)"
 echo "Source revision: $SOURCE_REVISION"
 echo "Corresponding Source: $SOURCE_ARCHIVE_NAME (inside the release Zip)"
 echo "Checksum: $CHECKSUM_PATH"
