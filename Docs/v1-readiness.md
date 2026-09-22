@@ -26,8 +26,8 @@ The GPL permits redistribution of official binaries, so the paid product cannot 
 
 Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks, and international consumer tax handling through Managed Payments. GlassEQ owns license issuance and product access.
 
-- [ ] Receive Stripe purchase, subscription, refund, and chargeback events through EventBridge and SQS Standard.
-- [x] Validate the configured EventBridge source, AWS account, environment, and API version; process supported Checkout, Invoice, and Subscription events idempotently and reconcile current Stripe state. Refund/dispute events remain pending.
+- [x] Receive Stripe purchase, subscription, refund, and chargeback events through EventBridge and SQS Standard. The worker supports the complete accepted event set; live delivery and redrive remain unverified.
+- [x] Validate the configured EventBridge source, AWS account, environment, and API version; process supported Checkout, Invoice, Subscription, Refund, and Dispute events idempotently and reconcile current Stripe state.
 - [x] Issue a GlassEQ license key after a successful perpetual purchase or subscription start. Both plans create a durable delivery record; email dispatch remains pending.
 - [x] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
 - [ ] Use the same entitlement service to authorize Sparkle archive downloads.
@@ -49,7 +49,8 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 - [x] Include every official v1.x update, including security and compatibility fixes published for v1. A perpetual v1 license does not include v2.
 - [x] Offer a voluntary 14-day refund window while honoring later refunds required by Stripe or applicable law.
 - [x] After a refund or chargeback, block new activations, official downloads, updates, and support. Do not disable an already activated offline installation.
-- [ ] Apply perpetual refund and chargeback restrictions in the entitlement and update services.
+- [x] Apply perpetual refund and chargeback restrictions in the entitlement service while preserving cached offline installations.
+- [ ] Apply those restrictions in the update service; download authorization remains unimplemented.
 
 ### Monthly subscriptions
 
