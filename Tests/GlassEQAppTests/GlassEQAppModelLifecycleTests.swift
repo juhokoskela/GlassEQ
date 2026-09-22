@@ -5637,9 +5637,18 @@ struct GlassEQAppModelLifecycleTests {
         #expect(SettingsHelperVerifier.executableURL(pathBytes: path.utf8.map { CChar(bitPattern: $0) })?.path == path)
     }
 
+    @Test(
+        arguments: ["/Applications/GlassEQ.app/Contents/MacOS/GlassEQ", "/tmp/Ääni 🎧/GlassEQ"],
+        [[CChar(0)], [0, 0, 0], [0, -1, 65]]
+    )
+    func settingsHelperExecutablePathStopsAtFirstNUL(_ path: String, suffix: [CChar]) {
+        let bytes = path.utf8.map { CChar(bitPattern: $0) }
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes + suffix)?.path == path)
+    }
+
     @Test(arguments: [[UInt8(0xFF)], [0xC3], [0xC0, 0xAF]])
     func settingsHelperExecutablePathRejectsInvalidUTF8(_ suffix: [UInt8]) {
-        let bytes = Array("/Applications/".utf8) + suffix + Array("/GlassEQ".utf8)
+        let bytes = Array("/Applications/".utf8) + suffix + Array("/GlassEQ".utf8) + [0]
         #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes.map { CChar(bitPattern: $0) }) == nil)
     }
 

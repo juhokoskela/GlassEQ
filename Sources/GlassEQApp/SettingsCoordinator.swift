@@ -1020,7 +1020,7 @@ enum SettingsHelperVerifier {
     }
 
     static func executableURL(pathBytes: some Sequence<CChar>) -> URL? {
-        guard let path = String(validating: pathBytes, as: UTF8.self) else {
+        guard let path = String(validating: pathBytes.lazy.prefix { $0 != 0 }, as: UTF8.self) else {
             return nil
         }
         return URL(filePath: path, directoryHint: .notDirectory).standardizedFileURL
