@@ -143,6 +143,43 @@ struct OutputTab: View {
 
             Section {
                 LabeledContent {
+                    Button(localized("Export…")) {
+                        controller.exportLibrary()
+                    }
+                    .disabled(controller.isProfileStoreProtected || controller.isLibraryTransferInProgress)
+                    .accessibilityHint(Text(localized("Saves the whole profile library as a file you choose")))
+                } label: {
+                    Text(localized("Export Library"))
+                    Text(
+                        localized(
+                            "Every profile with its impulse response, the output assignments, the fallback, and buffer preferences, in one JSON file."
+                        ))
+                }
+
+                LabeledContent {
+                    Button(localized("Import…")) {
+                        controller.chooseLibraryBackup()
+                    }
+                    .disabled(controller.isEditingLocked || controller.isLibraryTransferInProgress)
+                    .accessibilityHint(
+                        Text(localized("Chooses an exported library, then asks whether to add it or replace yours")))
+                } label: {
+                    Text(localized("Import Library"))
+                    Text(
+                        localized(
+                            "Adds the profiles from an exported library, or replaces yours after saving a copy of it."
+                        ))
+                }
+            } header: {
+                Text(localized("Library"))
+            } footer: {
+                if let message = controller.libraryMessage {
+                    Text(message)
+                }
+            }
+
+            Section {
+                LabeledContent {
                     Button(localized("Open Setup Guide")) {
                         controller.showSetupGuide()
                     }
@@ -198,6 +235,25 @@ struct OutputTab: View {
                 report: OutputDiagnosticsReport(snapshot: snapshot),
                 onReset: controller.resetDiagnostics
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { controller.libraryImportPreview != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        controller.cancelLibraryImport()
+                    }
+                }
+            )
+        ) {
+            if let preview = controller.libraryImportPreview {
+                LibraryImportSheet(
+                    preview: preview,
+                    onMerge: { controller.applyLibraryImport(.merge) },
+                    onReplace: { controller.applyLibraryImport(.replace) },
+                    onCancel: controller.cancelLibraryImport
+                )
+            }
         }
     }
 

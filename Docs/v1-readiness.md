@@ -146,11 +146,11 @@ Automatic crash uploading is not required for v1. Local diagnostics and an expli
 
 ## Profiles and user data
 
-- [ ] Export the complete profile library, including impulse responses, output mappings, the fallback profile, and relevant calibration records.
-- [ ] Import a complete library without silently replacing existing data.
-- [ ] Version and bound the backup format, validate it as untrusted input, and write restored data atomically.
-- [ ] Test round trips, merge or replacement behavior, corrupt backups, future schema versions, duplicate identifiers, oversized payloads, and interrupted writes.
-- [ ] Keep automatic backups before destructive migration or library replacement.
+- [x] Export the complete profile library, including impulse responses, output mappings, the fallback profile, and relevant calibration records. Buffer preferences travel with the library.
+- [x] Import a complete library without silently replacing existing data. Add is the default and never changes an existing profile or mapping; Replace is a separate, labelled choice.
+- [x] Version and bound the backup format, validate it as untrusted input, and write restored data atomically.
+- [x] Test round trips, merge or replacement behavior, corrupt backups, future schema versions, duplicate identifiers, oversized payloads, and interrupted writes. Writes are atomic renames, so an interrupted write leaves the previous file; the protected-store and read-only-directory tests cover the failure path.
+- [x] Keep automatic backups before destructive migration or library replacement. A schema migration copies the old file beside the store, and Replace writes the outgoing library to the Backups folder, keeping the newest ten.
 
 ## Product and legal UI
 

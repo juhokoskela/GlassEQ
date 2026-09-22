@@ -12,9 +12,13 @@ Launching the executable with `--debug` streams the same events to stderr, and t
 
 The release script now writes dSYMs for both executables, verifies that they match the packaged binaries, and archives them beside the app zip.
 
+## Library export and import
+
+Settings → Output has a Library section. Export saves every profile with its impulse response, the output assignments, the fallback profile, and the per-output buffer preferences as one JSON file. Import reads such a file, shows what it contains and what adding it would do, then adds it to the current library or replaces the library. Adding never changes a profile or assignment that is already there: a profile with the same identity but different contents arrives as a copy marked "(imported)". Replacing first saves the outgoing library under Application Support/GlassEQ/Backups, keeping the newest ten. A profile store from an older GlassEQ is also copied beside the store before its schema is migrated.
+
 ## Source API changes
 
-`SettingsCommand.showAbout` and `SettingsCommand.showSupportReport` ask the main app to open the About and Support Report windows. The app and bundled Settings helper must be rebuilt together.
+`SettingsCommand.showAbout` and `SettingsCommand.showSupportReport` ask the main app to open the About and Support Report windows. `exportLibrary`, `chooseLibraryBackup`, `applyLibraryImport`, and `cancelLibraryImport` drive library backups, and `SettingsCommandResponse` gained `libraryImportPreview` and `libraryMessage`. `GlassEQCore` gained `ProfileLibraryBackup`, its codec, and `ProfileLibraryMerge`. The app and bundled Settings helper must be rebuilt together.
 
 Programme comparison now always compares the draft with its filters off. `SettingsCommand.startProgrammeComparison` takes only the profile, and `EQProgrammeComparisonReference` has been removed. `EQProgrammeComparisonSnapshot` contains only `isActive`, `isReady`, and `selection`; attenuation-dB reporting has been removed. The app and bundled Settings helper must be rebuilt together. Saved profiles are unchanged.
 

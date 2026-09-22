@@ -318,6 +318,56 @@ final class SettingsController {
         return nil
     }
 
+    // MARK: Library backup
+
+    var libraryImportPreview: SettingsLibraryImportPreviewDTO?
+    var libraryMessage: String?
+    private(set) var isLibraryTransferInProgress = false
+
+    func exportLibrary() {
+        runLibraryTransfer { [self] in
+            let response = await model.perform(.exportLibrary)
+            libraryMessage = response?.libraryMessage
+        }
+    }
+
+    func chooseLibraryBackup() {
+        runLibraryTransfer { [self] in
+            libraryMessage = nil
+            let response = await model.perform(.chooseLibraryBackup)
+            libraryImportPreview = response?.libraryImportPreview
+        }
+    }
+
+    func applyLibraryImport(_ mode: SettingsLibraryImportMode) {
+        libraryImportPreview = nil
+        runLibraryTransfer { [self] in
+            let response = await dispatch(.applyLibraryImport(mode))
+            libraryMessage = response?.libraryMessage
+        }
+    }
+
+    func cancelLibraryImport() {
+        guard libraryImportPreview != nil else {
+            return
+        }
+        libraryImportPreview = nil
+        perform(.cancelLibraryImport)
+    }
+
+    private func runLibraryTransfer(_ operation: @escaping @MainActor () async -> Void) {
+        guard !isLibraryTransferInProgress else {
+            return
+        }
+        isLibraryTransferInProgress = true
+        Task { @MainActor in
+            defer {
+                isLibraryTransferInProgress = false
+            }
+            await operation()
+        }
+    }
+
     func chooseImportFiles(_ mode: SettingsFileImportMode) async -> SettingsFileImportChoice {
         let response = await model.chooseImportFiles(mode: mode)
         return SettingsFileImportChoice(
@@ -405,7 +455,7 @@ final class SettingsController {
         switch command {
         case .createProfile, .duplicateProfile, .deleteProfile,
             .applyProfile, .useProfileForCurrentOutput, .setFallback,
-            .importProfile, .importParsedProfile, .resetUnsupportedProfileStore:
+            .importProfile, .importParsedProfile, .resetUnsupportedProfileStore, .applyLibraryImport:
             reconcileAfterCommand(
                 dispatchedSelection: dispatchedSelection,
                 dispatchedDraft: dispatchedDraft

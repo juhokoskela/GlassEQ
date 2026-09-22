@@ -734,6 +734,8 @@ final class GlassEQAppModel {
     var supportReportPresentationGeneration = 0
     let lifecycleLog: LifecycleLog
     private let launchRecordURL: URL
+    private let storeURL: URL
+    private(set) var pendingLibraryImport: PendingLibraryImport?
     /// The previous run's record when it crashed or was killed; cleared when the user dismisses
     /// the notice.
     private(set) var previousRunEndedUncleanly: LaunchRecord?
@@ -1129,6 +1131,7 @@ final class GlassEQAppModel {
                 : NoopAggregateBufferNotifier())
         self.profilePersistenceMode = persistenceMode
         self.lifecycleLog = lifecycleLog
+        self.storeURL = storeURL
         self.launchRecordURL = launchRecordURL ?? LaunchRecordStore.defaultURL(besideStoreAt: storeURL)
         let licensingKind =
             switch licensing {
@@ -4296,6 +4299,117 @@ final class GlassEQAppModel {
             "Profiles reset for this GlassEQ version; previous store backed up to \(result.backupURL.lastPathComponent)."
         )
         notifyModelDidChange()
+    }
+
+    // MARK: Library backup
+
+    /// The whole library as one document. A protected store cannot be exported, because the
+    /// in-memory defaults are not the user's library.
+    func makeLibraryBackup(createdAt: Date = Date()) throws -> ProfileLibraryBackup {
+        try ensureProfileStoreWritable()
+        return ProfileLibraryBackup(
+            createdAt: createdAt,
+            appVersion: AppBuildInfo.current.displayVersion,
+            profileStore: profileStore,
+            bufferPreferences: try? aggregateBufferPolicyStore.exportDocument()
+        )
+    }
+
+    func stageLibraryImport(_ backup: ProfileLibraryBackup, filename: String) -> SettingsLibraryImportPreviewDTO {
+        let pending = PendingLibraryImport(backup: backup, filename: filename)
+        pendingLibraryImport = pending
+        let summary = ProfileLibraryMerge.preview(current: profileStore, incoming: backup.profileStore)
+        lifecycleLog.record("Library import staged from \(filename)")
+        return SettingsLibraryImportPreviewDTO(pending: pending, summary: summary)
+    }
+
+    func cancelLibraryImport() {
+        pendingLibraryImport = nil
+    }
+
+    /// Applies the staged library. Replacing writes an automatic backup of the current library
+    /// first, so the step is reversible by importing that file.
+    func applyLibraryImport(mode: SettingsLibraryImportMode) async throws -> String {
+        try ensureProfileStoreWritable()
+        guard let pending = pendingLibraryImport else {
+            throw SettingsCommandFailure(message: localized("Choose a library file before importing."))
+        }
+        let incoming = pending.backup.profileStore
+        let nextStore: ProfileStore
+        let message: String
+        switch mode {
+        case .merge:
+            let result: (store: ProfileStore, summary: ProfileLibraryMergeSummary)
+            do {
+                result = try ProfileLibraryMerge.merge(current: profileStore, incoming: incoming)
+            } catch let error as ProfileLibraryBackupError {
+                throw SettingsCommandFailure(message: error.localizedDescription)
+            }
+            nextStore = result.store
+            message = Self.mergeMessage(result.summary, filename: pending.filename)
+        case .replace:
+            let backupURL = try writeAutomaticLibraryBackup()
+            nextStore = incoming
+            message = localized(
+                "Replaced the library with \(incoming.profiles.count) profiles from \(pending.filename). The previous library was saved as \(backupURL.lastPathComponent)."
+            )
+        }
+        try ProfilePersistence.validateForCommit(nextStore)
+
+        pendingSaveTask?.cancel()
+        await pendingSaveTask?.value
+        pendingSaveTask = nil
+        let rollback = profileRollback()
+        let previousActive = activeProfile
+        profileStore = nextStore
+        try await storeWriter.saveAndSynchronize(profileStore)
+        if let preferences = pending.backup.bufferPreferences {
+            try? aggregateBufferPolicyStore.importDocument(preferences, replacingExisting: mode == .replace)
+        }
+        pendingLibraryImport = nil
+
+        let nextActive = nextStore.profile(forOutputUID: currentOutputUID.isEmpty ? nil : currentOutputUID)
+        activeProfile = nextActive
+        selectedProfileID = nextActive.id
+        draftProfile = nextActive
+        if nextActive != previousActive {
+            synchronizeActiveProfileProcessing(rollback: rollback)
+        } else {
+            clearProgrammeComparisonSession()
+        }
+        lifecycleLog.record("Library import applied (\(mode.rawValue)): \(nextStore.profiles.count) profiles")
+        notifyModelDidChange()
+        return message
+    }
+
+    private static func mergeMessage(_ summary: ProfileLibraryMergeSummary, filename: String) -> String {
+        var parts: [String] = []
+        if summary.addedProfiles > 0 {
+            parts.append(localized("added \(summary.addedProfiles) profiles"))
+        }
+        if summary.copiedProfiles > 0 {
+            parts.append(localized("added \(summary.copiedProfiles) as copies"))
+        }
+        if summary.unchangedProfiles > 0 {
+            parts.append(localized("skipped \(summary.unchangedProfiles) already here"))
+        }
+        if summary.addedMappings > 0 {
+            parts.append(localized("assigned \(summary.addedMappings) outputs"))
+        }
+        guard !parts.isEmpty else {
+            return localized("Nothing to add from \(filename); every profile is already in the library.")
+        }
+        return localized("Imported from \(filename): \(parts.joined(separator: ", ")).")
+    }
+
+    private func writeAutomaticLibraryBackup() throws -> URL {
+        let backup = try makeLibraryBackup()
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: storeURL)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
+        try ProfileLibraryBackupCodec.encode(backup).write(to: url, options: .atomic)
+        LibraryBackupFile.pruneAutomaticBackups(in: directory)
+        return url
     }
 
     func requestQuit() {

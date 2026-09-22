@@ -292,6 +292,45 @@ final class AggregateBufferPolicyStore {
     }
 
     private func write() throws {
+        let data = try encodeDocument(records)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// The current records as the same document the store writes to disk, for a library backup.
+    func exportDocument() throws -> Data {
+        try encodeDocument(records)
+    }
+
+    /// Adopts records from a backup's document. Merging keeps every route this Mac already knows
+    /// and adds the rest; replacing drops the current records first. Unreadable documents are
+    /// ignored, as they are at load.
+    func importDocument(_ data: Data, replacingExisting: Bool) throws {
+        let imported = Self.parse(data)
+        let previous = records
+        if replacingExisting {
+            records = Array(imported.prefix(Self.maximumRecordCount))
+        } else {
+            let known = Set(records.map(\.route))
+            for record in imported where !known.contains(record.route) && records.count < Self.maximumRecordCount {
+                records.append(record)
+            }
+        }
+        guard records != previous else {
+            return
+        }
+        do {
+            try write()
+        } catch {
+            records = previous
+            throw error
+        }
+    }
+
+    private func encodeDocument(_ records: [Record]) throws -> Data {
         guard records.count <= Self.maximumRecordCount else {
             throw PersistenceError.tooManyRecords
         }
@@ -313,15 +352,18 @@ final class AggregateBufferPolicyStore {
         guard data.count <= Self.maximumStoreBytes else {
             throw PersistenceError.storeTooLarge
         }
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: url, options: .atomic)
+        return data
     }
 
     private static func load(from url: URL) -> [Record] {
-        guard let data = try? readBoundedData(from: url),
+        guard let data = try? readBoundedData(from: url) else {
+            return []
+        }
+        return parse(data)
+    }
+
+    private static func parse(_ data: Data) -> [Record] {
+        guard data.count <= maximumStoreBytes,
             let document = try? JSONDecoder().decode(Document.self, from: data),
             [1, Document.schemaVersion].contains(document.schemaVersion),
             document.records.count <= maximumRecordCount

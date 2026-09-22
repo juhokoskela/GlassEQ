@@ -64,6 +64,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
 - **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.
+- **Library export and import.** Save every profile, impulse response, output assignment, and buffer preference as one file, then add it to another Mac's library or restore it in place.
 
 ![GlassEQ Editor tab with a convolution response graph and collapsed response points](Docs/Screenshots/beta-0.9.3-editor.png)
 

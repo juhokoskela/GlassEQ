@@ -87,6 +87,7 @@ final class SettingsCoordinator: NSObject {
     private let helperValidator: any SettingsHelperLaunchValidating
     private let settingsHelperURLProvider: () throws -> URL
     private let fileImportPicker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO?
+    private let libraryBackupPanels: any LibraryBackupPanelPresenting
     private var launchToken: String?
     private var runningApplication: NSRunningApplication?
     private var helperProcess: Process?
@@ -112,13 +113,15 @@ final class SettingsCoordinator: NSObject {
         fileImportPicker:
             @escaping @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
                 try await SettingsFileImportPicker.choose(mode: mode)
-            }
+            },
+        libraryBackupPanels: any LibraryBackupPanelPresenting = LiveLibraryBackupPanels()
     ) {
         self.model = model
         self.helperLauncher = helperLauncher
         self.helperValidator = helperValidator
         self.settingsHelperURLProvider = settingsHelperURLProvider ?? { try Self.defaultSettingsHelperURL() }
         self.fileImportPicker = fileImportPicker
+        self.libraryBackupPanels = libraryBackupPanels
         super.init()
     }
 
@@ -321,6 +324,13 @@ final class SettingsCoordinator: NSObject {
         ) {
             return response
         }
+        if let response = try await libraryBackupPanelResponse(
+            for: command,
+            model: model,
+            panels: libraryBackupPanels
+        ) {
+            return response
+        }
         return try await model.performSettingsCommand(command)
     }
 
@@ -479,12 +489,7 @@ final class SettingsCoordinator: NSObject {
             return
         }
         let commandToken = UUID()
-        let isFileImportPicker: Bool
-        if case .chooseImportFiles = command {
-            isFileImportPicker = true
-        } else {
-            isFileImportPicker = false
-        }
+        let isFileImportPicker = command.presentsFilePanel
         let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
@@ -500,12 +505,7 @@ final class SettingsCoordinator: NSObject {
                     commandTasks[requestID] = nil
                 }
             }
-            let shouldSuppressModelChanges: Bool
-            if case .chooseImportFiles = command {
-                shouldSuppressModelChanges = false
-            } else {
-                shouldSuppressModelChanges = true
-            }
+            let shouldSuppressModelChanges = !command.presentsFilePanel
             do {
                 if shouldSuppressModelChanges {
                     suppressedModelChangeDepth += 1
@@ -1211,9 +1211,17 @@ extension GlassEQAppModel {
             let imported = try importParsedProfile(profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
 
-        case .chooseImportFiles:
+        case .chooseImportFiles, .exportLibrary, .chooseLibraryBackup:
             throw SettingsCommandFailure(
                 message: localized("File selection is unavailable from this settings connection."))
+
+        case .applyLibraryImport(let mode):
+            let message = try await applyLibraryImport(mode: mode)
+            return SettingsCommandResponse(snapshot: settingsSnapshot(), libraryMessage: message)
+
+        case .cancelLibraryImport:
+            cancelLibraryImport()
+            return SettingsCommandResponse()
 
         case .startProgrammeComparison(let profile):
             try validateIncomingProfile(profile)
@@ -1299,6 +1307,9 @@ private final class InProcessSettingsClient: SettingsCommanding {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
         if let response = try await fileImportPickerResponse(for: command, model: model) {
+            return response
+        }
+        if let response = try await libraryBackupPanelResponse(for: command, model: model) {
             return response
         }
         return try await model.performSettingsCommand(command)

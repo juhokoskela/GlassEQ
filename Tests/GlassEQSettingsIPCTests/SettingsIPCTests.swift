@@ -600,6 +600,68 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
+    func libraryImportStagesThePreviewThenSendsTheChosenModeAndShowsTheOutcome() async {
+        let preview = SettingsLibraryImportPreviewDTO(
+            filename: "library.json", createdAt: Date(timeIntervalSince1970: 0), appVersion: nil,
+            profileCount: 2, outputMappingCount: 1, hasBufferPreferences: false,
+            mergeAddedProfiles: 2, mergeCopiedProfiles: 0, mergeUnchangedProfiles: 0,
+            mergeAddedMappings: 1, mergeSkippedMappings: 0, mergeExceedsProfileLimit: false)
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(libraryImportPreview: preview))
+        let model = GlassEQSettingsViewModel(snapshot: .disconnected, client: client)
+        let controller = SettingsController(model: model)
+
+        controller.chooseLibraryBackup()
+        #expect(await waitUntil { controller.libraryImportPreview != nil })
+        #expect(controller.libraryImportPreview == preview)
+        #expect(client.commands == [.chooseLibraryBackup])
+
+        client.response = SettingsCommandResponse(
+            snapshot: .disconnected, libraryMessage: "Imported from library.json: added 2 profiles.")
+        controller.applyLibraryImport(.merge)
+        #expect(controller.libraryImportPreview == nil)
+        #expect(await waitUntil { controller.libraryMessage != nil })
+        #expect(client.commands == [.chooseLibraryBackup, .applyLibraryImport(.merge)])
+        #expect(controller.libraryMessage == "Imported from library.json: added 2 profiles.")
+    }
+
+    @Test
+    @MainActor
+    func cancellingAStagedLibraryImportTellsTheApp() async {
+        let preview = SettingsLibraryImportPreviewDTO(
+            filename: "library.json", createdAt: Date(timeIntervalSince1970: 0), appVersion: nil,
+            profileCount: 1, outputMappingCount: 0, hasBufferPreferences: false,
+            mergeAddedProfiles: 1, mergeCopiedProfiles: 0, mergeUnchangedProfiles: 0,
+            mergeAddedMappings: 0, mergeSkippedMappings: 0, mergeExceedsProfileLimit: false)
+        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(libraryImportPreview: preview))
+        let controller = SettingsController(model: GlassEQSettingsViewModel(snapshot: .disconnected, client: client))
+
+        controller.cancelLibraryImport()
+        #expect(client.commands.isEmpty)
+
+        controller.chooseLibraryBackup()
+        #expect(await waitUntil { controller.libraryImportPreview != nil })
+        controller.cancelLibraryImport()
+        #expect(controller.libraryImportPreview == nil)
+        #expect(await waitUntil { client.commands.count == 2 })
+        #expect(client.commands.last == .cancelLibraryImport)
+    }
+
+    @Test
+    @MainActor
+    func libraryPanelCommandsAreTrackedLikeTheImportPicker() async {
+        let client = ReentrantCancellingSettingsCommandClient()
+        let model = GlassEQSettingsViewModel(client: client)
+        client.model = model
+
+        let response = await model.perform(.exportLibrary)
+
+        #expect(response == nil)
+        #expect(client.callCount == 1)
+        #expect(model.commandErrorMessage == nil)
+    }
+
+    @Test
+    @MainActor
     func newProfileSheetPresentsTheRequestedImportRouteAfterDismissing() {
         for route in ProfileImportRoute.allCases {
             let controller = SettingsController(model: GlassEQSettingsViewModel())
@@ -2064,4 +2126,15 @@ private final class SettingsPipeWriteRecorder: @unchecked Sendable {
         }
         return (messages, successCount, errorCount)
     }
+}
+
+@MainActor
+private func waitUntil(maxAttempts: Int = 100, _ predicate: @MainActor () -> Bool) async -> Bool {
+    for _ in 0..<maxAttempts {
+        if predicate() {
+            return true
+        }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return predicate()
 }
