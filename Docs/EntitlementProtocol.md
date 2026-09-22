@@ -2,7 +2,7 @@
 
 This document defines the v1 protocol for licensing the official GlassEQ distribution. It covers server data, application credentials, signed offline entitlements, Stripe event processing, activation management, and update authorization.
 
-This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Checkout is implemented in the companion server. Billing event processing and fulfillment are being added separately; the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
+This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Checkout is implemented in the companion server. The server now fulfills both plans and reconciles monthly renewals, recovery, and cancellation through EventBridge/SQS. Refunds/disputes, daily reconciliation, email delivery, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
 
 ## Product invariants
 
@@ -206,6 +206,7 @@ The following logical relational schema is authoritative. Concrete SQL types may
 | `license_id` | Unique and nullable until fulfillment |
 | `created_at` | Creation time |
 | `fulfilled_at` | Nullable fulfillment time |
+| `billing_revision` | Incremented on every monthly reconciliation to reject concurrent stale Stripe reads |
 
 Checkout fulfillment locks this row and creates at most one license. The browser never supplies a Stripe Price ID, policy version, success URL, or cancellation URL. Stripe owns any local-currency presentation through Managed Payments Adaptive Pricing.
 
@@ -562,7 +563,7 @@ The Stripe adapter uses one pinned API version and maps Stripe objects into the 
 
 Stripe sends partner events to EventBridge, which routes them through SQS Standard to GlassEQServer. There is no public Stripe webhook endpoint or webhook signing secret. The queue accepts messages only from the configured EventBridge rule. The worker validates the exact partner source, AWS account/region, Stripe environment, API version, and supported event type before processing.
 
-The worker retrieves current Stripe objects outside database transactions. Event IDs and domain-record locks prevent duplicate fulfillment; an SQS message is acknowledged only after its database transaction commits. Duplicates and out-of-order events must not create another license or move a subscription period backwards. Retries and dead-letter handling follow the server's `Docs/Billing.md` contract.
+The worker retrieves current Stripe objects outside database transactions. Event IDs and domain-record locks prevent duplicate fulfillment. Monthly reconciliation also checks an order revision captured before Stripe hydration, so a competing commit invalidates the snapshot. An SQS message is acknowledged only after its database transaction commits. Duplicates and out-of-order events must not create another license or move a subscription period backwards. Retries and dead-letter handling follow the server's `Docs/Billing.md` contract.
 
 Listen only for required events from the pinned Stripe version:
 
