@@ -40,7 +40,8 @@ jobs:
         run: python3 Scripts/test-launch-records.py
 
       - name: Test
-        run: swift test
+        # Blocking engine and filesystem fixtures must not exhaust the cooperative worker pool.
+        run: swift test --no-parallel
 
       - name: Analyze Swift declarations and imports
         run: ./Scripts/analyze-swift.sh
