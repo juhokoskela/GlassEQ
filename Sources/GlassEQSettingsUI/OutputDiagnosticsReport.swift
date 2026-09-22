@@ -2,9 +2,14 @@ import AppKit
 import GlassEQSettingsIPC
 import SwiftUI
 
+private extension SettingsAudioRouteMode {
+    var usesSeparateClockDiagnostics: Bool {
+        self == .compatibility || self == .headsetCompatibility
+    }
+}
+
 func outputAddedLatencyLabel(_ snapshot: SettingsSnapshot) -> String {
-    let routeMode = snapshot.metrics.diagnostics.status.routeMode
-    if routeMode == .compatibility || routeMode == .headsetCompatibility {
+    if snapshot.metrics.diagnostics.status.routeMode.usesSeparateClockDiagnostics {
         guard snapshot.metrics.playbackBufferObservations > 0 else {
             return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
         }
@@ -102,7 +107,7 @@ struct OutputDiagnosticsReport {
                 id: .reliability,
                 title: localized("Reliability"),
                 symbol: "checkmark.shield",
-                note: usesSeparateClockDiagnostics
+                note: diagnostics.status.routeMode.usesSeparateClockDiagnostics
                     ? localized("Buffered discards include priming and recovery. Failure categories can overlap.")
                     : localized("Failure categories can overlap."),
                 rows: reliabilityRows
@@ -300,7 +305,7 @@ struct OutputDiagnosticsReport {
             Row(id: "deadlineMisses", title: localized("Deadline Misses"), value: deadlineMissesLabel),
             Row(id: "discontinuities", title: localized("Discontinuities"), value: discontinuityLabel),
         ]
-        if usesSeparateClockDiagnostics {
+        if diagnostics.status.routeMode.usesSeparateClockDiagnostics {
             rows += [
                 Row(id: "bufferedFrames", title: localized("Buffered / Peak"), value: bufferedFramesLabel),
                 Row(id: "clockCorrection", title: localized("Clock Correction"), value: playbackRateCorrectionLabel),
@@ -346,11 +351,6 @@ struct OutputDiagnosticsReport {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
         )
-    }
-
-    private var usesSeparateClockDiagnostics: Bool {
-        diagnostics.status.routeMode == .compatibility
-            || diagnostics.status.routeMode == .headsetCompatibility
     }
 
     private var tailCompletionSlackLabel: String {

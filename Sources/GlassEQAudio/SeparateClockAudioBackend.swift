@@ -2736,7 +2736,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func restoreDeviceSettingsIfNeeded(_ state: inout ControlState) {
         var restoredSampleRateUIDs: [String] = []
-        for (uid, restoration) in state.sampleRateRestorations where Self.restoreSampleRateRestoration(restoration) {
+        for (uid, restoration) in state.sampleRateRestorations {
+            guard Self.restoreSampleRateRestoration(restoration) else {
+                continue
+            }
             try? PersistedAudioDeviceRestorationStore.clearSampleRate(uid: uid, at: restorationStoreURL)
             restoredSampleRateUIDs.append(uid)
         }
@@ -2745,8 +2748,10 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
 
         var restoredBufferFrameSizeUIDs: [String] = []
-        for (uid, restoration) in state.bufferFrameSizeRestorations
-        where Self.restoreBufferFrameSizeRestoration(restoration) {
+        for (uid, restoration) in state.bufferFrameSizeRestorations {
+            guard Self.restoreBufferFrameSizeRestoration(restoration) else {
+                continue
+            }
             try? PersistedAudioDeviceRestorationStore.clearBufferFrameSize(uid: uid, at: restorationStoreURL)
             restoredBufferFrameSizeUIDs.append(uid)
         }
@@ -2843,22 +2848,20 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
             return classifyCoreAudioError(coreAudioError)
         }
         if let availabilityError = error as? AudioDeviceAvailabilityError {
+            let category: AudioEngineFailure.Category
             switch availabilityError {
             case .unsupportedOutputChannelCount,
                 .unsupportedOutputBufferFrameSize,
                 .unsupportedPlaybackConversionBuffer:
-                return AudioEngineFailure(
-                    category: .deviceFormatUnsupported,
-                    userMessage: availabilityError.description,
-                    operation: "CoreAudioDeviceQuery"
-                )
+                category = .deviceFormatUnsupported
             default:
-                return AudioEngineFailure(
-                    category: .outputDeviceUnavailable,
-                    userMessage: availabilityError.description,
-                    operation: "CoreAudioDeviceQuery"
-                )
+                category = .outputDeviceUnavailable
             }
+            return AudioEngineFailure(
+                category: category,
+                userMessage: availabilityError.description,
+                operation: "CoreAudioDeviceQuery"
+            )
         }
         return AudioEngineFailure(
             category: .coreAudioOperationFailed,
@@ -3257,6 +3260,8 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         }
     }
 
+    // Keep action selection under one lock and generation checks around the work performed outside it.
+    // swiftlint:disable:next cyclomatic_complexity
     private func servicePlaybackMaintenance() {
         let now = ContinuousClock().now
         guard

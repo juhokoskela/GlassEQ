@@ -2047,19 +2047,11 @@ final class GlassEQAppModel {
             throw CancellationError()
         }
 
-        switch result {
-        case .success(let imported):
-            do {
-                try addProfile(imported, name: imported.name, status: localized("Imported \(imported.name)"))
-            } catch {
-                statusMessage = localized("Import failed: \(error.localizedDescription)")
-                notifyModelDidChange()
-                throw error
-            }
-            statusMessage = localized("Imported \(imported.name)")
-            notifyModelDidChange()
+        do {
+            let imported = try result.get()
+            try addProfile(imported, name: imported.name, status: localized("Imported \(imported.name)"))
             return true
-        case .failure(let error):
+        } catch {
             statusMessage = localized("Import failed: \(error.localizedDescription)")
             notifyModelDidChange()
             throw error
@@ -2309,9 +2301,7 @@ final class GlassEQAppModel {
             throw SettingsCommandFailure(
                 message: localized("The selected profile no longer exists. Refresh settings and try again."))
         }
-        var profile = source
-        profile.id = UUID()
-        try addProfile(profile, name: localized("\(source.name) Copy"), status: localized("Duplicated \(source.name)"))
+        try addProfile(source, name: localized("\(source.name) Copy"), status: localized("Duplicated \(source.name)"))
     }
 
     func deleteProfile(id: UUID) throws {

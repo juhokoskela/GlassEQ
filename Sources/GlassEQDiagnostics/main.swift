@@ -646,24 +646,23 @@ private func runDSPBenchmark(
     print("")
 
     var passed = true
-    for benchmarkCase in cases
-    where !run(
-        benchmarkCase,
-        maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
-    ) {
-        passed = false
+    for benchmarkCase in cases {
+        passed =
+            run(
+                benchmarkCase,
+                maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+            ) && passed
     }
     for transitionCase in cases
     where
         (transitionCase.name.hasPrefix("31-band graphic")
         || transitionCase.usesConvolution) && transitionCase.sampleRate != 96_000
     {
-        if !runTransition(
-            transitionCase,
-            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
-        ) {
-            passed = false
-        }
+        passed =
+            runTransition(
+                transitionCase,
+                maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+            ) && passed
     }
     return passed
 }

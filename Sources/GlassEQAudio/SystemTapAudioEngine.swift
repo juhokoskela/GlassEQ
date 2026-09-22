@@ -5092,21 +5092,19 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             return classifyCoreAudioError(coreAudioError)
         }
         if let availabilityError = error as? AudioDeviceAvailabilityError {
+            let category: AudioEngineFailure.Category
             switch availabilityError {
             case .unsupportedOutputChannelCount,
                 .unsupportedOutputBufferFrameSize:
-                return AudioEngineFailure(
-                    category: .deviceFormatUnsupported,
-                    userMessage: availabilityError.description,
-                    operation: "CoreAudioDeviceQuery"
-                )
+                category = .deviceFormatUnsupported
             default:
-                return AudioEngineFailure(
-                    category: .outputDeviceUnavailable,
-                    userMessage: availabilityError.description,
-                    operation: "CoreAudioDeviceQuery"
-                )
+                category = .outputDeviceUnavailable
             }
+            return AudioEngineFailure(
+                category: category,
+                userMessage: availabilityError.description,
+                operation: "CoreAudioDeviceQuery"
+            )
         }
         return AudioEngineFailure(
             category: .coreAudioOperationFailed,

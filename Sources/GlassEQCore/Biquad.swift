@@ -574,12 +574,8 @@ public enum FrequencyResponse {
         at position: Double
     ) -> Double {
         responses.reduce(0.0) { magnitudeDB, response in
-            magnitudeDB + 10
-                * log10(
-                    max(
-                        response.ratio(at: position),
-                        .leastNonzeroMagnitude
-                    ))
+            let ratio = max(response.ratio(at: position), .leastNonzeroMagnitude)
+            return magnitudeDB + 10 * log10(ratio)
         }
     }
 
@@ -682,11 +678,10 @@ private struct PeakSearchQueue {
                 break
             }
             let right = left + 1
-            let child =
+            let rightIsLarger =
                 right < storage.count
-                    && storage[right].upperBoundDB > storage[left].upperBoundDB
-                ? right
-                : left
+                && storage[right].upperBoundDB > storage[left].upperBoundDB
+            let child = rightIsLarger ? right : left
             guard storage[child].upperBoundDB > storage[parent].upperBoundDB else {
                 break
             }

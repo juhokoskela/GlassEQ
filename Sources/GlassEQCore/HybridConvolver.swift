@@ -342,10 +342,8 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
     }
 
     private mutating func accumulateTailPartition(_ partition: Int) {
-        let spectrumIndex =
-            (jobInputSpectrumIndex
-                - partition
-                + PreparedConvolutionKernel.tailPartitionCount) % PreparedConvolutionKernel.tailPartitionCount
+        let partitionCount = PreparedConvolutionKernel.tailPartitionCount
+        let spectrumIndex = (jobInputSpectrumIndex - partition + partitionCount) % partitionCount
         let inputStart = spectrumIndex * PreparedConvolutionKernel.packedBinCount
         let kernelStart = partition * PreparedConvolutionKernel.packedBinCount
 

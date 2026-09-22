@@ -50,7 +50,7 @@ let package = Package(
                 "GlassEQSettingsIPC",
             ],
             linkerSettings: [
-                .linkedFramework("AVFoundation")
+                .linkedFramework("AVFAudio")
             ]
         ),
         .target(

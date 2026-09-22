@@ -665,8 +665,8 @@ public enum CoreAudioDeviceQuery {
                 "invalid frame/channel count \(frames)x\(channels)"
             )
         }
-        guard let count = frames.multipliedReportingOverflow(by: channels).partialValue as Int?,
-            !frames.multipliedReportingOverflow(by: channels).overflow,
+        let (count, overflow) = frames.multipliedReportingOverflow(by: channels)
+        guard !overflow,
             count <= Int(maxBufferFrameSize) * maxChannelCount
         else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(

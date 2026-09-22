@@ -1,5 +1,4 @@
 import AudioToolbox
-import Darwin
 
 final class RealtimePCMRateConverter {
     let inputSampleRate: Double
@@ -83,10 +82,9 @@ final class RealtimePCMRateConverter {
 
         self.converter = converter
         self.latencyFrames = Int(primeInfo.trailingFrames)
-        self.historyOutputFrames =
-            Int(
-                ((Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames))
-                    * outputSampleRate / inputSampleRate).rounded(.up)) + 1
+        let historyInputFrames = Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames)
+        let historyOutputFrames = historyInputFrames * outputSampleRate / inputSampleRate
+        self.historyOutputFrames = Int(historyOutputFrames.rounded(.up)) + 1
     }
 
     deinit {
