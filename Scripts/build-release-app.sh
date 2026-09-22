@@ -318,46 +318,58 @@ copy_spm_resources() {
     fi
 }
 
+# Validates the keys file with the rules the app applies at launch: a non-empty JSON object whose
+# values are canonical base64 of 32-byte Ed25519 public keys, and whose identifiers have no
+# whitespace. The converted plist is what gets merged into Info.plist, so nothing is re-parsed
+# from display output.
+ENTITLEMENT_PUBLIC_KEYS_PLIST=""
 validate_entitlement_public_keys_file() {
     local file="$1"
-    local converted
-    local key_ids
-    local key_id
-    local decoded_length
     [[ -f "$file" ]] || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' does not exist"
-    converted="$(mktemp)"
-    plutil -convert xml1 -o "$converted" "$file" 2>/dev/null ||
-        fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' is not a JSON object"
-    key_ids="$(/usr/libexec/PlistBuddy -c "Print" "$converted" 2>/dev/null | sed -n 's/^    \([^ ]*\) = .*$/\1/p')"
-    [[ -n "$key_ids" ]] || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' contains no keys"
-    for key_id in $key_ids; do
-        decoded_length="$(/usr/libexec/PlistBuddy -c "Print :$key_id" "$converted" | base64 -d 2>/dev/null | wc -c | tr -d ' ')"
-        [[ "$decoded_length" == "32" ]] ||
-            fail "ENTITLEMENT_PUBLIC_KEYS_FILE key '$key_id' is not a base64 32-byte public key"
-    done
-    rm -f "$converted"
+    ENTITLEMENT_PUBLIC_KEYS_PLIST="$(mktemp)"
+    /usr/bin/python3 - "$file" "$ENTITLEMENT_PUBLIC_KEYS_PLIST" <<'PYTHON' || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' was rejected"
+import base64, json, plistlib, sys
+
+source, destination = sys.argv[1], sys.argv[2]
+try:
+    with open(source, "rb") as handle:
+        keys = json.load(handle)
+except Exception as error:
+    sys.exit(f"error: ENTITLEMENT_PUBLIC_KEYS_FILE is not valid JSON: {error}")
+if not isinstance(keys, dict) or not keys:
+    sys.exit("error: ENTITLEMENT_PUBLIC_KEYS_FILE must be a non-empty JSON object of key identifier to public key")
+for identifier, encoded in keys.items():
+    if not identifier or any(character.isspace() for character in identifier):
+        sys.exit(f"error: key identifier {identifier!r} must be non-empty without whitespace")
+    if not isinstance(encoded, str):
+        sys.exit(f"error: key {identifier!r} must be a base64 string")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:
+        sys.exit(f"error: key {identifier!r} is not strict base64")
+    if len(raw) != 32 or base64.b64encode(raw).decode() != encoded:
+        sys.exit(f"error: key {identifier!r} is not the canonical base64 of a 32-byte public key")
+with open(destination, "wb") as handle:
+    plistlib.dump(keys, handle)
+PYTHON
 }
 
 embed_entitlement_public_keys() {
     local plist="$1"
-    local file="$2"
-    local converted
-    converted="$(mktemp)"
-    plutil -convert xml1 -o "$converted" "$file"
+    [[ -n "$ENTITLEMENT_PUBLIC_KEYS_PLIST" && -f "$ENTITLEMENT_PUBLIC_KEYS_PLIST" ]] ||
+        fail "entitlement public keys were not validated before embedding"
     /usr/libexec/PlistBuddy -c "Delete :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist" 2>/dev/null || true
     /usr/libexec/PlistBuddy -c "Add :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY dict" "$plist"
-    /usr/libexec/PlistBuddy -c "Merge $converted :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist"
-    rm -f "$converted"
+    /usr/libexec/PlistBuddy -c "Merge $ENTITLEMENT_PUBLIC_KEYS_PLIST :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist"
 }
 
 # The licensing marker: a production build without the key dictionary would ship unrestricted.
 verify_licensing_marker() {
     local plist="$1"
-    local key_count
-    key_count="$(/usr/libexec/PlistBuddy -c "Print :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist" 2>/dev/null | grep -c ' = ' || true)"
-    if [[ "$RELEASE_CHANNEL" == "production" ]]; then
-        [[ "$key_count" -ge 1 ]] || fail "production build is missing $ENTITLEMENT_PUBLIC_KEYS_INFO_KEY and would run unrestricted"
-    fi
+    [[ "$RELEASE_CHANNEL" == "production" ]] || return 0
+    plutil -extract "$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" json -o - "$plist" 2>/dev/null |
+        /usr/bin/python3 -c 'import json, sys; keys = json.load(sys.stdin); sys.exit(0 if isinstance(keys, dict) and keys else 1)' ||
+        fail "production build is missing $ENTITLEMENT_PUBLIC_KEYS_INFO_KEY and would run unrestricted"
 }
 
 licensing_summary() {
@@ -485,7 +497,7 @@ verify_plist_value "$SETTINGS_INFO_PLIST" CFBundleShortVersionString "$VERSION"
 verify_plist_value "$SETTINGS_INFO_PLIST" CFBundleVersion "$BUILD"
 verify_no_unresolved_plist_tokens "$INFO_PLIST" "$SETTINGS_INFO_PLIST"
 if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
-    embed_entitlement_public_keys "$INFO_PLIST" "$ENTITLEMENT_PUBLIC_KEYS_FILE"
+    embed_entitlement_public_keys "$INFO_PLIST"
 fi
 verify_licensing_marker "$INFO_PLIST"
 
@@ -593,13 +605,8 @@ ditto -c -k --norsrc --noextattr --noqtn --noacl "$DSYM_DIR" "$DSYM_ZIP_PATH"
 # The disk image is the supported delivery artifact: the app, an Applications link for the drag
 # install, and the same license and Corresponding Source access as the zip.
 rm -rf "$DMG_STAGING_DIR"
-mkdir -p "$DMG_STAGING_DIR"
-ditto "$PACKAGE_APP_DIR" "$DMG_STAGING_DIR/$APP_NAME.app"
+ditto "$PACKAGE_DIR" "$DMG_STAGING_DIR"
 ln -s /Applications "$DMG_STAGING_DIR/Applications"
-cp "$LICENSE_FILE" "$DMG_STAGING_DIR/LICENSE"
-cp "$TRADEMARKS_FILE" "$DMG_STAGING_DIR/TRADEMARKS.md"
-cp "$SOURCE_NOTICE_PATH" "$DMG_STAGING_DIR/SOURCE.md"
-cp "$SOURCE_ARCHIVE_PATH" "$DMG_STAGING_DIR/$SOURCE_ARCHIVE_NAME"
 rm -f "$DMG_PATH"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO -quiet "$DMG_PATH"
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then

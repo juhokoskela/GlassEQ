@@ -71,7 +71,11 @@ class ReleaseChannelTests(unittest.TestCase):
 
     def test_entitlement_public_keys_file_is_validated(self):
         with tempfile.TemporaryDirectory() as directory:
-            for content in ("not json", "{}", json.dumps({"k1": "short"}), json.dumps({"k1": 5})):
+            valid_key = base64.b64encode(bytes(32)).decode()
+            for content in ("not json", "{}", "[]", json.dumps({"k1": "short"}), json.dumps({"k1": 5}),
+                            json.dumps({"k1": valid_key + " "}), json.dumps({"k1": valid_key + "\n"}),
+                            json.dumps({"key one": valid_key}), json.dumps({"": valid_key}),
+                            json.dumps({"k1": base64.b64encode(bytes(33)).decode()})):
                 with self.subTest(content=content):
                     result = self.dry_run("RELEASE_CHANNEL=production", *PRODUCTION_SIGNING,
                                           self.write_keys_file(directory, content))
