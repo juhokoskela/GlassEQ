@@ -2238,6 +2238,44 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsCommandsRaiseTheAboutWindowAndSetupGuideWithoutTouchingAudio() async throws {
+        let engine = FakeAudioEngine()
+        let model = makeModel(engine: engine)
+
+        let aboutResponse = try await model.performSettingsCommand(.showAbout)
+        let guideResponse = try await model.performSettingsCommand(.showSetupGuide)
+
+        #expect(aboutResponse.snapshot == nil)
+        #expect(guideResponse.snapshot == nil)
+        #expect(model.aboutPresentationGeneration == 1)
+        #expect(model.onboardingPresentationGeneration == 1)
+        #expect(model.onboardingRequestedStep == .welcome)
+        #expect(engine.startCalls.isEmpty)
+        #expect(engine.stopCallCount == 0)
+    }
+
+    @Test
+    func manageLicenseOpensTheGuideAtTheActivationStepAndTheNextRequestResetsIt() {
+        let model = makeModel()
+
+        model.requestOnboardingPresentation(step: .license)
+        #expect(model.onboardingRequestedStep == .license)
+        #expect(model.onboardingPresentationGeneration == 1)
+
+        model.requestOnboardingPresentation()
+        #expect(model.onboardingRequestedStep == .welcome)
+        #expect(model.onboardingPresentationGeneration == 2)
+    }
+
+    @Test
+    func sourceBuildsHaveNoLicenseSummary() {
+        let model = makeModel(licensing: .disabled)
+
+        #expect(model.licenseSummaryMessage == nil)
+        #expect(model.onboardingLicenseState == nil)
+    }
+
+    @Test
     func programmeComparisonKeepsTheActiveProfileAndReturnsThroughDSPTransition() async throws {
         let active = makeProfile(name: "Active")
         let output = makeOutput(uid: "comparison-output", name: "Comparison Output")

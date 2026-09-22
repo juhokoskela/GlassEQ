@@ -178,6 +178,17 @@ struct OnboardingView: View {
         }
         .frame(width: Self.width)
         .background(Color.macOSWindowBackground)
+        .onAppear {
+            step = requestedStep
+        }
+        // A request while the window is already open jumps to the requested step in place.
+        .onChange(of: model.onboardingPresentationGeneration) {
+            move(to: requestedStep)
+        }
+    }
+
+    private var requestedStep: OnboardingStep {
+        steps.contains(model.onboardingRequestedStep) ? model.onboardingRequestedStep : .welcome
     }
 
     private func move(to next: OnboardingStep) {

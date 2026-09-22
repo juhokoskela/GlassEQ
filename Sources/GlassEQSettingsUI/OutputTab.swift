@@ -167,6 +167,16 @@ struct OutputTab: View {
                             "Render timing percentiles, reliability counters, recovery history, and the Core Audio route behind this output."
                         ))
                 }
+
+                LabeledContent {
+                    Button(localized("Show About")) {
+                        controller.showAbout()
+                    }
+                    .accessibilityHint(Text(localized("Opens the About window in GlassEQ")))
+                } label: {
+                    Text(localized("About GlassEQ"))
+                    Text(localized("Version, license, privacy notes, and credits."))
+                }
             }
         }
         .formStyle(.grouped)

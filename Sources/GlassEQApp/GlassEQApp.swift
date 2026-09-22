@@ -10,6 +10,7 @@ import SwiftUI
 private enum GlassEQWindowID {
     static let inProcessSettings = "in-process-settings"
     static let onboarding = "onboarding"
+    static let about = "about"
 }
 
 @main
@@ -44,9 +45,35 @@ struct GlassEQApp: App {
                         generation: model.onboardingPresentationGeneration,
                         windowID: GlassEQWindowID.onboarding
                     )
+                    WindowPresenter(
+                        generation: model.aboutPresentationGeneration,
+                        windowID: GlassEQWindowID.about
+                    )
                 }
         }
         .menuBarExtraStyle(.window)
+
+        Window(localized("About GlassEQ"), id: GlassEQWindowID.about) {
+            AboutView(model: model)
+                .onAppear {
+                    model.foregroundWindowDidAppear()
+                }
+                .onDisappear {
+                    model.foregroundWindowDidDisappear()
+                }
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+        // The app menu only exists while a window keeps GlassEQ regular, and its About item
+        // should open the same window as the menu bar popover.
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(localized("About GlassEQ")) {
+                    model.requestAboutPresentation()
+                }
+            }
+        }
 
         Window(localized("Welcome to GlassEQ"), id: GlassEQWindowID.onboarding) {
             OnboardingView(model: model)
@@ -167,20 +194,6 @@ private extension Notification.Name {
     static let glassEQMetricsDidChange = Notification.Name("com.glasseq.metricsDidChange")
 }
 
-private enum AppBuildInfo {
-    static var displayVersion: String {
-        let bundle = Bundle.main
-        if let releaseLabel = bundle.object(forInfoDictionaryKey: "GlassEQReleaseLabel") as? String,
-            !releaseLabel.isEmpty
-        {
-            return releaseLabel
-        }
-        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.3"
-        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "15"
-        return "v\(version) (\(build))"
-    }
-}
-
 private enum WakeReconnectPolicy {
     static let maximumAttempts = 12
     static let retryDelay: Duration = .seconds(1)
@@ -202,7 +215,7 @@ private enum PendingOutputTransitionAction {
     case stopped
 }
 
-private let appResourcesBundle: Bundle = {
+let appResourcesBundle: Bundle = {
     let resourceBundleName = "GlassEQ_GlassEQApp.bundle"
     let candidates = [
         Bundle.main.resourceURL?.appendingPathComponent(resourceBundleName),
@@ -682,6 +695,9 @@ final class GlassEQAppModel {
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0
     var onboardingPresentationGeneration = 0
+    /// The step the guide opens on for the current `onboardingPresentationGeneration`.
+    private(set) var onboardingRequestedStep = OnboardingStep.welcome
+    var aboutPresentationGeneration = 0
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
     /// The user's current processing intent. Unlike `hasStartedAudio`, an explicit stop clears it,
@@ -1643,6 +1659,22 @@ final class GlassEQAppModel {
         }
     }
 
+    /// One line for the About window. Nil in source builds, which have no license.
+    var licenseSummaryMessage: String? {
+        switch licensing {
+        case .disabled:
+            return nil
+        case .invalidConfiguration:
+            return localized("This build's license configuration is invalid")
+        case .provider:
+            break
+        }
+        guard let content = licenseSnapshot?.content else {
+            return localized("Checking license...")
+        }
+        return licenseSummary(for: content)
+    }
+
     /// A secondary line for states that still process but need the user's attention. Stopped
     /// states already carry their reason in `statusMessage`.
     var licenseStatusMessage: String? {
@@ -1807,8 +1839,13 @@ final class GlassEQAppModel {
         grace.cancel()
     }
 
-    func requestOnboardingPresentation() {
+    func requestOnboardingPresentation(step: OnboardingStep = .welcome) {
+        onboardingRequestedStep = step
         onboardingPresentationGeneration &+= 1
+    }
+
+    func requestAboutPresentation() {
+        aboutPresentationGeneration &+= 1
     }
 
     // GlassEQ runs as an accessory and only shows a Dock icon while a regular window is open.
@@ -4869,11 +4906,24 @@ private struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(localized("GlassEQ"))
                     .font(.title3.weight(.semibold))
-                Text(AppBuildInfo.displayVersion)
+                Text(AppBuildInfo.current.displayVersion)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                dismiss()
+                model.requestAboutPresentation()
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.body)
+                    .frame(width: 24, height: 24)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.borderless)
+            .help(localized("About GlassEQ"))
+            .accessibilityLabel(Text(localized("About GlassEQ")))
+            .accessibilityHint(Text(localized("Shows the version, license, privacy notes, and credits")))
             Text(statusBadgeTitle)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(statusBadgeColor)

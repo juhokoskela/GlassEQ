@@ -1098,6 +1098,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case stopMetricsPolling
     case resetUnsupportedProfileStore
     case showSetupGuide
+    case showAbout
 }
 
 public struct SettingsCommandResponse: Codable, Equatable, Sendable {

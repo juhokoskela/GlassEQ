@@ -1263,6 +1263,10 @@ extension GlassEQAppModel {
         case .showSetupGuide:
             requestOnboardingPresentation()
             return SettingsCommandResponse()
+
+        case .showAbout:
+            requestAboutPresentation()
+            return SettingsCommandResponse()
         }
     }
 
