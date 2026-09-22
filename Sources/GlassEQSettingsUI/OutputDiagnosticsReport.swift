@@ -67,27 +67,28 @@ public struct OutputDiagnosticsReport {
     }
 
     var text: String {
-        text(includingOutputUID: true)
-    }
-
-    public func text(includingOutputUID: Bool) -> String {
-        var lines = [
+        [
             localized("GlassEQ audio diagnostics"),
             localized("Output: \(snapshot.currentOutputName)"),
             localized("Active profile: \(snapshot.activeProfileName)"),
             localized("Status: \(snapshot.statusMessage)"),
-        ]
-        for section in sections {
-            lines.append("")
-            lines.append("## \(section.title)")
-            for row in section.rows where includingOutputUID || row.id != Self.outputUIDRowID {
+            sectionText(excludingRows: []),
+        ].joined(separator: "\n")
+    }
+
+    public var supportText: String {
+        sectionText(excludingRows: [Self.outputUIDRowID])
+    }
+
+    private func sectionText(excludingRows: Set<String>) -> String {
+        sections.map { section in
+            var lines = ["## \(section.title)"]
+            for row in section.rows where !excludingRows.contains(row.id) {
                 lines.append("\(row.title): \(row.value)")
             }
-            if let note = section.note {
-                lines.append(note)
-            }
-        }
-        return lines.joined(separator: "\n")
+            if let note = section.note { lines.append(note) }
+            return lines.joined(separator: "\n")
+        }.joined(separator: "\n\n")
     }
 
     private func makeSections() -> [Section] {

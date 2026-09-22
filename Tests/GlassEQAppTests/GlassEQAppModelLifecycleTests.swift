@@ -2282,7 +2282,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.supportReportPresentationGeneration == 1)
         #expect(text.contains("Output: USB DAC"))
         #expect(!text.contains("usb-serial-1234"))
-        #expect(text.contains("Previous run: quit cleanly"))
+        #expect(text.contains("Previous run: no unclean exit recorded"))
         #expect(text.contains("Launch: "))
         #expect(text.contains("Audio start requested"))
         #expect(text.contains("Window requested: support report"))

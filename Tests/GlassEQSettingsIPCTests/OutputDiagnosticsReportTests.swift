@@ -42,7 +42,10 @@ struct OutputDiagnosticsReportTextTests {
         let report = OutputDiagnosticsReport(snapshot: snapshot)
 
         #expect(report.text.contains("usb-serial-1234"))
-        #expect(!report.text(includingOutputUID: false).contains("usb-serial-1234"))
-        #expect(report.text(includingOutputUID: false).contains("USB DAC"))
+        #expect(!report.supportText.contains("usb-serial-1234"))
+        #expect(!report.supportText.contains("Output: USB DAC"))
+        #expect(!report.supportText.contains("Active profile:"))
+        #expect(!report.supportText.contains("Status:"))
+        #expect(report.supportText.contains("## Observation"))
     }
 }

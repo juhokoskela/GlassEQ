@@ -70,7 +70,7 @@ enum SupportReport {
                 "Previous run: did not quit cleanly (started \(previousRun.startedAt.formatted(dateFormat)), \(version))"
             )
         } else {
-            lines.append("Previous run: quit cleanly")
+            lines.append("Previous run: no unclean exit recorded")
         }
         lines += [
             "",

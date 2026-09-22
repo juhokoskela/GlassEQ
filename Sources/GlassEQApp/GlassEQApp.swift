@@ -2011,7 +2011,7 @@ final class GlassEQAppModel {
             fallbackProfileName: profileStore.profiles.first { $0.id == profileStore.fallbackProfileID }?.name
                 ?? "none",
             audioDiagnostics: OutputDiagnosticsReport(snapshot: snapshot)
-                .text(includingOutputUID: false),
+                .supportText,
             recentEvents: lifecycleLog.text
         )
     }

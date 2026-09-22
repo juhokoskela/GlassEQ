@@ -234,7 +234,7 @@ struct SupportReportTextTests {
 
         #expect(!text.contains("Model identifier"))
         #expect(!text.contains("License:"))
-        #expect(text.contains("Previous run: quit cleanly"))
+        #expect(text.contains("Previous run: no unclean exit recorded"))
         #expect(text.contains("Active profile: HD 58X (convolution, disabled)"))
         #expect(text.hasSuffix("## Recent events\nNone recorded"))
     }

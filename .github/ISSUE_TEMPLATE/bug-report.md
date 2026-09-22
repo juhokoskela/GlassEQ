@@ -8,7 +8,7 @@ assignees: ""
 
 ## Support report
 
-In GlassEQ, open **About GlassEQ** (the info button in the menu bar popover, or Settings → Output → About GlassEQ) and click **Support Report…**. Read it, then paste it below or attach the saved file. It contains the app and macOS versions, the audio route, the engine state, and recent app events. It does not contain your profiles, imported files, or license key.
+In GlassEQ, open **About GlassEQ** (the info button in the menu bar popover, or Settings → Output → About GlassEQ) and click **Support Report…**. Read it, then paste it below or attach the saved file. It contains the app and macOS versions, the audio route, the engine state, and recent app events. It can include profile names, output names, imported filenames, and error details. It excludes EQ settings, impulse-response samples, and license keys. Review those names and details before sharing.
 
 ```text
 
