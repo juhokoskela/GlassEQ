@@ -113,7 +113,7 @@ public enum ProfileLibraryBackupCodec {
         do {
             backup = try decoder.decode(ProfileLibraryBackup.self, from: data)
         } catch {
-            throw ProfileLibraryBackupError.invalidStore(String(describing: error))
+            throw ProfileLibraryBackupError.invalidStore("The library contains unreadable profile data.")
         }
         guard (1...ProfileStore.currentSchemaVersion).contains(backup.profileStore.schemaVersion) else {
             throw ProfileLibraryBackupError.unsupportedStoreSchema(
@@ -186,13 +186,11 @@ public enum ProfileLibraryMerge {
         store: ProfileStore, summary: ProfileLibraryMergeSummary
     ) {
         let planned = plan(current: current, incoming: incoming)
-        guard !planned.summary.exceedsProfileLimit else {
-            throw ProfileLibraryBackupError.tooManyProfiles(
-                count: planned.summary.resultingProfileCount,
-                maximum: ProfilePersistence.profileCountRange.upperBound
-            )
+        do {
+            try ProfilePersistence.validate(planned.store)
+        } catch let ProfileStoreValidationError.invalidProfileCount(count, allowed) where count > allowed.upperBound {
+            throw ProfileLibraryBackupError.tooManyProfiles(count: count, maximum: allowed.upperBound)
         }
-        try ProfilePersistence.validate(planned.store)
         return (planned.store, planned.summary)
     }
 
@@ -210,8 +208,17 @@ public enum ProfileLibraryMerge {
                     continue
                 }
                 var copy = profile
-                copy.id = UUID()
                 copy.name = copiedName(for: profile.name)
+                if let existingCopy = current.profiles.first(where: { candidate in
+                    var comparable = candidate
+                    comparable.id = copy.id
+                    return comparable == copy
+                }) {
+                    remappedIDs[profile.id] = existingCopy.id
+                    summary.unchangedProfiles += 1
+                    continue
+                }
+                copy.id = UUID()
                 remappedIDs[profile.id] = copy.id
                 store.profiles.append(copy)
                 summary.copiedProfiles += 1

@@ -22,6 +22,22 @@ struct ProfileLibraryBackupCodecTests {
     }
 
     @Test
+    func mergingAConflictingProfileTwiceReusesItsCopy() throws {
+        let current = makeLibrary()
+        var incoming = current
+        incoming.profiles[0].preampDB = -3
+        incoming.outputMappings = [
+            OutputDeviceProfileMapping(outputDeviceUID: "new-output", profileID: incoming.profiles[0].id)
+        ]
+        let first = try ProfileLibraryMerge.merge(current: current, incoming: incoming)
+        let second = try ProfileLibraryMerge.merge(current: first.store, incoming: incoming)
+        #expect(second.store == first.store)
+        #expect(second.summary.copiedProfiles == 0)
+        #expect(second.summary.unchangedProfiles == incoming.profiles.count)
+        #expect(ProfileLibraryMerge.preview(current: first.store, incoming: incoming).copiedProfiles == 0)
+    }
+
+    @Test
     func emptyLibraryIsRefusedInsteadOfBecomingDefaults() throws {
         let backup = ProfileLibraryBackup(
             createdAt: createdAt, appVersion: nil, profileStore: ProfileStore(profiles: []))
