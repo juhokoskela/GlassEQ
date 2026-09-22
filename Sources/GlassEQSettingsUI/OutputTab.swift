@@ -214,7 +214,7 @@ struct OutputTab: View {
                     Text(localized("Support Report"))
                     Text(
                         localized(
-                            "App and macOS versions, engine state, route details, and recent events for a bug report. No profiles or license key."
+                            "App and macOS versions, profile and output names, engine state, and recent events. Review before sharing. No EQ settings, impulse responses, or license keys."
                         ))
                 }
 

@@ -121,16 +121,11 @@ enum AboutSection: String, CaseIterable, Identifiable {
 
 struct AboutView: View {
     let model: GlassEQAppModel
-    @State private var section: AboutSection
+    @State private var section = AboutSection.overview
     @State private var isShowingLicenseText = false
 
     static let width: CGFloat = 520
     static let contentHeight: CGFloat = 340
-
-    init(model: GlassEQAppModel, section: AboutSection = .overview) {
-        self.model = model
-        _section = State(initialValue: section)
-    }
 
     var body: some View {
         VStack(spacing: 0) {

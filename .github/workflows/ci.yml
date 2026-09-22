@@ -36,6 +36,9 @@ jobs:
       - name: Check release channels
         run: python3 Scripts/test-release-app.py
 
+      - name: Check sandboxed launch records
+        run: python3 Scripts/test-launch-records.py
+
       - name: Test
         run: swift test
 

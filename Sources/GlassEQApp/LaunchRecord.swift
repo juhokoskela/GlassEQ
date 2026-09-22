@@ -1,13 +1,13 @@
+import AppKit
 import Darwin
 import Foundation
-import SwiftUI
 
 /// Written when a run starts and removed when it ends cleanly, so the next launch can tell that a
 /// previous one crashed or was killed. macOS tears the process tap down with the process, so the
 /// record is guidance for the user, not a recovery step.
 struct LaunchRecord: Codable, Equatable {
     let startedAt: Date
-    let version: String?
+    let version: String
     let processIdentifier: Int32
 }
 
@@ -26,22 +26,33 @@ enum LaunchRecordStore {
     static func beginRun(
         in directory: URL,
         startedAt: Date = Date(),
-        version: String?,
+        version: String,
         processIdentifier: Int32 = ProcessInfo.processInfo.processIdentifier,
-        isProcessAlive: (Int32) -> Bool = { kill($0, 0) == 0 }
+        isProcessAlive: (LaunchRecord) -> Bool = isRunning
     ) -> LaunchRecord? {
-        var unclean: LaunchRecord?
-        for (url, record) in existingRecords(in: directory) where !isProcessAlive(record.processIdentifier) {
+        let dead = existingRecords(in: directory).filter { !isProcessAlive($0.1) }
+        for (url, _) in dead {
             try? FileManager.default.removeItem(at: url)
-            if unclean.map({ record.startedAt > $0.startedAt }) ?? true {
-                unclean = record
-            }
         }
         write(
             LaunchRecord(startedAt: startedAt, version: version, processIdentifier: processIdentifier),
             to: recordURL(in: directory, processIdentifier: processIdentifier)
         )
-        return unclean
+        return dead.map(\.1).max { $0.startedAt < $1.startedAt }
+    }
+
+    static func isRunning(_ record: LaunchRecord) -> Bool {
+        // The sandbox hides peer launch dates. Ignore markers from before this boot, then
+        // identify the application without kill(pid, 0), which reports EPERM for live peers.
+        var bootTime = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &bootTime, &size, nil, 0) == 0,
+            record.startedAt.timeIntervalSince1970 >= TimeInterval(bootTime.tv_sec),
+            let bundleIdentifier = Bundle.main.bundleIdentifier
+        else {
+            return false
+        }
+        return NSRunningApplication(processIdentifier: record.processIdentifier)?.bundleIdentifier == bundleIdentifier
     }
 
     static func endRun(
@@ -71,7 +82,7 @@ enum LaunchRecordStore {
     }
 
     private static func read(at url: URL) -> LaunchRecord? {
-        guard let data = try? Data(contentsOf: url), data.count <= 4096 else {
+        guard let data = try? Data(contentsOf: url) else {
             return nil
         }
         let decoder = JSONDecoder()
@@ -88,43 +99,5 @@ enum LaunchRecordStore {
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
-    }
-}
-
-/// Shown in the menu bar popover after a run that crashed or was killed. macOS drops the tap with
-/// the process, so playback already came back; the notice says what to do if it did not.
-struct UncleanTerminationNotice: View {
-    let showSupportReport: () -> Void
-    let dismissNotice: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle")
-                    .foregroundStyle(Color.macOSSystemOrange)
-                    .accessibilityHidden(true)
-                Text(
-                    localized(
-                        "GlassEQ did not quit normally last time. If your output still sounds wrong, retry the audio engine in Settings. If it keeps happening, send a support report."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Button(action: dismissNotice) {
-                    Image(systemName: "xmark")
-                        .frame(width: 20, height: 20)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel(Text(localized("Dismiss")))
-            }
-            Button(localized("Support Report…"), action: showSupportReport)
-                .controlSize(.small)
-        }
-        .font(.caption)
-        .padding(10)
-        .background(Color.macOSSystemOrange.opacity(0.12), in: .rect(cornerRadius: 10))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(Text(localized("Previous run did not quit normally")))
     }
 }

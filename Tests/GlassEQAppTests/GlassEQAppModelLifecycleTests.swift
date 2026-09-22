@@ -2309,7 +2309,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(FileManager.default.fileExists(atPath: ownRecordURL.path))
 
         model.dismissUncleanTerminationNotice()
-        #expect(model.visiblePreviousRunEndedUncleanly == nil)
+        #expect(!model.showsUncleanTerminationNotice)
         #expect(model.previousRunEndedUncleanly?.startedAt == startedAt)
         #expect(
             SupportReport.text(model.supportReportInputs(generatedAt: Date(timeIntervalSince1970: 0)))

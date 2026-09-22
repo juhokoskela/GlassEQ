@@ -25,7 +25,7 @@ struct GlassEQApp: App {
     @State private var model = GlassEQAppModel(
         autoStart: OnboardingState.isComplete,
         licensing: LicensingBootstrap.makeSource(),
-        lifecycleLog: LifecycleLog(streamsToStandardError: LifecycleLog.launchOptions())
+        lifecycleLog: LifecycleLog(streamsToStandardError: LifecycleLog.isDebugLaunch())
     )
 
     var body: some Scene {
@@ -1932,8 +1932,8 @@ final class GlassEQAppModel {
         lifecycleLog.record("Window requested: support report")
     }
 
-    var visiblePreviousRunEndedUncleanly: LaunchRecord? {
-        isUncleanTerminationNoticeDismissed ? nil : previousRunEndedUncleanly
+    var showsUncleanTerminationNotice: Bool {
+        !isUncleanTerminationNoticeDismissed && previousRunEndedUncleanly != nil
     }
 
     func dismissUncleanTerminationNotice() {
@@ -1950,7 +1950,6 @@ final class GlassEQAppModel {
 
     func supportReportInputs(generatedAt: Date = Date()) -> SupportReportInputs {
         let snapshot = settingsSnapshot()
-        let launchAtLogin = LaunchAtLoginModel()
         return SupportReportInputs(
             generatedAt: generatedAt,
             build: AppBuildInfo.current,
@@ -1958,13 +1957,13 @@ final class GlassEQAppModel {
             architecture: SupportReport.architecture,
             modelIdentifier: SupportReport.modelIdentifier,
             launchedWithDebugFlag: lifecycleLog.streamsToStandardError,
-            installLocation: installLocationIssue?.reportDescription ?? "installed normally",
+            installLocation: installLocationIssue,
             lifecycleState: "\(lifecycleState)",
             statusMessage: statusMessage,
             isRunning: isRunning,
             onboardingIsComplete: OnboardingState.isComplete,
             audioCaptureState: Self.describe(onboardingAudioCaptureState),
-            launchAtLoginStatus: Self.describe(launchAtLogin.status),
+            launchAtLoginStatus: Self.describe(SMAppService.mainApp.status),
             licenseSummary: licenseSummaryMessage,
             previousRun: previousRunEndedUncleanly,
             profileCount: profileStore.profiles.count,
@@ -1975,7 +1974,7 @@ final class GlassEQAppModel {
             fallbackProfileName: profileStore.profiles.first { $0.id == profileStore.fallbackProfileID }?.name
                 ?? "none",
             audioDiagnostics: OutputDiagnosticsReport(snapshot: snapshot)
-                .text(omittingRows: [OutputDiagnosticsReport.outputUIDRowID]),
+                .text(includingOutputUID: false),
             recentEvents: lifecycleLog.text
         )
     }
@@ -5227,16 +5226,23 @@ private struct MenuBarView: View {
             }
 
             if let issue = model.visibleInstallLocationIssue {
-                InstallLocationNotice(issue: issue, dismissNotice: model.dismissInstallLocationNotice)
+                PopoverNotice(
+                    symbol: "arrow.down.app", title: localized("GlassEQ is not installed in Applications"),
+                    message: issue.message, dismiss: model.dismissInstallLocationNotice)
             }
 
-            if model.visiblePreviousRunEndedUncleanly != nil {
-                UncleanTerminationNotice(
+            if model.showsUncleanTerminationNotice {
+                PopoverNotice(
+                    symbol: "exclamationmark.triangle",
+                    title: localized("Previous run did not quit normally"),
+                    message: localized(
+                        "GlassEQ did not quit normally last time. If your output still sounds wrong, retry the audio engine in Settings. If it keeps happening, send a support report."
+                    ),
+                    dismiss: model.dismissUncleanTerminationNotice,
                     showSupportReport: {
                         dismiss()
                         model.requestSupportReportPresentation()
-                    },
-                    dismissNotice: model.dismissUncleanTerminationNotice
+                    }
                 )
             }
         }

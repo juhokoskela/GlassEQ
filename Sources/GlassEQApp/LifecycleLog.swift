@@ -26,7 +26,7 @@ final class LifecycleLog {
         self.now = now
     }
 
-    nonisolated static func launchOptions(arguments: [String] = CommandLine.arguments) -> Bool {
+    nonisolated static func isDebugLaunch(arguments: [String] = CommandLine.arguments) -> Bool {
         arguments.dropFirst().contains(debugFlag)
     }
 
@@ -36,7 +36,7 @@ final class LifecycleLog {
         if entries.count > Self.capacity {
             entries.removeFirst(entries.count - Self.capacity)
         }
-        logger.info("\(message, privacy: .public)")
+        logger.info("\(message, privacy: .private)")
         if streamsToStandardError {
             let line = "\(Self.line(for: entry))\n"
             FileHandle.standardError.write(Data(line.utf8))

@@ -92,7 +92,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ## Getting help
 
-Open **About GlassEQ** (the info button in the menu bar popover, or Settings → Output → About GlassEQ) and click **Support Report…**. The report lists the app and macOS versions, the audio route, the engine state, and the last app events, and nothing from your profiles or license. Read it, then send it to contact@juhokoskela.fi or attach it to a [GitHub issue](https://github.com/juhokoskela/GlassEQ/issues).
+Open **About GlassEQ** (the info button in the menu bar popover, or Settings → Output → About GlassEQ) and click **Support Report…**. The report lists the app and macOS versions, the audio route, the engine state, and the last app events, including profile and output names. Recent events may contain filenames or error details. It excludes EQ settings, impulse responses, and license keys. Read it, then send it to contact@juhokoskela.fi or attach it to a [GitHub issue](https://github.com/juhokoskela/GlassEQ/issues).
 
 If GlassEQ launches and nothing appears, start it from Terminal to watch what it does:
 

@@ -59,7 +59,7 @@ public struct OutputDiagnosticsReport {
 
     /// The row that names the output by its Core Audio UID. A support report leaves it out because
     /// USB device UIDs can embed serial numbers.
-    public static let outputUIDRowID = "outputUID"
+    private static let outputUIDRowID = "outputUID"
 
     public init(snapshot: SettingsSnapshotDTO) {
         self.snapshot = snapshot
@@ -67,10 +67,10 @@ public struct OutputDiagnosticsReport {
     }
 
     var text: String {
-        text(omittingRows: [])
+        text(includingOutputUID: true)
     }
 
-    public func text(omittingRows omittedRowIDs: Set<String>) -> String {
+    public func text(includingOutputUID: Bool) -> String {
         var lines = [
             localized("GlassEQ audio diagnostics"),
             localized("Output: \(snapshot.currentOutputName)"),
@@ -80,7 +80,7 @@ public struct OutputDiagnosticsReport {
         for section in sections {
             lines.append("")
             lines.append("## \(section.title)")
-            for row in section.rows where !omittedRowIDs.contains(row.id) {
+            for row in section.rows where includingOutputUID || row.id != Self.outputUIDRowID {
                 lines.append("\(row.title): \(row.value)")
             }
             if let note = section.note {

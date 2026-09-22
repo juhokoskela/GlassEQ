@@ -5,7 +5,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Everything the support report prints. The model fills it from state it already owns; nothing
-/// here is a profile's contents, an impulse response, a device UID, or a license credential.
+/// here is an EQ setting, an impulse response, a device UID, or a license credential.
 struct SupportReportInputs {
     var generatedAt: Date
     var build: AppBuildInfo
@@ -13,7 +13,7 @@ struct SupportReportInputs {
     var architecture: String
     var modelIdentifier: String?
     var launchedWithDebugFlag: Bool
-    var installLocation: String
+    var installLocation: InstallLocationIssue?
     var lifecycleState: String
     var statusMessage: String
     var isRunning: Bool
@@ -42,7 +42,7 @@ enum SupportReport {
             "## App",
             "Version: \(inputs.build.versionLine)",
             "Launched with \(LifecycleLog.debugFlag): \(yesNo(inputs.launchedWithDebugFlag))",
-            "Install location: \(inputs.installLocation)",
+            "Install location: \(inputs.installLocation?.reportDescription ?? "installed normally")",
             "",
             "## Mac",
             "macOS: \(inputs.operatingSystemVersion)",
@@ -65,7 +65,7 @@ enum SupportReport {
             lines.append("License: \(licenseSummary)")
         }
         if let previousRun = inputs.previousRun {
-            let version = previousRun.version ?? "unknown version"
+            let version = previousRun.version
             lines.append(
                 "Previous run: did not quit cleanly (started \(previousRun.startedAt.formatted(dateFormat)), \(version))"
             )
@@ -138,7 +138,7 @@ struct SupportReportView: View {
                     .accessibilityAddTraits(.isHeader)
                 Text(
                     localized(
-                        "Read it before sending. It names your output device and lists recent app events, but never your profiles, imported files, or license key. Send it to contact@juhokoskela.fi or attach it to a GitHub issue."
+                        "Read it before sending. It includes profile and output names, app state, and recent events, which may contain filenames or error details. It excludes EQ settings, impulse responses, and license keys. Send it to contact@juhokoskela.fi or attach it to a GitHub issue."
                     )
                 )
                 .font(.callout)

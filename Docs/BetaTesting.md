@@ -74,7 +74,7 @@ From the project checkout, run:
 swift run GlassEQDiagnostics 2
 ```
 
-For installed-app testing, open About GlassEQ and click Support Report…. Read it, then paste it into the bug report or attach the saved file. It carries the app and macOS versions, the audio route, the engine state, and the last app events, and nothing from your profiles or license. If you can reproduce with the checkout diagnostic, include its full output as well.
+For installed-app testing, open About GlassEQ and click Support Report…. Read it, then paste it into the bug report or attach the saved file. It carries the app and macOS versions, the audio route, the engine state, and the last app events, including profile and output names. Recent events may contain filenames or error details. It excludes EQ settings, impulse responses, and license keys. If you can reproduce with the checkout diagnostic, include its full output as well.
 
 If the app launches and shows nothing, run it from Terminal and include the output:
 

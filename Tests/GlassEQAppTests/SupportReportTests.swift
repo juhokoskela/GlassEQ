@@ -34,10 +34,10 @@ struct LifecycleLogTests {
 
     @Test
     func debugFlagIsReadFromArgumentsAfterTheExecutable() {
-        #expect(LifecycleLog.launchOptions(arguments: ["GlassEQ", "--debug"]))
-        #expect(!LifecycleLog.launchOptions(arguments: ["GlassEQ"]))
-        #expect(!LifecycleLog.launchOptions(arguments: ["--debug"]))
-        #expect(!LifecycleLog.launchOptions(arguments: []))
+        #expect(LifecycleLog.isDebugLaunch(arguments: ["GlassEQ", "--debug"]))
+        #expect(!LifecycleLog.isDebugLaunch(arguments: ["GlassEQ"]))
+        #expect(!LifecycleLog.isDebugLaunch(arguments: ["--debug"]))
+        #expect(!LifecycleLog.isDebugLaunch(arguments: []))
     }
 }
 
@@ -46,10 +46,9 @@ struct LaunchRecordStoreTests {
     private func temporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appending(path: "GlassEQLaunchRecordTests-\(UUID().uuidString)")
-            .appending(path: LaunchRecordStore.directoryName)
     }
 
-    private let dead: (Int32) -> Bool = { _ in false }
+    private let dead: (LaunchRecord) -> Bool = { _ in false }
 
     @Test
     func firstRunHasNoPreviousRecordAndWritesItsOwn() throws {
@@ -89,7 +88,7 @@ struct LaunchRecordStoreTests {
         let previous = LaunchRecordStore.beginRun(
             in: directory, version: "v1.0 (2)", processIdentifier: 101, isProcessAlive: dead)
         let again = LaunchRecordStore.beginRun(
-            in: directory, version: "v1.0 (2)", processIdentifier: 102, isProcessAlive: { $0 == 101 })
+            in: directory, version: "v1.0 (2)", processIdentifier: 102, isProcessAlive: { $0.processIdentifier == 101 })
 
         #expect(previous == LaunchRecord(startedAt: startedAt, version: "v1.0 (1)", processIdentifier: 100))
         #expect(again == nil)
@@ -102,7 +101,7 @@ struct LaunchRecordStoreTests {
 
         _ = LaunchRecordStore.beginRun(in: directory, version: "v1.0 (1)", processIdentifier: 100, isProcessAlive: dead)
         let previous = LaunchRecordStore.beginRun(
-            in: directory, version: "v1.0 (1)", processIdentifier: 101, isProcessAlive: { $0 == 100 })
+            in: directory, version: "v1.0 (1)", processIdentifier: 101, isProcessAlive: { $0.processIdentifier == 100 })
 
         #expect(previous == nil)
         #expect(
@@ -118,7 +117,8 @@ struct LaunchRecordStoreTests {
 
         _ = LaunchRecordStore.beginRun(in: directory, version: "A", processIdentifier: 100, isProcessAlive: dead)
         _ = LaunchRecordStore.beginRun(
-            in: directory, startedAt: bStartedAt, version: "B", processIdentifier: 101, isProcessAlive: { $0 == 100 })
+            in: directory, startedAt: bStartedAt, version: "B", processIdentifier: 101,
+            isProcessAlive: { $0.processIdentifier == 100 })
         LaunchRecordStore.endRun(in: directory, processIdentifier: 100)
         // B crashes; nothing removes its record.
         let previous = LaunchRecordStore.beginRun(
@@ -137,7 +137,8 @@ struct LaunchRecordStoreTests {
         _ = LaunchRecordStore.beginRun(
             in: directory, startedAt: newer, version: "N", processIdentifier: 100, isProcessAlive: dead)
         _ = LaunchRecordStore.beginRun(
-            in: directory, startedAt: older, version: "O", processIdentifier: 101, isProcessAlive: { $0 == 100 })
+            in: directory, startedAt: older, version: "O", processIdentifier: 101,
+            isProcessAlive: { $0.processIdentifier == 100 })
         let previous = LaunchRecordStore.beginRun(
             in: directory, version: "C", processIdentifier: 102, isProcessAlive: dead)
 
@@ -158,7 +159,7 @@ struct SupportReportTextTests {
             architecture: "arm64",
             modelIdentifier: "Mac15,6",
             launchedWithDebugFlag: true,
-            installLocation: "installed normally",
+            installLocation: nil,
             lifecycleState: "running",
             statusMessage: "Processing on Studio Monitors",
             isRunning: true,

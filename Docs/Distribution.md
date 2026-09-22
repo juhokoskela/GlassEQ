@@ -109,7 +109,7 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 
 ## Support Reports and Debug Launches
 
-GlassEQ builds a support report from state it already holds: the app and macOS versions, the Mac model identifier, the engine and setup state, the audio route without its device UID, profile names only, and the last 200 lifecycle events. Users open it from About GlassEQ, from Settings → Output, or from the notice shown after a run that did not quit cleanly, then review, copy, or save it. Ask for it in every bug report.
+GlassEQ builds a support report from state it already holds: the app and macOS versions, the Mac model identifier, the engine and setup state, the audio route without its device UID, profile names, and the last 200 lifecycle events. Events may contain filenames or error details. The report excludes EQ settings, impulse responses, and license keys. Dynamic messages are private in the unified log; the local report retains them for review before sharing. Users open it from About GlassEQ, from Settings → Output, or from the notice shown after a run that did not quit cleanly, then review, copy, or save it. Ask for it in every bug report.
 
 For a launch that shows nothing, run the executable from Terminal with the debug flag. It streams the same lifecycle events to stderr as they happen:
 
