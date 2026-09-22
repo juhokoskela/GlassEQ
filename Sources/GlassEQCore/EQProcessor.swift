@@ -15,7 +15,8 @@ public struct EQChannelConfiguration: Equatable, Sendable {
         maximumUsableFrequency: Double? = nil
     ) {
         self.preampLinearGain = Float(pow(10, preampDB / 20))
-        self.coefficients = filters
+        self.coefficients =
+            filters
             .filter(\.isEnabled)
             .map {
                 BiquadCoefficients.make(
@@ -147,12 +148,13 @@ public struct EQRenderConfiguration: Sendable {
         channelCount: Int,
         maximumUsableFrequency: Double? = nil
     ) {
-        self.init(configuration: EQConfiguration(
-            profile: profile,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            maximumUsableFrequency: maximumUsableFrequency
-        ))
+        self.init(
+            configuration: EQConfiguration(
+                profile: profile,
+                sampleRate: sampleRate,
+                channelCount: channelCount,
+                maximumUsableFrequency: maximumUsableFrequency
+            ))
     }
 
     public init(configuration: EQConfiguration) {
@@ -169,12 +171,13 @@ public struct EQRenderConfiguration: Sendable {
         channelCount: Int,
         maximumUsableFrequency: Double? = nil
     ) throws -> EQRenderConfiguration {
-        let renderConfiguration = try EQRenderConfiguration(preparing: EQConfiguration(
-            profile: profile,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            maximumUsableFrequency: maximumUsableFrequency
-        ))
+        let renderConfiguration = try EQRenderConfiguration(
+            preparing: EQConfiguration(
+                profile: profile,
+                sampleRate: sampleRate,
+                channelCount: channelCount,
+                maximumUsableFrequency: maximumUsableFrequency
+            ))
         guard renderConfiguration.isNumericallySafe else {
             throw EQRenderConfigurationError.numericallyUnsafe
         }
@@ -190,7 +193,8 @@ public struct EQRenderConfiguration: Sendable {
         self.preampLinearGains = renderLayout.preampLinearGains
         // A bypassed bank renders as identity, so preparing its kernels would be
         // wasted work on the path that fades processing out.
-        self.convolutionKernels = configuration.isBypassed
+        self.convolutionKernels =
+            configuration.isBypassed
             ? Array(repeating: nil, count: configuration.channelCount)
             : try Self.makeConvolutionKernels(configuration: configuration)
         self.preparationSucceeded = true
@@ -359,7 +363,8 @@ public struct EQProcessor: ~Copyable, Sendable {
     /// Replaces owned render storage; call outside the render callback.
     public mutating func applyPreparedConfiguration(_ renderConfiguration: EQRenderConfiguration) {
         let previousCoefficients = coefficients
-        let needsStateReset = renderConfiguration.configuration.channelCount != self.configuration.channelCount
+        let needsStateReset =
+            renderConfiguration.configuration.channelCount != self.configuration.channelCount
             || renderConfiguration.channelFilterCounts != channelFilterCounts
             || renderConfiguration.configuration.sampleRate != self.configuration.sampleRate
 
@@ -373,7 +378,8 @@ public struct EQProcessor: ~Copyable, Sendable {
         if needsStateReset {
             states = Array(repeating: BiquadState(), count: renderConfiguration.coefficients.count)
         } else {
-            resetChangedFilterStates(previousCoefficients: previousCoefficients, nextCoefficients: renderConfiguration.coefficients)
+            resetChangedFilterStates(
+                previousCoefficients: previousCoefficients, nextCoefficients: renderConfiguration.coefficients)
         }
     }
 
@@ -382,7 +388,8 @@ public struct EQProcessor: ~Copyable, Sendable {
         nextCoefficients: [RenderBiquadCoefficients]
     ) {
         guard previousCoefficients.count == nextCoefficients.count,
-              states.count == nextCoefficients.count else {
+            states.count == nextCoefficients.count
+        else {
             states = Array(repeating: BiquadState(), count: nextCoefficients.count)
             return
         }
@@ -406,7 +413,8 @@ public struct EQProcessor: ~Copyable, Sendable {
         let remainingSampleStart = frameCount * sourceChannelCount
         if remainingSampleStart < samples.count {
             for channel in 0..<(samples.count - remainingSampleStart) {
-                samples[remainingSampleStart + channel] = processSample(samples[remainingSampleStart + channel], channel: channel)
+                samples[remainingSampleStart + channel] = processSample(
+                    samples[remainingSampleStart + channel], channel: channel)
             }
         }
     }
@@ -432,15 +440,17 @@ public struct EQProcessor: ~Copyable, Sendable {
                 frameCount: availableFrames,
                 channelCount: sourceChannelCount
             )
-            return diagnostics.nonFiniteSamples &+ Self.protectInterleavedWithDiagnostics(
-                samples,
-                frameCount: availableFrames,
-                channelCount: sourceChannelCount
-            )
+            return diagnostics.nonFiniteSamples
+                &+ Self.protectInterleavedWithDiagnostics(
+                    samples,
+                    frameCount: availableFrames,
+                    channelCount: sourceChannelCount
+                )
         }
 
         if sourceChannelCount == 2, channelStarts.count >= 2 {
-            return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
+            return withRenderBuffers {
+                stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
                 Self.processStereoInterleaved(
                     samples,
                     frameCount: availableFrames,
@@ -453,7 +463,8 @@ public struct EQProcessor: ~Copyable, Sendable {
             }
         }
 
-        return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
+        return withRenderBuffers {
+            stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
             var saturatedSamples: UInt64 = 0
             let channels = min(sourceChannelCount, channelStartBuffer.count)
             var sampleIndex = 0
@@ -505,7 +516,8 @@ public struct EQProcessor: ~Copyable, Sendable {
             )
         }
 
-        return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
+        return withRenderBuffers {
+            stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
             var diagnostics = EQLinearRenderDiagnostics()
             let channels = min(sourceChannelCount, channelStartBuffer.count)
             var sampleIndex = 0
@@ -553,7 +565,8 @@ public struct EQProcessor: ~Copyable, Sendable {
         processSampleWithDiagnostics(input, channel: channel).sample
     }
 
-    public mutating func processSampleWithDiagnostics(_ input: Float, channel: Int) -> (sample: Float, saturated: Bool) {
+    public mutating func processSampleWithDiagnostics(_ input: Float, channel: Int) -> (sample: Float, saturated: Bool)
+    {
         guard !configuration.isBypassed else {
             return (input, false)
         }
@@ -563,7 +576,8 @@ public struct EQProcessor: ~Copyable, Sendable {
         }
         if configuration.usesConvolution {
             guard channel < convolvers.count,
-                  convolvers.hasConvolver(at: channel) else {
+                convolvers.hasConvolver(at: channel)
+            else {
                 return (0, true)
             }
             let processed = convolvers[channel]!.processSample(
@@ -575,7 +589,8 @@ public struct EQProcessor: ~Copyable, Sendable {
                 processed.encounteredNonFinite || protected.saturated
             )
         }
-        return withRenderBuffers { stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
+        return withRenderBuffers {
+            stateBuffer, coefficientBuffer, channelStartBuffer, channelFilterCountBuffer, preampLinearGainBuffer in
             Self.processSampleWithDiagnosticsUnchecked(
                 input,
                 channel: channel,
@@ -841,8 +856,11 @@ struct ConvolverBank: ~Copyable, @unchecked Sendable {
     // Checking through the borrowing subscript materializes the large optional in Swift 6.4.
     func hasConvolver(at index: Int) -> Bool { storage[index] != nil }
 
+    // SwiftLint does not recognize uses of these borrowing and mutating accessors.
+    // swiftlint:disable unused_declaration
     subscript(index: Int) -> RealtimeHybridConvolver? {
         _read { yield storage[index] }
         _modify { yield &storage[index] }
     }
+    // swiftlint:enable unused_declaration
 }

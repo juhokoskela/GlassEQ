@@ -61,7 +61,8 @@ final class SettingsController {
         let snapshot = model.snapshot
         draftProfile = snapshot.draftProfile
         selectedProfileID = snapshot.selectedProfileID
-        storedProfile = snapshot.profiles.first(where: { $0.id == snapshot.selectedProfileID })
+        storedProfile =
+            snapshot.profiles.first(where: { $0.id == snapshot.selectedProfileID })
             ?? snapshot.draftProfile
     }
 
@@ -177,7 +178,8 @@ final class SettingsController {
 
     func selectProfile(_ id: UUID) {
         guard !isComparisonInProgress,
-              let profile = snapshot.profiles.first(where: { $0.id == id }) else {
+            let profile = snapshot.profiles.first(where: { $0.id == id })
+        else {
             return
         }
         selectedProfileID = id
@@ -362,7 +364,8 @@ final class SettingsController {
         let latest = snapshot
         selectedProfileID = latest.selectedProfileID
         draftProfile = latest.draftProfile
-        storedProfile = latest.profiles.first(where: { $0.id == latest.selectedProfileID })
+        storedProfile =
+            latest.profiles.first(where: { $0.id == latest.selectedProfileID })
             ?? latest.draftProfile
     }
 
@@ -393,8 +396,8 @@ final class SettingsController {
         }
         switch command {
         case .createProfile, .duplicateProfile, .deleteProfile,
-             .applyProfile, .useProfileForCurrentOutput, .setFallback,
-             .importProfile, .importParsedProfile, .resetUnsupportedProfileStore:
+            .applyProfile, .useProfileForCurrentOutput, .setFallback,
+            .importProfile, .importParsedProfile, .resetUnsupportedProfileStore:
             reconcileAfterCommand(
                 dispatchedSelection: dispatchedSelection,
                 dispatchedDraft: dispatchedDraft

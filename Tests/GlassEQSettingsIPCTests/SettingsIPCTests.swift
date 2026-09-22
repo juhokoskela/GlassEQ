@@ -29,13 +29,15 @@ struct SettingsIPCTests {
         #expect(ImportedEQTextDetector.format(for: "* Filter Settings file") == .rew)
         #expect(ImportedEQTextDetector.format(for: "Filter Settings file") == .rew)
         #expect(ImportedEQTextDetector.format(for: "Room EQ Wizard V5.40") == .rew)
-        #expect(ImportedEQTextDetector.format(
-            for: "Filter 1: ON Modal Fc 44 Hz Gain -5 dB Q 3"
-        ) == .rew)
+        #expect(
+            ImportedEQTextDetector.format(
+                for: "Filter 1: ON Modal Fc 44 Hz Gain -5 dB Q 3"
+            ) == .rew)
         #expect(ImportedEQTextDetector.format(for: "GraphicEQ: 20 0; 20000 -1") == .autoEQ)
-        #expect(ImportedEQTextDetector.format(
-            for: "Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1"
-        ) == .autoEQ)
+        #expect(
+            ImportedEQTextDetector.format(
+                for: "Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1"
+            ) == .autoEQ)
     }
 
     @Test(arguments: [0.707, 0.12345678901234567, 20_000.125])
@@ -155,10 +157,15 @@ struct SettingsIPCTests {
         session.begin(value: -3, context: original)
         #expect(session.isActive(in: original))
         for changed in [
-            EditableValueContext(editor: EditorContextID(profileID: UUID(), channel: .linked, generation: 0), valueID: original.valueID),
-            EditableValueContext(editor: EditorContextID(profileID: editor.profileID, channel: .right, generation: 0), valueID: original.valueID),
-            EditableValueContext(editor: EditorContextID(profileID: editor.profileID, channel: .linked, generation: 1), valueID: original.valueID),
-            EditableValueContext(editor: editor, valueID: UUID())
+            EditableValueContext(
+                editor: EditorContextID(profileID: UUID(), channel: .linked, generation: 0), valueID: original.valueID),
+            EditableValueContext(
+                editor: EditorContextID(profileID: editor.profileID, channel: .right, generation: 0),
+                valueID: original.valueID),
+            EditableValueContext(
+                editor: EditorContextID(profileID: editor.profileID, channel: .linked, generation: 1),
+                valueID: original.valueID),
+            EditableValueContext(editor: editor, valueID: UUID()),
         ] {
             #expect(!session.isActive(in: changed))
         }
@@ -177,8 +184,10 @@ struct SettingsIPCTests {
             reference.maximumFractionDigits = digits
             if signed { reference.positivePrefix = reference.plusSign }
             for value in [-120.0, -6.125, -0.0, 0, 0.707, 1.25, 1_000, 20_000] {
-                #expect(localizedDecimal(value, minimumFractionDigits: digits, maximumFractionDigits: digits, signed: signed)
-                    == reference.string(from: NSNumber(value: value)))
+                #expect(
+                    localizedDecimal(
+                        value, minimumFractionDigits: digits, maximumFractionDigits: digits, signed: signed)
+                        == reference.string(from: NSNumber(value: value)))
             }
         }
     }
@@ -403,12 +412,12 @@ struct SettingsIPCTests {
         var commands: [SettingsCommand] = [
             .startProgrammeComparison(draft),
             .selectProgrammeComparison(.reference),
-            .selectProgrammeComparison(.equalized)
+            .selectProgrammeComparison(.equalized),
         ]
         var comparisonStates = [
             EQProgrammeComparisonSnapshot(isActive: true),
             EQProgrammeComparisonSnapshot(isActive: true, isReady: true, selection: .reference),
-            EQProgrammeComparisonSnapshot(isActive: true, isReady: true)
+            EQProgrammeComparisonSnapshot(isActive: true, isReady: true),
         ]
         if stopBeforeApply {
             commands.append(.stopProgrammeComparison)
@@ -447,7 +456,7 @@ struct SettingsIPCTests {
         .setAggregateBufferMode(.automatic),
         .retryAutomaticAggregateBuffer,
         .retryAudioEngine,
-        .openPrivacySettings
+        .openPrivacySettings,
     ])
     @MainActor
     func transientCommandSnapshotPreservesUnsavedDraft(command: SettingsCommand) async {
@@ -725,12 +734,14 @@ struct SettingsIPCTests {
         let messages = recorder.snapshot().messages
         #expect(messages.count >= 2)
         if messages.count >= 2 {
-            #expect(messages[1] == .request(
-                sessionToken: "token",
-                id: requestID,
-                kind: .cancel,
-                command: nil
-            ))
+            #expect(
+                messages[1]
+                    == .request(
+                        sessionToken: "token",
+                        id: requestID,
+                        kind: .cancel,
+                        command: nil
+                    ))
         }
 
     }
@@ -759,7 +770,8 @@ struct SettingsIPCTests {
             event: .metricsChanged(SettingsAudioMetricsDTO(capturedFrames: 42))
         )
 
-        let decodedResponse = try SettingsPipeCodec.decodeLine(Data(try SettingsPipeCodec.encodeLine(response).dropLast()))
+        let decodedResponse = try SettingsPipeCodec.decodeLine(
+            Data(try SettingsPipeCodec.encodeLine(response).dropLast()))
         let decodedEvent = try SettingsPipeCodec.decodeLine(Data(try SettingsPipeCodec.encodeLine(event).dropLast()))
 
         #expect(decodedResponse == response)
@@ -784,7 +796,7 @@ struct SettingsIPCTests {
             SettingsPipeMessage.event(
                 sessionToken: "token",
                 event: .sectionRequested(.output)
-            )
+            ),
         ]
 
         for message in messages {
@@ -813,7 +825,7 @@ struct SettingsIPCTests {
         let commands: [SettingsCommand] = [
             .startProgrammeComparison(profile),
             .selectProgrammeComparison(.reference),
-            .stopProgrammeComparison
+            .stopProgrammeComparison,
         ]
 
         for (index, command) in commands.enumerated() {
@@ -835,10 +847,11 @@ struct SettingsIPCTests {
             name: "Room IR",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: [1, 0.25, -0.125]
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: [1, 0.25, -0.125]
+                ))
         )
         let command = SettingsCommand.importParsedProfile(profile)
         let message = SettingsPipeMessage.request(
@@ -860,14 +873,15 @@ struct SettingsIPCTests {
             name: "Imported",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: [1, 0.25]
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: [1, 0.25]
+                ))
         )
         let commands: [SettingsCommand] = [
             .chooseImportFiles(mode: .single),
-            .chooseImportFiles(mode: .stereoPair)
+            .chooseImportFiles(mode: .stereoPair),
         ]
         let selections: [SettingsFileImportSelectionDTO] = [
             .text(
@@ -877,18 +891,20 @@ struct SettingsIPCTests {
             ),
             .impulseResponse(
                 profile: profile,
-                channels: [SettingsImpulseResponseChannelDTO(
-                    filename: "room.wav",
-                    frameCount: 2,
-                    sampleRate: 48_000
-                )],
+                channels: [
+                    SettingsImpulseResponseChannelDTO(
+                        filename: "room.wav",
+                        frameCount: 2,
+                        sampleRate: 48_000
+                    )
+                ],
                 sourceFileCount: 1
             ),
             .stereoText(
                 profile: profile,
                 leftFilename: "left.txt",
                 rightFilename: "right.txt"
-            )
+            ),
         ]
 
         for (index, command) in commands.enumerated() {
@@ -960,68 +976,75 @@ struct SettingsIPCTests {
     @Test(arguments: [26, 27, 28], [true, false])
     func bluetoothBufferNoticeUsesOSAndTransportMetadata(majorVersion: Int, isBluetooth: Bool) {
         let route = SettingsAudioRouteDTO(transport: "Localized transport name", isBluetoothTransport: isBluetooth)
-        #expect(shouldShowMacOS27BluetoothBufferNotice(
-            route: route,
-            operatingSystemMajorVersion: majorVersion
-        ) == (majorVersion == 27 && isBluetooth))
+        #expect(
+            shouldShowMacOS27BluetoothBufferNotice(
+                route: route,
+                operatingSystemMajorVersion: majorVersion
+            ) == (majorVersion == 27 && isBluetooth))
     }
 
     @Test
     func clampedFixedBufferExplanationDoesNotInventAnInstabilityEvent() {
-        #expect(outputBufferExplanation(
-            aggregateBuffer: SettingsAggregateBufferDTO(mode: .frames32, isAvailable: true),
-            currentFrameSize: 256
-        ) == "The active buffer is 256 frames. Your 32-frame preference is saved.")
+        #expect(
+            outputBufferExplanation(
+                aggregateBuffer: SettingsAggregateBufferDTO(mode: .frames32, isAvailable: true),
+                currentFrameSize: 256
+            ) == "The active buffer is 256 frames. Your 32-frame preference is saved.")
     }
 
     @Test
     func outputBufferSummaryInterpolatesFixedAndAutomaticFrameSizes() {
-        #expect(outputBufferSummary(
-            aggregateBuffer: SettingsAggregateBufferDTO(
-                mode: .frames16,
-                automaticFrameSize: 16,
-                isAvailable: true
-            ),
-            currentFrameSize: 16
-        ) == "16 frames")
-        #expect(outputBufferSummary(
-            aggregateBuffer: SettingsAggregateBufferDTO(
-                mode: .frames16,
-                automaticFrameSize: 16,
-                isAvailable: true
-            ),
-            currentFrameSize: 32
-        ) == "16 selected, 32 frames active")
-        #expect(outputBufferSummary(
-            aggregateBuffer: SettingsAggregateBufferDTO(
-                mode: .automatic,
-                automaticFrameSize: 64,
-                isAvailable: true
-            ),
-            currentFrameSize: 64
-        ) == "Automatic, 64 frames active")
-        #expect(outputBufferSummary(
-            aggregateBuffer: SettingsAggregateBufferDTO(
-                mode: .automatic,
-                automaticFrameSize: 16,
-                isAvailable: false
-            ),
-            currentFrameSize: 480
-        ) == "480 frames, compatibility path")
+        #expect(
+            outputBufferSummary(
+                aggregateBuffer: SettingsAggregateBufferDTO(
+                    mode: .frames16,
+                    automaticFrameSize: 16,
+                    isAvailable: true
+                ),
+                currentFrameSize: 16
+            ) == "16 frames")
+        #expect(
+            outputBufferSummary(
+                aggregateBuffer: SettingsAggregateBufferDTO(
+                    mode: .frames16,
+                    automaticFrameSize: 16,
+                    isAvailable: true
+                ),
+                currentFrameSize: 32
+            ) == "16 selected, 32 frames active")
+        #expect(
+            outputBufferSummary(
+                aggregateBuffer: SettingsAggregateBufferDTO(
+                    mode: .automatic,
+                    automaticFrameSize: 64,
+                    isAvailable: true
+                ),
+                currentFrameSize: 64
+            ) == "Automatic, 64 frames active")
+        #expect(
+            outputBufferSummary(
+                aggregateBuffer: SettingsAggregateBufferDTO(
+                    mode: .automatic,
+                    automaticFrameSize: 16,
+                    isAvailable: false
+                ),
+                currentFrameSize: 480
+            ) == "480 frames, compatibility path")
     }
 
     @Test
     func audioMetricsDecodeOldPayloadsWithDefaultedNewFields() throws {
-        let data = Data("""
-        {
-          "capturedFrames": 42,
-          "playedFrames": 24,
-          "playbackUnderrunFrames": 1,
-          "saturatedSamples": 2,
-          "currentBufferedFrames": 512,
-          "maxBufferedFrames": 1024
-        }
-        """.utf8)
+        let data = Data(
+            """
+            {
+              "capturedFrames": 42,
+              "playedFrames": 24,
+              "playbackUnderrunFrames": 1,
+              "saturatedSamples": 2,
+              "currentBufferedFrames": 512,
+              "maxBufferedFrames": 1024
+            }
+            """.utf8)
 
         let metrics = try JSONDecoder().decode(SettingsAudioMetricsDTO.self, from: data)
 
@@ -1191,26 +1214,31 @@ struct SettingsIPCTests {
         #expect(routeAnalysis.inactiveEnabledFilterCount == 1)
         #expect(fallbackAnalysis.maximumUsableFrequency == 20_000)
         #expect(fallbackAnalysis.inactiveEnabledFilterCount == 0)
-        #expect(routeAnalysis.linkedPoints == FrequencyResponse.points(
-            for: profile.filters,
-            preampDB: profile.preampDB,
-            sampleRate: 44_100
-        ))
-        #expect(routeAnalysis.recommendedPreampDB == (try EQProfileAnalysis.recommendedPreampDB(
-            profile: profile,
-            sampleRate: 44_100,
-            cancellationCheck: {}
-        )))
+        #expect(
+            routeAnalysis.linkedPoints
+                == FrequencyResponse.points(
+                    for: profile.filters,
+                    preampDB: profile.preampDB,
+                    sampleRate: 44_100
+                ))
+        #expect(
+            routeAnalysis.recommendedPreampDB
+                == (try EQProfileAnalysis.recommendedPreampDB(
+                    profile: profile,
+                    sampleRate: 44_100,
+                    cancellationCheck: {}
+                )))
     }
 
     @Test
     func settingsAnalysisTracksResponseCurveChanges() async throws {
         var profile = EQProfile.flatConvolution
         let flat = try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)
-        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: 6),
-            EQMagnitudePoint(frequency: 20_000, gainDB: -2)
-        ]))
+        profile.convolution = .magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 6),
+                EQMagnitudePoint(frequency: 20_000, gainDB: -2),
+            ]))
         let shaped = try await EQAnalysisSnapshot.analyze(profile: profile, sampleRate: 48_000)
 
         #expect(flat.signature != shaped.signature)
@@ -1338,7 +1366,7 @@ struct SettingsIPCTests {
         let messages: [SettingsPipeMessage] = [
             .bootstrap(sessionToken: "token"),
             .request(sessionToken: "token", id: "request-1", kind: .connect, command: nil),
-            .event(sessionToken: "token", event: .shutdown)
+            .event(sessionToken: "token", event: .shutdown),
         ]
 
         for message in messages {
@@ -1582,47 +1610,52 @@ struct SettingsIPCTests {
 
     @Test
     func settingsHostValidationChecksProcessParentAndBundleID() throws {
-        let launchInfo = try #require(SettingsLaunchInfo(commandLineArguments: [
-            "GlassEQSettings",
-            "--glasseq-main-pid", "123"
-        ]))
+        let launchInfo = try #require(
+            SettingsLaunchInfo(commandLineArguments: [
+                "GlassEQSettings",
+                "--glasseq-main-pid", "123",
+            ]))
 
         try SettingsHostValidator.validate(
             launchInfo: launchInfo,
-            resolver: FakeHostProcessResolver(snapshot: SettingsHostProcessSnapshot(
-                exists: true,
-                bundleIdentifier: "com.glasseq.app",
-                parentProcessIdentifier: 123
-            ))
+            resolver: FakeHostProcessResolver(
+                snapshot: SettingsHostProcessSnapshot(
+                    exists: true,
+                    bundleIdentifier: "com.glasseq.app",
+                    parentProcessIdentifier: 123
+                ))
         )
         #expect(throws: SettingsCommandFailure.self) {
             try SettingsHostValidator.validate(
                 launchInfo: launchInfo,
-                resolver: FakeHostProcessResolver(snapshot: SettingsHostProcessSnapshot(
-                    exists: false,
-                    bundleIdentifier: nil,
-                    parentProcessIdentifier: nil
-                ))
+                resolver: FakeHostProcessResolver(
+                    snapshot: SettingsHostProcessSnapshot(
+                        exists: false,
+                        bundleIdentifier: nil,
+                        parentProcessIdentifier: nil
+                    ))
             )
         }
         #expect(throws: SettingsCommandFailure.self) {
             try SettingsHostValidator.validate(
                 launchInfo: launchInfo,
-                resolver: FakeHostProcessResolver(snapshot: SettingsHostProcessSnapshot(
-                    exists: true,
-                    bundleIdentifier: "com.glasseq.app",
-                    parentProcessIdentifier: 456
-                ))
+                resolver: FakeHostProcessResolver(
+                    snapshot: SettingsHostProcessSnapshot(
+                        exists: true,
+                        bundleIdentifier: "com.glasseq.app",
+                        parentProcessIdentifier: 456
+                    ))
             )
         }
         #expect(throws: SettingsCommandFailure.self) {
             try SettingsHostValidator.validate(
                 launchInfo: launchInfo,
-                resolver: FakeHostProcessResolver(snapshot: SettingsHostProcessSnapshot(
-                    exists: true,
-                    bundleIdentifier: "com.example.other",
-                    parentProcessIdentifier: 123
-                ))
+                resolver: FakeHostProcessResolver(
+                    snapshot: SettingsHostProcessSnapshot(
+                        exists: true,
+                        bundleIdentifier: "com.example.other",
+                        parentProcessIdentifier: 123
+                    ))
             )
         }
     }
@@ -1792,7 +1825,7 @@ private final class FakeSettingsPipeClient: SettingsPipeClientConnection, @unche
 private func launchArguments() -> [String] {
     [
         "GlassEQSettings",
-        "--glasseq-main-pid", "123"
+        "--glasseq-main-pid", "123",
     ]
 }
 
@@ -1878,7 +1911,8 @@ private extension Result where Success == Void, Failure == any Error {
 
     var isClosedPipePumpFailure: Bool {
         if case .failure(let error as SettingsPipeWritePumpError) = self,
-           error == .closed {
+            error == .closed
+        {
             return true
         }
         return false

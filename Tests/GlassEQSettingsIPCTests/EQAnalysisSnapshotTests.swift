@@ -24,18 +24,20 @@ struct EQAnalysisSnapshotTests {
     @Test
     func asynchronousAnalysisMatchesCoreReference() async throws {
         let sampleRate = 48_000.0
-        let leftSource = EQConvolutionSource.impulseResponse(ImpulseResponseSource(
-            sampleRate: sampleRate,
-            samples: (0..<1_024).map { index in
-                Float(0.25 * sin(2 * Double.pi * Double(index) / 31))
-            }
-        ))
-        let rightSource = EQConvolutionSource.impulseResponse(ImpulseResponseSource(
-            sampleRate: sampleRate,
-            samples: (0..<1_024).map { index in
-                Float(0.125 * cos(2 * Double.pi * Double(index) / 47))
-            }
-        ))
+        let leftSource = EQConvolutionSource.impulseResponse(
+            ImpulseResponseSource(
+                sampleRate: sampleRate,
+                samples: (0..<1_024).map { index in
+                    Float(0.25 * sin(2 * Double.pi * Double(index) / 31))
+                }
+            ))
+        let rightSource = EQConvolutionSource.impulseResponse(
+            ImpulseResponseSource(
+                sampleRate: sampleRate,
+                samples: (0..<1_024).map { index in
+                    Float(0.125 * cos(2 * Double.pi * Double(index) / 47))
+                }
+            ))
         let profile = EQProfile(
             name: "Stereo analysis",
             mode: .convolution,
@@ -54,36 +56,48 @@ struct EQAnalysisSnapshotTests {
             sampleRate: sampleRate
         )
 
-        #expect(analysis.signature == EQAnalysisSignature(
-            profile: profile,
-            sampleRate: sampleRate
-        ))
+        #expect(
+            analysis.signature
+                == EQAnalysisSignature(
+                    profile: profile,
+                    sampleRate: sampleRate
+                ))
         #expect(analysis.channelMode == .stereo)
-        #expect(analysis.recommendedPreampDB == (try EQProfileAnalysis.recommendedPreampDB(
-            profile: profile,
-            sampleRate: sampleRate,
-            cancellationCheck: {}
-        )))
-        #expect(analysis.maximumUsableFrequency == EQRouteFrequencyPolicy.maximumUsableFrequency(
-            sampleRate: sampleRate
-        ))
-        #expect(analysis.inactiveEnabledFilterCount == EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
-            profile: profile,
-            sampleRate: sampleRate
-        ))
+        #expect(
+            analysis.recommendedPreampDB
+                == (try EQProfileAnalysis.recommendedPreampDB(
+                    profile: profile,
+                    sampleRate: sampleRate,
+                    cancellationCheck: {}
+                )))
+        #expect(
+            analysis.maximumUsableFrequency
+                == EQRouteFrequencyPolicy.maximumUsableFrequency(
+                    sampleRate: sampleRate
+                ))
+        #expect(
+            analysis.inactiveEnabledFilterCount
+                == EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
+                    profile: profile,
+                    sampleRate: sampleRate
+                ))
         #expect(analysis.linkedPoints.isEmpty)
-        #expect(analysis.leftPoints == FrequencyResponse.points(
-            for: leftSource,
-            preampDB: profile.leftPreampDB,
-            sampleRate: sampleRate,
-            cancellationCheck: {}
-        ))
-        #expect(analysis.rightPoints == FrequencyResponse.points(
-            for: rightSource,
-            preampDB: profile.rightPreampDB,
-            sampleRate: sampleRate,
-            cancellationCheck: {}
-        ))
+        #expect(
+            analysis.leftPoints
+                == FrequencyResponse.points(
+                    for: leftSource,
+                    preampDB: profile.leftPreampDB,
+                    sampleRate: sampleRate,
+                    cancellationCheck: {}
+                ))
+        #expect(
+            analysis.rightPoints
+                == FrequencyResponse.points(
+                    for: rightSource,
+                    preampDB: profile.rightPreampDB,
+                    sampleRate: sampleRate,
+                    cancellationCheck: {}
+                ))
     }
 
     @Test
@@ -149,9 +163,10 @@ struct EQAnalysisSnapshotTests {
 
     @Test
     func preampOnlyUpdateReusesPreparedImpulseResponseAnalysis() async throws {
-        let profile = impulseResponseProfile(samples: (0..<1_024).map { index in
-            Float(0.2 * sin(2 * Double.pi * Double(index) / 37))
-        })
+        let profile = impulseResponseProfile(
+            samples: (0..<1_024).map { index in
+                Float(0.2 * sin(2 * Double.pi * Double(index) / 37))
+            })
         let analysis = try await EQAnalysisSnapshot.analyze(
             profile: profile,
             sampleRate: 48_000
@@ -159,10 +174,11 @@ struct EQAnalysisSnapshotTests {
         var updatedProfile = profile
         updatedProfile.preampDB = -7.25
 
-        let updated = try #require(analysis.updatingPreamp(
-            profile: updatedProfile,
-            sampleRate: 48_000
-        ))
+        let updated = try #require(
+            analysis.updatingPreamp(
+                profile: updatedProfile,
+                sampleRate: 48_000
+            ))
         let reference = try await EQAnalysisSnapshot.analyze(
             profile: updatedProfile,
             sampleRate: 48_000
@@ -179,15 +195,17 @@ struct EQAnalysisSnapshotTests {
             sampleRate: 48_000
         )
         var changedProfile = profile
-        changedProfile.convolution = .impulseResponse(ImpulseResponseSource(
-            sampleRate: 48_000,
-            samples: [1, 0.25]
-        ))
+        changedProfile.convolution = .impulseResponse(
+            ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25]
+            ))
 
-        #expect(analysis.updatingPreamp(
-            profile: changedProfile,
-            sampleRate: 48_000
-        ) == nil)
+        #expect(
+            analysis.updatingPreamp(
+                profile: changedProfile,
+                sampleRate: 48_000
+            ) == nil)
     }
 
     private func impulseResponseProfile(samples: [Float]) -> EQProfile {
@@ -195,10 +213,11 @@ struct EQAnalysisSnapshotTests {
             name: "Impulse response analysis",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: samples
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: samples
+                ))
         )
     }
 }

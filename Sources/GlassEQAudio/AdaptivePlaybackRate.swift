@@ -201,8 +201,9 @@ struct HermitePlaybackResampler {
     ) -> Bool {
         let outputFrames = max(outputFrames, 0)
         guard outputFrames > 0,
-              input.count >= plan.combinedFrames * channelCount,
-              output.count >= outputFrames * channelCount else {
+            input.count >= plan.combinedFrames * channelCount,
+            output.count >= outputFrames * channelCount
+        else {
             return false
         }
 
@@ -248,9 +249,10 @@ struct HermitePlaybackResampler {
         }
         for frame in 0..<nextRetainedFrames {
             for channel in 0..<channelCount {
-                retainedSamples[frame * channelCount + channel] = input[
-                    (retainStart + frame) * channelCount + channel
-                ]
+                retainedSamples[frame * channelCount + channel] =
+                    input[
+                        (retainStart + frame) * channelCount + channel
+                    ]
             }
         }
         retainedFrames = nextRetainedFrames

@@ -1,5 +1,3 @@
-import Foundation
-
 /// Monotonic time for scheduling and for advancing trusted time within a process. Values are
 /// durations since an arbitrary per-clock origin, so they never move backwards with the wall clock.
 public protocol LicensingClock: Sendable {

@@ -1,4 +1,4 @@
-import AVFoundation
+import AVFAudio
 import Foundation
 import GlassEQCore
 import GlassEQProfileImport
@@ -104,7 +104,7 @@ struct ImpulseResponseWAVImporterTests {
     func importsStereoWAVWithoutCombiningChannels() throws {
         let url = try writeWAV(channels: [
             [1, 0.5, 0.25],
-            [-1, -0.5, -0.25]
+            [-1, -0.5, -0.25],
         ])
         defer { try? FileManager.default.removeItem(at: url) }
 
@@ -114,7 +114,8 @@ struct ImpulseResponseWAVImporterTests {
         #expect(imported.sourceFileCount == 1)
         #expect(imported.profile.channelMode == .stereo)
         guard case .impulseResponse(let left) = imported.profile.leftConvolution,
-              case .impulseResponse(let right) = imported.profile.rightConvolution else {
+            case .impulseResponse(let right) = imported.profile.rightConvolution
+        else {
             Issue.record("Expected independent stereo impulse responses")
             return
         }
@@ -146,7 +147,8 @@ struct ImpulseResponseWAVImporterTests {
         #expect(rightChannel.filename == rightURL.lastPathComponent)
         #expect(rightChannel.frameCount == 2)
         guard case .impulseResponse(let left) = imported.profile.leftConvolution,
-              case .impulseResponse(let right) = imported.profile.rightConvolution else {
+            case .impulseResponse(let right) = imported.profile.rightConvolution
+        else {
             Issue.record("Expected separate left and right impulse responses")
             return
         }
@@ -157,7 +159,8 @@ struct ImpulseResponseWAVImporterTests {
 
         #expect(imported.channels == .stereo(left: rightChannel, right: leftChannel))
         guard case .impulseResponse(let swappedLeft) = imported.profile.leftConvolution,
-              case .impulseResponse(let swappedRight) = imported.profile.rightConvolution else {
+            case .impulseResponse(let swappedRight) = imported.profile.rightConvolution
+        else {
             Issue.record("Expected swapped left and right impulse responses")
             return
         }
@@ -174,10 +177,12 @@ struct ImpulseResponseWAVImporterTests {
             try? FileManager.default.removeItem(at: rightURL)
         }
 
-        #expect(throws: ImpulseResponseWAVImportError.separateFilesMustBeMono(
-            leftChannels: 2,
-            rightChannels: 1
-        )) {
+        #expect(
+            throws: ImpulseResponseWAVImportError.separateFilesMustBeMono(
+                leftChannels: 2,
+                rightChannels: 1
+            )
+        ) {
             _ = try ImpulseResponseWAVImporter.loadStereoPair(
                 leftURL: leftURL,
                 rightURL: rightURL
@@ -194,10 +199,12 @@ struct ImpulseResponseWAVImporterTests {
             try? FileManager.default.removeItem(at: rightURL)
         }
 
-        #expect(throws: ImpulseResponseWAVImportError.channelSampleRateMismatch(
-            left: 48_000,
-            right: 96_000
-        )) {
+        #expect(
+            throws: ImpulseResponseWAVImportError.channelSampleRateMismatch(
+                left: 48_000,
+                right: 96_000
+            )
+        ) {
             _ = try ImpulseResponseWAVImporter.loadStereoPair(
                 leftURL: leftURL,
                 rightURL: rightURL
@@ -207,14 +214,16 @@ struct ImpulseResponseWAVImporterTests {
 
     @Test
     func importsSeparateTextFilesAsLeftAndRightFilters() throws {
-        let leftURL = try writeText("""
-        Preamp: -2 dB
-        Filter 1: ON PK Fc 100 Hz Gain 3 dB Q 1
-        """)
-        let rightURL = try writeText("""
-        Preamp: -4 dB
-        Filter 1: ON PK Fc 200 Hz Gain -2 dB Q 2
-        """)
+        let leftURL = try writeText(
+            """
+            Preamp: -2 dB
+            Filter 1: ON PK Fc 100 Hz Gain 3 dB Q 1
+            """)
+        let rightURL = try writeText(
+            """
+            Preamp: -4 dB
+            Filter 1: ON PK Fc 200 Hz Gain -2 dB Q 2
+            """)
         defer {
             try? FileManager.default.removeItem(at: leftURL)
             try? FileManager.default.removeItem(at: rightURL)
@@ -261,7 +270,8 @@ struct ImpulseResponseWAVImporterTests {
         #expect(imported.profile.mode == .convolution)
         #expect(imported.profile.channelMode == .stereo)
         guard case .magnitudeCurve(let left) = imported.profile.leftConvolution,
-              case .magnitudeCurve(let right) = imported.profile.rightConvolution else {
+            case .magnitudeCurve(let right) = imported.profile.rightConvolution
+        else {
             Issue.record("Expected separate response curves")
             return
         }
@@ -271,18 +281,20 @@ struct ImpulseResponseWAVImporterTests {
 
     @Test
     func importsSeparateREWFilesAsLeftAndRightFilters() throws {
-        let leftURL = try writeText("""
-        Filter Settings file
-        Room EQ V5.31.3
-        Equaliser: Generic
-        Filter 1: ON PK Fc 45 Hz Gain -4.5 dB Q 3.2
-        """)
-        let rightURL = try writeText("""
-        Filter Settings file
-        Room EQ V5.31.3
-        Equaliser: Generic
-        Filter 1: ON PK Fc 63 Hz Gain -2.5 dB Q 2.1
-        """)
+        let leftURL = try writeText(
+            """
+            Filter Settings file
+            Room EQ V5.31.3
+            Equaliser: Generic
+            Filter 1: ON PK Fc 45 Hz Gain -4.5 dB Q 3.2
+            """)
+        let rightURL = try writeText(
+            """
+            Filter Settings file
+            Room EQ V5.31.3
+            Equaliser: Generic
+            Filter 1: ON PK Fc 63 Hz Gain -2.5 dB Q 2.1
+            """)
         defer {
             try? FileManager.default.removeItem(at: leftURL)
             try? FileManager.default.removeItem(at: rightURL)
@@ -317,12 +329,13 @@ struct ImpulseResponseWAVImporterTests {
     ) throws -> URL {
         let frameCount = try #require(channels.first?.count)
         #expect(channels.allSatisfy { $0.count == frameCount })
-        let format = try #require(AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: AVAudioChannelCount(channels.count),
-            interleaved: false
-        ))
+        let format = try #require(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sampleRate,
+                channels: AVAudioChannelCount(channels.count),
+                interleaved: false
+            ))
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQ-IR-\(UUID().uuidString).wav")
         let file = try AVAudioFile(
@@ -331,10 +344,11 @@ struct ImpulseResponseWAVImporterTests {
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
-        let buffer = try #require(AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: AVAudioFrameCount(frameCount)
-        ))
+        let buffer = try #require(
+            AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: AVAudioFrameCount(frameCount)
+            ))
         buffer.frameLength = AVAudioFrameCount(frameCount)
         let storage = try #require(buffer.floatChannelData)
         for channel in channels.indices {

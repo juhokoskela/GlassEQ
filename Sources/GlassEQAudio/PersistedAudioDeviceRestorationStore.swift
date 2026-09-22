@@ -34,8 +34,9 @@ enum PersistedAudioDeviceRestorationStore {
 
     static func load(from url: URL) -> [String: PersistedAudioDeviceRestorationRecord] {
         guard let data = try? readBoundedData(from: url),
-              let records = try? JSONDecoder().decode([PersistedAudioDeviceRestorationRecord].self, from: data),
-              records.count <= maximumRecordCount else {
+            let records = try? JSONDecoder().decode([PersistedAudioDeviceRestorationRecord].self, from: data),
+            records.count <= maximumRecordCount
+        else {
             return [:]
         }
         var recordsByUID: [String: PersistedAudioDeviceRestorationRecord] = [:]
@@ -85,9 +86,10 @@ enum PersistedAudioDeviceRestorationStore {
 
     static func recordSampleRate(uid: String, originalSampleRate: Double, at url: URL) throws {
         guard isValidUID(uid),
-              originalSampleRate.isFinite,
-              originalSampleRate > 0,
-              originalSampleRate <= CoreAudioDeviceQuery.maxSampleRate else {
+            originalSampleRate.isFinite,
+            originalSampleRate > 0,
+            originalSampleRate <= CoreAudioDeviceQuery.maxSampleRate
+        else {
             throw PersistenceError.invalidRecord
         }
         var records = load(from: url)
@@ -101,8 +103,9 @@ enum PersistedAudioDeviceRestorationStore {
 
     static func recordBufferFrameSize(uid: String, originalFrameSize: UInt32, at url: URL) throws {
         guard isValidUID(uid),
-              originalFrameSize > 0,
-              originalFrameSize <= CoreAudioDeviceQuery.maxBufferFrameSize else {
+            originalFrameSize > 0,
+            originalFrameSize <= CoreAudioDeviceQuery.maxBufferFrameSize
+        else {
             throw PersistenceError.invalidRecord
         }
         var records = load(from: url)
@@ -141,11 +144,13 @@ enum PersistedAudioDeviceRestorationStore {
             return false
         }
         if let sampleRate = record.originalSampleRate,
-           !sampleRate.isFinite || sampleRate <= 0 || sampleRate > CoreAudioDeviceQuery.maxSampleRate {
+            !sampleRate.isFinite || sampleRate <= 0 || sampleRate > CoreAudioDeviceQuery.maxSampleRate
+        {
             return false
         }
         if let frameSize = record.originalBufferFrameSize,
-           frameSize == 0 || frameSize > CoreAudioDeviceQuery.maxBufferFrameSize {
+            frameSize == 0 || frameSize > CoreAudioDeviceQuery.maxBufferFrameSize
+        {
             return false
         }
         return true

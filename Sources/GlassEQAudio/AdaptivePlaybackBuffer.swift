@@ -1,4 +1,3 @@
-import CoreAudio
 import Foundation
 
 public enum PlaybackBufferInstabilityReason: UInt8, Codable, Equatable, Sendable {
@@ -168,7 +167,8 @@ struct PlaybackBufferUnderrunEvidence: Sendable {
             return false
         }
         if let startedAt,
-           startedAt.duration(to: now) > window {
+            startedAt.duration(to: now) > window
+        {
             reset()
         }
         if startedAt == nil {
@@ -340,34 +340,38 @@ enum PersistedPlaybackBufferCalibrationStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         if let document = try? decoder.decode(PersistedPlaybackBufferCalibrationDocument.self, from: data),
-           document.schemaVersion == PersistedPlaybackBufferCalibrationDocument.currentSchemaVersion,
-           hasBoundedCollections(document.calibrations) {
+            document.schemaVersion == PersistedPlaybackBufferCalibrationDocument.currentSchemaVersion,
+            hasBoundedCollections(document.calibrations)
+        {
             return normalized(document.calibrations)
         }
 
         // Schema 2 persisted callback growth caused by timestamp reanchors. Do not migrate that
         // contaminated evidence; legacy and schema 1 records predate that escalation path.
         if let document = try? decoder.decode(PersistedPlaybackBufferCalibrationDocumentV1.self, from: data),
-           document.schemaVersion == 1,
-           document.calibrations.count <= maximumRecordCount,
-           document.calibrations.allSatisfy({ $0.events.count <= maximumDecodedEventCount }) {
+            document.schemaVersion == 1,
+            document.calibrations.count <= maximumRecordCount,
+            document.calibrations.allSatisfy({ $0.events.count <= maximumDecodedEventCount })
+        {
             return normalized(document.calibrations.map(migrateV1Calibration))
         }
 
         guard let legacyRecords = try? JSONDecoder().decode([LegacyPersistedPlaybackBufferSize].self, from: data),
-              legacyRecords.count <= maximumRecordCount else {
+            legacyRecords.count <= maximumRecordCount
+        else {
             return []
         }
-        return normalized(legacyRecords.map {
-            PersistedPlaybackBufferCalibration(
-                outputUID: $0.outputUID,
-                sampleRate: $0.sampleRate,
-                stableFrameSize: $0.frameSize,
-                probingFrameSize: nil,
-                operatingPoints: [],
-                events: []
-            )
-        })
+        return normalized(
+            legacyRecords.map {
+                PersistedPlaybackBufferCalibration(
+                    outputUID: $0.outputUID,
+                    sampleRate: $0.sampleRate,
+                    stableFrameSize: $0.frameSize,
+                    probingFrameSize: nil,
+                    operatingPoints: [],
+                    events: []
+                )
+            })
     }
 
     static func calibration(
@@ -436,9 +440,10 @@ enum PersistedPlaybackBufferCalibrationStore {
         at url: URL
     ) throws {
         guard isValidFrameSize(previousFrameSize),
-              isValidFrameSize(resultingFrameSize),
-              isValidTargetFrames(previousTargetFrames),
-              isValidTargetFrames(resultingTargetFrames) else {
+            isValidFrameSize(resultingFrameSize),
+            isValidTargetFrames(previousTargetFrames),
+            isValidTargetFrames(resultingTargetFrames)
+        else {
             return
         }
         guard reason == .underrun else {
@@ -453,11 +458,13 @@ enum PersistedPlaybackBufferCalibrationStore {
             let previousCalibration = calibration
             let previousTarget = UInt32(clamping: previousTargetFrames)
             if resultingFrameSize != previousFrameSize,
-               calibration.stableFrameSize == previousFrameSize {
+                calibration.stableFrameSize == previousFrameSize
+            {
                 calibration.stableFrameSize = nil
             }
             if resultingFrameSize != previousFrameSize,
-               calibration.probingFrameSize == previousFrameSize {
+                calibration.probingFrameSize == previousFrameSize
+            {
                 calibration.probingFrameSize = resultingFrameSize
             }
             if calibration.stableFrameSize == nil {
@@ -479,15 +486,16 @@ enum PersistedPlaybackBufferCalibrationStore {
             guard calibration != previousCalibration else {
                 return
             }
-            calibration.events.append(PlaybackBufferCalibrationEvent(
-                kind: .instability,
-                timestamp: timestamp,
-                reason: reason,
-                previousFrameSize: previousFrameSize,
-                resultingFrameSize: resultingFrameSize,
-                previousTargetFrames: previousTarget,
-                resultingTargetFrames: UInt32(clamping: resultingTargetFrames)
-            ))
+            calibration.events.append(
+                PlaybackBufferCalibrationEvent(
+                    kind: .instability,
+                    timestamp: timestamp,
+                    reason: reason,
+                    previousFrameSize: previousFrameSize,
+                    resultingFrameSize: resultingFrameSize,
+                    previousTargetFrames: previousTarget,
+                    resultingTargetFrames: UInt32(clamping: resultingTargetFrames)
+                ))
         }
     }
 
@@ -515,15 +523,16 @@ enum PersistedPlaybackBufferCalibrationStore {
                 operatingPoint.stableTargetFrames = UInt32(clamping: targetFrames)
                 operatingPoint.probingTargetFrames = nil
             }
-            calibration.events.append(PlaybackBufferCalibrationEvent(
-                kind: .stabilized,
-                timestamp: timestamp,
-                reason: nil,
-                previousFrameSize: nil,
-                resultingFrameSize: frameSize,
-                previousTargetFrames: nil,
-                resultingTargetFrames: UInt32(clamping: targetFrames)
-            ))
+            calibration.events.append(
+                PlaybackBufferCalibrationEvent(
+                    kind: .stabilized,
+                    timestamp: timestamp,
+                    reason: nil,
+                    previousFrameSize: nil,
+                    resultingFrameSize: frameSize,
+                    previousTargetFrames: nil,
+                    resultingTargetFrames: UInt32(clamping: targetFrames)
+                ))
         }
     }
 
@@ -536,8 +545,9 @@ enum PersistedPlaybackBufferCalibrationStore {
     ) throws {
         let tapSampleRate = tapSampleRate ?? sampleRate
         guard isValidOutputUID(outputUID),
-              isValidSampleRate(sampleRate),
-              isValidSampleRate(tapSampleRate) else {
+            isValidSampleRate(sampleRate),
+            isValidSampleRate(tapSampleRate)
+        else {
             return
         }
 
@@ -554,15 +564,16 @@ enum PersistedPlaybackBufferCalibrationStore {
             guard calibrations.count < maximumRecordCount else {
                 throw PersistenceError.tooManyRecords
             }
-            calibrations.append(PersistedPlaybackBufferCalibration(
-                outputUID: outputUID,
-                sampleRate: sampleRate,
-                tapSampleRate: tapSampleRate,
-                stableFrameSize: nil,
-                probingFrameSize: nil,
-                operatingPoints: [],
-                events: []
-            ))
+            calibrations.append(
+                PersistedPlaybackBufferCalibration(
+                    outputUID: outputUID,
+                    sampleRate: sampleRate,
+                    tapSampleRate: tapSampleRate,
+                    stableFrameSize: nil,
+                    probingFrameSize: nil,
+                    operatingPoints: [],
+                    events: []
+                ))
             index = calibrations.index(before: calibrations.endIndex)
         }
 
@@ -608,7 +619,8 @@ enum PersistedPlaybackBufferCalibrationStore {
         var uniqueRecords: [String: PersistedPlaybackBufferCalibration] = [:]
         for var calibration in calibrations where isValidCalibrationIdentity(calibration) {
             guard calibration.operatingPoints.count <= maximumOperatingPointCount,
-                  calibration.events.count <= maximumDecodedEventCount else {
+                calibration.events.count <= maximumDecodedEventCount
+            else {
                 continue
             }
             calibration.stableFrameSize = calibration.stableFrameSize.flatMap {
@@ -662,9 +674,11 @@ enum PersistedPlaybackBufferCalibrationStore {
             operatingPoint.unstableThroughTargetFrames = operatingPoint.unstableThroughTargetFrames.flatMap {
                 isValidTargetFrames($0) ? $0 : nil
             }
-            guard operatingPoint.stableTargetFrames != nil
+            guard
+                operatingPoint.stableTargetFrames != nil
                     || operatingPoint.probingTargetFrames != nil
-                    || operatingPoint.unstableThroughTargetFrames != nil else {
+                    || operatingPoint.unstableThroughTargetFrames != nil
+            else {
                 continue
             }
             if var existing = pointsByFrameSize[operatingPoint.frameSize] {
@@ -700,13 +714,15 @@ enum PersistedPlaybackBufferCalibrationStore {
             events: calibration.events
         )
         if let frameSize = calibration.stableFrameSize,
-           let targetFrames = calibration.stableTargetFrames {
+            let targetFrames = calibration.stableTargetFrames
+        {
             migrated.updateOperatingPoint(for: frameSize) { operatingPoint in
                 operatingPoint.stableTargetFrames = targetFrames
             }
         }
         if let frameSize = calibration.probingFrameSize ?? calibration.stableFrameSize,
-           let targetFrames = calibration.probingTargetFrames {
+            let targetFrames = calibration.probingTargetFrames
+        {
             migrated.updateOperatingPoint(for: frameSize) { operatingPoint in
                 operatingPoint.probingTargetFrames = targetFrames
             }
@@ -854,7 +870,8 @@ struct AdaptivePlaybackBufferPolicy {
         calibration: PersistedPlaybackBufferCalibration?,
         supportedRange: AudioBufferFrameSizeRange
     ) -> UInt32 {
-        let calibratedFrameSize = calibration?.probingFrameSize
+        let calibratedFrameSize =
+            calibration?.probingFrameSize
             ?? calibration?.stableFrameSize
             ?? 0
         return min(
@@ -893,7 +910,8 @@ struct AdaptivePlaybackBufferPolicy {
             baselineTargetFrames
         )
         guard candidate >= minimum,
-              candidate > Int(unstableThroughTargetFrames ?? 0) else {
+            candidate > Int(unstableThroughTargetFrames ?? 0)
+        else {
             return nil
         }
         return candidate
@@ -922,8 +940,9 @@ struct OutputCallbackTimestampTracker {
 
     mutating func observe(sampleTime: Double?, frameCount: Int) -> Bool {
         guard let sampleTime,
-              sampleTime.isFinite,
-              frameCount > 0 else {
+            sampleTime.isFinite,
+            frameCount > 0
+        else {
             reset()
             return false
         }

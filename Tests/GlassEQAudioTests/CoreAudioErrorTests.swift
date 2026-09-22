@@ -23,12 +23,12 @@ struct CoreAudioErrorTests {
             "AudioHardwareCreateProcessTap(system sounds)",
             "AudioDeviceStart(capture tap)",
             "AudioDeviceStart(combined aggregate)",
-            "AudioDeviceStart(profile rebuild mute tap)"
+            "AudioDeviceStart(profile rebuild mute tap)",
         ]
         let statuses = [
             kAudioDevicePermissionsError,
             kAudioHardwareIllegalOperationError,
-            OSStatus(EPERM)
+            OSStatus(EPERM),
         ]
 
         for operation in operations {
@@ -54,7 +54,7 @@ struct CoreAudioErrorTests {
                 .coreAudioOperationFailed
             ),
             ("AudioHardwareCreateProcessTapMetadata", kAudioHardwareIllegalOperationError, .coreAudioOperationFailed),
-            ("AudioHardwareCreateProcessTap(main)", kAudioDeviceUnsupportedFormatError, .deviceFormatUnsupported)
+            ("AudioHardwareCreateProcessTap(main)", kAudioDeviceUnsupportedFormatError, .deviceFormatUnsupported),
         ]
 
         for (operation, status, expectedCategory) in cases {

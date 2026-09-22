@@ -409,38 +409,64 @@ public struct SettingsAudioRenderTimingDTO: Codable, Equatable, Sendable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
-            callbackStartLatenessObservations: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartLatenessObservations) ?? 0,
-            callbackStartLatenessP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartLatenessP50Nanoseconds) ?? 0,
-            callbackStartLatenessP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartLatenessP99Nanoseconds) ?? 0,
-            callbackStartLatenessP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartLatenessP999Nanoseconds) ?? 0,
-            callbackStartLatenessP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartLatenessP9999Nanoseconds) ?? 0,
-            maximumCallbackStartLatenessNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumCallbackStartLatenessNanoseconds) ?? 0,
+            callbackStartLatenessObservations: try container.decodeIfPresent(
+                UInt64.self, forKey: .callbackStartLatenessObservations) ?? 0,
+            callbackStartLatenessP50Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .callbackStartLatenessP50Nanoseconds) ?? 0,
+            callbackStartLatenessP99Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .callbackStartLatenessP99Nanoseconds) ?? 0,
+            callbackStartLatenessP999Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .callbackStartLatenessP999Nanoseconds) ?? 0,
+            callbackStartLatenessP9999Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .callbackStartLatenessP9999Nanoseconds) ?? 0,
+            maximumCallbackStartLatenessNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumCallbackStartLatenessNanoseconds) ?? 0,
             directHeadObservations: try container.decodeIfPresent(UInt64.self, forKey: .directHeadObservations) ?? 0,
-            directHeadP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP50Nanoseconds) ?? 0,
-            directHeadP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP99Nanoseconds) ?? 0,
-            directHeadP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP999Nanoseconds) ?? 0,
-            directHeadP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP9999Nanoseconds) ?? 0,
-            maximumDirectHeadNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumDirectHeadNanoseconds) ?? 0,
+            directHeadP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP50Nanoseconds)
+                ?? 0,
+            directHeadP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP99Nanoseconds)
+                ?? 0,
+            directHeadP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP999Nanoseconds)
+                ?? 0,
+            directHeadP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .directHeadP9999Nanoseconds)
+                ?? 0,
+            maximumDirectHeadNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumDirectHeadNanoseconds) ?? 0,
             tailWorkObservations: try container.decodeIfPresent(UInt64.self, forKey: .tailWorkObservations) ?? 0,
             tailWorkP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .tailWorkP50Nanoseconds) ?? 0,
             tailWorkP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .tailWorkP99Nanoseconds) ?? 0,
             tailWorkP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .tailWorkP999Nanoseconds) ?? 0,
-            tailWorkP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .tailWorkP9999Nanoseconds) ?? 0,
-            maximumTailWorkNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTailWorkNanoseconds) ?? 0,
+            tailWorkP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .tailWorkP9999Nanoseconds)
+                ?? 0,
+            maximumTailWorkNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTailWorkNanoseconds)
+                ?? 0,
             totalRenderObservations: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderObservations) ?? 0,
-            totalRenderP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP50Nanoseconds) ?? 0,
-            totalRenderP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP99Nanoseconds) ?? 0,
-            totalRenderP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP999Nanoseconds) ?? 0,
-            totalRenderP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP9999Nanoseconds) ?? 0,
-            maximumTotalRenderNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTotalRenderNanoseconds) ?? 0,
-            completionLatenessObservations: try container.decodeIfPresent(UInt64.self, forKey: .completionLatenessObservations) ?? 0,
-            completionLatenessP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .completionLatenessP50Nanoseconds) ?? 0,
-            completionLatenessP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .completionLatenessP99Nanoseconds) ?? 0,
-            completionLatenessP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .completionLatenessP999Nanoseconds) ?? 0,
-            completionLatenessP9999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .completionLatenessP9999Nanoseconds) ?? 0,
-            maximumCompletionLatenessNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumCompletionLatenessNanoseconds) ?? 0,
-            tailCompletionObservations: try container.decodeIfPresent(UInt64.self, forKey: .tailCompletionObservations) ?? 0,
-            minimumTailCompletionSlackFrames: try container.decodeIfPresent(Int.self, forKey: .minimumTailCompletionSlackFrames) ?? 0,
+            totalRenderP50Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP50Nanoseconds)
+                ?? 0,
+            totalRenderP99Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP99Nanoseconds)
+                ?? 0,
+            totalRenderP999Nanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .totalRenderP999Nanoseconds)
+                ?? 0,
+            totalRenderP9999Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .totalRenderP9999Nanoseconds) ?? 0,
+            maximumTotalRenderNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumTotalRenderNanoseconds) ?? 0,
+            completionLatenessObservations: try container.decodeIfPresent(
+                UInt64.self, forKey: .completionLatenessObservations) ?? 0,
+            completionLatenessP50Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .completionLatenessP50Nanoseconds) ?? 0,
+            completionLatenessP99Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .completionLatenessP99Nanoseconds) ?? 0,
+            completionLatenessP999Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .completionLatenessP999Nanoseconds) ?? 0,
+            completionLatenessP9999Nanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .completionLatenessP9999Nanoseconds) ?? 0,
+            maximumCompletionLatenessNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumCompletionLatenessNanoseconds) ?? 0,
+            tailCompletionObservations: try container.decodeIfPresent(UInt64.self, forKey: .tailCompletionObservations)
+                ?? 0,
+            minimumTailCompletionSlackFrames: try container.decodeIfPresent(
+                Int.self, forKey: .minimumTailCompletionSlackFrames) ?? 0,
             tailDeadlineMisses: try container.decodeIfPresent(UInt64.self, forKey: .tailDeadlineMisses) ?? 0
         )
     }
@@ -683,24 +709,42 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             saturatedSamples: try container.decodeIfPresent(UInt64.self, forKey: .saturatedSamples) ?? 0,
             currentBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .currentBufferedFrames) ?? 0,
             maxBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .maxBufferedFrames) ?? 0,
-            maximumPlaybackBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .maximumPlaybackBufferedFrames) ?? 0,
-            minimumPlaybackBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .minimumPlaybackBufferedFrames) ?? 0,
-            averagePlaybackBufferedFrames: try container.decodeIfPresent(Double.self, forKey: .averagePlaybackBufferedFrames) ?? 0,
-            playbackBufferObservations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferObservations) ?? 0,
-            inputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .inputTimestampDiscontinuities) ?? 0,
-            outputTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .outputTimestampDiscontinuities) ?? 0,
-            pairedTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .pairedTimestampDiscontinuities) ?? 0,
-            qualifyingPairedTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .qualifyingPairedTimestampDiscontinuities) ?? 0,
-            lastInputTimestampJumpFrames: try container.decodeIfPresent(Double.self, forKey: .lastInputTimestampJumpFrames) ?? 0,
-            lastOutputTimestampJumpFrames: try container.decodeIfPresent(Double.self, forKey: .lastOutputTimestampJumpFrames) ?? 0,
-            lastInputHostIntervalErrorNanoseconds: try container.decodeIfPresent(Int64.self, forKey: .lastInputHostIntervalErrorNanoseconds) ?? 0,
-            lastOutputHostIntervalErrorNanoseconds: try container.decodeIfPresent(Int64.self, forKey: .lastOutputHostIntervalErrorNanoseconds) ?? 0,
-            timestampJumpIntervalObservations: try container.decodeIfPresent(UInt64.self, forKey: .timestampJumpIntervalObservations) ?? 0,
-            minimumTimestampJumpIntervalNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumTimestampJumpIntervalNanoseconds) ?? 0,
-            maximumTimestampJumpIntervalNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTimestampJumpIntervalNanoseconds) ?? 0,
-            averageTimestampJumpIntervalNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageTimestampJumpIntervalNanoseconds) ?? 0,
-            maximumCaptureCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumCaptureCallbackFrames) ?? 0,
-            maximumPlaybackCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumPlaybackCallbackFrames) ?? 0,
+            maximumPlaybackBufferedFrames: try container.decodeIfPresent(
+                Int.self, forKey: .maximumPlaybackBufferedFrames) ?? 0,
+            minimumPlaybackBufferedFrames: try container.decodeIfPresent(
+                Int.self, forKey: .minimumPlaybackBufferedFrames) ?? 0,
+            averagePlaybackBufferedFrames: try container.decodeIfPresent(
+                Double.self, forKey: .averagePlaybackBufferedFrames) ?? 0,
+            playbackBufferObservations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferObservations)
+                ?? 0,
+            inputTimestampDiscontinuities: try container.decodeIfPresent(
+                UInt64.self, forKey: .inputTimestampDiscontinuities) ?? 0,
+            outputTimestampDiscontinuities: try container.decodeIfPresent(
+                UInt64.self, forKey: .outputTimestampDiscontinuities) ?? 0,
+            pairedTimestampDiscontinuities: try container.decodeIfPresent(
+                UInt64.self, forKey: .pairedTimestampDiscontinuities) ?? 0,
+            qualifyingPairedTimestampDiscontinuities: try container.decodeIfPresent(
+                UInt64.self, forKey: .qualifyingPairedTimestampDiscontinuities) ?? 0,
+            lastInputTimestampJumpFrames: try container.decodeIfPresent(
+                Double.self, forKey: .lastInputTimestampJumpFrames) ?? 0,
+            lastOutputTimestampJumpFrames: try container.decodeIfPresent(
+                Double.self, forKey: .lastOutputTimestampJumpFrames) ?? 0,
+            lastInputHostIntervalErrorNanoseconds: try container.decodeIfPresent(
+                Int64.self, forKey: .lastInputHostIntervalErrorNanoseconds) ?? 0,
+            lastOutputHostIntervalErrorNanoseconds: try container.decodeIfPresent(
+                Int64.self, forKey: .lastOutputHostIntervalErrorNanoseconds) ?? 0,
+            timestampJumpIntervalObservations: try container.decodeIfPresent(
+                UInt64.self, forKey: .timestampJumpIntervalObservations) ?? 0,
+            minimumTimestampJumpIntervalNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .minimumTimestampJumpIntervalNanoseconds) ?? 0,
+            maximumTimestampJumpIntervalNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumTimestampJumpIntervalNanoseconds) ?? 0,
+            averageTimestampJumpIntervalNanoseconds: try container.decodeIfPresent(
+                Double.self, forKey: .averageTimestampJumpIntervalNanoseconds) ?? 0,
+            maximumCaptureCallbackFrames: try container.decodeIfPresent(Int.self, forKey: .maximumCaptureCallbackFrames)
+                ?? 0,
+            maximumPlaybackCallbackFrames: try container.decodeIfPresent(
+                Int.self, forKey: .maximumPlaybackCallbackFrames) ?? 0,
             captureCallbackSizeObservations: try container.decodeIfPresent(
                 [SettingsAudioCallbackSizeObservationDTO].self,
                 forKey: .captureCallbackSizeObservations
@@ -710,28 +754,49 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
                 forKey: .playbackCallbackSizeObservations
             ) ?? [],
             renderDeadlineMisses: try container.decodeIfPresent(UInt64.self, forKey: .renderDeadlineMisses) ?? 0,
-            callbackStartStarvations: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartStarvations) ?? 0,
+            callbackStartStarvations: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartStarvations)
+                ?? 0,
             renderOverruns: try container.decodeIfPresent(UInt64.self, forKey: .renderOverruns) ?? 0,
-            playbackTimestampDiscontinuities: try container.decodeIfPresent(UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
-            playbackBufferRenegotiations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferRenegotiations) ?? 0,
-            adaptivePlaybackRenderFailures: try container.decodeIfPresent(UInt64.self, forKey: .adaptivePlaybackRenderFailures) ?? 0,
-            playbackRateCorrectionPPM: try container.decodeIfPresent(Double.self, forKey: .playbackRateCorrectionPPM) ?? 0,
-            playbackRateCorrectionSaturated: try container.decodeIfPresent(Bool.self, forKey: .playbackRateCorrectionSaturated) ?? false,
-            playbackOccupancyTargetFrames: try container.decodeIfPresent(Int.self, forKey: .playbackOccupancyTargetFrames) ?? 0,
-            filteredPlaybackOccupancyFrames: try container.decodeIfPresent(Double.self, forKey: .filteredPlaybackOccupancyFrames) ?? 0,
-            playbackBufferSampleRate: try container.decodeIfPresent(Double.self, forKey: .playbackBufferSampleRate) ?? 0,
-            playbackSampleRateConversionActive: try container.decodeIfPresent(Bool.self, forKey: .playbackSampleRateConversionActive) ?? false,
-            tapToOutputLatencyObservations: try container.decodeIfPresent(UInt64.self, forKey: .tapToOutputLatencyObservations) ?? 0,
-            minimumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumTapToOutputLatencyNanoseconds) ?? 0,
-            maximumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumTapToOutputLatencyNanoseconds) ?? 0,
-            averageTapToOutputLatencyNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageTapToOutputLatencyNanoseconds) ?? 0,
-            callbackTimingObservations: try container.decodeIfPresent(UInt64.self, forKey: .callbackTimingObservations) ?? 0,
-            minimumInputAgeNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumInputAgeNanoseconds) ?? 0,
-            maximumInputAgeNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumInputAgeNanoseconds) ?? 0,
-            averageInputAgeNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageInputAgeNanoseconds) ?? 0,
-            minimumOutputLeadNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumOutputLeadNanoseconds) ?? 0,
-            maximumOutputLeadNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumOutputLeadNanoseconds) ?? 0,
-            averageOutputLeadNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageOutputLeadNanoseconds) ?? 0,
+            playbackTimestampDiscontinuities: try container.decodeIfPresent(
+                UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
+            playbackBufferRenegotiations: try container.decodeIfPresent(
+                UInt64.self, forKey: .playbackBufferRenegotiations) ?? 0,
+            adaptivePlaybackRenderFailures: try container.decodeIfPresent(
+                UInt64.self, forKey: .adaptivePlaybackRenderFailures) ?? 0,
+            playbackRateCorrectionPPM: try container.decodeIfPresent(Double.self, forKey: .playbackRateCorrectionPPM)
+                ?? 0,
+            playbackRateCorrectionSaturated: try container.decodeIfPresent(
+                Bool.self, forKey: .playbackRateCorrectionSaturated) ?? false,
+            playbackOccupancyTargetFrames: try container.decodeIfPresent(
+                Int.self, forKey: .playbackOccupancyTargetFrames) ?? 0,
+            filteredPlaybackOccupancyFrames: try container.decodeIfPresent(
+                Double.self, forKey: .filteredPlaybackOccupancyFrames) ?? 0,
+            playbackBufferSampleRate: try container.decodeIfPresent(Double.self, forKey: .playbackBufferSampleRate)
+                ?? 0,
+            playbackSampleRateConversionActive: try container.decodeIfPresent(
+                Bool.self, forKey: .playbackSampleRateConversionActive) ?? false,
+            tapToOutputLatencyObservations: try container.decodeIfPresent(
+                UInt64.self, forKey: .tapToOutputLatencyObservations) ?? 0,
+            minimumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .minimumTapToOutputLatencyNanoseconds) ?? 0,
+            maximumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumTapToOutputLatencyNanoseconds) ?? 0,
+            averageTapToOutputLatencyNanoseconds: try container.decodeIfPresent(
+                Double.self, forKey: .averageTapToOutputLatencyNanoseconds) ?? 0,
+            callbackTimingObservations: try container.decodeIfPresent(UInt64.self, forKey: .callbackTimingObservations)
+                ?? 0,
+            minimumInputAgeNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .minimumInputAgeNanoseconds)
+                ?? 0,
+            maximumInputAgeNanoseconds: try container.decodeIfPresent(UInt64.self, forKey: .maximumInputAgeNanoseconds)
+                ?? 0,
+            averageInputAgeNanoseconds: try container.decodeIfPresent(Double.self, forKey: .averageInputAgeNanoseconds)
+                ?? 0,
+            minimumOutputLeadNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .minimumOutputLeadNanoseconds) ?? 0,
+            maximumOutputLeadNanoseconds: try container.decodeIfPresent(
+                UInt64.self, forKey: .maximumOutputLeadNanoseconds) ?? 0,
+            averageOutputLeadNanoseconds: try container.decodeIfPresent(
+                Double.self, forKey: .averageOutputLeadNanoseconds) ?? 0,
             renderTiming: try container.decodeIfPresent(
                 SettingsAudioRenderTimingDTO.self,
                 forKey: .renderTiming
@@ -937,7 +1002,8 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             ) ?? currentOutputSampleRate,
             currentOutputChannelCount: try container.decode(Int.self, forKey: .currentOutputChannelCount),
             currentOutputBufferFrameSize: try container.decode(UInt32.self, forKey: .currentOutputBufferFrameSize),
-            currentOutputMappedProfileID: try container.decodeIfPresent(UUID.self, forKey: .currentOutputMappedProfileID),
+            currentOutputMappedProfileID: try container.decodeIfPresent(
+                UUID.self, forKey: .currentOutputMappedProfileID),
             aggregateBuffer: try container.decodeIfPresent(
                 SettingsAggregateBufferDTO.self,
                 forKey: .aggregateBuffer
@@ -1087,9 +1153,9 @@ public enum SettingsPipeMessage: Codable, Equatable, Sendable {
     public var sessionToken: String {
         switch self {
         case .bootstrap(let sessionToken),
-             .request(let sessionToken, _, _, _),
-             .response(let sessionToken, _, _, _),
-             .event(let sessionToken, _):
+            .request(let sessionToken, _, _, _),
+            .response(let sessionToken, _, _, _),
+            .event(let sessionToken, _):
             sessionToken
         }
     }
@@ -1292,7 +1358,8 @@ public final class SettingsPipeOrderedMainActorDelivery: @unchecked Sendable {
 
         queue.async { [weak self] in
             guard let self,
-                  self.isCurrent(scheduledGeneration) else {
+                self.isCurrent(scheduledGeneration)
+            else {
                 return
             }
             let semaphore = DispatchSemaphore(value: 0)

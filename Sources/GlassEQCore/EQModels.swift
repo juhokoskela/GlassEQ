@@ -208,9 +208,11 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         rightPreampDB = try container.decodeIfPresent(Double.self, forKey: .rightPreampDB) ?? preampDB
         rightFilters = try container.decodeIfPresent([EQFilter].self, forKey: .rightFilters) ?? filters
         convolution = try container.decodeIfPresent(EQConvolutionSource.self, forKey: .convolution)
-        leftConvolution = try container.decodeIfPresent(EQConvolutionSource.self, forKey: .leftConvolution)
+        leftConvolution =
+            try container.decodeIfPresent(EQConvolutionSource.self, forKey: .leftConvolution)
             ?? convolution
-        rightConvolution = try container.decodeIfPresent(EQConvolutionSource.self, forKey: .rightConvolution)
+        rightConvolution =
+            try container.decodeIfPresent(EQConvolutionSource.self, forKey: .rightConvolution)
             ?? convolution
         isBypassed = try container.decodeIfPresent(Bool.self, forKey: .isBypassed) ?? false
     }
@@ -263,10 +265,11 @@ public struct EQProfile: Codable, Equatable, Identifiable, Sendable {
         name: "Flat Convolution",
         mode: .convolution,
         filters: [],
-        convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: 0),
-            EQMagnitudePoint(frequency: 20_000, gainDB: 0)
-        ]))
+        convolution: .magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 20_000, gainDB: 0),
+            ]))
     )
 }
 
@@ -274,14 +277,14 @@ public enum GraphicEQBands {
     public static let graphicQ = 1.414_213_562_37
 
     public static let tenBand: [Double] = [
-        31.25, 62.5, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000
+        31.25, 62.5, 125, 250, 500, 1_000, 2_000, 4_000, 8_000, 16_000,
     ]
 
     public static let thirtyOneBand: [Double] = [
         20, 25, 31.5, 40, 50, 63, 80, 100,
         125, 160, 200, 250, 315, 400, 500, 630, 800,
         1_000, 1_250, 1_600, 2_000, 2_500, 3_150, 4_000,
-        5_000, 6_300, 8_000, 10_000, 12_500, 16_000, 20_000
+        5_000, 6_300, 8_000, 10_000, 12_500, 16_000, 20_000,
     ]
 }
 
@@ -303,11 +306,8 @@ public struct ProfileStoreRepairSummary: Equatable, Sendable {
     public var removedInvalidProfiles: Int
 
     public var didRepair: Bool {
-        restoredDefaultProfiles ||
-            repairedFallbackProfileID ||
-            removedOutputMappings > 0 ||
-            deduplicatedOutputMappings > 0 ||
-            removedInvalidProfiles > 0
+        restoredDefaultProfiles || repairedFallbackProfileID || removedOutputMappings > 0
+            || deduplicatedOutputMappings > 0 || removedInvalidProfiles > 0
     }
 
     public init(
@@ -415,8 +415,9 @@ public struct ProfileStore: Codable, Equatable, Sendable {
 
     public func profile(forOutputUID uid: String?) -> EQProfile {
         if let uid,
-           let profileID = outputMappings.first(where: { $0.outputDeviceUID == uid })?.profileID,
-           let profile = profiles.first(where: { $0.id == profileID }) {
+            let profileID = outputMappings.first(where: { $0.outputDeviceUID == uid })?.profileID,
+            let profile = profiles.first(where: { $0.id == profileID })
+        {
             return profile
         }
 

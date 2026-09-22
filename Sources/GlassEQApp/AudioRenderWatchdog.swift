@@ -1,5 +1,3 @@
-import Foundation
-
 enum AudioRenderWatchdogAction: Equatable, Sendable {
     case restart
     case stop
@@ -31,7 +29,8 @@ struct AudioRenderDeadlineBurstDetector: Sendable {
         }
 
         while let oldest = observations.first,
-              oldest.at.duration(to: now) > window {
+            oldest.at.duration(to: now) > window
+        {
             observedMisses -= oldest.count
             observations.removeFirst()
         }
@@ -77,7 +76,8 @@ struct FixedBufferRecoverySession: Sendable {
         at now: ContinuousClock.Instant = .now
     ) -> FixedBufferRecoveryAction {
         guard let lastFailureAt,
-              lastFailureAt.duration(to: now) <= repeatedFailureWindow else {
+            lastFailureAt.duration(to: now) <= repeatedFailureWindow
+        else {
             self.lastFailureAt = now
             return .rebuild(frameSize: runtimeFrameSize)
         }
@@ -161,15 +161,17 @@ struct AudioRenderWatchdog: Sendable {
             return nil
         }
         guard actionIssuedForGeneration != generation,
-              let lastProgressAt,
-              lastProgressAt.duration(to: now) >= stallThreshold else {
+            let lastProgressAt,
+            lastProgressAt.duration(to: now) >= stallThreshold
+        else {
             return nil
         }
 
         actionIssuedForGeneration = generation
         if lastAutomaticRecoveryRoute == route,
-           let lastAutomaticRecoveryAt,
-           lastAutomaticRecoveryAt.duration(to: now) < repeatedFailureWindow {
+            let lastAutomaticRecoveryAt,
+            lastAutomaticRecoveryAt.duration(to: now) < repeatedFailureWindow
+        {
             return .stop
         }
         lastAutomaticRecoveryAt = now

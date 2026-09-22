@@ -14,21 +14,21 @@ struct ProfileSidebar: View {
                 isSelected: profile.id == selectedProfileID,
                 isActive: profile.id == controller.snapshot.activeProfileID
             )
-                .contextMenu {
-                    Button(localized("Duplicate")) {
-                        controller.duplicateProfile(profile.id)
-                    }
-                    .disabled(isReadOnly)
-                    Button(localized("Use for This Output")) {
-                        controller.assignProfileToCurrentOutput(profile.id)
-                    }
-                    .disabled(isReadOnly || !controller.hasCurrentOutput)
-                    Divider()
-                    Button(localized("Delete…"), role: .destructive) {
-                        controller.requestProfileDeletion(profile.id)
-                    }
-                    .disabled(!controller.canDeleteProfile(profile.id))
+            .contextMenu {
+                Button(localized("Duplicate")) {
+                    controller.duplicateProfile(profile.id)
                 }
+                .disabled(isReadOnly)
+                Button(localized("Use for This Output")) {
+                    controller.assignProfileToCurrentOutput(profile.id)
+                }
+                .disabled(isReadOnly || !controller.hasCurrentOutput)
+                Divider()
+                Button(localized("Delete…"), role: .destructive) {
+                    controller.requestProfileDeletion(profile.id)
+                }
+                .disabled(!controller.canDeleteProfile(profile.id))
+            }
         }
         .listStyle(.sidebar)
         .disabled(controller.isComparisonInProgress)
@@ -63,10 +63,18 @@ struct ProfileSidebar: View {
                     IconButtonLabel(systemImage: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help(canDeleteSelectedProfile ? localized("Delete profile") : localized("Switch away from the active profile before deleting it"))
+                .help(
+                    canDeleteSelectedProfile
+                        ? localized("Delete profile")
+                        : localized("Switch away from the active profile before deleting it")
+                )
                 .disabled(!canDeleteSelectedProfile)
                 .accessibilityLabel(Text(localized("Delete profile")))
-                .accessibilityHint(Text(canDeleteSelectedProfile ? localized("Deletes the selected profile") : localized("Switch away from the active profile before deleting it")))
+                .accessibilityHint(
+                    Text(
+                        canDeleteSelectedProfile
+                            ? localized("Deletes the selected profile")
+                            : localized("Switch away from the active profile before deleting it")))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -124,7 +132,8 @@ private struct ProfileRow: View {
         var parts = [profile.mode.title]
         switch profile.mode {
         case .parametric:
-            let count = profile.channelMode == .stereo
+            let count =
+                profile.channelMode == .stereo
                 ? max(profile.leftFilters.count, profile.rightFilters.count)
                 : profile.filters.count
             parts.append(count == 1 ? localized("1 filter") : localized("\(count) filters"))

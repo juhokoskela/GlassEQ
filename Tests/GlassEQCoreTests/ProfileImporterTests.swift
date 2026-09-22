@@ -6,10 +6,10 @@ struct ProfileImporterTests {
     @Test
     func importsEqualizerAPOText() throws {
         let text = """
-        Preamp: -5.4 dB
-        Filter 1: ON PK Fc 105 Hz Gain -2.1 dB Q 1.41
-        Filter 2: ON LS Fc 80 Hz Gain 3.0 dB Q 0.70
-        """
+            Preamp: -5.4 dB
+            Filter 1: ON PK Fc 105 Hz Gain -2.1 dB Q 1.41
+            Filter 2: ON LS Fc 80 Hz Gain 3.0 dB Q 0.70
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -24,9 +24,9 @@ struct ProfileImporterTests {
     @Test
     func importsEqualizerAPOGraphicEQAsMagnitudeCurve() throws {
         let text = """
-        Preamp: -6.2 dB
-        GraphicEQ: 20 -0.2; 100 3.5; 1000 -2.1; 20000 0.4
-        """
+            Preamp: -6.2 dB
+            GraphicEQ: 20 -0.2; 100 3.5; 1000 -2.1; 20000 0.4
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -57,10 +57,12 @@ struct ProfileImporterTests {
 
     @Test
     func rejectsDuplicateGraphicEQFrequencies() throws {
-        #expect(throws: ProfileImportError.duplicateMagnitudeFrequency(
-            line: 1,
-            frequency: 100
-        )) {
+        #expect(
+            throws: ProfileImportError.duplicateMagnitudeFrequency(
+                line: 1,
+                frequency: 100
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(
                 "GraphicEQ: 20 0; 100 1; 100 -1"
             )
@@ -70,15 +72,17 @@ struct ProfileImporterTests {
     @Test
     func rejectsMixedGraphicEQAndFilterDirectives() throws {
         let text = """
-        Preamp: -4 dB
-        GraphicEQ: 20 0; 1000 3; 20000 0
-        Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1
-        """
+            Preamp: -4 dB
+            GraphicEQ: 20 0; 1000 3; 20000 0
+            Filter 1: ON PK Fc 1000 Hz Gain -2 dB Q 1
+            """
 
-        #expect(throws: ProfileImportError.mixedEqualizerAPOFormats(
-            graphicEQLine: 2,
-            filterLine: 3
-        )) {
+        #expect(
+            throws: ProfileImportError.mixedEqualizerAPOFormats(
+                graphicEQLine: 2,
+                filterLine: 3
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(text)
         }
     }
@@ -86,14 +90,14 @@ struct ProfileImporterTests {
     @Test
     func importsChannelGraphicEQWithCommentsAndPreamps() throws {
         let text = """
-        # Filter 1: this comment is not an active filter
-        Preamp: -4 dB
-        Channel: L
-        Preamp: -5 dB
-        GraphicEQ: 20 0; 20000 -1
-        Channel: R
-        GraphicEQ: 20 -2; 20000 1
-        """
+            # Filter 1: this comment is not an active filter
+            Preamp: -4 dB
+            Channel: L
+            Preamp: -5 dB
+            GraphicEQ: 20 0; 20000 -1
+            Channel: R
+            GraphicEQ: 20 -2; 20000 1
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -102,7 +106,8 @@ struct ProfileImporterTests {
         #expect(profile.leftPreampDB == -9)
         #expect(profile.rightPreampDB == -4)
         guard case .magnitudeCurve = profile.leftConvolution,
-              case .magnitudeCurve = profile.rightConvolution else {
+            case .magnitudeCurve = profile.rightConvolution
+        else {
             Issue.record("Expected separate magnitude curves")
             return
         }
@@ -111,17 +116,19 @@ struct ProfileImporterTests {
     @Test
     func rejectsEmptyGraphicEQOnOneStereoChannelAtItsDeclaration() {
         let text = """
-        Channel: L
-        GraphicEQ: 100 1; 200 2
-        Channel: R
-        GraphicEQ:
-        """
+            Channel: L
+            GraphicEQ: 100 1; 200 2
+            Channel: R
+            GraphicEQ:
+            """
 
-        #expect(throws: ProfileImportError.insufficientMagnitudePoints(
-            line: 4,
-            count: 0,
-            minimum: 2
-        )) {
+        #expect(
+            throws: ProfileImportError.insufficientMagnitudePoints(
+                line: 4,
+                count: 0,
+                minimum: 2
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(text)
         }
     }
@@ -129,17 +136,19 @@ struct ProfileImporterTests {
     @Test
     func rejectsSinglePointGraphicEQOnOneStereoChannelAtItsDeclaration() {
         let text = """
-        Channel: L
-        GraphicEQ: 100 1; 200 2
-        Channel: R
-        GraphicEQ: 100 1
-        """
+            Channel: L
+            GraphicEQ: 100 1; 200 2
+            Channel: R
+            GraphicEQ: 100 1
+            """
 
-        #expect(throws: ProfileImportError.insufficientMagnitudePoints(
-            line: 4,
-            count: 1,
-            minimum: 2
-        )) {
+        #expect(
+            throws: ProfileImportError.insufficientMagnitudePoints(
+                line: 4,
+                count: 1,
+                minimum: 2
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(text)
         }
     }
@@ -147,9 +156,9 @@ struct ProfileImporterTests {
     @Test
     func importsGraphicEQWithDisabledParametricFilter() throws {
         let text = """
-        GraphicEQ: 20 0; 1000 3; 20000 0
-        Filter 1: OFF PK Fc 1000 Hz Gain -2 dB Q 1
-        """
+            GraphicEQ: 20 0; 1000 3; 20000 0
+            Filter 1: OFF PK Fc 1000 Hz Gain -2 dB Q 1
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -164,14 +173,16 @@ struct ProfileImporterTests {
 
     @Test
     func graphicEQExportRoundTripsStereoCurvesAndPreamps() throws {
-        let left = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: 2),
-            EQMagnitudePoint(frequency: 20_000, gainDB: -1)
-        ]))
-        let right = EQConvolutionSource.magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: -3),
-            EQMagnitudePoint(frequency: 20_000, gainDB: 1.5)
-        ]))
+        let left = EQConvolutionSource.magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 2),
+                EQMagnitudePoint(frequency: 20_000, gainDB: -1),
+            ]))
+        let right = EQConvolutionSource.magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: -3),
+                EQMagnitudePoint(frequency: 20_000, gainDB: 1.5),
+            ]))
         let profile = EQProfile(
             name: "Stereo Curve",
             mode: .convolution,
@@ -195,9 +206,10 @@ struct ProfileImporterTests {
         #expect(imported.leftPreampDB == -5)
         #expect(imported.rightPreampDB == -6)
         guard case .magnitudeCurve(let importedLeft) = imported.leftConvolution,
-              case .magnitudeCurve(let importedRight) = imported.rightConvolution,
-              case .magnitudeCurve(let expectedLeft) = left,
-              case .magnitudeCurve(let expectedRight) = right else {
+            case .magnitudeCurve(let importedRight) = imported.rightConvolution,
+            case .magnitudeCurve(let expectedLeft) = left,
+            case .magnitudeCurve(let expectedRight) = right
+        else {
             Issue.record("Expected stereo magnitude curves")
             return
         }
@@ -210,10 +222,10 @@ struct ProfileImporterTests {
     @Test
     func ignoresDisabledEqualizerAPOFilters() throws {
         let text = """
-        Filter 1: OFF BP Fc 1000 Hz Gain 6 dB Q 1
-        Filter 2: OFF
-        Filter 3: ON PK Fc 2000 Hz Gain 3 dB Q 1
-        """
+            Filter 1: OFF BP Fc 1000 Hz Gain 6 dB Q 1
+            Filter 2: OFF
+            Filter 3: ON PK Fc 2000 Hz Gain 3 dB Q 1
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -224,14 +236,16 @@ struct ProfileImporterTests {
     @Test
     func rejectsUnsupportedEnabledEqualizerAPOFiltersWithoutPartialImport() throws {
         let text = """
-        Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
-        Filter 2: ON BP Fc 1000 Hz Gain 6 dB Q 1
-        """
+            Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
+            Filter 2: ON BP Fc 1000 Hz Gain 6 dB Q 1
+            """
 
-        #expect(throws: ProfileImportError.unsupportedEqualizerAPOFilter(
-            line: 2,
-            kind: "BP"
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedEqualizerAPOFilter(
+                line: 2,
+                kind: "BP"
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(text)
         }
     }
@@ -239,25 +253,29 @@ struct ProfileImporterTests {
     @Test
     func rejectsEnabledEqualizerAPOFilterWithoutKind() throws {
         let text = """
-        Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
-        Filter 2: ON
-        """
+            Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
+            Filter 2: ON
+            """
 
-        #expect(throws: ProfileImportError.unsupportedEqualizerAPOFilter(
-            line: 2,
-            kind: nil
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedEqualizerAPOFilter(
+                line: 2,
+                kind: nil
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(text)
         }
     }
 
     @Test
     func rejectsEqualizerAPOBandwidthParametersThatWouldChangeTheResponse() throws {
-        #expect(throws: ProfileImportError.unsupportedFilterParameters(
-            line: 1,
-            format: "EqualizerAPO",
-            parameters: "BW Oct"
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedFilterParameters(
+                line: 1,
+                format: "EqualizerAPO",
+                parameters: "BW Oct"
+            )
+        ) {
             _ = try EQProfileTextImporter.importAutoEQ(
                 "Filter 1: ON PK Fc 1000 Hz Gain 6 dB BW Oct 1"
             )
@@ -270,10 +288,11 @@ struct ProfileImporterTests {
             name: "Imported IR",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: [1, 0]
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: [1, 0]
+                ))
         )
 
         #expect(throws: EQProfileTextExportError.impulseResponseUnsupported) {
@@ -284,16 +303,16 @@ struct ProfileImporterTests {
     @Test
     func importsEqualizerAPOChannelSectionsAsStereoProfile() throws {
         let text = """
-        Preamp: -5.96 dB
+            Preamp: -5.96 dB
 
-        Channel: L
-        Filter 1:  ON  PK  Fc 37 Hz  Gain 6 dB  Q 1
-        Filter 2:  ON  PK  Fc 47 Hz  Gain -16.7 dB  Q 5
+            Channel: L
+            Filter 1:  ON  PK  Fc 37 Hz  Gain 6 dB  Q 1
+            Filter 2:  ON  PK  Fc 47 Hz  Gain -16.7 dB  Q 5
 
-        Channel: R
-        Filter 1:  ON  PK  Fc 61 Hz  Gain 2.7 dB  Q 7.5
-        Filter 2:  ON  PK  Fc 67 Hz  Gain -6.8 dB  Q 5
-        """
+            Channel: R
+            Filter 1:  ON  PK  Fc 61 Hz  Gain 2.7 dB  Q 7.5
+            Filter 2:  ON  PK  Fc 67 Hz  Gain -6.8 dB  Q 5
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -313,14 +332,14 @@ struct ProfileImporterTests {
     @Test
     func importsEqualizerAPOChannelPreampsWithoutFiltersAsStereoProfile() throws {
         let text = """
-        Preamp: -1 dB
+            Preamp: -1 dB
 
-        Channel: L
-        Preamp: -3 dB
+            Channel: L
+            Preamp: -3 dB
 
-        Channel: R
-        Preamp: -4 dB
-        """
+            Channel: R
+            Preamp: -4 dB
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -336,15 +355,15 @@ struct ProfileImporterTests {
     @Test
     func importsEqualizerAPOChannelPreampsWithLinkedFiltersAsStereoFallback() throws {
         let text = """
-        Preamp: -1 dB
-        Filter 1: ON PK Fc 1000 Hz Gain 2 dB Q 1
+            Preamp: -1 dB
+            Filter 1: ON PK Fc 1000 Hz Gain 2 dB Q 1
 
-        Channel: L
-        Preamp: -3 dB
+            Channel: L
+            Preamp: -3 dB
 
-        Channel: R
-        Preamp: -4 dB
-        """
+            Channel: R
+            Preamp: -4 dB
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -360,12 +379,12 @@ struct ProfileImporterTests {
     @Test
     func accumulatesGlobalEqualizerAPOCommandsIntoSelectedChannels() throws {
         let text = """
-        Preamp: -6 dB
-        Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
-        Channel: L
-        Preamp: -5 dB
-        Filter 2: ON PK Fc 200 Hz Gain 3 dB Q 2
-        """
+            Preamp: -6 dB
+            Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+            Channel: L
+            Preamp: -5 dB
+            Filter 2: ON PK Fc 200 Hz Gain 3 dB Q 2
+            """
 
         let profile = try EQProfileTextImporter.importAutoEQ(text)
 
@@ -380,11 +399,12 @@ struct ProfileImporterTests {
 
     @Test(arguments: ["L R", "1 2"])
     func importsLeftAndRightSelectorsWithoutChangingFallback(_ selectors: String) throws {
-        let profile = try EQProfileTextImporter.importAutoEQ("""
-        Channel: \(selectors)
-        Preamp: -3 dB
-        Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
-        """)
+        let profile = try EQProfileTextImporter.importAutoEQ(
+            """
+            Channel: \(selectors)
+            Preamp: -3 dB
+            Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+            """)
 
         #expect(profile.channelMode == .stereo)
         #expect(profile.preampDB == 0)
@@ -397,10 +417,11 @@ struct ProfileImporterTests {
 
     @Test
     func importsAllChannelSelectorAsLinkedFallback() throws {
-        let profile = try EQProfileTextImporter.importAutoEQ("""
-        Channel: all
-        Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
-        """)
+        let profile = try EQProfileTextImporter.importAutoEQ(
+            """
+            Channel: all
+            Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+            """)
 
         #expect(profile.channelMode == .linked)
         #expect(profile.filters.map(\.frequency) == [100])
@@ -408,42 +429,50 @@ struct ProfileImporterTests {
 
     @Test
     func rejectsUnsupportedEqualizerAPOChannelSelectors() throws {
-        #expect(throws: ProfileImportError.unsupportedEqualizerAPOChannel(
-            line: 1,
-            selectors: "C"
-        )) {
-            _ = try EQProfileTextImporter.importAutoEQ("""
-            Channel: C
-            Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
-            """)
+        #expect(
+            throws: ProfileImportError.unsupportedEqualizerAPOChannel(
+                line: 1,
+                selectors: "C"
+            )
+        ) {
+            _ = try EQProfileTextImporter.importAutoEQ(
+                """
+                Channel: C
+                Filter 1: ON PK Fc 100 Hz Gain 2 dB Q 1
+                """)
         }
     }
 
     @Test
     func rejectsMultipleGraphicEQStagesOnOneChannel() throws {
-        #expect(throws: ProfileImportError.multipleEqualizerAPOGraphicEQ(
-            line: 3,
-            channel: "left"
-        )) {
-            _ = try EQProfileTextImporter.importAutoEQ("""
-            GraphicEQ: 20 0; 20000 0
-            Channel: L
-            GraphicEQ: 20 1; 20000 1
-            """)
+        #expect(
+            throws: ProfileImportError.multipleEqualizerAPOGraphicEQ(
+                line: 3,
+                channel: "left"
+            )
+        ) {
+            _ = try EQProfileTextImporter.importAutoEQ(
+                """
+                GraphicEQ: 20 0; 20000 0
+                Channel: L
+                GraphicEQ: 20 1; 20000 1
+                """)
         }
     }
 
     @Test
     func importsOneSidedGraphicEQWithIdentityOnTheOtherChannel() throws {
-        let profile = try EQProfileTextImporter.importAutoEQ("""
-        Channel: L
-        GraphicEQ: 20 2; 20000 -1
-        """)
+        let profile = try EQProfileTextImporter.importAutoEQ(
+            """
+            Channel: L
+            GraphicEQ: 20 2; 20000 -1
+            """)
 
         #expect(profile.channelMode == .stereo)
         #expect(profile.convolution == nil)
         guard case .magnitudeCurve(let left) = profile.leftConvolution,
-              case .magnitudeCurve(let right) = profile.rightConvolution else {
+            case .magnitudeCurve(let right) = profile.rightConvolution
+        else {
             Issue.record("Expected stereo magnitude curves")
             return
         }
@@ -483,9 +512,9 @@ struct ProfileImporterTests {
     @Test
     func importsREWText() throws {
         let text = """
-        Filter 1: ON PK Fc 45.0 Hz Gain -4.5 dB Q 3.20
-        Filter 2: ON PK Fc 120.0 Hz Gain 2.0 dB Q 1.10
-        """
+            Filter 1: ON PK Fc 45.0 Hz Gain -4.5 dB Q 3.20
+            Filter 2: ON PK Fc 120.0 Hz Gain 2.0 dB Q 1.10
+            """
 
         let profile = try EQProfileTextImporter.importREW(text)
 
@@ -498,10 +527,10 @@ struct ProfileImporterTests {
     @Test
     func ignoresDisabledREWFilters() throws {
         let text = """
-        Filter 1: OFF BP Fc 1000 Hz Gain 6 dB Q 1
-        Filter 2: None
-        Filter 3: ON PK Fc 2000 Hz Gain 3 dB Q 1
-        """
+            Filter 1: OFF BP Fc 1000 Hz Gain 6 dB Q 1
+            Filter 2: None
+            Filter 3: ON PK Fc 2000 Hz Gain 3 dB Q 1
+            """
 
         let profile = try EQProfileTextImporter.importREW(text)
 
@@ -512,35 +541,41 @@ struct ProfileImporterTests {
     @Test
     func rejectsUnsupportedEnabledREWFiltersWithoutPartialImport() throws {
         let text = """
-        Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
-        Filter 2: ON NO Fc 1000 Hz Gain 6 dB Q 1
-        """
+            Filter 1: ON PK Fc 2000 Hz Gain 3 dB Q 1
+            Filter 2: ON NO Fc 1000 Hz Gain 6 dB Q 1
+            """
 
-        #expect(throws: ProfileImportError.unsupportedREWFilter(
-            line: 2,
-            kind: "NO"
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedREWFilter(
+                line: 2,
+                kind: "NO"
+            )
+        ) {
             _ = try EQProfileTextImporter.importREW(text)
         }
     }
 
     @Test
     func rejectsEnabledREWFilterWithoutKind() throws {
-        #expect(throws: ProfileImportError.unsupportedREWFilter(
-            line: 1,
-            kind: nil
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedREWFilter(
+                line: 1,
+                kind: nil
+            )
+        ) {
             _ = try EQProfileTextImporter.importREW("Filter 1: ON")
         }
     }
 
     @Test
     func rejectsREWBandwidthParametersThatWouldChangeTheResponse() throws {
-        #expect(throws: ProfileImportError.unsupportedFilterParameters(
-            line: 1,
-            format: "REW",
-            parameters: "BW Oct"
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedFilterParameters(
+                line: 1,
+                format: "REW",
+                parameters: "BW Oct"
+            )
+        ) {
             _ = try EQProfileTextImporter.importREW(
                 "Filter 1: ON PK Fc 1000 Hz Gain 6 dB BW Oct 1"
             )
@@ -549,11 +584,13 @@ struct ProfileImporterTests {
 
     @Test
     func rejectsREWShelfSlopeParametersThatWouldChangeTheResponse() throws {
-        #expect(throws: ProfileImportError.unsupportedFilterParameters(
-            line: 1,
-            format: "REW",
-            parameters: "10.8 dB"
-        )) {
+        #expect(
+            throws: ProfileImportError.unsupportedFilterParameters(
+                line: 1,
+                format: "REW",
+                parameters: "10.8 dB"
+            )
+        ) {
             _ = try EQProfileTextImporter.importREW(
                 "Filter 1: ON LSC 10.8 dB Fc 100 Hz Gain 6 dB"
             )
@@ -563,12 +600,12 @@ struct ProfileImporterTests {
     @Test
     func importsREWTextWithUncommentedFilterSettingsHeader() throws {
         let text = """
-        Filter Settings file
+            Filter Settings file
 
-        Room EQ V5.31.3
-        Equaliser: Generic
-        Filter 1: ON PK Fc 45.0 Hz Gain -4.5 dB Q 3.20
-        """
+            Room EQ V5.31.3
+            Equaliser: Generic
+            Filter 1: ON PK Fc 45.0 Hz Gain -4.5 dB Q 3.20
+            """
 
         let profile = try EQProfileTextImporter.importREW(text)
 
@@ -579,11 +616,11 @@ struct ProfileImporterTests {
     @Test
     func importsREWFilterKindsAndDecimalCommas() throws {
         let text = """
-        Filter 1: ON LS Fc 80,5 Hz Gain 3,5 dB Q 0,70
-        Filter 2: ON HS Fc 12000 Hz Gain -2 dB Q 0.80
-        Filter 3: ON HP Fc 30 Hz Gain 0 dB Q 0.707
-        Filter 4: ON LP Fc 18000 Hz Gain 0 dB Q 0.707
-        """
+            Filter 1: ON LS Fc 80,5 Hz Gain 3,5 dB Q 0,70
+            Filter 2: ON HS Fc 12000 Hz Gain -2 dB Q 0.80
+            Filter 3: ON HP Fc 30 Hz Gain 0 dB Q 0.707
+            Filter 4: ON LP Fc 18000 Hz Gain 0 dB Q 0.707
+            """
 
         let profile = try EQProfileTextImporter.importREW(text)
 
@@ -727,9 +764,9 @@ struct ProfileImporterTests {
     @Test
     func rejectsAutoEQNumericFieldsOutsideLimitsWithLineNumber() throws {
         let text = """
-        Preamp: -3 dB
-        Filter 1: ON PK Fc 25000 Hz Gain 0 dB Q 1
-        """
+            Preamp: -3 dB
+            Filter 1: ON PK Fc 25000 Hz Gain 0 dB Q 1
+            """
 
         do {
             _ = try EQProfileTextImporter.importAutoEQ(text)
@@ -757,9 +794,9 @@ struct ProfileImporterTests {
         var limits = ProfileImportLimits.default
         limits.maxFiltersPerChannel = 1
         let text = """
-        Filter 1: ON PK Fc 100 Hz Gain 0 dB Q 1
-        Filter 2: ON PK Fc 200 Hz Gain 0 dB Q 1
-        """
+            Filter 1: ON PK Fc 100 Hz Gain 0 dB Q 1
+            Filter 2: ON PK Fc 200 Hz Gain 0 dB Q 1
+            """
 
         do {
             _ = try EQProfileTextImporter.importAutoEQ(text, limits: limits)
@@ -775,12 +812,12 @@ struct ProfileImporterTests {
         limits.maxFiltersPerChannel = 4
         limits.maxTotalFilters = 2
         let text = """
-        Channel: L
-        Filter 1: ON PK Fc 100 Hz Gain 0 dB Q 1
-        Filter 2: ON PK Fc 200 Hz Gain 0 dB Q 1
-        Channel: R
-        Filter 1: ON PK Fc 300 Hz Gain 0 dB Q 1
-        """
+            Channel: L
+            Filter 1: ON PK Fc 100 Hz Gain 0 dB Q 1
+            Filter 2: ON PK Fc 200 Hz Gain 0 dB Q 1
+            Channel: R
+            Filter 1: ON PK Fc 300 Hz Gain 0 dB Q 1
+            """
 
         do {
             _ = try EQProfileTextImporter.importAutoEQ(text, limits: limits)

@@ -352,7 +352,7 @@ struct RealtimeAudioRingBufferTests {
         let written = accepted.withLock { $0 }
         let read = consumed.withLock { $0 }
         #expect(!read.sequenceOvertookWrite)
-        #expect(written.samples.count > 0)
+        #expect(!written.samples.isEmpty)
         #expect(written.samples.count / 2 + written.droppedFrames == totalFrames)
         #expect(read.samples.count / 2 + read.discardedFrames == written.samples.count / 2)
         #expect(ring.nextReadSequence() == UInt64(written.samples.count / 2))

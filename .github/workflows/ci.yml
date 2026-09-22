@@ -27,6 +27,9 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Check Swift formatting and lint
+        run: ./Scripts/check-swift.sh
+
       - name: Build
         run: swift build
 
@@ -35,6 +38,9 @@ jobs:
 
       - name: Test
         run: swift test
+
+      - name: Analyze Swift declarations and imports
+        run: ./Scripts/analyze-swift.sh
 
       - name: Check audio ring with Thread Sanitizer
         run: ./Scripts/test-audio-ring-tsan.sh

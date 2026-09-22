@@ -12,7 +12,8 @@ package enum SettingsFileImportPicker {
         NSApp.activate()
         defer {
             if let previousApplication,
-               previousApplication.processIdentifier != NSRunningApplication.current.processIdentifier {
+                previousApplication.processIdentifier != NSRunningApplication.current.processIdentifier
+            {
                 previousApplication.activate(from: .current, options: [.activateAllWindows])
             }
         }
@@ -29,7 +30,9 @@ package enum SettingsFileImportPicker {
             panel.allowsMultipleSelection = false
         case .stereoPair:
             panel.title = localized("Import Separate Left and Right Files")
-            panel.message = localized("Choose two text files or two mono WAV files. GlassEQ will show their left and right assignment before importing them.")
+            panel.message = localized(
+                "Choose two text files or two mono WAV files. GlassEQ will show their left and right assignment before importing them."
+            )
             panel.prompt = localized("Choose")
             panel.allowsMultipleSelection = true
         }
@@ -51,7 +54,8 @@ package enum SettingsFileImportPicker {
         switch mode {
         case .single:
             guard urls.count == 1,
-                  let url = urls.first else {
+                let url = urls.first
+            else {
                 throw SettingsCommandFailure(message: localized("Select one file to import."))
             }
             load = {
@@ -59,7 +63,8 @@ package enum SettingsFileImportPicker {
             }
         case .stereoPair:
             guard urls.count == 2 else {
-                throw SettingsCommandFailure(message: localized("Select exactly two files: one for the left channel and one for the right."))
+                throw SettingsCommandFailure(
+                    message: localized("Select exactly two files: one for the left channel and one for the right."))
             }
             let leftURL = urls[0]
             let rightURL = urls[1]

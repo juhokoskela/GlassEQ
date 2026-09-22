@@ -1,4 +1,3 @@
-import Foundation
 import Synchronization
 
 struct RingBufferWriteResult: Equatable, Sendable {
@@ -30,7 +29,8 @@ final class RealtimeAudioRingBuffer: @unchecked Sendable {
         let maximumStorageFrameCapacity = Self.maximumStorageSampleCount / self.channelCount
         self.capacityFrames = min(max(capacityFrames, 2), maximumStorageFrameCapacity - 1)
         self.storageFrameCapacity = self.capacityFrames + 1
-        self.storage = UnsafeMutableBufferPointer<Float>.allocate(capacity: self.channelCount * self.storageFrameCapacity)
+        self.storage = UnsafeMutableBufferPointer<Float>.allocate(
+            capacity: self.channelCount * self.storageFrameCapacity)
         self.storage.initialize(repeating: 0)
     }
 
@@ -65,7 +65,8 @@ final class RealtimeAudioRingBuffer: @unchecked Sendable {
         }
 
         if sourceChannelCount == channelCount,
-           let source = samples.baseAddress {
+            let source = samples.baseAddress
+        {
             copyIntoStorage(
                 source: source,
                 storageFrame: write,
@@ -108,7 +109,8 @@ final class RealtimeAudioRingBuffer: @unchecked Sendable {
         let framesToRead = min(requestedFrames, occupancyFrames(read: read, write: write))
 
         if destinationChannelCount == channelCount,
-           let destination = samples.baseAddress {
+            let destination = samples.baseAddress
+        {
             copyFromStorage(
                 destination: destination,
                 storageFrame: read,

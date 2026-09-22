@@ -79,23 +79,25 @@ public struct ActivationState: Codable, Equatable, Sendable {
             throw .unsupportedSchemaVersion(schemaVersion)
         }
         guard schemaVersion == Self.currentSchemaVersion,
-              !activationToken.isEmpty,
-              activationToken.utf8.count <= 256,
-              entitlement.utf8.count <= EntitlementVerifier.maximumTokenBytes,
-              highestAcceptedRevision >= 0,
-              highestTrustedTime >= 0,
-              [
-                  wallClockAtLastVerification,
-                  clockAnomalyDetectedAt,
-                  serverDeniedAt,
-                  serviceRevokedAt,
-                  deactivationRequestedAt
-              ].allSatisfy({ $0.map { $0 >= 0 } ?? true }) else {
+            !activationToken.isEmpty,
+            activationToken.utf8.count <= 256,
+            entitlement.utf8.count <= EntitlementVerifier.maximumTokenBytes,
+            highestAcceptedRevision >= 0,
+            highestTrustedTime >= 0,
+            [
+                wallClockAtLastVerification,
+                clockAnomalyDetectedAt,
+                serverDeniedAt,
+                serviceRevokedAt,
+                deactivationRequestedAt,
+            ].allSatisfy({ $0.map { $0 >= 0 } ?? true })
+        else {
             throw .corruptRecord
         }
 
         let hasActiveAuthority = !entitlement.isEmpty && highestAcceptedRevision > 0
-        let isCleanupOnly = entitlement.isEmpty
+        let isCleanupOnly =
+            entitlement.isEmpty
             && highestAcceptedRevision == 0
             && deactivationRequestedAt != nil
         guard hasActiveAuthority || isCleanupOnly else {
@@ -119,7 +121,9 @@ enum LicenseRecordCodec {
         }
     }
 
-    static func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws(LicenseCredentialStoreError) -> Value {
+    static func decode<Value: Decodable>(_ type: Value.Type, from data: Data) throws(LicenseCredentialStoreError)
+        -> Value
+    {
         guard data.count <= ActivationState.maximumEncodedBytes else {
             throw .corruptRecord
         }

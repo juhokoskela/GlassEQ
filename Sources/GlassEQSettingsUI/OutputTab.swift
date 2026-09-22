@@ -43,12 +43,14 @@ struct OutputTab: View {
                     .disabled(!snapshot.aggregateBuffer.isAvailable)
 
                     if snapshot.aggregateBuffer.mode == .automatic,
-                       snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize {
+                        snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize
+                    {
                         Button(localized("Retry \(snapshot.aggregateBuffer.defaultFrameSize) Frames")) {
                             controller.retryAutomaticAggregateBuffer()
                         }
                     } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
-                              snapshot.currentOutputBufferFrameSize > fixedFrameSize {
+                        snapshot.currentOutputBufferFrameSize > fixedFrameSize
+                    {
                         Button(localized("Retry \(fixedFrameSize) Frames")) {
                             controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
                         }
@@ -62,8 +64,12 @@ struct OutputTab: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(localized("macOS 27 Bluetooth audio"), systemImage: "info.circle")
                             .fontWeight(.semibold)
-                        Text(localized("macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."))
-                            .foregroundStyle(.secondary)
+                        Text(
+                            localized(
+                                "macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."
+                            )
+                        )
+                        .foregroundStyle(.secondary)
                     }
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
@@ -73,7 +79,10 @@ struct OutputTab: View {
                 if snapshot.aggregateBuffer.defaultFrameSize > 16 {
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(localized("Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."))
+                            Text(
+                                localized(
+                                    "Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."
+                                ))
                             Text(localized("On AirPods Pro, adjusting volume using the stems avoided the issue."))
                         }
                         .font(.caption)
@@ -84,10 +93,11 @@ struct OutputTab: View {
                     }
                 }
             } footer: {
-                Text(outputBufferExplanation(
-                    aggregateBuffer: snapshot.aggregateBuffer,
-                    currentFrameSize: snapshot.currentOutputBufferFrameSize
-                ))
+                Text(
+                    outputBufferExplanation(
+                        aggregateBuffer: snapshot.aggregateBuffer,
+                        currentFrameSize: snapshot.currentOutputBufferFrameSize
+                    ))
             }
 
             Section(localized("Profile Mapping")) {
@@ -139,7 +149,10 @@ struct OutputTab: View {
                     .accessibilityHint(Text(localized("Reopens the first-launch walkthrough in GlassEQ")))
                 } label: {
                     Text(localized("Setup Guide"))
-                    Text(localized("Walk through system audio capture permission, Launch at Login, and how GlassEQ follows your output."))
+                    Text(
+                        localized(
+                            "Walk through system audio capture permission, Launch at Login, and how GlassEQ follows your output."
+                        ))
                 }
 
                 LabeledContent {
@@ -149,7 +162,10 @@ struct OutputTab: View {
                     .accessibilityHint(Text(localized("Opens detailed audio engine diagnostics")))
                 } label: {
                     Text(localized("Stats for Nerds"))
-                    Text(localized("Render timing percentiles, reliability counters, recovery history, and the Core Audio route behind this output."))
+                    Text(
+                        localized(
+                            "Render timing percentiles, reliability counters, recovery history, and the Core Audio route behind this output."
+                        ))
                 }
             }
         }
@@ -164,7 +180,8 @@ struct OutputTab: View {
 
     private var mappedProfileName: String {
         guard let profileID = snapshot.currentOutputMappedProfileID,
-              let profile = snapshot.profiles.first(where: { $0.id == profileID }) else {
+            let profile = snapshot.profiles.first(where: { $0.id == profileID })
+        else {
             return localized("Fallback")
         }
         return profile.name
@@ -230,7 +247,8 @@ func outputBufferExplanation(
         )
     }
     if let fixedFrameSize = aggregateBuffer.mode.fixedFrameSize,
-       currentFrameSize > fixedFrameSize {
+        currentFrameSize > fixedFrameSize
+    {
         return localized(
             "The active buffer is \(currentFrameSize) frames. Your \(fixedFrameSize)-frame preference is saved."
         )

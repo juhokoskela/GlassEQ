@@ -166,11 +166,13 @@ public enum CoreAudioDeviceQuery {
         }
 
         for deviceID in try audioDeviceIDs() {
-            guard (try? getStringProperty(
-                objectID: deviceID,
-                selector: kAudioDevicePropertyDeviceUID,
-                scope: kAudioObjectPropertyScopeGlobal
-            )) == targetUID else {
+            guard
+                (try? getStringProperty(
+                    objectID: deviceID,
+                    selector: kAudioDevicePropertyDeviceUID,
+                    scope: kAudioObjectPropertyScopeGlobal
+                )) == targetUID
+            else {
                 continue
             }
             guard (try? isDeviceAlive(id: deviceID)) == true else {
@@ -484,7 +486,8 @@ public enum CoreAudioDeviceQuery {
         )
         let value = pointer.pointee
         guard let value else {
-            throw CoreAudioError(operation: "AudioObjectGetPropertyData(\(selector)) nil", status: kAudioHardwareBadObjectError)
+            throw CoreAudioError(
+                operation: "AudioObjectGetPropertyData(\(selector)) nil", status: kAudioHardwareBadObjectError)
         }
         return value as String
     }
@@ -624,10 +627,11 @@ public enum CoreAudioDeviceQuery {
         objectID: AudioObjectID
     ) throws -> AudioBufferFrameSizeRange {
         guard range.mMinimum.isFinite,
-              range.mMaximum.isFinite,
-              range.mMinimum > 0,
-              range.mMaximum > 0,
-              range.mMinimum <= range.mMaximum else {
+            range.mMaximum.isFinite,
+            range.mMinimum > 0,
+            range.mMaximum > 0,
+            range.mMinimum <= range.mMaximum
+        else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
                 objectID,
                 "buffer frame size range \(range.mMinimum)...\(range.mMaximum) is invalid"
@@ -637,10 +641,11 @@ public enum CoreAudioDeviceQuery {
         let roundedMinimum = range.mMinimum.rounded(.up)
         let roundedMaximum = range.mMaximum.rounded(.down)
         guard roundedMinimum >= 1,
-              roundedMaximum >= roundedMinimum,
-              roundedMaximum <= Double(maxBufferFrameSize),
-              roundedMinimum <= Double(UInt32.max),
-              roundedMaximum <= Double(UInt32.max) else {
+            roundedMaximum >= roundedMinimum,
+            roundedMaximum <= Double(maxBufferFrameSize),
+            roundedMinimum <= Double(UInt32.max),
+            roundedMaximum <= Double(UInt32.max)
+        else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
                 objectID,
                 "buffer frame size range \(range.mMinimum)...\(range.mMaximum) is outside supported bounds"
@@ -660,9 +665,10 @@ public enum CoreAudioDeviceQuery {
                 "invalid frame/channel count \(frames)x\(channels)"
             )
         }
-        guard let count = frames.multipliedReportingOverflow(by: channels).partialValue as Int?,
-              !frames.multipliedReportingOverflow(by: channels).overflow,
-              count <= Int(maxBufferFrameSize) * maxChannelCount else {
+        let (count, overflow) = frames.multipliedReportingOverflow(by: channels)
+        guard !overflow,
+            count <= Int(maxBufferFrameSize) * maxChannelCount
+        else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
                 objectID,
                 "frame/channel count \(frames)x\(channels) is too large"
@@ -677,7 +683,8 @@ public enum CoreAudioDeviceQuery {
         objectID: AudioObjectID
     ) throws {
         guard let buffersOffset = MemoryLayout<AudioBufferList>.offset(of: \.mBuffers) else {
-            throw AudioDeviceAvailabilityError.invalidDeviceMetadata(objectID, "cannot determine AudioBufferList layout")
+            throw AudioDeviceAvailabilityError.invalidDeviceMetadata(
+                objectID, "cannot determine AudioBufferList layout")
         }
         guard bufferCount >= 0, bufferCount <= maxChannelCount else {
             throw AudioDeviceAvailabilityError.invalidDeviceMetadata(

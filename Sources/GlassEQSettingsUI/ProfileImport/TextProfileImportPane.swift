@@ -28,8 +28,12 @@ struct TextProfileImportPane: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(localized("Import a profile"))
                         .font(.title2.weight(.semibold))
-                    Text(localized("Select EqualizerAPO, AutoEq, or REW settings, or a WAV impulse response. You can also paste text settings below."))
-                        .foregroundStyle(.secondary)
+                    Text(
+                        localized(
+                            "Select EqualizerAPO, AutoEq, or REW settings, or a WAV impulse response. You can also paste text settings below."
+                        )
+                    )
+                    .foregroundStyle(.secondary)
                 }
 
                 HStack {
@@ -165,11 +169,13 @@ struct TextProfileImportPane: View {
 
     private var footerText: String {
         if importedStereoTextPair != nil
-            || importedImpulseResponse?.sourceFileCount == 2 {
+            || importedImpulseResponse?.sourceFileCount == 2
+        {
             return localized("GlassEQ will combine the files as one stereo profile. Existing profiles are not changed.")
         }
         if importedImpulseResponse != nil {
-            return localized("The imported impulse response keeps its original phase. Existing profiles are not changed.")
+            return localized(
+                "The imported impulse response keeps its original phase. Existing profiles are not changed.")
         }
         return localized("Disabled filters are ignored. Existing profiles are not changed.")
     }
@@ -228,13 +234,15 @@ struct TextProfileImportPane: View {
 
         case let .impulseResponse(profile, channels, sourceFileCount):
             guard let importedChannels = ImportedImpulseResponse.Channels(channels) else {
-                model.errorMessage = ImpulseResponseWAVImportError
+                model.errorMessage =
+                    ImpulseResponseWAVImportError
                     .unsupportedChannelCount(channels.count)
                     .localizedDescription
                 return
             }
             profileName = profile.name
-            importedFilename = sourceFileCount == 2
+            importedFilename =
+                sourceFileCount == 2
                 ? localized("2 files selected")
                 : importedChannels.first.filename
             importedImpulseResponse = ImportedImpulseResponse(

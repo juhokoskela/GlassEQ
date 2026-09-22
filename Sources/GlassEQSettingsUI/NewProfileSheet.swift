@@ -197,11 +197,11 @@ private struct NewProfileKindChoices: View {
         .parametric,
         .convolution,
         .graphic10,
-        .graphic31
+        .graphic31,
     ]
     private let columns = [
         GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
+        GridItem(.flexible(), spacing: 12),
     ]
 
     var body: some View {

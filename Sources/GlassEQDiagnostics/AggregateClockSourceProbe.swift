@@ -113,7 +113,7 @@ func runAggregateClockSourceProbe(output: AudioOutputDevice) -> Int32 {
                     physicalDevice: physicalDevice,
                     tap: tap
                 )
-            }
+            },
         ] {
             do {
                 try probe()
@@ -150,15 +150,15 @@ private func runTapMainUIDProbe(
                 kAudioSubDeviceOutputChannelsKey: output.outputChannelCount,
                 kAudioSubDeviceDriftCompensationKey: true,
                 kAudioSubDeviceDriftCompensationQualityKey:
-                    kAudioAggregateDriftCompensationHighQuality
+                    kAudioAggregateDriftCompensationHighQuality,
             ]
         ],
         kAudioAggregateDeviceTapListKey: [
             [
                 kAudioSubTapUIDKey: tapUID,
-                kAudioSubTapDriftCompensationKey: false
+                kAudioSubTapDriftCompensationKey: false,
             ]
-        ]
+        ],
     ]
 
     var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -194,7 +194,8 @@ private func runTapMainUIDProbe(
         )
         runningActiveSubtaps = selection.activeSubtapIDs
         runningActiveSubtapError = selection.activeSubtapError
-        runningSelectionApplied = selection.activeSubtapApplied
+        runningSelectionApplied =
+            selection.activeSubtapApplied
             || selection.originalTapApplied
         runningSource = describe(try aggregate.clockSource)
     }
@@ -227,7 +228,7 @@ private func runProbe(
                 kAudioSubDeviceUIDKey: output.uid,
                 kAudioSubDeviceInputChannelsKey: 0,
                 kAudioSubDeviceOutputChannelsKey: output.outputChannelCount,
-                kAudioSubDeviceDriftCompensationKey: false
+                kAudioSubDeviceDriftCompensationKey: false,
             ]
         ],
         kAudioAggregateDeviceTapListKey: [
@@ -235,9 +236,9 @@ private func runProbe(
                 kAudioSubTapUIDKey: tapUID,
                 kAudioSubTapDriftCompensationKey: true,
                 kAudioSubTapDriftCompensationQualityKey:
-                    kAudioAggregateDriftCompensationHighQuality
+                    kAudioAggregateDriftCompensationHighQuality,
             ]
-        ]
+        ],
     ]
 
     var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -286,7 +287,8 @@ private func runProbe(
             )
             runningActiveSubtaps = selection.activeSubtapIDs
             runningActiveSubtapError = selection.activeSubtapError
-            runningSelectionApplied = selection.activeSubtapApplied
+            runningSelectionApplied =
+                selection.activeSubtapApplied
                 || selection.originalTapApplied
             runningSource = describe(try aggregate.clockSource)
         }
@@ -381,7 +383,8 @@ private func runTapFirstOutputProbe(
         )
         runningActiveSubtaps = selection.activeSubtapIDs
         runningActiveSubtapError = selection.activeSubtapError
-        runningTapSource = selection.activeSubtapApplied
+        runningTapSource =
+            selection.activeSubtapApplied
             || selection.originalTapApplied
     }
     let sourceAfterStoppingTapOnlyIO = try aggregate.clockSource?.id == tap.id
@@ -504,7 +507,8 @@ private func setInputStreamUsage(
     let header = storage.assumingMemoryBound(to: AudioHardwareIOProcStreamUsage.self)
     header.pointee.mIOProc = unsafeBitCast(ioProcID, to: UnsafeMutableRawPointer.self)
     header.pointee.mNumberStreams = UInt32(usage.count)
-    let values = storage
+    let values =
+        storage
         .advanced(by: valuesOffset)
         .assumingMemoryBound(to: UInt32.self)
     for (index, enabled) in usage.enumerated() {
@@ -533,7 +537,7 @@ private func createEmptyAggregate(label: String) throws -> AudioHardwareAggregat
     let description: [String: Any] = [
         kAudioAggregateDeviceNameKey: "GlassEQ Clock Probe \(label)",
         kAudioAggregateDeviceUIDKey: "com.glasseq.clock-probe.\(UUID().uuidString)",
-        kAudioAggregateDeviceIsPrivateKey: true
+        kAudioAggregateDeviceIsPrivateKey: true,
     ]
     var aggregateID = AudioObjectID(kAudioObjectUnknown)
     try check(

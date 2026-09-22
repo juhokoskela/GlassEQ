@@ -11,10 +11,11 @@ struct LicenseServiceClientTests {
     func activationSendsTheDocumentedRequestAndParsesTheResponse() async throws {
         let session = LicenseTestURLProtocol.makeSession()
         defer { LicenseTestURLProtocol.reset() }
-        LicenseTestURLProtocol.enqueue(.json(
-            status: 201,
-            body: #"{"activation_token":"gea_abc","entitlement":"e.y.j"}"#
-        ))
+        LicenseTestURLProtocol.enqueue(
+            .json(
+                status: 201,
+                body: #"{"activation_token":"gea_abc","entitlement":"e.y.j"}"#
+            ))
 
         let response = try await LicenseServiceClient(session: session).activate(
             licenseKey: "  GEQ1-ABCD-EFGH  ",
@@ -38,10 +39,11 @@ struct LicenseServiceClientTests {
     func activationAcceptsAReplayedTwoHundred() async throws {
         let session = LicenseTestURLProtocol.makeSession()
         defer { LicenseTestURLProtocol.reset() }
-        LicenseTestURLProtocol.enqueue(.json(
-            status: 200,
-            body: #"{"activation_token":"gea_abc","entitlement":"e.y.j"}"#
-        ))
+        LicenseTestURLProtocol.enqueue(
+            .json(
+                status: 200,
+                body: #"{"activation_token":"gea_abc","entitlement":"e.y.j"}"#
+            ))
 
         let response = try await LicenseServiceClient(session: session).activate(
             licenseKey: "GEQ1-ABCD",
@@ -63,7 +65,8 @@ struct LicenseServiceClientTests {
             try await client.activate(licenseKey: "   ", installationID: installationID, idempotencyKey: idempotencyKey)
         }
         await #expect(throws: LicenseServiceError.invalidLicenseKey) {
-            try await client.activate(licenseKey: tooLong, installationID: installationID, idempotencyKey: idempotencyKey)
+            try await client.activate(
+                licenseKey: tooLong, installationID: installationID, idempotencyKey: idempotencyKey)
         }
         #expect(LicenseTestURLProtocol.requests.isEmpty)
     }
@@ -113,7 +116,7 @@ struct LicenseServiceClientTests {
         ("release_not_eligible", .releaseNotEligible, false),
         ("idempotency_conflict", .idempotencyConflict, false),
         ("temporarily_unavailable", .temporarilyUnavailable, true),
-        ("brand_new_code", .unknown("brand_new_code"), true)
+        ("brand_new_code", .unknown("brand_new_code"), true),
     ])
     func errorEnvelopesMapToStableCodes(
         rawCode: String,
@@ -122,15 +125,19 @@ struct LicenseServiceClientTests {
     ) async throws {
         let session = LicenseTestURLProtocol.makeSession()
         defer { LicenseTestURLProtocol.reset() }
-        LicenseTestURLProtocol.enqueue(.json(
-            status: 403,
-            body: #"{"error":{"code":"\#(rawCode)","message":"ignored","retryable":\#(retryable),"request_id":"req_01"}}"#
-        ))
+        LicenseTestURLProtocol.enqueue(
+            .json(
+                status: 403,
+                body:
+                    #"{"error":{"code":"\#(rawCode)","message":"ignored","retryable":\#(retryable),"request_id":"req_01"}}"#
+            ))
 
-        await #expect(throws: LicenseServiceError.service(
-            code: expected,
-            retryAfterSeconds: nil
-        )) {
+        await #expect(
+            throws: LicenseServiceError.service(
+                code: expected,
+                retryAfterSeconds: nil
+            )
+        ) {
             try await LicenseServiceClient(session: session).refresh(
                 activationToken: "gea_secret",
                 installationID: installationID
@@ -142,16 +149,19 @@ struct LicenseServiceClientTests {
     func rateLimitingClampsRetryAfter(header: String, expected: Int?) async throws {
         let session = LicenseTestURLProtocol.makeSession()
         defer { LicenseTestURLProtocol.reset() }
-        LicenseTestURLProtocol.enqueue(.init(
-            status: 429,
-            headers: ["Retry-After": header, "Content-Type": "application/json"],
-            body: Data(#"{"error":{"code":"rate_limited","message":"","retryable":true}}"#.utf8)
-        ))
+        LicenseTestURLProtocol.enqueue(
+            .init(
+                status: 429,
+                headers: ["Retry-After": header, "Content-Type": "application/json"],
+                body: Data(#"{"error":{"code":"rate_limited","message":"","retryable":true}}"#.utf8)
+            ))
 
-        await #expect(throws: LicenseServiceError.service(
-            code: .rateLimited,
-            retryAfterSeconds: expected
-        )) {
+        await #expect(
+            throws: LicenseServiceError.service(
+                code: .rateLimited,
+                retryAfterSeconds: expected
+            )
+        ) {
             try await LicenseServiceClient(session: session).refresh(
                 activationToken: "gea_secret",
                 installationID: installationID
@@ -163,16 +173,19 @@ struct LicenseServiceClientTests {
     func retryAfterLookupIsCaseInsensitive() async throws {
         let session = LicenseTestURLProtocol.makeSession()
         defer { LicenseTestURLProtocol.reset() }
-        LicenseTestURLProtocol.enqueue(.init(
-            status: 503,
-            headers: ["retry-after": "120", "content-type": "application/json"],
-            body: Data(#"{"error":{"code":"temporarily_unavailable","message":"","retryable":true}}"#.utf8)
-        ))
+        LicenseTestURLProtocol.enqueue(
+            .init(
+                status: 503,
+                headers: ["retry-after": "120", "content-type": "application/json"],
+                body: Data(#"{"error":{"code":"temporarily_unavailable","message":"","retryable":true}}"#.utf8)
+            ))
 
-        await #expect(throws: LicenseServiceError.service(
-            code: .temporarilyUnavailable,
-            retryAfterSeconds: 120
-        )) {
+        await #expect(
+            throws: LicenseServiceError.service(
+                code: .temporarilyUnavailable,
+                retryAfterSeconds: 120
+            )
+        ) {
             try await LicenseServiceClient(session: session).refresh(
                 activationToken: "gea_secret",
                 installationID: installationID
@@ -186,7 +199,7 @@ struct LicenseServiceClientTests {
         (.dnsLookupFailed, .transport(.offline)),
         (.timedOut, .transport(.timedOut)),
         (.cancelled, .transport(.other)),
-        (.badServerResponse, .transport(.other))
+        (.badServerResponse, .transport(.other)),
     ])
     func transportFailuresAreClassified(code: URLError.Code, expected: LicenseServiceError) async throws {
         let session = LicenseTestURLProtocol.makeSession()
@@ -247,11 +260,12 @@ struct LicenseServiceClientTests {
     func redirectsAreRefusedWithoutASecondRequest() async throws {
         let session = LicenseTestURLProtocol.makeSession()
         defer { LicenseTestURLProtocol.reset() }
-        LicenseTestURLProtocol.enqueue(.init(
-            status: 302,
-            headers: ["Location": "https://evil.example/v1/entitlements/refresh"],
-            body: Data()
-        ))
+        LicenseTestURLProtocol.enqueue(
+            .init(
+                status: 302,
+                headers: ["Location": "https://evil.example/v1/entitlements/refresh"],
+                body: Data()
+            ))
         LicenseTestURLProtocol.enqueue(.json(status: 200, body: #"{"entitlement":"e.y.j"}"#))
 
         await #expect(throws: LicenseServiceError.redirected) {
@@ -326,18 +340,19 @@ final class LicenseTestURLProtocol: URLProtocol, @unchecked Sendable {
         }
     }
 
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override static func canInit(with request: URLRequest) -> Bool { true }
+    override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         let storage = Self.storage
         let outcome = storage.lock.withLock { () -> Outcome? in
-            storage.recorded.append(LicenseTestRecordedRequest(
-                url: request.url,
-                method: request.httpMethod,
-                headers: request.allHTTPHeaderFields ?? [:],
-                body: Self.readBody(request)
-            ))
+            storage.recorded.append(
+                LicenseTestRecordedRequest(
+                    url: request.url,
+                    method: request.httpMethod,
+                    headers: request.allHTTPHeaderFields ?? [:],
+                    body: Self.readBody(request)
+                ))
             return storage.queue.isEmpty ? nil : storage.queue.removeFirst()
         }
         guard let outcome, let url = request.url else {
@@ -352,12 +367,14 @@ final class LicenseTestURLProtocol: URLProtocol, @unchecked Sendable {
             if !stub.chunked {
                 headers["Content-Length"] = String(stub.body.count)
             }
-            guard let response = HTTPURLResponse(
-                url: url,
-                statusCode: stub.status,
-                httpVersion: "HTTP/1.1",
-                headerFields: headers
-            ) else {
+            guard
+                let response = HTTPURLResponse(
+                    url: url,
+                    statusCode: stub.status,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: headers
+                )
+            else {
                 client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
                 return
             }
@@ -365,7 +382,7 @@ final class LicenseTestURLProtocol: URLProtocol, @unchecked Sendable {
             if stub.chunked {
                 for start in stride(from: 0, to: stub.body.count, by: 1_024) {
                     let end = min(start + 1_024, stub.body.count)
-                    client?.urlProtocol(self, didLoad: stub.body[start ..< end])
+                    client?.urlProtocol(self, didLoad: stub.body[start..<end])
                 }
             } else if !stub.body.isEmpty {
                 client?.urlProtocol(self, didLoad: stub.body)

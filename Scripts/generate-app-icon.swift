@@ -4,11 +4,13 @@ import AppKit
 import Foundation
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let resourcesURL = root
+let resourcesURL =
+    root
     .appendingPathComponent("Sources", isDirectory: true)
     .appendingPathComponent("GlassEQApp", isDirectory: true)
     .appendingPathComponent("Resources", isDirectory: true)
-let iconsetURL = root
+let iconsetURL =
+    root
     .appendingPathComponent(".build", isDirectory: true)
     .appendingPathComponent("icon-generation", isDirectory: true)
     .appendingPathComponent("GlassEQ.iconset", isDirectory: true)
@@ -27,7 +29,7 @@ let sizes: [(name: String, pixels: Int)] = [
     ("icon_256x256.png", 256),
     ("icon_256x256@2x.png", 512),
     ("icon_512x512.png", 512),
-    ("icon_512x512@2x.png", 1024)
+    ("icon_512x512@2x.png", 1024),
 ]
 
 func color(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat, _ alpha: CGFloat = 1) -> NSColor {
@@ -90,8 +92,8 @@ func drawIcon(size: Int) -> NSImage {
     )
 
     drawGradient(
-        NSGradient(colorsAndLocations:
-            (color(220, 223, 226), 0.00),
+        NSGradient(
+            colorsAndLocations: (color(220, 223, 226), 0.00),
             (color(151, 156, 163), 0.52),
             (color(88, 94, 103), 1.00)
         )!,
@@ -117,8 +119,8 @@ func drawIcon(size: Int) -> NSImage {
     )
 
     drawGradient(
-        NSGradient(colorsAndLocations:
-            (color(255, 255, 255, 0.30), 0.00),
+        NSGradient(
+            colorsAndLocations: (color(255, 255, 255, 0.30), 0.00),
             (color(255, 255, 255, 0.24), 1.00)
         )!,
         in: panel,
@@ -176,7 +178,7 @@ func drawIcon(size: Int) -> NSImage {
             NSGradient(colors: [
                 color(255, 255, 255, 0.95),
                 color(224, 228, 232, 0.82),
-                color(255, 255, 255, 0.56)
+                color(255, 255, 255, 0.56),
             ])!,
             in: knob,
             angle: -45
@@ -193,7 +195,8 @@ func writePNG(_ image: NSImage, to url: URL) throws {
         let bitmap = NSBitmapImageRep(data: tiff),
         let data = bitmap.representation(using: .png, properties: [:])
     else {
-        throw NSError(domain: "GlassEQIconGenerator", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG"])
+        throw NSError(
+            domain: "GlassEQIconGenerator", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG"])
     }
 
     try data.write(to: url, options: .atomic)
@@ -210,7 +213,9 @@ try process.run()
 process.waitUntilExit()
 
 guard process.terminationStatus == 0 else {
-    throw NSError(domain: "GlassEQIconGenerator", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "iconutil failed"])
+    throw NSError(
+        domain: "GlassEQIconGenerator", code: Int(process.terminationStatus),
+        userInfo: [NSLocalizedDescriptionKey: "iconutil failed"])
 }
 
 print(icnsURL.path)

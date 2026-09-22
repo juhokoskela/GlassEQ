@@ -18,7 +18,8 @@ struct ApplyBar: View {
                     .foregroundStyle(.secondary)
                     .font(.caption.weight(.medium))
                     .accessibilityLabel(Text(localized("Profile edit state")))
-                    .accessibilityValue(Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+                    .accessibilityValue(
+                        Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
             }
             HStack(spacing: 8) {
                 if programmeComparison.isActive {
@@ -57,7 +58,11 @@ struct ApplyBar: View {
                         controller.useDraftForCurrentOutput()
                     }
                     .disabled(isReadOnly || !controller.hasCurrentOutput)
-                    .accessibilityHint(Text(controller.hasCurrentOutput ? localized("Maps the selected profile to the current output device") : localized("No current output is available")))
+                    .accessibilityHint(
+                        Text(
+                            controller.hasCurrentOutput
+                                ? localized("Maps the selected profile to the current output device")
+                                : localized("No current output is available")))
                 }
 
                 Spacer(minLength: 0)

@@ -127,6 +127,16 @@ swift run GlassEQDiagnostics 2
 
 `GlassEQDiagnostics` runs a short smoke test against the current default output and prints local device details plus capture/playback metrics.
 
+### Formatting and lint
+
+```sh
+swift format format --in-place --recursive Sources Tests Scripts Package.swift
+./Scripts/check-swift.sh
+./Scripts/analyze-swift.sh
+```
+
+See [Swift tooling policy](Docs/SwiftTooling.md) for the toolchain, enforced checks, and local exceptions.
+
 ### Creating a beta build
 
 ```sh

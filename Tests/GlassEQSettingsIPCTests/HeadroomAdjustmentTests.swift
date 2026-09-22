@@ -17,10 +17,11 @@ struct HeadroomAdjustmentTests {
             rightFilters: []
         )
 
-        let adjusted = try #require(profileApplyingRecommendedHeadroom(
-            profile,
-            recommendedPreampDB: -10.5
-        ))
+        let adjusted = try #require(
+            profileApplyingRecommendedHeadroom(
+                profile,
+                recommendedPreampDB: -10.5
+            ))
 
         #expect(adjusted.leftPreampDB == -10.5)
         #expect(adjusted.rightPreampDB == -30.5)
@@ -39,9 +40,10 @@ struct HeadroomAdjustmentTests {
             rightFilters: []
         )
 
-        #expect(profileApplyingRecommendedHeadroom(
-            profile,
-            recommendedPreampDB: -2
-        ) == nil)
+        #expect(
+            profileApplyingRecommendedHeadroom(
+                profile,
+                recommendedPreampDB: -2
+            ) == nil)
     }
 }

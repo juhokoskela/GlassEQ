@@ -42,7 +42,8 @@ package enum StereoTextPairImporter {
         let left = try importProfile(from: leftURL)
         let right = try importProfile(from: rightURL)
         guard left.channelMode == .linked,
-              right.channelMode == .linked else {
+            right.channelMode == .linked
+        else {
             throw StereoTextPairImportError.filesMustDescribeLinkedChannels
         }
         guard left.mode == right.mode else {
@@ -60,7 +61,8 @@ package enum StereoTextPairImporter {
         let profile: EQProfile
         if left.mode == .convolution {
             guard let leftSource = left.convolution,
-                  let rightSource = right.convolution else {
+                let rightSource = right.convolution
+            else {
                 throw StereoTextPairImportError.missingConvolutionSource
             }
             profile = EQProfile(
@@ -125,7 +127,8 @@ extension EQProfile {
         let left = removingChannelSuffix(leftURL.deletingPathExtension().lastPathComponent)
         let right = removingChannelSuffix(rightURL.deletingPathExtension().lastPathComponent)
         if !left.isEmpty,
-           left.caseInsensitiveCompare(right) == .orderedSame {
+            left.caseInsensitiveCompare(right) == .orderedSame
+        {
             return left
         }
         return fallback
@@ -134,7 +137,7 @@ extension EQProfile {
     private static func removingChannelSuffix(_ name: String) -> String {
         let suffixes = [
             " left", "-left", "_left", " l", "-l", "_l",
-            " right", "-right", "_right", " r", "-r", "_r"
+            " right", "-right", "_right", " r", "-r", "_r",
         ]
         let lowercased = name.lowercased()
         for suffix in suffixes where lowercased.hasSuffix(suffix) {

@@ -11,7 +11,9 @@ import Testing
 @MainActor
 @Suite
 struct GlassEQAppModelLifecycleTests {
-    @Test(arguments: [kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeUSB])
+    @Test(arguments: [
+        kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeUSB,
+    ])
     func outputDiagnosticsPublishBluetoothTransportMetadata(transport: UInt32) async {
         let output = makeOutput(uid: "transport-output", name: "Output", transportType: transport)
         let engine = FakeAudioEngine()
@@ -132,16 +134,17 @@ struct GlassEQAppModelLifecycleTests {
         var renegotiatedOutput = output
         renegotiatedOutput.bufferFrameSize = 512
         engine.state = .running(output: renegotiatedOutput)
-        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
-            outputName: output.name,
-            outputUID: output.uid,
-            sampleRate: output.nominalSampleRate,
-            previousFrameSize: 480,
-            frameSize: 512,
-            previousPlaybackTargetFrames: 512,
-            playbackTargetFrames: 1_024,
-            cause: .instability(.underrun)
-        ))
+        engine.emitPlaybackBufferRenegotiation(
+            PlaybackBufferRenegotiation(
+                outputName: output.name,
+                outputUID: output.uid,
+                sampleRate: output.nominalSampleRate,
+                previousFrameSize: 480,
+                frameSize: 512,
+                previousPlaybackTargetFrames: 512,
+                playbackTargetFrames: 1_024,
+                cause: .instability(.underrun)
+            ))
         await waitUntil {
             model.currentOutputBufferFrameSize == 512
         }
@@ -174,31 +177,33 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
-        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
-            outputName: "Other Output",
-            outputUID: "other-output",
-            sampleRate: 48_000,
-            previousFrameSize: 480,
-            frameSize: 128,
-            playbackTargetFrames: 512,
-            cause: .stableDecay
-        ))
+        engine.emitPlaybackBufferRenegotiation(
+            PlaybackBufferRenegotiation(
+                outputName: "Other Output",
+                outputUID: "other-output",
+                sampleRate: 48_000,
+                previousFrameSize: 480,
+                frameSize: 128,
+                playbackTargetFrames: 512,
+                cause: .stableDecay
+            ))
         await settleAsyncWork()
         #expect(model.currentOutputBufferFrameSize == 480)
 
         var renegotiatedOutput = output
         renegotiatedOutput.bufferFrameSize = 256
         engine.state = .running(output: renegotiatedOutput)
-        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
-            outputName: output.name,
-            outputUID: output.uid,
-            sampleRate: output.nominalSampleRate,
-            previousFrameSize: 480,
-            frameSize: 256,
-            previousPlaybackTargetFrames: 1_024,
-            playbackTargetFrames: 512,
-            cause: .stableDecay
-        ))
+        engine.emitPlaybackBufferRenegotiation(
+            PlaybackBufferRenegotiation(
+                outputName: output.name,
+                outputUID: output.uid,
+                sampleRate: output.nominalSampleRate,
+                previousFrameSize: 480,
+                frameSize: 256,
+                previousPlaybackTargetFrames: 1_024,
+                playbackTargetFrames: 512,
+                cause: .stableDecay
+            ))
         await waitUntil {
             model.currentOutputBufferFrameSize == 256
         }
@@ -243,15 +248,16 @@ struct GlassEQAppModelLifecycleTests {
                 && model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize
         }
 
-        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
-            outputName: initialOutput.name,
-            outputUID: initialOutput.uid,
-            sampleRate: initialOutput.nominalSampleRate,
-            previousFrameSize: initialOutput.bufferFrameSize,
-            frameSize: 128,
-            playbackTargetFrames: 512,
-            cause: .stableDecay
-        ))
+        engine.emitPlaybackBufferRenegotiation(
+            PlaybackBufferRenegotiation(
+                outputName: initialOutput.name,
+                outputUID: initialOutput.uid,
+                sampleRate: initialOutput.nominalSampleRate,
+                previousFrameSize: initialOutput.bufferFrameSize,
+                frameSize: 128,
+                playbackTargetFrames: 512,
+                cause: .stableDecay
+            ))
         await settleAsyncWork()
 
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
@@ -292,20 +298,22 @@ struct GlassEQAppModelLifecycleTests {
             engine.startCalls.count == 2
                 && model.currentOutputBufferFrameSize == replacementOutput.bufferFrameSize
         }
-        #expect(engine.waitUntilStartIsBlocked(
-            for: replacementOutput.uid,
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilStartIsBlocked(
+                for: replacementOutput.uid,
+                timeout: .now() + 1
+            ))
 
-        engine.emitPlaybackBufferRenegotiation(PlaybackBufferRenegotiation(
-            outputName: initialOutput.name,
-            outputUID: initialOutput.uid,
-            sampleRate: initialOutput.nominalSampleRate,
-            previousFrameSize: 256,
-            frameSize: initialOutput.bufferFrameSize,
-            playbackTargetFrames: 1_024,
-            cause: .stableDecay
-        ))
+        engine.emitPlaybackBufferRenegotiation(
+            PlaybackBufferRenegotiation(
+                outputName: initialOutput.name,
+                outputUID: initialOutput.uid,
+                sampleRate: initialOutput.nominalSampleRate,
+                previousFrameSize: 256,
+                frameSize: initialOutput.bufferFrameSize,
+                playbackTargetFrames: 1_024,
+                cause: .stableDecay
+            ))
         await settleAsyncWork()
 
         #expect(model.currentOutputBufferFrameSize == replacementOutput.bufferFrameSize)
@@ -335,9 +343,11 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         #expect(!model.isRunning)
-        #expect(model.statusMessage == localized(
-            "Audio engine failed: \(adaptiveRenderFailure.userMessage)"
-        ))
+        #expect(
+            model.statusMessage
+                == localized(
+                    "Audio engine failed: \(adaptiveRenderFailure.userMessage)"
+                ))
     }
 
     @Test
@@ -357,11 +367,12 @@ struct GlassEQAppModelLifecycleTests {
             engine.startCalls.count == 2 && model.lifecycleState == .running
         }
 
-        #expect(engine.events.prefix(3) == [
-            "start:\(output.uid)",
-            "stop",
-            "start:\(output.uid)"
-        ])
+        #expect(
+            engine.events.prefix(3) == [
+                "start:\(output.uid)",
+                "stop",
+                "start:\(output.uid)",
+            ])
         model.stop()
     }
 
@@ -378,11 +389,13 @@ struct GlassEQAppModelLifecycleTests {
         )
         try AggregateBufferPolicyStore(
             url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
-        ).setMode(.frames16, for: AggregateAudioRouteFingerprint(
-            outputDeviceUID: output.uid,
-            nativeOutputStreamIndex: 0,
-            nominalSampleRate: output.nominalSampleRate
-        ))
+        ).setMode(
+            .frames16,
+            for: AggregateAudioRouteFingerprint(
+                outputDeviceUID: output.uid,
+                nativeOutputStreamIndex: 0,
+                nominalSampleRate: output.nominalSampleRate
+            ))
         let engine = FakeAudioEngine()
         engine.headsetPromotionCandidateUIDs = [output.uid]
         let model = makeModel(
@@ -566,9 +579,10 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.headsetAggregatePromotionAttemptCount == 1
         }
-        #expect(engine.waitUntilHeadsetAggregatePromotionIsBlocked(
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilHeadsetAggregatePromotionIsBlocked(
+                timeout: .now() + 1
+            ))
 
         lookup.result = .success(transientOutput)
         observer.emit(.success(transientOutput))
@@ -644,9 +658,10 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.coldStartupAggregatePromotionAttemptCount == 1
         }
-        #expect(engine.waitUntilColdStartupAggregatePromotionIsBlocked(
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilColdStartupAggregatePromotionIsBlocked(
+                timeout: .now() + 1
+            ))
 
         observers.observers[0].emit(.success(output))
         engine.unblockColdStartupAggregatePromotion()
@@ -685,9 +700,10 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.coldStartupAggregatePromotionAttemptCount == 1
         }
-        #expect(engine.waitUntilColdStartupAggregatePromotionIsBlocked(
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilColdStartupAggregatePromotionIsBlocked(
+                timeout: .now() + 1
+            ))
 
         observers.observers[0].emit(.success(transientOutput))
         observers.observers[0].emit(.success(output))
@@ -735,9 +751,10 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.coldStartupAggregatePromotionAttemptCount == 1
         }
-        #expect(engine.waitUntilColdStartupAggregatePromotionIsBlocked(
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilColdStartupAggregatePromotionIsBlocked(
+                timeout: .now() + 1
+            ))
 
         lookup.result = .success(changedOutput)
         observer.emit(.success(changedOutput))
@@ -759,11 +776,12 @@ struct GlassEQAppModelLifecycleTests {
                 && model.currentOutputSampleRate == changedOutput.nominalSampleRate
         }
         #expect(rebuilt)
-        #expect(engine.events == [
-            "start:\(output.uid)",
-            "stop",
-            "start:\(changedOutput.uid)",
-        ])
+        #expect(
+            engine.events == [
+                "start:\(output.uid)",
+                "stop",
+                "start:\(changedOutput.uid)",
+            ])
     }
 
     @Test
@@ -1004,11 +1022,13 @@ struct GlassEQAppModelLifecycleTests {
         )
         try AggregateBufferPolicyStore(
             url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
-        ).setMode(.frames16, for: AggregateAudioRouteFingerprint(
-            outputDeviceUID: output.uid,
-            nativeOutputStreamIndex: 0,
-            nominalSampleRate: output.nominalSampleRate
-        ))
+        ).setMode(
+            .frames16,
+            for: AggregateAudioRouteFingerprint(
+                outputDeviceUID: output.uid,
+                nativeOutputStreamIndex: 0,
+                nominalSampleRate: output.nominalSampleRate
+            ))
         let engine = FakeAudioEngine()
         engine.headsetPromotionCandidateUIDs = [output.uid]
         engine.headsetAggregatePromotionResult = .promoted(output)
@@ -1157,14 +1177,17 @@ struct GlassEQAppModelLifecycleTests {
         defer { removeTemporaryStoreDirectory(for: storeURL) }
         var profile = makeProfile(name: "Bypassed Bluetooth")
         profile.isBypassed = true
-        let output = makeOutput(uid: "bypassed-bluetooth", name: "AirPods", transportType: kAudioDeviceTransportTypeBluetooth)
+        let output = makeOutput(
+            uid: "bypassed-bluetooth", name: "AirPods", transportType: kAudioDeviceTransportTypeBluetooth)
         try AggregateBufferPolicyStore(
             url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
-        ).setMode(mode, for: AggregateAudioRouteFingerprint(
-            outputDeviceUID: output.uid,
-            nativeOutputStreamIndex: 0,
-            nominalSampleRate: output.nominalSampleRate
-        ))
+        ).setMode(
+            mode,
+            for: AggregateAudioRouteFingerprint(
+                outputDeviceUID: output.uid,
+                nativeOutputStreamIndex: 0,
+                nominalSampleRate: output.nominalSampleRate
+            ))
         let engine = FakeAudioEngine()
         engine.reflectPreferredAggregateBufferFrameSize = true
         let observers = FakeDefaultOutputObserverFactory()
@@ -1390,7 +1413,7 @@ struct GlassEQAppModelLifecycleTests {
             (3, 3, UInt32(16)),
             (6, 4, UInt32(32)),
             (9, 5, UInt32(64)),
-            (12, 6, UInt32(128))
+            (12, 6, UInt32(128)),
         ] {
             try? await Task.sleep(for: .milliseconds(50))
             var metrics = engine.metrics
@@ -1462,10 +1485,11 @@ struct GlassEQAppModelLifecycleTests {
         metrics.renderDeadlineMisses = 6
         engine.metrics = metrics
         try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.waitUntilPreferredAggregateBufferFrameSizeWriteIsBlocked(
-            32,
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilPreferredAggregateBufferFrameSizeWriteIsBlocked(
+                32,
+                timeout: .now() + 1
+            ))
 
         model.stop()
         engine.unblockPreferredAggregateBufferFrameSizeWrite(32)
@@ -1523,10 +1547,11 @@ struct GlassEQAppModelLifecycleTests {
         let policyStoreURL = storeURL.deletingPathExtension()
             .appendingPathExtension("aggregate-buffer-policy.json")
         let policyStore = AggregateBufferPolicyStore(url: policyStoreURL)
-        #expect(try policyStore.recordAutomaticFailure(
-            for: route,
-            occurrences: 2
-        ) == 32)
+        #expect(
+            try policyStore.recordAutomaticFailure(
+                for: route,
+                occurrences: 2
+            ) == 32)
         #expect(try policyStore.recordCleanAutomaticSession(for: route) == nil)
         #expect(try policyStore.recordCleanAutomaticSession(for: route) == nil)
         #expect(AggregateBufferPolicyStore(url: policyStoreURL).selection(for: route).frameSize == 32)
@@ -1615,11 +1640,12 @@ struct GlassEQAppModelLifecycleTests {
         let selection = AggregateBufferPolicyStore(
             url: storeURL.deletingPathExtension()
                 .appendingPathExtension("aggregate-buffer-policy.json")
-        ).selection(for: AggregateAudioRouteFingerprint(
-            outputDeviceUID: output.uid,
-            nativeOutputStreamIndex: 0,
-            nominalSampleRate: output.nominalSampleRate
-        ))
+        ).selection(
+            for: AggregateAudioRouteFingerprint(
+                outputDeviceUID: output.uid,
+                nativeOutputStreamIndex: 0,
+                nominalSampleRate: output.nominalSampleRate
+            ))
         #expect(selection.automaticFrameSize == 16)
         #expect(model.settingsSnapshot().currentOutputBufferFrameSize == appliedFrameSize)
     }
@@ -1684,10 +1710,12 @@ struct GlassEQAppModelLifecycleTests {
         let output = makeOutput(uid: "retry-preserved-output", name: "Retry Preserved Output")
         let store = ProfileStore(
             profiles: [running, inactive],
-            outputMappings: [OutputDeviceProfileMapping(
-                outputDeviceUID: output.uid,
-                profileID: running.id
-            )],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: output.uid,
+                    profileID: running.id
+                )
+            ],
             fallbackProfileID: inactive.id
         )
         let engine = FakeAudioEngine()
@@ -1884,10 +1912,12 @@ struct GlassEQAppModelLifecycleTests {
         let secondProfile = makeProfile(name: "Second Output Profile")
         let store = ProfileStore(
             profiles: [firstProfile, secondProfile],
-            outputMappings: [OutputDeviceProfileMapping(
-                outputDeviceUID: secondOutput.uid,
-                profileID: secondProfile.id
-            )],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: secondOutput.uid,
+                    profileID: secondProfile.id
+                )
+            ],
             fallbackProfileID: firstProfile.id
         )
         let engine = FakeAudioEngine()
@@ -1936,10 +1966,12 @@ struct GlassEQAppModelLifecycleTests {
         let secondProfile = makeProfile(name: "Pending Second Profile")
         let store = ProfileStore(
             profiles: [firstProfile, secondProfile],
-            outputMappings: [OutputDeviceProfileMapping(
-                outputDeviceUID: secondOutput.uid,
-                profileID: secondProfile.id
-            )],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: secondOutput.uid,
+                    profileID: secondProfile.id
+                )
+            ],
             fallbackProfileID: firstProfile.id
         )
         let engine = FakeAudioEngine()
@@ -1995,10 +2027,12 @@ struct GlassEQAppModelLifecycleTests {
         let routeProfile = makeProfile(name: "Route Profile")
         let store = ProfileStore(
             profiles: [confirmedProfile, routeProfile],
-            outputMappings: [OutputDeviceProfileMapping(
-                outputDeviceUID: secondOutput.uid,
-                profileID: routeProfile.id
-            )],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: secondOutput.uid,
+                    profileID: routeProfile.id
+                )
+            ],
             fallbackProfileID: confirmedProfile.id
         )
         let engine = FakeAudioEngine()
@@ -2356,11 +2390,12 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(!model.settingsSnapshot().programmeComparison.isActive)
         #expect(model.activeProfile == secondProfile)
-        #expect(engine.programmeComparisonSelections == [
-            .equalized,
-            .reference,
-            .equalized
-        ])
+        #expect(
+            engine.programmeComparisonSelections == [
+                .equalized,
+                .reference,
+                .equalized,
+            ])
 
         let updatesBeforeStop = engine.updateDSPCalls
         model.stopProgrammeComparison()
@@ -2651,11 +2686,12 @@ struct GlassEQAppModelLifecycleTests {
                     && engine.startCalls.count == 2
             }
             #expect(engine.startCalls.map(\.output) == [initialOutput, changedOutput])
-            #expect(engine.events == [
-                "start:\(initialOutput.uid)",
-                "stop",
-                "start:\(changedOutput.uid)",
-            ])
+            #expect(
+                engine.events == [
+                    "start:\(initialOutput.uid)",
+                    "stop",
+                    "start:\(changedOutput.uid)",
+                ])
         } else {
             await waitUntil {
                 model.currentOutputSampleRate == changedOutput.nominalSampleRate
@@ -2704,9 +2740,10 @@ struct GlassEQAppModelLifecycleTests {
         settlement.hold()
         observer.emit(.success(output), reason: reason)
 
-        try #require(await waitUntil {
-            engine.stopCallCount == 1 && settlement.waitCount == 1
-        })
+        try #require(
+            await waitUntil {
+                engine.stopCallCount == 1 && settlement.waitCount == 1
+            })
         #expect(engine.startCalls.count == 1)
         settlement.release()
 
@@ -2772,11 +2809,12 @@ struct GlassEQAppModelLifecycleTests {
         }
         #expect(rebuilt)
         #expect(engine.startCalls[1].profile == editedProfile)
-        #expect(engine.events == [
-            "start:\(initialOutput.uid)",
-            "stop",
-            "start:\(changedOutput.uid)",
-        ])
+        #expect(
+            engine.events == [
+                "start:\(initialOutput.uid)",
+                "stop",
+                "start:\(changedOutput.uid)",
+            ])
     }
 
     @Test
@@ -2807,10 +2845,11 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             engine.startCalls.count == 1
         }
-        #expect(engine.waitUntilStartIsBlocked(
-            for: initialOutput.uid,
-            timeout: .now() + 1
-        ))
+        #expect(
+            engine.waitUntilStartIsBlocked(
+                for: initialOutput.uid,
+                timeout: .now() + 1
+            ))
 
         lookup.result = .success(changedOutput)
         observer.emit(.success(changedOutput))
@@ -2834,11 +2873,12 @@ struct GlassEQAppModelLifecycleTests {
                 && model.currentOutputSampleRate == changedOutput.nominalSampleRate
         }
         #expect(rebuilt)
-        #expect(engine.events == [
-            "start:\(initialOutput.uid)",
-            "stop",
-            "start:\(changedOutput.uid)",
-        ])
+        #expect(
+            engine.events == [
+                "start:\(initialOutput.uid)",
+                "stop",
+                "start:\(changedOutput.uid)",
+            ])
     }
 
     @Test
@@ -2877,9 +2917,10 @@ struct GlassEQAppModelLifecycleTests {
         settlement.hold()
         lookup.result = .success(transientOutput)
         observer.emit(.success(transientOutput))
-        try #require(await waitUntil {
-            engine.stopCallCount == 1 && settlement.waitCount == 1
-        })
+        try #require(
+            await waitUntil {
+                engine.stopCallCount == 1 && settlement.waitCount == 1
+            })
 
         lookup.result = .success(runningOutput)
         observer.emit(.success(runningOutput))
@@ -2891,11 +2932,12 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(engine.startCalls.map(\.output) == [runningOutput, runningOutput])
         #expect(engine.resumeOutputCallCount == 0)
-        #expect(engine.events == [
-            "start:\(runningOutput.uid)",
-            "stop",
-            "start:\(runningOutput.uid)",
-        ])
+        #expect(
+            engine.events == [
+                "start:\(runningOutput.uid)",
+                "stop",
+                "start:\(runningOutput.uid)",
+            ])
         #expect(model.lifecycleState == .running)
     }
 
@@ -3271,9 +3313,10 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running
                 && model.currentOutputUID == secondOutput.uid
                 && engine.state == .running(output: secondOutput)
-                && model.statusMessage == localized(
-                    "Processing \(secondOutput.name) with \(model.activeProfile.name)"
-                )
+                && model.statusMessage
+                    == localized(
+                        "Processing \(secondOutput.name) with \(model.activeProfile.name)"
+                    )
         }
 
         #expect(model.currentOutputUID == secondOutput.uid)
@@ -3840,12 +3883,14 @@ struct GlassEQAppModelLifecycleTests {
             EQFilter(kind: .peak, frequency: Double($0 + 1), gainDB: 0, q: 1, isEnabled: false)
         }
 
-        await #expect(throws: ProfileStoreValidationError.tooManyFilters(
-            profileID: overloaded.id,
-            channel: "linked",
-            count: ProfilePersistence.maxFiltersPerChannel + 1,
-            maximum: ProfilePersistence.maxFiltersPerChannel
-        )) {
+        await #expect(
+            throws: ProfileStoreValidationError.tooManyFilters(
+                profileID: overloaded.id,
+                channel: "linked",
+                count: ProfilePersistence.maxFiltersPerChannel + 1,
+                maximum: ProfilePersistence.maxFiltersPerChannel
+            )
+        ) {
             _ = try await model.performSettingsCommand(.applyProfile(overloaded))
         }
 
@@ -3859,10 +3904,12 @@ struct GlassEQAppModelLifecycleTests {
         let model = makeModel(store: store)
         let initialSelection = model.selectedProfileID
 
-        await #expect(throws: ProfileStoreValidationError.invalidProfileCount(
-            count: ProfilePersistence.profileCountRange.upperBound + 1,
-            allowed: ProfilePersistence.profileCountRange
-        )) {
+        await #expect(
+            throws: ProfileStoreValidationError.invalidProfileCount(
+                count: ProfilePersistence.profileCountRange.upperBound + 1,
+                allowed: ProfilePersistence.profileCountRange
+            )
+        ) {
             _ = try await model.performSettingsCommand(.createProfile(.parametric))
         }
 
@@ -4014,7 +4061,7 @@ struct GlassEQAppModelLifecycleTests {
             at: storeURL.deletingLastPathComponent(),
             includingPropertiesForKeys: nil
         )
-            .filter { $0.lastPathComponent.hasPrefix("Profiles.invalid-") }
+        .filter { $0.lastPathComponent.hasPrefix("Profiles.invalid-") }
         #expect(backups.count == 1)
         if let backup = backups.first {
             #expect(try Data(contentsOf: backup) == futureData)
@@ -4151,10 +4198,12 @@ struct GlassEQAppModelLifecycleTests {
         let output = makeOutput(uid: "delete-guard-output", name: "Delete Guard Output")
         let store = ProfileStore(
             profiles: [running, requested],
-            outputMappings: [OutputDeviceProfileMapping(
-                outputDeviceUID: output.uid,
-                profileID: running.id
-            )],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: output.uid,
+                    profileID: running.id
+                )
+            ],
             fallbackProfileID: running.id
         )
         let engine = FakeAudioEngine()
@@ -4245,10 +4294,12 @@ struct GlassEQAppModelLifecycleTests {
         let output = makeOutput(uid: "deleted-mapping-output", name: "Deleted Mapping Output")
         let store = ProfileStore(
             profiles: [mapped, running, requested],
-            outputMappings: [OutputDeviceProfileMapping(
-                outputDeviceUID: output.uid,
-                profileID: mapped.id
-            )],
+            outputMappings: [
+                OutputDeviceProfileMapping(
+                    outputDeviceUID: output.uid,
+                    profileID: mapped.id
+                )
+            ],
             fallbackProfileID: running.id
         )
         let engine = FakeAudioEngine()
@@ -4393,10 +4444,12 @@ struct GlassEQAppModelLifecycleTests {
         let model = makeModel(store: store)
         let text = "Filter 1: ON PK Fc 1000 Hz Gain 1 dB Q 1"
 
-        await #expect(throws: ProfileStoreValidationError.invalidProfileCount(
-            count: ProfilePersistence.profileCountRange.upperBound + 1,
-            allowed: ProfilePersistence.profileCountRange
-        )) {
+        await #expect(
+            throws: ProfileStoreValidationError.invalidProfileCount(
+                count: ProfilePersistence.profileCountRange.upperBound + 1,
+                allowed: ProfilePersistence.profileCountRange
+            )
+        ) {
             _ = try await model.performSettingsCommand(.importProfile(format: .autoEQ, name: "Imported", text: text))
         }
 
@@ -4412,10 +4465,11 @@ struct GlassEQAppModelLifecycleTests {
             name: "Room IR",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: [1, 0.25, -0.125]
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: [1, 0.25, -0.125]
+                ))
         )
 
         let response = try await model.performSettingsCommand(
@@ -4781,11 +4835,12 @@ struct GlassEQAppModelLifecycleTests {
         )
 
         let importTask = Task {
-            try await model.performSettingsCommand(.importProfile(
-                format: .autoEQ,
-                name: importedProfile.name,
-                text: "1 0"
-            ))
+            try await model.performSettingsCommand(
+                .importProfile(
+                    format: .autoEQ,
+                    name: importedProfile.name,
+                    text: "1 0"
+                ))
         }
         await waitUntil {
             importer.hasEntered
@@ -4873,34 +4928,37 @@ struct GlassEQAppModelLifecycleTests {
         )
 
         let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "file-picker",
-            kind: .command,
-            command: .chooseImportFiles(mode: .single)
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "file-picker",
+                kind: .command,
+                command: .chooseImportFiles(mode: .single)
+            ))
         await waitUntil {
             picker.hasEntered
         }
 
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "file-picker",
-            kind: .cancel,
-            command: nil
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "file-picker",
+                kind: .cancel,
+                command: nil
+            ))
 
         await waitUntil {
             picker.wasCancelled
         }
         await settleAsyncWork()
         #expect(picker.wasCancelled)
-        #expect(!launcher.receivedAppMessages.contains { message in
-            if case .response(_, "file-picker", _, _) = message {
-                return true
-            }
-            return false
-        })
+        #expect(
+            !launcher.receivedAppMessages.contains { message in
+                if case .response(_, "file-picker", _, _) = message {
+                    return true
+                }
+                return false
+            })
         await model.stopAcceptingSettingsCommandsAndWait()
         model.resumeSettingsCommandsAfterCancelledQuit()
         coordinator.shutdown()
@@ -4921,12 +4979,13 @@ struct GlassEQAppModelLifecycleTests {
         model.settingsCoordinator = coordinator
 
         let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "quit-file-picker",
-            kind: .command,
-            command: .chooseImportFiles(mode: .single)
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "quit-file-picker",
+                kind: .command,
+                command: .chooseImportFiles(mode: .single)
+            ))
         await waitUntil {
             picker.hasEntered
         }
@@ -4949,12 +5008,13 @@ struct GlassEQAppModelLifecycleTests {
             return false
         }
         #expect(pickerResponses.count == 1)
-        #expect(pickerResponses.contains { message in
-            if case let .response(_, "quit-file-picker", _, error) = message {
-                return error == "GlassEQ is shutting down."
-            }
-            return false
-        })
+        #expect(
+            pickerResponses.contains { message in
+                if case let .response(_, "quit-file-picker", _, error) = message {
+                    return error == "GlassEQ is shutting down."
+                }
+                return false
+            })
         model.resumeSettingsCommandsAfterCancelledQuit()
         coordinator.shutdown()
     }
@@ -4998,22 +5058,24 @@ struct GlassEQAppModelLifecycleTests {
         )
 
         let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "file-picker",
-            kind: .command,
-            command: .chooseImportFiles(mode: .stereoPair)
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "file-picker",
+                kind: .command,
+                command: .chooseImportFiles(mode: .stereoPair)
+            ))
         await waitUntil {
             picker.hasEntered
         }
 
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "disconnect",
-            kind: .disconnect,
-            command: nil
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "disconnect",
+                kind: .disconnect,
+                command: nil
+            ))
 
         await waitUntil {
             picker.wasCancelled
@@ -5123,9 +5185,10 @@ struct GlassEQAppModelLifecycleTests {
             Issue.record("Expected Settings bootstrap message")
             return
         }
-        try launcher.writeHelperOutput(try SettingsPipeCodec.encodeLine(
-            .request(sessionToken: token, id: "connect", kind: .connect, command: nil)
-        ))
+        try launcher.writeHelperOutput(
+            try SettingsPipeCodec.encodeLine(
+                .request(sessionToken: token, id: "connect", kind: .connect, command: nil)
+            ))
         try launcher.closeHelperOutput()
 
         for _ in 0..<100 where model.inProcessSettingsPresentationGeneration == 0 {
@@ -5183,11 +5246,13 @@ struct GlassEQAppModelLifecycleTests {
             Issue.record("Expected Settings bootstrap message")
             return
         }
-        let requests = try SettingsPipeCodec.encodeLine(
-            .request(sessionToken: token, id: "connect", kind: .connect, command: nil)
-        ) + SettingsPipeCodec.encodeLine(
-            .request(sessionToken: token, id: "ready", kind: .ready, command: nil)
-        )
+        let requests =
+            try SettingsPipeCodec.encodeLine(
+                .request(sessionToken: token, id: "connect", kind: .connect, command: nil)
+            )
+            + SettingsPipeCodec.encodeLine(
+                .request(sessionToken: token, id: "ready", kind: .ready, command: nil)
+            )
         try launcher.writeHelperOutput(requests)
         for _ in 0..<100 where !coordinator.isHelperReadyForTesting {
             try await Task.sleep(for: .milliseconds(10))
@@ -5237,12 +5302,13 @@ struct GlassEQAppModelLifecycleTests {
             Issue.record("Expected Settings bootstrap message")
             return
         }
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "connect",
-            kind: .connect,
-            command: nil
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "connect",
+                kind: .connect,
+                command: nil
+            ))
         await waitUntil {
             launcher.receivedAppMessages.contains { message in
                 if case .response(_, "connect", _, _) = message {
@@ -5256,12 +5322,13 @@ struct GlassEQAppModelLifecycleTests {
         model.engineMetrics = AudioEngineMetrics(capturedFrames: 42)
         coordinator.modelDidChange()
         coordinator.metricsDidChange()
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "ready",
-            kind: .ready,
-            command: nil
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "ready",
+                kind: .ready,
+                command: nil
+            ))
 
         await waitUntil {
             launcher.receivedAppMessages.contains { message in
@@ -5301,12 +5368,13 @@ struct GlassEQAppModelLifecycleTests {
             Issue.record("Expected Settings bootstrap message")
             return
         }
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "connect",
-            kind: .connect,
-            command: nil
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "connect",
+                kind: .connect,
+                command: nil
+            ))
         await waitUntil {
             launcher.receivedAppMessages.contains { message in
                 if case .response(_, "connect", _, _) = message {
@@ -5317,12 +5385,13 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         try launcher.closeHelperInput()
-        try launcher.writeHelperMessage(.request(
-            sessionToken: token,
-            id: "ready",
-            kind: .ready,
-            command: nil
-        ))
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token,
+                id: "ready",
+                kind: .ready,
+                command: nil
+            ))
 
         await waitUntil {
             model.inProcessSettingsPresentationGeneration == 1
@@ -5405,7 +5474,8 @@ struct GlassEQAppModelLifecycleTests {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQHelperValidation-\(UUID().uuidString)", isDirectory: true)
         let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
-        let helperURL = hostURL
+        let helperURL =
+            hostURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Helpers", isDirectory: true)
             .appendingPathComponent("GlassEQSettings.app", isDirectory: true)
@@ -5415,8 +5485,10 @@ struct GlassEQAppModelLifecycleTests {
             executableName: "GlassEQSettings"
         )
         let validator = FakeCodeSigningValidator(signatures: [
-            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
-            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
         ])
 
         let executableURL = try SettingsHelperVerifier.validatedExecutableURL(
@@ -5427,11 +5499,13 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(executableURL.lastPathComponent == "GlassEQSettings")
 
-        let wrongBundleURL = hostURL
+        let wrongBundleURL =
+            hostURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Helpers", isDirectory: true)
             .appendingPathComponent("WrongSettings.app", isDirectory: true)
-        try makeFakeAppBundle(at: wrongBundleURL, bundleIdentifier: "com.example.wrong", executableName: "GlassEQSettings")
+        try makeFakeAppBundle(
+            at: wrongBundleURL, bundleIdentifier: "com.example.wrong", executableName: "GlassEQSettings")
         #expect(throws: SettingsCommandFailure.self) {
             _ = try SettingsHelperVerifier.validatedExecutableURL(
                 for: wrongBundleURL,
@@ -5440,7 +5514,8 @@ struct GlassEQAppModelLifecycleTests {
             )
         }
 
-        let outsideURL = root
+        let outsideURL =
+            root
             .appendingPathComponent("Outside", isDirectory: true)
             .appendingPathComponent("GlassEQSettings.app", isDirectory: true)
         try makeFakeAppBundle(
@@ -5457,8 +5532,10 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         let mismatchedTeam = FakeCodeSigningValidator(signatures: [
-            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
-            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "OTHERTEAM")
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "OTHERTEAM"),
         ])
         #expect(throws: SettingsCommandFailure.self) {
             _ = try SettingsHelperVerifier.validatedExecutableURL(
@@ -5469,8 +5546,10 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         let adHoc = FakeCodeSigningValidator(signatures: [
-            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: nil),
-            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: nil)
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: nil),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: nil),
         ])
         _ = try SettingsHelperVerifier.validatedExecutableURL(
             for: helperURL,
@@ -5487,7 +5566,8 @@ struct GlassEQAppModelLifecycleTests {
             try? FileManager.default.removeItem(at: root)
         }
         let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
-        let helperURL = hostURL
+        let helperURL =
+            hostURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Helpers", isDirectory: true)
             .appendingPathComponent("GlassEQSettings.app", isDirectory: true)
@@ -5497,9 +5577,12 @@ struct GlassEQAppModelLifecycleTests {
             executableName: "GlassEQSettings"
         )
         let validator = FakeCodeSigningValidator(signatures: [
-            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
-            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
-            "pid:123": SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
+            "pid:123": SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
         ])
 
         try SettingsHelperVerifier.validateRunningProcess(
@@ -5520,7 +5603,8 @@ struct GlassEQAppModelLifecycleTests {
             try? FileManager.default.removeItem(at: root)
         }
         let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
-        let helperURL = hostURL
+        let helperURL =
+            hostURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Helpers", isDirectory: true)
             .appendingPathComponent("GlassEQSettings.app", isDirectory: true)
@@ -5530,8 +5614,10 @@ struct GlassEQAppModelLifecycleTests {
             executableName: "GlassEQSettings"
         )
         let validator = FakeCodeSigningValidator(signatures: [
-            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
-            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
         ])
 
         #expect(throws: SettingsCommandFailure.self) {
@@ -5546,6 +5632,145 @@ struct GlassEQAppModelLifecycleTests {
         }
     }
 
+    @Test(arguments: ["/Applications/GlassEQ.app/Contents/MacOS/GlassEQ", "/tmp/Ääni 🎧/GlassEQ"])
+    func settingsHelperExecutablePathPreservesValidUTF8(_ path: String) {
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: path.utf8.map { CChar(bitPattern: $0) })?.path == path)
+    }
+
+    @Test(
+        arguments: ["/Applications/GlassEQ.app/Contents/MacOS/GlassEQ", "/tmp/Ääni 🎧/GlassEQ"],
+        [[CChar(0)], [0, 0, 0], [0, -1, 65]]
+    )
+    func settingsHelperExecutablePathStopsAtFirstNUL(_ path: String, suffix: [CChar]) {
+        let bytes = path.utf8.map { CChar(bitPattern: $0) }
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes + suffix)?.path == path)
+    }
+
+    @Test(arguments: [[UInt8(0xFF)], [0xC3], [0xC0, 0xAF]])
+    func settingsHelperExecutablePathRejectsInvalidUTF8(_ suffix: [UInt8]) {
+        let bytes = Array("/Applications/".utf8) + suffix + Array("/GlassEQ".utf8) + [0]
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes.map { CChar(bitPattern: $0) }) == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func settingsHelperRunningValidationAcceptsSymlinkAliases(hasRunningBundleURL: Bool) throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperAliasValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL.appendingPathComponent("Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let aliasHostURL = root.appendingPathComponent("Alias.app", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: aliasHostURL, withDestinationURL: hostURL)
+        let aliasHelperURL = aliasHostURL.appendingPathComponent(
+            "Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        let helperSignature = SettingsCodeSignatureInfo(
+            signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        let validator = FakeCodeSigningValidator(signatures: [
+            aliasHostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: helperSignature,
+            aliasHelperURL.standardizedFileURL.path: helperSignature,
+            "pid:123": helperSignature,
+        ])
+
+        _ = try SettingsHelperVerifier.validatedExecutableURL(
+            for: aliasHelperURL,
+            hostBundleURL: aliasHostURL,
+            codeSigningValidator: validator
+        )
+        try SettingsHelperVerifier.validateRunningProcess(
+            processIdentifier: 123,
+            expectedHelperURL: aliasHelperURL,
+            hostBundleURL: aliasHostURL,
+            runningBundleURL: { _ in hasRunningBundleURL ? helperURL : nil },
+            processExecutableURL: { _ in helperExecutableURL(for: helperURL) },
+            codeSigningValidator: validator
+        )
+    }
+
+    @Test(arguments: [false, true])
+    func settingsHelperRunningValidationRejectsDifferentOrMissingExecutable(actualExecutableExists: Bool) throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperExecutableValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL.appendingPathComponent("Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let otherExecutableURL = root.appendingPathComponent("OtherSettings", isDirectory: false)
+        if actualExecutableExists {
+            try FileManager.default.copyItem(at: helperExecutableURL(for: helperURL), to: otherExecutableURL)
+        }
+        let helperSignature = SettingsCodeSignatureInfo(
+            signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        let validator = FakeCodeSigningValidator(signatures: [
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: helperSignature,
+            "pid:123": helperSignature,
+        ])
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try SettingsHelperVerifier.validateRunningProcess(
+                processIdentifier: 123,
+                expectedHelperURL: helperURL,
+                hostBundleURL: hostURL,
+                runningBundleURL: { _ in helperURL },
+                processExecutableURL: { _ in otherExecutableURL },
+                codeSigningValidator: validator
+            )
+        }
+    }
+
+    @Test
+    func settingsHelperRunningValidationRejectsMissingResolvedBundleIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperMissingBundleValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL.appendingPathComponent("Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let missingBundleURL = root.appendingPathComponent("Missing.app", isDirectory: true)
+        let helperSignature = SettingsCodeSignatureInfo(
+            signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        let validator = FakeCodeSigningValidator(signatures: [
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: helperSignature,
+            missingBundleURL.standardizedFileURL.path: helperSignature,
+            "pid:123": helperSignature,
+        ])
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try SettingsHelperVerifier.validateRunningProcess(
+                processIdentifier: 123,
+                expectedHelperURL: helperURL,
+                hostBundleURL: hostURL,
+                runningBundleURL: { _ in missingBundleURL },
+                processExecutableURL: { _ in helperExecutableURL(for: helperURL) },
+                codeSigningValidator: validator
+            )
+        }
+    }
+
     @Test
     func settingsHelperRunningValidationRejectsUnexpectedResolvedBundleURL() throws {
         let root = FileManager.default.temporaryDirectory
@@ -5554,7 +5779,8 @@ struct GlassEQAppModelLifecycleTests {
             try? FileManager.default.removeItem(at: root)
         }
         let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
-        let helperURL = hostURL
+        let helperURL =
+            hostURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Helpers", isDirectory: true)
             .appendingPathComponent("GlassEQSettings.app", isDirectory: true)
@@ -5570,10 +5796,14 @@ struct GlassEQAppModelLifecycleTests {
             executableName: "GlassEQSettings"
         )
         let validator = FakeCodeSigningValidator(signatures: [
-            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
-            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
-            otherURL.standardizedFileURL.path: SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
-            "pid:123": SettingsCodeSignatureInfo(signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
+            otherURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
+            "pid:123": SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID"),
         ])
 
         #expect(throws: SettingsCommandFailure.self) {
@@ -5791,10 +6021,11 @@ private func makeImpulseResponseProfile(
         name: name,
         mode: .convolution,
         filters: [],
-        convolution: .impulseResponse(ImpulseResponseSource(
-            sampleRate: sampleRate,
-            samples: [1, 0.25, -0.125]
-        ))
+        convolution: .impulseResponse(
+            ImpulseResponseSource(
+                sampleRate: sampleRate,
+                samples: [1, 0.25, -0.125]
+            ))
     )
 }
 
@@ -5845,7 +6076,7 @@ private func makeFakeAppBundle(
     let info: NSDictionary = [
         "CFBundleIdentifier": bundleIdentifier,
         "CFBundleExecutable": executableName,
-        "CFBundlePackageType": "APPL"
+        "CFBundlePackageType": "APPL",
     ]
     let plistURL = contentsURL.appendingPathComponent("Info.plist")
     guard info.write(to: plistURL, atomically: true) else {
@@ -5882,27 +6113,30 @@ private func connectSettingsHelper(
             return false
         }
     }
-    let bootstrap = try #require(launcher.receivedAppMessages.first { message in
-        if case .bootstrap = message {
-            return true
-        }
-        return false
-    })
+    let bootstrap = try #require(
+        launcher.receivedAppMessages.first { message in
+            if case .bootstrap = message {
+                return true
+            }
+            return false
+        })
     guard case .bootstrap(let token) = bootstrap else {
         throw SettingsCommandFailure(message: "Expected Settings bootstrap message.")
     }
-    try launcher.writeHelperMessage(.request(
-        sessionToken: token,
-        id: "connect",
-        kind: .connect,
-        command: nil
-    ))
-    try launcher.writeHelperMessage(.request(
-        sessionToken: token,
-        id: "ready",
-        kind: .ready,
-        command: nil
-    ))
+    try launcher.writeHelperMessage(
+        .request(
+            sessionToken: token,
+            id: "connect",
+            kind: .connect,
+            command: nil
+        ))
+    try launcher.writeHelperMessage(
+        .request(
+            sessionToken: token,
+            id: "ready",
+            kind: .ready,
+            command: nil
+        ))
     await waitUntil {
         coordinator.isHelperReadyForTesting
     }
@@ -6216,22 +6450,17 @@ private final class BlockingAsyncDefaultOutputObserverFactory: DefaultOutputObse
     private(set) var observers: [BlockingAsyncDefaultOutputObserver] = []
 
     func makeObserver(onChange: @escaping DefaultOutputObserverHandler) -> any DefaultOutputObserving {
-        let observer = BlockingAsyncDefaultOutputObserver(onChange: onChange)
+        let observer = BlockingAsyncDefaultOutputObserver()
         observers.append(observer)
         return observer
     }
 }
 
 private final class BlockingAsyncDefaultOutputObserver: DefaultOutputObserving, @unchecked Sendable {
-    private let onChange: DefaultOutputObserverHandler
     private let lock = NSLock()
     private var _startCalls: [Bool] = []
     private var _stopCallCount = 0
     private var startContinuation: CheckedContinuation<Void, Never>?
-
-    init(onChange: @escaping DefaultOutputObserverHandler) {
-        self.onChange = onChange
-    }
 
     var startCalls: [Bool] {
         withLock {
@@ -6270,13 +6499,6 @@ private final class BlockingAsyncDefaultOutputObserver: DefaultOutputObserving, 
         stop()
     }
 
-    func emit(
-        _ result: Result<AudioOutputDevice, Error>,
-        reason: DefaultOutputDeviceChangeReason = .settled
-    ) {
-        onChange(result, reason)
-    }
-
     func resumeStart() {
         let continuation = withLock {
             let continuation = startContinuation
@@ -6311,9 +6533,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateError: Error?
     private var _updateErrorPreservesRunningState = false
     private var _updateDSPResult = true
-    private var _beginProgrammeComparisonResult = true
     private var _startDelaySeconds: TimeInterval = 0
-    private var _startDelaySecondsByUID: [String: TimeInterval] = [:]
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
     private var _preferredFrameSizeBlockers: [UInt32: FakeStartBlocker] = [:]
     private var _updateBlockersByProfileID: [UUID: FakeStartBlocker] = [:]
@@ -6352,8 +6572,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _coldStartupAggregatePromotionAttemptCount = 0
     private var _isDeferringColdStartupAggregate = false
     private var _latencyMetadata: AudioEngineLatencyMetadata?
-    private var _playbackBufferRenegotiationHandler:
-        (@Sendable (PlaybackBufferRenegotiation) -> Void)?
+    private var _playbackBufferRenegotiationHandler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
     private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
 
     var state: AudioEngineState {
@@ -6412,19 +6631,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _updateDSPResult = newValue } }
     }
 
-    var beginProgrammeComparisonResult: Bool {
-        get { withLock { _beginProgrammeComparisonResult } }
-        set { withLock { _beginProgrammeComparisonResult = newValue } }
-    }
-
     var startDelaySeconds: TimeInterval {
         get { withLock { _startDelaySeconds } }
         set { withLock { _startDelaySeconds = newValue } }
-    }
-
-    var startDelaySecondsByUID: [String: TimeInterval] {
-        get { withLock { _startDelaySecondsByUID } }
-        set { withLock { _startDelaySecondsByUID = newValue } }
     }
 
     private(set) var startCalls: [StartCall] {
@@ -6646,13 +6855,14 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     func start(output: AudioOutputDevice, profile: EQProfile) throws {
         let startControl = withLock {
             _events.append("start:\(output.uid)")
-            _startCalls.append(StartCall(
-                output: output,
-                profile: profile,
-                aggregateBufferFrameSize: _preferredAggregateBufferFrameSize
-            ))
+            _startCalls.append(
+                StartCall(
+                    output: output,
+                    profile: profile,
+                    aggregateBufferFrameSize: _preferredAggregateBufferFrameSize
+                ))
             return (
-                delay: _startDelaySecondsByUID[output.uid] ?? _startDelaySeconds,
+                delay: _startDelaySeconds,
                 blocker: _startBlockersByUID[output.uid],
                 error: _startErrorProfileID == nil || _startErrorProfileID == profile.id
                     ? _startError
@@ -6680,22 +6890,26 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 activeOutput.bufferFrameSize = _preferredAggregateBufferFrameSize
             }
             _state = .running(output: activeOutput)
-            let remainsPromoted = _isUsingPromotedHeadsetAggregate
+            let remainsPromoted =
+                _isUsingPromotedHeadsetAggregate
                 && _promotedHeadsetOutputUID == output.uid
-            _isUsingTransitionalHeadsetBackend = !remainsPromoted
+            _isUsingTransitionalHeadsetBackend =
+                !remainsPromoted
                 && _headsetPromotionCandidateUIDs.contains(output.uid)
             _isUsingPromotedHeadsetAggregate = remainsPromoted
             if !remainsPromoted {
                 _promotedHeadsetOutputUID = nil
             }
             _isDeferringColdStartupAggregate = _coldStartupPromotionCandidateUIDs.contains(output.uid)
-            _isUsingSeparateClockBackend = _isUsingTransitionalHeadsetBackend
+            _isUsingSeparateClockBackend =
+                _isUsingTransitionalHeadsetBackend
                 || _isDeferringColdStartupAggregate
         }
     }
 
     func attemptColdStartupAggregatePromotion() throws
-        -> ColdStartupAggregatePromotionResult {
+        -> ColdStartupAggregatePromotionResult
+    {
         let attempt = withLock {
             _coldStartupAggregatePromotionAttemptCount += 1
             return (
@@ -6837,13 +7051,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         withLock {
             _programmeComparisonCalls.append(profile)
             _programmeComparisonReferences.append(reference)
-            if _beginProgrammeComparisonResult {
-                _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
-                    isActive: true,
-                    selection: .equalized
-                )
-            }
-            return _beginProgrammeComparisonResult
+            _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
+                isActive: true,
+                selection: .equalized
+            )
+            return true
         }
     }
 
@@ -6975,23 +7187,25 @@ private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying 
         previousFrameSize: UInt32,
         newFrameSize: UInt32
     ) {
-        calls.append(Call(
-            outputName: outputName,
-            previousFrameSize: previousFrameSize,
-            newFrameSize: newFrameSize
-        ))
+        calls.append(
+            Call(
+                outputName: outputName,
+                previousFrameSize: previousFrameSize,
+                newFrameSize: newFrameSize
+            ))
     }
 
     func notifyFixedBufferRebuild(
         outputName: String,
         frameSize: UInt32
     ) {
-        calls.append(Call(
-            outputName: outputName,
-            previousFrameSize: frameSize,
-            newFrameSize: frameSize,
-            kind: .fixedRebuild
-        ))
+        calls.append(
+            Call(
+                outputName: outputName,
+                previousFrameSize: frameSize,
+                newFrameSize: frameSize,
+                kind: .fixedRebuild
+            ))
     }
 
     func notifyTemporaryBufferIncrease(
@@ -6999,12 +7213,13 @@ private final class FakeAggregateBufferNotifier: AggregateBufferChangeNotifying 
         preferredFrameSize: UInt32,
         runtimeFrameSize: UInt32
     ) {
-        calls.append(Call(
-            outputName: outputName,
-            previousFrameSize: preferredFrameSize,
-            newFrameSize: runtimeFrameSize,
-            kind: .fixedTemporaryIncrease
-        ))
+        calls.append(
+            Call(
+                outputName: outputName,
+                previousFrameSize: preferredFrameSize,
+                newFrameSize: runtimeFrameSize,
+                kind: .fixedTemporaryIncrease
+            ))
     }
 }
 
@@ -7029,10 +7244,10 @@ private final class FakeStartBlocker: @unchecked Sendable {
 // MARK: - License enforcement
 
 private let nonPermittingLicenseStates: [LicenseState] = [
-    .unlicensed, .monthlyExpired, .invalidEntitlement, .storageUnavailable
+    .unlicensed, .monthlyExpired, .invalidEntitlement, .storageUnavailable,
 ]
 private let permittingLicenseStates: [LicenseState] = [
-    .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .verificationNeeded
+    .perpetual, .monthlyActive, .monthlyRecovery, .monthlyGrace, .verificationNeeded,
 ]
 
 @MainActor
@@ -7084,7 +7299,8 @@ struct LicenseEnforcementTests {
         let output = makeOutput()
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
 
         model.start()
         observers.observers[0].emit(.success(output))
@@ -7146,7 +7362,9 @@ struct LicenseEnforcementTests {
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
         let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive), gated: true)
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero, licensing: .provider(source))
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero,
+            licensing: .provider(source))
 
         model.start()
         await settleAsyncWork()
@@ -7163,7 +7381,8 @@ struct LicenseEnforcementTests {
         let blockedEngine = FakeAudioEngine()
         let blockedObservers = FakeDefaultOutputObserverFactory()
         let blockedSource = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed), gated: true)
-        let blocked = makeModel(engine: blockedEngine, observers: blockedObservers, outputDelay: .zero, licensing: .provider(blockedSource))
+        let blocked = makeModel(
+            engine: blockedEngine, observers: blockedObservers, outputDelay: .zero, licensing: .provider(blockedSource))
         blocked.start()
         blockedSource.release()
         await waitUntil { blocked.licenseSnapshot != nil }
@@ -7262,7 +7481,9 @@ struct LicenseEnforcementTests {
         engine.blockStart(for: output.uid)
         let observers = FakeDefaultOutputObserverFactory()
         let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
-        let model = makeModel(engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero, licensing: .provider(source))
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero,
+            licensing: .provider(source))
         await waitUntil { model.licenseSnapshot != nil }
         model.start()
         await waitUntil { observers.observers.count == 1 }
@@ -7305,7 +7526,8 @@ struct LicenseEnforcementTests {
     @Test
     func expiryDuringAStoppedOutputChangeDoesNotRestartAfterSettling() async {
         let running = await makeRunningModel(outputDelay: .milliseconds(100))
-        let changed = makeOutput(uid: running.output.uid, name: running.output.name, nominalSampleRate: 44_100, bufferFrameSize: 512)
+        let changed = makeOutput(
+            uid: running.output.uid, name: running.output.name, nominalSampleRate: 44_100, bufferFrameSize: 512)
 
         running.observers.observers[0].emit(.success(changed))
         await waitUntil { running.engine.stopCallCount == 1 }
@@ -7401,7 +7623,8 @@ struct LicenseEnforcementTests {
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
         let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed))
-        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero, wakeDelay: .zero, licensing: .provider(source))
+        let model = makeModel(
+            engine: engine, observers: observers, outputDelay: .zero, wakeDelay: .zero, licensing: .provider(source))
         await waitUntil { model.licenseSnapshot != nil }
 
         model.start()
@@ -7570,7 +7793,8 @@ struct LicenseEnforcementTests {
     func invalidConfigurationNeverStartsAndNamesTheProblem() async {
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero, licensing: .invalidConfiguration)
+        let model = makeModel(
+            engine: engine, observers: observers, outputDelay: .zero, licensing: .invalidConfiguration)
 
         model.start()
         await settleAsyncWork()
@@ -7589,18 +7813,19 @@ private func makeLicenseSnapshot(
     expiresAt: Int64? = nil,
     activation: ActivationAvailability? = nil
 ) -> LicenseSnapshot {
-    let terms: MonthlyTerms? = switch state {
-    case .perpetual: nil
-    case .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded:
-        MonthlyTerms(
-            billingState: billingState ?? .active,
-            billingPeriodEnd: 0,
-            recoveryUntil: 0,
-            refreshAfter: 0,
-            expiresAt: expiresAt ?? 0
-        )
-    case .unlicensed, .invalidEntitlement, .storageUnavailable: nil
-    }
+    let terms: MonthlyTerms? =
+        switch state {
+        case .perpetual: nil
+        case .monthlyActive, .monthlyRecovery, .monthlyGrace, .monthlyExpired, .verificationNeeded:
+            MonthlyTerms(
+                billingState: billingState ?? .active,
+                billingPeriodEnd: 0,
+                recoveryUntil: 0,
+                refreshAfter: 0,
+                expiresAt: expiresAt ?? 0
+            )
+        case .unlicensed, .invalidEntitlement, .storageUnavailable: nil
+        }
     return LicenseSnapshot(
         sequence: sequence,
         content: LicenseSnapshotContent(
@@ -7817,19 +8042,23 @@ struct LicenseActivationOnboardingTests {
 
     @Test
     func aMalformedStoredRecordCarriesANoticeButStillTakesAKey() async {
-        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .available))
+        let source = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .available))
         let model = makeModel(licensing: .provider(source))
         await waitUntil { model.licenseSnapshot != nil }
 
-        #expect(model.onboardingLicenseState == .awaitingKey(
-            notice: localized("The stored license is invalid. Activate again to continue."),
-            failure: nil
-        ))
+        #expect(
+            model.onboardingLicenseState
+                == .awaitingKey(
+                    notice: localized("The stored license is invalid. Activate again to continue."),
+                    failure: nil
+                ))
     }
 
     @Test
     func anUnusableRecordOffersRemovalInsteadOfAKeyForm() async {
-        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .needsRemoval))
+        let source = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .needsRemoval))
         source.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
         let model = makeModel(licensing: .provider(source))
         await waitUntil { model.licenseSnapshot != nil }
@@ -7848,7 +8077,8 @@ struct LicenseActivationOnboardingTests {
 
     @Test
     func recordsThatNeedANewerAppAreNotOfferedForRemoval() async {
-        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .needsAppUpdate))
+        let source = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .invalidEntitlement, activation: .needsAppUpdate))
         let model = makeModel(licensing: .provider(source))
         await waitUntil { model.licenseSnapshot != nil }
 
@@ -7862,7 +8092,8 @@ struct LicenseActivationOnboardingTests {
     @Test
     func expiryOffersRenewalUnlessTheSlotWasReleasedElsewhere() async {
         let expired = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyExpired))
-        let revoked = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyExpired, activation: .revoked))
+        let revoked = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .monthlyExpired, activation: .revoked))
         revoked.deactivationResult = .success(makeLicenseSnapshot(state: .unlicensed, sequence: 2))
         let expiredModel = makeModel(licensing: .provider(expired))
         let revokedModel = makeModel(licensing: .provider(revoked))
@@ -7894,14 +8125,16 @@ struct LicenseActivationOnboardingTests {
 
     @Test
     func aPendingReleaseAndAnUnreadableKeychainShowNoForm() async {
-        let releasing = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .unlicensed, activation: .releasingPreviousActivation))
+        let releasing = FakeLicenseSnapshotSource(
+            initial: makeLicenseSnapshot(state: .unlicensed, activation: .releasingPreviousActivation))
         let unreadable = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .storageUnavailable))
         let releasingModel = makeModel(licensing: .provider(releasing))
         let unreadableModel = makeModel(licensing: .provider(unreadable))
         await waitUntil { releasingModel.licenseSnapshot != nil && unreadableModel.licenseSnapshot != nil }
 
         guard case let .unavailable(releasingMessage, nil)? = releasingModel.onboardingLicenseState,
-              case let .unavailable(unreadableMessage, nil)? = unreadableModel.onboardingLicenseState else {
+            case let .unavailable(unreadableMessage, nil)? = unreadableModel.onboardingLicenseState
+        else {
             Issue.record("expected both to hide the key form")
             return
         }
@@ -7918,7 +8151,7 @@ struct LicenseActivationOnboardingTests {
             (.needsAppUpdate, .invalidEntitlement),
             (.releasingPreviousActivation, .unlicensed),
             (.storageUnavailable, .storageUnavailable),
-            (.revoked, .monthlyExpired)
+            (.revoked, .monthlyExpired),
         ]
         for (availability, state) in cases {
             let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: state, activation: availability))
@@ -7956,7 +8189,9 @@ struct LicenseActivationOnboardingTests {
 
         #expect(source.activatedKeys == ["GEQ1-TEST-KEY"])
         #expect(model.licenseSnapshot?.content.state == .perpetual)
-        #expect(model.onboardingLicenseState == .activated(detail: localized("Perpetual license. Every v1 update is included.")))
+        #expect(
+            model.onboardingLicenseState
+                == .activated(detail: localized("Perpetual license. Every v1 update is included.")))
     }
 
     @Test
@@ -8010,10 +8245,12 @@ struct LicenseActivationOnboardingTests {
         model.activateLicense(key: "   ")
 
         #expect(source.activatedKeys.isEmpty)
-        #expect(model.onboardingLicenseState == .awaitingKey(
-            notice: nil,
-            failure: LicenseOperationFailureMessage.text(for: LicensingError.service(.invalidLicenseKey))
-        ))
+        #expect(
+            model.onboardingLicenseState
+                == .awaitingKey(
+                    notice: nil,
+                    failure: LicenseOperationFailureMessage.text(for: LicensingError.service(.invalidLicenseKey))
+                ))
     }
 
     @Test
@@ -8113,10 +8350,12 @@ struct LicenseActivationOnboardingTests {
         await model.cleanupForTerminationAndWait()
 
         #expect(source.checkpointCount == 1)
-        #expect(model.onboardingLicenseState == .awaitingKey(
-            notice: nil,
-            failure: LicenseOperationFailureMessage.text(for: LicensingError.service(.cancelled))
-        ))
+        #expect(
+            model.onboardingLicenseState
+                == .awaitingKey(
+                    notice: nil,
+                    failure: LicenseOperationFailureMessage.text(for: LicensingError.service(.cancelled))
+                ))
     }
 
     @Test

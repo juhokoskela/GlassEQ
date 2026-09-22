@@ -1,5 +1,5 @@
 import CoreAudio
-import Foundation
+import Dispatch
 
 public enum DefaultOutputDeviceChangeReason: Equatable, Sendable {
     case initial
@@ -24,10 +24,11 @@ public enum DefaultOutputDeviceChangeReason: Equatable, Sendable {
     }
 }
 
-public typealias DefaultOutputDeviceChangeHandler = @Sendable (
-    Result<AudioOutputDevice, Error>,
-    DefaultOutputDeviceChangeReason
-) -> Void
+public typealias DefaultOutputDeviceChangeHandler =
+    @Sendable (
+        Result<AudioOutputDevice, Error>,
+        DefaultOutputDeviceChangeReason
+    ) -> Void
 
 final class DispatchRefreshCoalescer: @unchecked Sendable {
     private let queue: DispatchQueue
@@ -48,7 +49,8 @@ final class DispatchRefreshCoalescer: @unchecked Sendable {
         let scheduledGeneration = generation
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self,
-                  self.generation == scheduledGeneration else {
+                self.generation == scheduledGeneration
+            else {
                 return
             }
             operation()
@@ -64,7 +66,8 @@ struct DefaultOutputChangeTracker {
         sendChange: Bool,
         reason: DefaultOutputDeviceChangeReason
     ) -> Bool {
-        let shouldSend = sendChange
+        let shouldSend =
+            sendChange
             && (reason.reportsUnchangedOutput || output != lastObservedOutput)
         lastObservedOutput = output
         return shouldSend
@@ -218,7 +221,8 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         }
         refreshCoalescer.schedule { [weak self] in
             guard let self,
-                  self.isStarted else {
+                self.isStarted
+            else {
                 return
             }
             self.refreshObservedOutput(
@@ -283,7 +287,8 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
             ),
             operation: operation
         )
-        systemListeners.append(ListenerToken(objectID: AudioObjectID(kAudioObjectSystemObject), address: address, listener: listener))
+        systemListeners.append(
+            ListenerToken(objectID: AudioObjectID(kAudioObjectSystemObject), address: address, listener: listener))
     }
 
     private func addOutputListener(
@@ -299,8 +304,9 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
         )
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self,
-                  self.isStarted,
-                  self.observedOutputID == outputID else {
+                self.isStarted,
+                self.observedOutputID == outputID
+            else {
                 return
             }
 

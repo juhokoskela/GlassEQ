@@ -1,5 +1,4 @@
 import CoreAudio
-import Foundation
 @testable import GlassEQAudio
 import GlassEQCore
 import Testing
@@ -21,54 +20,65 @@ struct MultiChannelOutputMappingTests {
 
     @Test
     func deviceTapUsesStreamContainingBothPlaybackChannels() {
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [2],
-            playbackChannels: (0, 1)
-        ) == 0)
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [2, 2, 2],
-            playbackChannels: (2, 3)
-        ) == 1)
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [2, 2, 1],
-            playbackChannels: (4, 4)
-        ) == 2)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [2],
+                playbackChannels: (0, 1)
+            ) == 0)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [2, 2, 2],
+                playbackChannels: (2, 3)
+            ) == 1)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [2, 2, 1],
+                playbackChannels: (4, 4)
+            ) == 2)
     }
 
     @Test
     func deviceTapRejectsPlaybackChannelsThatCannotShareAStream() {
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [2, 2, 2],
-            playbackChannels: (1, 2)
-        ) == nil)
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [2, 0, 2],
-            playbackChannels: (0, 1)
-        ) == nil)
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [],
-            playbackChannels: (0, 1)
-        ) == nil)
-        #expect(SystemTapAudioEngine.tapOutputStreamIndex(
-            streamChannelCounts: [6],
-            playbackChannels: (2, 3)
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [2, 2, 2],
+                playbackChannels: (1, 2)
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [2, 0, 2],
+                playbackChannels: (0, 1)
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [],
+                playbackChannels: (0, 1)
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapOutputStreamIndex(
+                streamChannelCounts: [6],
+                playbackChannels: (2, 3)
+            ) == nil)
     }
 
     @Test
     func playbackChannelPairEncodingRoundTripsAndClamps() {
-        #expect(SystemTapAudioEngine.decodedPlaybackChannelPair(
-            SystemTapAudioEngine.encodedPlaybackChannelPair(left: 0, right: 1)
-        ) == (0, 1))
-        #expect(SystemTapAudioEngine.decodedPlaybackChannelPair(
-            SystemTapAudioEngine.encodedPlaybackChannelPair(left: 2, right: 3)
-        ) == (2, 3))
-        #expect(SystemTapAudioEngine.decodedPlaybackChannelPair(
-            SystemTapAudioEngine.encodedPlaybackChannelPair(left: 255, right: 255)
-        ) == (255, 255))
-        #expect(SystemTapAudioEngine.decodedPlaybackChannelPair(
-            SystemTapAudioEngine.encodedPlaybackChannelPair(left: -5, right: 999)
-        ) == (0, 255))
+        #expect(
+            SystemTapAudioEngine.decodedPlaybackChannelPair(
+                SystemTapAudioEngine.encodedPlaybackChannelPair(left: 0, right: 1)
+            ) == (0, 1))
+        #expect(
+            SystemTapAudioEngine.decodedPlaybackChannelPair(
+                SystemTapAudioEngine.encodedPlaybackChannelPair(left: 2, right: 3)
+            ) == (2, 3))
+        #expect(
+            SystemTapAudioEngine.decodedPlaybackChannelPair(
+                SystemTapAudioEngine.encodedPlaybackChannelPair(left: 255, right: 255)
+            ) == (255, 255))
+        #expect(
+            SystemTapAudioEngine.decodedPlaybackChannelPair(
+                SystemTapAudioEngine.encodedPlaybackChannelPair(left: -5, right: 999)
+            ) == (0, 255))
     }
 
     @Test
@@ -82,11 +92,14 @@ struct MultiChannelOutputMappingTests {
             frameCount: 2
         )
 
-        #expect(written == [[
-            -1, -1, -1, -1, -1, -1,
-            1, 2, 0, 0, 0, 0,
-            3, 4, 0, 0, 0, 0
-        ]])
+        #expect(
+            written == [
+                [
+                    -1, -1, -1, -1, -1, -1,
+                    1, 2, 0, 0, 0, 0,
+                    3, 4, 0, 0, 0, 0,
+                ]
+            ])
     }
 
     @Test
@@ -99,10 +112,13 @@ struct MultiChannelOutputMappingTests {
             pair: (2, 3)
         )
 
-        #expect(written == [[
-            0, 0, 1, 2, 0, 0,
-            0, 0, 3, 4, 0, 0
-        ]])
+        #expect(
+            written == [
+                [
+                    0, 0, 1, 2, 0, 0,
+                    0, 0, 3, 4, 0, 0,
+                ]
+            ])
     }
 
     @Test
@@ -115,11 +131,12 @@ struct MultiChannelOutputMappingTests {
             pair: (2, 3)
         )
 
-        #expect(written == [
-            [0, 0, 0, 0],
-            [1, 2, 3, 4],
-            [0, 0, 0, 0]
-        ])
+        #expect(
+            written == [
+                [0, 0, 0, 0],
+                [1, 2, 3, 4],
+                [0, 0, 0, 0],
+            ])
     }
 
     @Test
@@ -132,11 +149,12 @@ struct MultiChannelOutputMappingTests {
             pair: (1, 2)
         )
 
-        #expect(written == [
-            [0, 1, 0, 3],
-            [2, 0, 4, 0],
-            [0, 0, 0, 0]
-        ])
+        #expect(
+            written == [
+                [0, 1, 0, 3],
+                [2, 0, 4, 0],
+                [0, 0, 0, 0],
+            ])
     }
 
     @Test
@@ -149,10 +167,13 @@ struct MultiChannelOutputMappingTests {
             pair: (2, 3)
         )
 
-        #expect(written == [[
-            0, 0, 5, 5, 0, 0,
-            0, 0, 6, 6, 0, 0
-        ]])
+        #expect(
+            written == [
+                [
+                    0, 0, 5, 5, 0, 0,
+                    0, 0, 6, 6, 0, 0,
+                ]
+            ])
     }
 
     @Test
@@ -165,10 +186,11 @@ struct MultiChannelOutputMappingTests {
             pair: (4, 5)
         )
 
-        #expect(written == [
-            [0, 0, 0, 0],
-            [0, 0, 0, 0]
-        ])
+        #expect(
+            written == [
+                [0, 0, 0, 0],
+                [0, 0, 0, 0],
+            ])
     }
 
     @Test
@@ -202,12 +224,15 @@ struct MultiChannelOutputMappingTests {
             }
         }
 
-        #expect(written == [[
-            1, 2, 0, 0, 0, 0,
-            3, 4, 0, 0, 0, 0,
-            5, 6, 0, 0, 0, 0,
-            7, 8, 0, 0, 0, 0
-        ]])
+        #expect(
+            written == [
+                [
+                    1, 2, 0, 0, 0, 0,
+                    3, 4, 0, 0, 0, 0,
+                    5, 6, 0, 0, 0, 0,
+                    7, 8, 0, 0, 0, 0,
+                ]
+            ])
     }
 
     @Test
@@ -238,26 +263,29 @@ struct MultiChannelOutputMappingTests {
 
     @Test
     func tapInputOffsetsAccountForBothProcessTaps() throws {
-        let duplexOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
-            physicalInputChannelCount: 2,
-            aggregateInputChannelCount: 6,
-            mainTapChannelCount: 2,
-            systemSoundTapChannelCount: 2
-        ))
-        let outputOnlyOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
-            physicalInputChannelCount: 0,
-            aggregateInputChannelCount: 4,
-            mainTapChannelCount: 2,
-            systemSoundTapChannelCount: 2
-        ))
-        let reorderedOffsets = try #require(SystemTapAudioEngine.tapInputChannelOffsets(
-            physicalInputChannelCount: 2,
-            aggregateInputChannelCount: 6,
-            mainTapChannelCount: 2,
-            systemSoundTapChannelCount: 2,
-            mainTapIndex: 1,
-            systemSoundTapIndex: 0
-        ))
+        let duplexOffsets = try #require(
+            SystemTapAudioEngine.tapInputChannelOffsets(
+                physicalInputChannelCount: 2,
+                aggregateInputChannelCount: 6,
+                mainTapChannelCount: 2,
+                systemSoundTapChannelCount: 2
+            ))
+        let outputOnlyOffsets = try #require(
+            SystemTapAudioEngine.tapInputChannelOffsets(
+                physicalInputChannelCount: 0,
+                aggregateInputChannelCount: 4,
+                mainTapChannelCount: 2,
+                systemSoundTapChannelCount: 2
+            ))
+        let reorderedOffsets = try #require(
+            SystemTapAudioEngine.tapInputChannelOffsets(
+                physicalInputChannelCount: 2,
+                aggregateInputChannelCount: 6,
+                mainTapChannelCount: 2,
+                systemSoundTapChannelCount: 2,
+                mainTapIndex: 1,
+                systemSoundTapIndex: 0
+            ))
 
         #expect(duplexOffsets.main == 2)
         #expect(duplexOffsets.systemSounds == 4)
@@ -265,58 +293,66 @@ struct MultiChannelOutputMappingTests {
         #expect(outputOnlyOffsets.systemSounds == 2)
         #expect(reorderedOffsets.main == 4)
         #expect(reorderedOffsets.systemSounds == 2)
-        #expect(SystemTapAudioEngine.tapInputChannelOffsets(
-            physicalInputChannelCount: 2,
-            aggregateInputChannelCount: 5,
-            mainTapChannelCount: 2,
-            systemSoundTapChannelCount: 1
-        ) == nil)
-        #expect(SystemTapAudioEngine.tapInputChannelOffsets(
-            physicalInputChannelCount: 2,
-            aggregateInputChannelCount: 6,
-            mainTapChannelCount: 2,
-            systemSoundTapChannelCount: 2,
-            mainTapIndex: 0,
-            systemSoundTapIndex: 0
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapInputChannelOffsets(
+                physicalInputChannelCount: 2,
+                aggregateInputChannelCount: 5,
+                mainTapChannelCount: 2,
+                systemSoundTapChannelCount: 1
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapInputChannelOffsets(
+                physicalInputChannelCount: 2,
+                aggregateInputChannelCount: 6,
+                mainTapChannelCount: 2,
+                systemSoundTapChannelCount: 2,
+                mainTapIndex: 0,
+                systemSoundTapIndex: 0
+            ) == nil)
     }
 
     @Test
     func inputStreamUsageEnablesOnlyTapStreams() {
-        #expect(SystemTapAudioEngine.inputStreamUsage(
-            streamChannelCounts: [2, 2],
-            tapChannelOffset: 2,
-            tapChannelCount: 2
-        ) == [0, 1])
-        #expect(SystemTapAudioEngine.inputStreamUsage(
-            streamChannelCounts: [2],
-            tapChannelOffset: 0,
-            tapChannelCount: 2
-        ) == [1])
-        #expect(SystemTapAudioEngine.inputStreamUsage(
-            streamChannelCounts: [2, 2, 2],
-            tapChannelOffset: 2,
-            tapChannelCount: 4
-        ) == [0, 1, 1])
+        #expect(
+            SystemTapAudioEngine.inputStreamUsage(
+                streamChannelCounts: [2, 2],
+                tapChannelOffset: 2,
+                tapChannelCount: 2
+            ) == [0, 1])
+        #expect(
+            SystemTapAudioEngine.inputStreamUsage(
+                streamChannelCounts: [2],
+                tapChannelOffset: 0,
+                tapChannelCount: 2
+            ) == [1])
+        #expect(
+            SystemTapAudioEngine.inputStreamUsage(
+                streamChannelCounts: [2, 2, 2],
+                tapChannelOffset: 2,
+                tapChannelCount: 4
+            ) == [0, 1, 1])
     }
 
     @Test
     func inputStreamUsageRejectsLayoutsThatCannotIsolateTheTap() {
-        #expect(SystemTapAudioEngine.inputStreamUsage(
-            streamChannelCounts: [4],
-            tapChannelOffset: 2,
-            tapChannelCount: 2
-        ) == nil)
-        #expect(SystemTapAudioEngine.inputStreamUsage(
-            streamChannelCounts: [2, 2],
-            tapChannelOffset: 2,
-            tapChannelCount: 1
-        ) == nil)
-        #expect(SystemTapAudioEngine.inputStreamUsage(
-            streamChannelCounts: [2, 0, 2],
-            tapChannelOffset: 2,
-            tapChannelCount: 2
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.inputStreamUsage(
+                streamChannelCounts: [4],
+                tapChannelOffset: 2,
+                tapChannelCount: 2
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.inputStreamUsage(
+                streamChannelCounts: [2, 2],
+                tapChannelOffset: 2,
+                tapChannelCount: 1
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.inputStreamUsage(
+                streamChannelCounts: [2, 0, 2],
+                tapChannelOffset: 2,
+                tapChannelCount: 2
+            ) == nil)
     }
 
     @Test
@@ -324,7 +360,7 @@ struct MultiChannelOutputMappingTests {
         let interleaved = copiedInput(
             input: [
                 10, 11, 1, 2,
-                12, 13, 3, 4
+                12, 13, 3, 4,
             ],
             inputChannelLayout: [4],
             frameCount: 2,
@@ -334,7 +370,7 @@ struct MultiChannelOutputMappingTests {
         let split = copiedInput(
             input: [
                 10, 11, 12, 13,
-                1, 2, 3, 4
+                1, 2, 3, 4,
             ],
             inputChannelLayout: [2, 2],
             frameCount: 2,
@@ -352,7 +388,7 @@ struct MultiChannelOutputMappingTests {
             input: [
                 10, 11, 12, 13,
                 20, 21, 22, 23,
-                0.4, -0.4, 0.2, -0.2
+                0.4, -0.4, 0.2, -0.2,
             ],
             inputChannelLayout: [2, 2, 2],
             samples: [0.1, -0.2, 0.3, -0.4],
@@ -393,7 +429,7 @@ struct MultiChannelOutputMappingTests {
                 0.1, 0.1,
                 0.1, 0.1,
                 0.1, 0.1,
-                0.1, 0.1
+                0.1, 0.1,
             ],
             inputChannelLayout: [2],
             samples: [Float](repeating: 0, count: 8),

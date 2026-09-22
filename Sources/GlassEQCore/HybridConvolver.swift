@@ -1,6 +1,5 @@
 import Accelerate
 import Darwin
-import Foundation
 
 enum HybridConvolverError: Error, Equatable, Sendable {
     case invalidImpulseResponse
@@ -23,8 +22,9 @@ struct PreparedConvolutionKernel: Sendable {
 
     init(impulseResponse: [Float]) throws {
         guard !impulseResponse.isEmpty,
-              impulseResponse.count <= Self.tapCount,
-              impulseResponse.allSatisfy(\.isFinite) else {
+            impulseResponse.count <= Self.tapCount,
+            impulseResponse.allSatisfy(\.isFinite)
+        else {
             throw HybridConvolverError.invalidImpulseResponse
         }
 
@@ -79,7 +79,8 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
     private static let outputRingFrames = 1_024
     private static let outputRingMask = outputRingFrames - 1
     private static let inverseGuardFrames = 16
-    private static let partitionWorkFrames = PreparedConvolutionKernel.tailPartitionFrames
+    private static let partitionWorkFrames =
+        PreparedConvolutionKernel.tailPartitionFrames
         - inverseGuardFrames
 
     private let kernel: PreparedConvolutionKernel
@@ -135,12 +136,14 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
                 )
             }
         }
-        directWriteIndex = (directWriteIndex + 1)
+        directWriteIndex =
+            (directWriteIndex + 1)
             & (PreparedConvolutionKernel.directTapCount - 1)
 
         tailInputBlock[tailInputCount] = input
         tailInputCount += 1
-        let completedInputBlock = tailInputCount
+        let completedInputBlock =
+            tailInputCount
             == PreparedConvolutionKernel.tailPartitionFrames
 
         advanceTailJobByOneFrame()
@@ -161,8 +164,9 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
         preampLinearGain: Float
     ) -> EQLinearRenderDiagnostics {
         guard channel >= 0,
-              channel < channelCount,
-              frameCount > 0 else {
+            channel < channelCount,
+            frameCount > 0
+        else {
             return EQLinearRenderDiagnostics()
         }
 
@@ -208,7 +212,8 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
                         )
                     }
                 }
-                directWriteIndex = (directWriteIndex + 1)
+                directWriteIndex =
+                    (directWriteIndex + 1)
                     & (PreparedConvolutionKernel.directTapCount - 1)
 
                 tailInputBlock[tailInputCount] = input
@@ -274,7 +279,8 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
         jobWorkNumerator += PreparedConvolutionKernel.tailPartitionCount * frameCount
         var didWork = false
         while jobWorkNumerator >= Self.partitionWorkFrames,
-              jobNextPartition < PreparedConvolutionKernel.tailPartitionCount {
+            jobNextPartition < PreparedConvolutionKernel.tailPartitionCount
+        {
             jobWorkNumerator -= Self.partitionWorkFrames
             accumulateTailPartition(jobNextPartition)
             jobNextPartition += 1
@@ -315,9 +321,11 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
             outputReal: scratch.fftOutputReal,
             outputImaginary: scratch.fftOutputImaginary
         )
-        inputSpectrumWriteIndex = (inputSpectrumWriteIndex + 1)
+        inputSpectrumWriteIndex =
+            (inputSpectrumWriteIndex + 1)
             % PreparedConvolutionKernel.tailPartitionCount
-        let destinationStart = inputSpectrumWriteIndex
+        let destinationStart =
+            inputSpectrumWriteIndex
             * PreparedConvolutionKernel.packedBinCount
         for bin in 0..<PreparedConvolutionKernel.packedBinCount {
             scratch.inputSpectrumReal[destinationStart + bin] = scratch.fftOutputReal[bin] * 0.5
@@ -334,17 +342,16 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
     }
 
     private mutating func accumulateTailPartition(_ partition: Int) {
-        let spectrumIndex = (
-            jobInputSpectrumIndex
-                - partition
-                + PreparedConvolutionKernel.tailPartitionCount
-        ) % PreparedConvolutionKernel.tailPartitionCount
+        let partitionCount = PreparedConvolutionKernel.tailPartitionCount
+        let spectrumIndex = (jobInputSpectrumIndex - partition + partitionCount) % partitionCount
         let inputStart = spectrumIndex * PreparedConvolutionKernel.packedBinCount
         let kernelStart = partition * PreparedConvolutionKernel.packedBinCount
 
-        scratch.accumulatorReal[0] += scratch.inputSpectrumReal[inputStart]
+        scratch.accumulatorReal[0] +=
+            scratch.inputSpectrumReal[inputStart]
             * kernel.tailSpectrumReal[kernelStart]
-        scratch.accumulatorImaginary[0] += scratch.inputSpectrumImaginary[inputStart]
+        scratch.accumulatorImaginary[0] +=
+            scratch.inputSpectrumImaginary[inputStart]
             * kernel.tailSpectrumImaginary[kernelStart]
         kernel.tailSpectrumReal.withUnsafeBufferPointer { kernelReal in
             kernel.tailSpectrumImaginary.withUnsafeBufferPointer { kernelImaginary in
@@ -378,9 +385,10 @@ struct RealtimeHybridConvolver: ~Copyable, Sendable {
         let scale = 1 / Float(PreparedConvolutionKernel.transformFrames)
         for frame in 0..<PreparedConvolutionKernel.tailPartitionFrames {
             let firstHalfSample = unpackedInverseSample(frame) * scale
-            let secondHalfSample = unpackedInverseSample(
-                frame + PreparedConvolutionKernel.tailPartitionFrames
-            ) * scale
+            let secondHalfSample =
+                unpackedInverseSample(
+                    frame + PreparedConvolutionKernel.tailPartitionFrames
+                ) * scale
             let outputIndex = Int(jobDueFrame + Int64(frame)) & Self.outputRingMask
             tailOutputRing[outputIndex] = firstHalfSample + tailOverlap[frame]
             tailOverlap[frame] = secondHalfSample
@@ -439,11 +447,13 @@ private final class RealFloatDFTSetup: @unchecked Sendable {
         guard let forwardSetup = vDSP_DFT_zrop_CreateSetup(nil, length, .FORWARD) else {
             throw HybridConvolverError.transformSetupFailed
         }
-        guard let inverseSetup = vDSP_DFT_zrop_CreateSetup(
-            forwardSetup,
-            length,
-            .INVERSE
-        ) else {
+        guard
+            let inverseSetup = vDSP_DFT_zrop_CreateSetup(
+                forwardSetup,
+                length,
+                .INVERSE
+            )
+        else {
             vDSP_DFT_DestroySetup(forwardSetup)
             throw HybridConvolverError.transformSetupFailed
         }

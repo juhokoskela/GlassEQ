@@ -8,9 +8,10 @@ import UserNotifications
 struct AggregateBufferNotifierTests {
     @Test
     func notificationSetupIsDisabledOutsideAnAppBundle() {
-        #expect(!AggregateBufferNotifier.canUseUserNotifications(
-            bundleURL: URL(fileURLWithPath: "/tmp/GlassEQ")
-        ))
+        #expect(
+            !AggregateBufferNotifier.canUseUserNotifications(
+                bundleURL: URL(fileURLWithPath: "/tmp/GlassEQ")
+            ))
         AggregateBufferNotifier.shared.start()
     }
 

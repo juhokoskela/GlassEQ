@@ -43,13 +43,15 @@ struct EntitlementVerifierTests {
 
         #expect(entitlement.keyID == fixture.keyID)
         #expect(entitlement.claims.plan == .monthly)
-        #expect(entitlement.claims.monthlyTerms == MonthlyTerms(
-            billingState: .active,
-            billingPeriodEnd: fixture.billingPeriodEnd,
-            recoveryUntil: fixture.recoveryUntil,
-            refreshAfter: fixture.refreshAfter,
-            expiresAt: fixture.expiresAt
-        ))
+        #expect(
+            entitlement.claims.monthlyTerms
+                == MonthlyTerms(
+                    billingState: .active,
+                    billingPeriodEnd: fixture.billingPeriodEnd,
+                    recoveryUntil: fixture.recoveryUntil,
+                    refreshAfter: fixture.refreshAfter,
+                    expiresAt: fixture.expiresAt
+                ))
         #expect(entitlement.claims.revision == 7)
     }
 
@@ -89,8 +91,8 @@ struct EntitlementVerifierTests {
     func rejectsUnknownHeaderFields() throws {
         let fixture = try EntitlementFixture()
         let unknownHeader = """
-        {"alg":"EdDSA","kid":"\(fixture.keyID)","typ":"glasseq-entitlement+jwt","extra":"value"}
-        """
+            {"alg":"EdDSA","kid":"\(fixture.keyID)","typ":"glasseq-entitlement+jwt","extra":"value"}
+            """
 
         let unknownToken = try fixture.sign(header: unknownHeader, payload: fixture.monthlyPayload())
 
@@ -124,7 +126,7 @@ struct EntitlementVerifierTests {
             """,
             """
             {"alg":"EdDSA","kid":"","typ":"glasseq-entitlement+jwt"}
-            """
+            """,
         ] {
             #expect(throws: EntitlementVerificationError.invalidHeader) {
                 try fixture.verify(try fixture.sign(header: invalidHeader, payload: payload))
@@ -133,7 +135,7 @@ struct EntitlementVerifierTests {
 
         for malformedPlan in [
             payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\",", with: ""),
-            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\"", with: "\"plan\":1")
+            payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\"", with: "\"plan\":1"),
         ] {
             #expect(throws: EntitlementVerificationError.malformedClaims) {
                 try fixture.verify(try fixture.sign(payload: malformedPlan))
@@ -149,7 +151,7 @@ struct EntitlementVerifierTests {
         for future in [
             payload.replacingOccurrences(of: "\"schema\":1", with: "\"schema\":2"),
             payload.replacingOccurrences(of: "\"plan\":\"perpetual_v1\"", with: "\"plan\":\"lifetime\""),
-            payload.replacingOccurrences(of: "\"release_scope\":\"v1\"", with: "\"release_scope\":\"v2\"")
+            payload.replacingOccurrences(of: "\"release_scope\":\"v1\"", with: "\"release_scope\":\"v2\""),
         ] {
             #expect(throws: EntitlementVerificationError.unsupportedClaims) {
                 try fixture.verify(try fixture.sign(payload: future))
@@ -162,7 +164,8 @@ struct EntitlementVerifierTests {
             payload.replacingOccurrences(of: fixture.installationID.uuidString, with: "not-a-uuid"),
             payload.replacingOccurrences(of: "\"revision\":7", with: "\"revision\":0"),
             payload.replacingOccurrences(of: "\"sub\":\"lic_01\"", with: "\"sub\":\"\""),
-            payload.replacingOccurrences(of: "\"security_updates_after_expiry\":false", with: "\"security_updates_after_expiry\":true")
+            payload.replacingOccurrences(
+                of: "\"security_updates_after_expiry\":false", with: "\"security_updates_after_expiry\":true"),
         ] {
             #expect(throws: EntitlementVerificationError.invalidClaims) {
                 try fixture.verify(try fixture.sign(payload: invalid))

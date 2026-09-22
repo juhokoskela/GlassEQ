@@ -6,14 +6,16 @@ import GlassEQCore
 let arguments = Array(CommandLine.arguments.dropFirst().drop { $0 == "--" })
 if arguments.first == "dsp-benchmark" || arguments.first == "--dsp-benchmark" {
     let benchmarkArguments = arguments.dropFirst()
-    let maximumCallbackBudgetPercent = benchmarkArguments.contains("--check")
+    let maximumCallbackBudgetPercent =
+        benchmarkArguments.contains("--check")
         ? 50.0
         : nil
     let curvePath = benchmarkArguments.first { $0 != "--check" }
-    exit(runDSPBenchmark(
-        curvePath: curvePath,
-        maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
-    ) ? 0 : 1)
+    exit(
+        runDSPBenchmark(
+            curvePath: curvePath,
+            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+        ) ? 0 : 1)
 }
 
 do {
@@ -162,7 +164,8 @@ private enum DiagnosticsArgumentError: Error, CustomStringConvertible {
         case .invalidObjectID(let option, let value):
             return "\(option) requires a positive Core Audio object ID; got \(value)."
         case .invalidHandoffExperiment(let option, let value):
-            return "\(option) requires production-start, quiesce-only, combined-incumbent, combined-16, physical-create-only, combined-create-only, combined-output-only, physical-first-live-taps, physical-first-live-taps-16, complete-route-switch, or physical-first-route-switch; got \(value)."
+            return
+                "\(option) requires production-start, quiesce-only, combined-incumbent, combined-16, physical-create-only, combined-create-only, combined-output-only, physical-first-live-taps, physical-first-live-taps-16, complete-route-switch, or physical-first-route-switch; got \(value)."
         case .incompatibleOptions(let first, let second):
             return "\(first) and \(second) cannot be used together."
         case .unknownOption(let option):
@@ -183,11 +186,12 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
             }
             return 0
         }
-        let output = if let objectID = options.outputObjectID {
-            try CoreAudioDeviceQuery.outputDevice(id: objectID)
-        } else {
-            try CoreAudioDeviceQuery.defaultOutputDevice()
-        }
+        let output =
+            if let objectID = options.outputObjectID {
+                try CoreAudioDeviceQuery.outputDevice(id: objectID)
+            } else {
+                try CoreAudioDeviceQuery.defaultOutputDevice()
+            }
         if options.setDefaultOutput {
             try setDiagnosticDefaultOutputDevice(output)
             print("Default output: \(output.id)\t\(output.name)\t\(output.uid)")
@@ -234,7 +238,9 @@ private func runDiagnostics(options: DiagnosticsOptions) -> Int32 {
             printLatencyMetadata(latencyMetadata.aggregateDevice, label: "Combined aggregate")
         }
         if options.intentionalCrashAfterStart {
-            print("Intentional crash requested after engine start. Pending device setting restoration is persisted and retried on the next launch.")
+            print(
+                "Intentional crash requested after engine start. Pending device setting restoration is persisted and retried on the next launch."
+            )
             fflush(stdout)
             abort()
         }
@@ -311,23 +317,6 @@ private func optionalChannelCounts(_ counts: [Int]?) -> String {
     counts.map { String(describing: $0) } ?? "unavailable"
 }
 
-private func audioEngineStatus(from state: AudioEngineState) -> AudioEngineStatus {
-    switch state {
-    case .stopped:
-        return .stopped
-    case .running(let output):
-        return .running(output: output)
-    case .failed(let message):
-        return .failed(
-            AudioEngineFailure(
-                category: .coreAudioOperationFailed,
-                userMessage: message,
-                operation: "SystemTapAudioEngine"
-            )
-        )
-    }
-}
-
 private func audioEngineStatus(from error: Error) -> AudioEngineStatus {
     if let availabilityError = error as? AudioDeviceAvailabilityError {
         let category: AudioEngineFailure.Category
@@ -401,24 +390,27 @@ func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
     print("Output timestamp jumps: \(metrics.outputTimestampDiscontinuities)")
     print("Paired timestamp jumps: \(metrics.pairedTimestampDiscontinuities)")
     if metrics.pairedTimestampDiscontinuities > 0 {
-        print(String(
-            format: "Last input jump: %+.3f frames, host interval error %+.3f ms",
-            metrics.lastInputTimestampJumpFrames,
-            Double(metrics.lastInputHostIntervalErrorNanoseconds) / 1_000_000
-        ))
-        print(String(
-            format: "Last output jump: %+.3f frames, host interval error %+.3f ms",
-            metrics.lastOutputTimestampJumpFrames,
-            Double(metrics.lastOutputHostIntervalErrorNanoseconds) / 1_000_000
-        ))
+        print(
+            String(
+                format: "Last input jump: %+.3f frames, host interval error %+.3f ms",
+                metrics.lastInputTimestampJumpFrames,
+                Double(metrics.lastInputHostIntervalErrorNanoseconds) / 1_000_000
+            ))
+        print(
+            String(
+                format: "Last output jump: %+.3f frames, host interval error %+.3f ms",
+                metrics.lastOutputTimestampJumpFrames,
+                Double(metrics.lastOutputHostIntervalErrorNanoseconds) / 1_000_000
+            ))
     }
     if metrics.timestampJumpIntervalObservations > 0 {
-        print(String(
-            format: "Paired jump interval: %.3f ms average, %.3f to %.3f ms",
-            metrics.averageTimestampJumpIntervalNanoseconds / 1_000_000,
-            Double(metrics.minimumTimestampJumpIntervalNanoseconds) / 1_000_000,
-            Double(metrics.maximumTimestampJumpIntervalNanoseconds) / 1_000_000
-        ))
+        print(
+            String(
+                format: "Paired jump interval: %.3f ms average, %.3f to %.3f ms",
+                metrics.averageTimestampJumpIntervalNanoseconds / 1_000_000,
+                Double(metrics.minimumTimestampJumpIntervalNanoseconds) / 1_000_000,
+                Double(metrics.maximumTimestampJumpIntervalNanoseconds) / 1_000_000
+            ))
     } else {
         print("Paired jump interval: unavailable")
     }
@@ -463,30 +455,33 @@ func printMetrics(_ metrics: AudioEngineMetrics, sampleRate: Double) {
         maximumNanoseconds: metrics.renderTiming.maximumCompletionLatenessNanoseconds
     )
     if metrics.tapToOutputLatencyObservations > 0 {
-        print(String(
-            format: "Tap-to-output latency: %.3f ms average, %.3f to %.3f ms",
-            metrics.averageTapToOutputLatencyNanoseconds / 1_000_000,
-            Double(metrics.minimumTapToOutputLatencyNanoseconds) / 1_000_000,
-            Double(metrics.maximumTapToOutputLatencyNanoseconds) / 1_000_000
-        ))
+        print(
+            String(
+                format: "Tap-to-output latency: %.3f ms average, %.3f to %.3f ms",
+                metrics.averageTapToOutputLatencyNanoseconds / 1_000_000,
+                Double(metrics.minimumTapToOutputLatencyNanoseconds) / 1_000_000,
+                Double(metrics.maximumTapToOutputLatencyNanoseconds) / 1_000_000
+            ))
     } else {
         print("Tap-to-output latency: unavailable")
     }
     if metrics.callbackTimingObservations > 0 {
-        print(String(
-            format: "Input age: %.3f ms average, %.3f frames, %.3f to %.3f ms",
-            metrics.averageInputAgeNanoseconds / 1_000_000,
-            metrics.averageInputAgeNanoseconds * sampleRate / 1_000_000_000,
-            Double(metrics.minimumInputAgeNanoseconds) / 1_000_000,
-            Double(metrics.maximumInputAgeNanoseconds) / 1_000_000
-        ))
-        print(String(
-            format: "Output lead: %.3f ms average, %.3f frames, %.3f to %.3f ms",
-            metrics.averageOutputLeadNanoseconds / 1_000_000,
-            metrics.averageOutputLeadNanoseconds * sampleRate / 1_000_000_000,
-            Double(metrics.minimumOutputLeadNanoseconds) / 1_000_000,
-            Double(metrics.maximumOutputLeadNanoseconds) / 1_000_000
-        ))
+        print(
+            String(
+                format: "Input age: %.3f ms average, %.3f frames, %.3f to %.3f ms",
+                metrics.averageInputAgeNanoseconds / 1_000_000,
+                metrics.averageInputAgeNanoseconds * sampleRate / 1_000_000_000,
+                Double(metrics.minimumInputAgeNanoseconds) / 1_000_000,
+                Double(metrics.maximumInputAgeNanoseconds) / 1_000_000
+            ))
+        print(
+            String(
+                format: "Output lead: %.3f ms average, %.3f frames, %.3f to %.3f ms",
+                metrics.averageOutputLeadNanoseconds / 1_000_000,
+                metrics.averageOutputLeadNanoseconds * sampleRate / 1_000_000_000,
+                Double(metrics.minimumOutputLeadNanoseconds) / 1_000_000,
+                Double(metrics.maximumOutputLeadNanoseconds) / 1_000_000
+            ))
     } else {
         print("Input age: unavailable")
         print("Output lead: unavailable")
@@ -503,12 +498,13 @@ private func printExtremeDuration(
         print("\(label): unavailable")
         return
     }
-    print(String(
-        format: "\(label): %.3f us p99.99, %.3f us maximum over %llu published callbacks",
-        Double(p9999Nanoseconds) / 1_000,
-        Double(maximumNanoseconds) / 1_000,
-        observations
-    ))
+    print(
+        String(
+            format: "\(label): %.3f us p99.99, %.3f us maximum over %llu published callbacks",
+            Double(p9999Nanoseconds) / 1_000,
+            Double(maximumNanoseconds) / 1_000,
+            observations
+        ))
 }
 
 func printTimestampProbeRecords(_ records: [AudioTimestampProbeRecord]) {
@@ -519,24 +515,28 @@ func printTimestampProbeRecords(_ records: [AudioTimestampProbeRecord]) {
                 + "inputJump=\(record.inputJumpDetected ? "yes" : "no") "
                 + "outputJump=\(record.outputJumpDetected ? "yes" : "no")"
         )
-        print(String(
-            format: "  input  mSampleTime=%.6f mHostTime=%llu mRateScalar=%.12f mFlags=0x%08X delta=%+.3f frames hostError=%+.3f ms",
-            record.inputSampleTime,
-            record.inputHostTime,
-            record.inputRateScalar,
-            record.inputFlags,
-            record.inputSampleTimeDeltaFrames,
-            Double(record.inputHostIntervalErrorNanoseconds) / 1_000_000
-        ))
-        print(String(
-            format: "  output mSampleTime=%.6f mHostTime=%llu mRateScalar=%.12f mFlags=0x%08X delta=%+.3f frames hostError=%+.3f ms",
-            record.outputSampleTime,
-            record.outputHostTime,
-            record.outputRateScalar,
-            record.outputFlags,
-            record.outputSampleTimeDeltaFrames,
-            Double(record.outputHostIntervalErrorNanoseconds) / 1_000_000
-        ))
+        print(
+            String(
+                format:
+                    "  input  mSampleTime=%.6f mHostTime=%llu mRateScalar=%.12f mFlags=0x%08X delta=%+.3f frames hostError=%+.3f ms",
+                record.inputSampleTime,
+                record.inputHostTime,
+                record.inputRateScalar,
+                record.inputFlags,
+                record.inputSampleTimeDeltaFrames,
+                Double(record.inputHostIntervalErrorNanoseconds) / 1_000_000
+            ))
+        print(
+            String(
+                format:
+                    "  output mSampleTime=%.6f mHostTime=%llu mRateScalar=%.12f mFlags=0x%08X delta=%+.3f frames hostError=%+.3f ms",
+                record.outputSampleTime,
+                record.outputHostTime,
+                record.outputRateScalar,
+                record.outputFlags,
+                record.outputSampleTimeDeltaFrames,
+                Double(record.outputHostIntervalErrorNanoseconds) / 1_000_000
+            ))
     }
 }
 
@@ -632,34 +632,37 @@ private func runDSPBenchmark(
             sampleRate: 192_000,
             channelCount: 2,
             frameCount: 16
-        )
+        ),
     ]
 
     print("GlassEQ DSP benchmark")
     print("Measures the 16-frame DSP workload; Core Audio buffering and device latency are not included.")
-    print("Biquad EQ is in-place and has no fixed block/sample delay; recursive filters still have frequency-dependent phase/group delay.")
-    print("The hybrid minimum-phase FIR also adds no fixed buffering delay: its 512-tap head renders directly while partitioned tail work completes ahead of its deadline.")
+    print(
+        "Biquad EQ is in-place and has no fixed block/sample delay; recursive filters still have frequency-dependent phase/group delay."
+    )
+    print(
+        "The hybrid minimum-phase FIR also adds no fixed buffering delay: its 512-tap head renders directly while partitioned tail work completes ahead of its deadline."
+    )
     print("")
 
     var passed = true
     for benchmarkCase in cases {
-        if !run(
-            benchmarkCase,
-            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
-        ) {
-            passed = false
-        }
+        passed =
+            run(
+                benchmarkCase,
+                maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+            ) && passed
     }
-    for transitionCase in cases where (
-        transitionCase.name.hasPrefix("31-band graphic")
-            || transitionCase.usesConvolution
-    ) && transitionCase.sampleRate != 96_000 {
-        if !runTransition(
-            transitionCase,
-            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
-        ) {
-            passed = false
-        }
+    for transitionCase in cases
+    where
+        (transitionCase.name.hasPrefix("31-band graphic")
+        || transitionCase.usesConvolution) && transitionCase.sampleRate != 96_000
+    {
+        passed =
+            runTransition(
+                transitionCase,
+                maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+            ) && passed
     }
     return passed
 }
@@ -675,11 +678,13 @@ private func run(
         sampleRate: benchmarkCase.sampleRate
     )
     var samples = originalSamples
-    guard let renderConfiguration = try? EQRenderConfiguration.prepare(
-        profile: benchmarkCase.profile,
-        sampleRate: benchmarkCase.sampleRate,
-        channelCount: benchmarkCase.channelCount
-    ) else {
+    guard
+        let renderConfiguration = try? EQRenderConfiguration.prepare(
+            profile: benchmarkCase.profile,
+            sampleRate: benchmarkCase.sampleRate,
+            channelCount: benchmarkCase.channelCount
+        )
+    else {
         print("\(benchmarkCase.name): failed to prepare DSP")
         return false
     }
@@ -692,13 +697,15 @@ private func run(
 
     let start = DispatchTime.now().uptimeNanoseconds
     var saturatedSamples: UInt64 = 0
-    var callbackDurations = benchmarkCase.usesConvolution
+    var callbackDurations =
+        benchmarkCase.usesConvolution
         ? [UInt64]()
         : []
     callbackDurations.reserveCapacity(benchmarkCase.usesConvolution ? iterations : 0)
     for _ in 0..<iterations {
         samples = originalSamples
-        let callbackStart = benchmarkCase.usesConvolution
+        let callbackStart =
+            benchmarkCase.usesConvolution
             ? DispatchTime.now().uptimeNanoseconds
             : 0
         saturatedSamples &+= samples.withUnsafeMutableBufferPointer {
@@ -723,7 +730,10 @@ private func run(
     let perSampleNanoseconds = averageNanoseconds / Double(benchmarkCase.frameCount * benchmarkCase.channelCount)
 
     print(benchmarkCase.name)
-    print(String(format: "  Buffer: %d frames, %d channels, %.0f Hz", benchmarkCase.frameCount, benchmarkCase.channelCount, benchmarkCase.sampleRate))
+    print(
+        String(
+            format: "  Buffer: %d frames, %d channels, %.0f Hz", benchmarkCase.frameCount, benchmarkCase.channelCount,
+            benchmarkCase.sampleRate))
     print(String(format: "  Avg DSP time: %.3f us/buffer", averageMicroseconds))
     print(String(format: "  Callback budget: %.3f us (%.3f%% used)", callbackBudgetMicroseconds, budgetPercent))
     print(String(format: "  Avg per sample: %.3f ns", perSampleNanoseconds))
@@ -737,18 +747,21 @@ private func run(
             Int((Double(sorted.count - 1) * 0.9999).rounded(.up)),
             sorted.count - 1
         )
-        print(String(
-            format: "  p99.9 DSP time: %.3f us/buffer",
-            Double(sorted[percentileIndex]) / 1_000
-        ))
-        print(String(
-            format: "  p99.99 DSP time: %.3f us/buffer",
-            Double(sorted[extremePercentileIndex]) / 1_000
-        ))
-        print(String(
-            format: "  Max DSP time: %.3f us/buffer",
-            Double(sorted.last ?? 0) / 1_000
-        ))
+        print(
+            String(
+                format: "  p99.9 DSP time: %.3f us/buffer",
+                Double(sorted[percentileIndex]) / 1_000
+            ))
+        print(
+            String(
+                format: "  p99.99 DSP time: %.3f us/buffer",
+                Double(sorted[extremePercentileIndex]) / 1_000
+            ))
+        print(
+            String(
+                format: "  Max DSP time: %.3f us/buffer",
+                Double(sorted.last ?? 0) / 1_000
+            ))
     }
     print("  Saturated samples during benchmark: \(saturatedSamples)")
     let passed = reportBenchmarkBudgetResult(
@@ -770,16 +783,18 @@ private func runTransition(
         sampleRate: benchmarkCase.sampleRate
     )
     var samples = originalSamples
-    guard let activeConfiguration = try? EQRenderConfiguration.prepare(
-        profile: benchmarkCase.profile,
-        sampleRate: benchmarkCase.sampleRate,
-        channelCount: benchmarkCase.channelCount
-    ),
-    let incomingConfiguration = try? EQRenderConfiguration.prepare(
-        profile: benchmarkCase.profile,
-        sampleRate: benchmarkCase.sampleRate,
-        channelCount: benchmarkCase.channelCount
-    ) else {
+    guard
+        let activeConfiguration = try? EQRenderConfiguration.prepare(
+            profile: benchmarkCase.profile,
+            sampleRate: benchmarkCase.sampleRate,
+            channelCount: benchmarkCase.channelCount
+        ),
+        let incomingConfiguration = try? EQRenderConfiguration.prepare(
+            profile: benchmarkCase.profile,
+            sampleRate: benchmarkCase.sampleRate,
+            channelCount: benchmarkCase.channelCount
+        )
+    else {
         print("Whole-bank transition: \(benchmarkCase.name): failed to prepare DSP")
         return false
     }
@@ -809,13 +824,15 @@ private func runTransition(
 
     let start = DispatchTime.now().uptimeNanoseconds
     var saturatedSamples: UInt64 = 0
-    var callbackDurations = benchmarkCase.usesConvolution
+    var callbackDurations =
+        benchmarkCase.usesConvolution
         ? [UInt64]()
         : []
     callbackDurations.reserveCapacity(benchmarkCase.usesConvolution ? iterations : 0)
     for _ in 0..<iterations {
         samples = originalSamples
-        let callbackStart = benchmarkCase.usesConvolution
+        let callbackStart =
+            benchmarkCase.usesConvolution
             ? DispatchTime.now().uptimeNanoseconds
             : 0
         saturatedSamples &+= samples.withUnsafeMutableBufferPointer {
@@ -834,23 +851,26 @@ private func runTransition(
     let elapsed = DispatchTime.now().uptimeNanoseconds - start
 
     let averageMicroseconds = Double(elapsed) / Double(iterations) / 1_000
-    let callbackBudgetMicroseconds = Double(benchmarkCase.frameCount)
+    let callbackBudgetMicroseconds =
+        Double(benchmarkCase.frameCount)
         / benchmarkCase.sampleRate * 1_000_000
     let budgetPercent = averageMicroseconds / callbackBudgetMicroseconds * 100
 
     print("Whole-bank transition: \(benchmarkCase.name)")
-    print(String(
-        format: "  Buffer: %d frames, %d channels, %.0f Hz",
-        benchmarkCase.frameCount,
-        benchmarkCase.channelCount,
-        benchmarkCase.sampleRate
-    ))
+    print(
+        String(
+            format: "  Buffer: %d frames, %d channels, %.0f Hz",
+            benchmarkCase.frameCount,
+            benchmarkCase.channelCount,
+            benchmarkCase.sampleRate
+        ))
     print(String(format: "  Avg DSP time: %.3f us/buffer", averageMicroseconds))
-    print(String(
-        format: "  Callback budget: %.3f us (%.3f%% used)",
-        callbackBudgetMicroseconds,
-        budgetPercent
-    ))
+    print(
+        String(
+            format: "  Callback budget: %.3f us (%.3f%% used)",
+            callbackBudgetMicroseconds,
+            budgetPercent
+        ))
     if benchmarkCase.usesConvolution {
         let sorted = callbackDurations.sorted()
         let percentileIndex = min(
@@ -861,18 +881,21 @@ private func runTransition(
             Int((Double(sorted.count - 1) * 0.9999).rounded(.up)),
             sorted.count - 1
         )
-        print(String(
-            format: "  p99.9 DSP time: %.3f us/buffer",
-            Double(sorted[percentileIndex]) / 1_000
-        ))
-        print(String(
-            format: "  p99.99 DSP time: %.3f us/buffer",
-            Double(sorted[extremePercentileIndex]) / 1_000
-        ))
-        print(String(
-            format: "  Max DSP time: %.3f us/buffer",
-            Double(sorted.last ?? 0) / 1_000
-        ))
+        print(
+            String(
+                format: "  p99.9 DSP time: %.3f us/buffer",
+                Double(sorted[percentileIndex]) / 1_000
+            ))
+        print(
+            String(
+                format: "  p99.99 DSP time: %.3f us/buffer",
+                Double(sorted[extremePercentileIndex]) / 1_000
+            ))
+        print(
+            String(
+                format: "  Max DSP time: %.3f us/buffer",
+                Double(sorted.last ?? 0) / 1_000
+            ))
     }
     print("  Saturated samples during benchmark: \(saturatedSamples)")
     let passed = reportBenchmarkBudgetResult(
@@ -891,11 +914,12 @@ private func reportBenchmarkBudgetResult(
         return true
     }
     let passed = budgetPercent < maximumCallbackBudgetPercent
-    print(String(
-        format: "  Release benchmark limit: %.1f%% (%@)",
-        maximumCallbackBudgetPercent,
-        passed ? "passed" : "FAILED"
-    ))
+    print(
+        String(
+            format: "  Release benchmark limit: %.1f%% (%@)",
+            maximumCallbackBudgetPercent,
+            passed ? "passed" : "FAILED"
+        ))
     return passed
 }
 
@@ -911,14 +935,14 @@ private func complexStereoProfile() -> EQProfile {
             EQFilter(kind: .peak, frequency: 55, gainDB: 4.5, q: 4),
             EQFilter(kind: .lowShelf, frequency: 110, gainDB: 2.5, q: 0.8),
             EQFilter(kind: .highShelf, frequency: 9_000, gainDB: -3.5, q: 0.7),
-            EQFilter(kind: .highPass, frequency: 24, gainDB: 0, q: 0.707)
+            EQFilter(kind: .highPass, frequency: 24, gainDB: 0, q: 0.707),
         ],
         rightPreampDB: -4,
         rightFilters: [
             EQFilter(kind: .peak, frequency: 1_250, gainDB: -5, q: 7),
             EQFilter(kind: .lowPass, frequency: 18_000, gainDB: 0, q: 0.707),
             EQFilter(kind: .highShelf, frequency: 12_000, gainDB: 2, q: 0.9),
-            EQFilter(kind: .peak, frequency: 72, gainDB: 3, q: 5)
+            EQFilter(kind: .peak, frequency: 72, gainDB: 3, q: 5),
         ]
     )
 }
@@ -929,15 +953,16 @@ private func benchmarkConvolutionProfile() -> EQProfile {
         mode: .convolution,
         preampDB: -6,
         filters: [],
-        convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: 4),
-            EQMagnitudePoint(frequency: 80, gainDB: -2),
-            EQMagnitudePoint(frequency: 250, gainDB: 3),
-            EQMagnitudePoint(frequency: 1_000, gainDB: -4),
-            EQMagnitudePoint(frequency: 4_000, gainDB: 5),
-            EQMagnitudePoint(frequency: 10_000, gainDB: -3),
-            EQMagnitudePoint(frequency: 20_000, gainDB: 1)
-        ]))
+        convolution: .magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 4),
+                EQMagnitudePoint(frequency: 80, gainDB: -2),
+                EQMagnitudePoint(frequency: 250, gainDB: 3),
+                EQMagnitudePoint(frequency: 1_000, gainDB: -4),
+                EQMagnitudePoint(frequency: 4_000, gainDB: 5),
+                EQMagnitudePoint(frequency: 10_000, gainDB: -3),
+                EQMagnitudePoint(frequency: 20_000, gainDB: 1),
+            ]))
     )
 }
 
@@ -946,7 +971,8 @@ private func makeStereoTestBlock(frameCount: Int, sampleRate: Double) -> [Float]
     for frame in 0..<frameCount {
         let time = Double(frame) / sampleRate
         samples[frame * 2] = Float(0.18 * sin(2 * Double.pi * 73 * time) + 0.07 * sin(2 * Double.pi * 1_007 * time))
-        samples[frame * 2 + 1] = Float(0.16 * sin(2 * Double.pi * 211 * time) - 0.05 * sin(2 * Double.pi * 6_300 * time))
+        samples[frame * 2 + 1] = Float(
+            0.16 * sin(2 * Double.pi * 211 * time) - 0.05 * sin(2 * Double.pi * 6_300 * time))
     }
     return samples
 }

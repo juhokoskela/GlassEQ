@@ -23,18 +23,19 @@ struct EQCoreTests {
     func frequencyResponsePointsMatchCoefficientMagnitudeSum() {
         let filters = [
             EQFilter(kind: .peak, frequency: 1_000, gainDB: 6, q: 1),
-            EQFilter(kind: .highShelf, frequency: 8_000, gainDB: -3, q: 0.7)
+            EQFilter(kind: .highShelf, frequency: 8_000, gainDB: -3, q: 0.7),
         ]
         let points = FrequencyResponse.points(for: filters, preampDB: -2, sampleRate: 48_000, count: 5)
         let coefficients = filters.map { BiquadCoefficients.make(filter: $0, sampleRate: 48_000) }
 
         for point in points {
             let expected = coefficients.reduce(-2.0) { magnitude, coefficients in
-                magnitude + FrequencyResponse.magnitudeDB(
-                    for: coefficients,
-                    frequency: point.frequency,
-                    sampleRate: 48_000
-                )
+                magnitude
+                    + FrequencyResponse.magnitudeDB(
+                        for: coefficients,
+                        frequency: point.frequency,
+                        sampleRate: 48_000
+                    )
             }
             #expect(abs(point.magnitudeDB - expected) < 0.000_000_001)
         }
@@ -53,7 +54,9 @@ struct EQCoreTests {
         let points = FrequencyResponse.points(for: [disabled], preampDB: -3, sampleRate: 48_000, count: 8)
 
         #expect(points.allSatisfy { abs($0.magnitudeDB + 3) < 0.000_000_001 })
-        #expect(abs(FrequencyResponse.peakMagnitudeDB(for: [disabled], preampDB: -3, sampleRate: 48_000) + 3) < 0.000_000_001)
+        #expect(
+            abs(FrequencyResponse.peakMagnitudeDB(for: [disabled], preampDB: -3, sampleRate: 48_000) + 3)
+                < 0.000_000_001)
     }
 
     @Test
@@ -124,7 +127,7 @@ struct EQCoreTests {
             filters: [
                 EQFilter(kind: .peak, frequency: 6_000, gainDB: 3),
                 EQFilter(kind: .peak, frequency: 8_000, gainDB: 3),
-                EQFilter(kind: .peak, frequency: 20_000, gainDB: 3, isEnabled: false)
+                EQFilter(kind: .peak, frequency: 20_000, gainDB: 3, isEnabled: false),
             ]
         )
         let stereoProfile = EQProfile(
@@ -136,14 +139,16 @@ struct EQCoreTests {
             rightFilters: [EQFilter(kind: .peak, frequency: 20_000, gainDB: 3)]
         )
 
-        #expect(EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
-            profile: linkedProfile,
-            sampleRate: 16_000
-        ) == 1)
-        #expect(EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
-            profile: stereoProfile,
-            sampleRate: 16_000
-        ) == 2)
+        #expect(
+            EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
+                profile: linkedProfile,
+                sampleRate: 16_000
+            ) == 1)
+        #expect(
+            EQRouteFrequencyPolicy.inactiveEnabledFilterCount(
+                profile: stereoProfile,
+                sampleRate: 16_000
+            ) == 2)
     }
 
     @Test
@@ -360,11 +365,12 @@ struct EQCoreTests {
     func responseCurveAnalysisUsesCurvePeakAndLogFrequencyInterpolation() throws {
         var profile = EQProfile.flatConvolution
         profile.preampDB = -2
-        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: 0),
-            EQMagnitudePoint(frequency: 200, gainDB: 8),
-            EQMagnitudePoint(frequency: 20_000, gainDB: -3)
-        ]))
+        profile.convolution = .magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 0),
+                EQMagnitudePoint(frequency: 200, gainDB: 8),
+                EQMagnitudePoint(frequency: 20_000, gainDB: -3),
+            ]))
 
         let recommended = try testRecommendedPreampDB(
             profile: profile,
@@ -392,18 +398,21 @@ struct EQCoreTests {
         let targetMagnitude = pow(10, 12.0 / 20)
         let coefficientScale = 2 * targetMagnitude / Double(frameCount)
         let samples = (0..<frameCount).map { index in
-            Float(coefficientScale * cos(
-                2 * Double.pi * Double(frequencyBin * index) / Double(frameCount)
-            ))
+            Float(
+                coefficientScale
+                    * cos(
+                        2 * Double.pi * Double(frequencyBin * index) / Double(frameCount)
+                    ))
         }
         let profile = EQProfile(
             name: "Narrow peak",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: sampleRate,
-                samples: samples
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: sampleRate,
+                    samples: samples
+                ))
         )
 
         let renderedPeak = impulseMagnitudeDB(
@@ -432,18 +441,21 @@ struct EQCoreTests {
         let targetMagnitude = pow(10, 12.0 / 20)
         let coefficientScale = 2 * targetMagnitude / Double(frameCount)
         let samples = (0..<frameCount).map { index in
-            Float(coefficientScale * cos(
-                2 * Double.pi * Double(frequencyBin * index) / Double(frameCount)
-            ))
+            Float(
+                coefficientScale
+                    * cos(
+                        2 * Double.pi * Double(frequencyBin * index) / Double(frameCount)
+                    ))
         }
         let profile = EQProfile(
             name: "Non-power-of-two impulse",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: sampleRate,
-                samples: samples
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: sampleRate,
+                    samples: samples
+                ))
         )
 
         let renderedPeak = impulseMagnitudeDB(
@@ -472,10 +484,11 @@ struct EQCoreTests {
         samples[0] = 1
         samples[1] = 0.2
         let response = FrequencyResponse.points(
-            for: .impulseResponse(ImpulseResponseSource(
-                sampleRate: sampleRate,
-                samples: samples
-            )),
+            for: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: sampleRate,
+                    samples: samples
+                )),
             preampDB: -3,
             sampleRate: sampleRate,
             count: 17
@@ -483,11 +496,13 @@ struct EQCoreTests {
 
         #expect(response.count == 17)
         for point in response {
-            let expected = -3 + impulseMagnitudeDB(
-                samples: samples,
-                frequency: point.frequency,
-                sampleRate: sampleRate
-            )
+            let expected =
+                -3
+                + impulseMagnitudeDB(
+                    samples: samples,
+                    frequency: point.frequency,
+                    sampleRate: sampleRate
+                )
             #expect(abs(point.magnitudeDB - expected) < 0.000_001)
         }
     }
@@ -502,7 +517,7 @@ struct EQCoreTests {
         var curve = MagnitudeCurveSource(points: [
             EQMagnitudePoint(frequency: 20, gainDB: 0),
             EQMagnitudePoint(frequency: 1_000, gainDB: 0),
-            EQMagnitudePoint(frequency: 10_000, gainDB: 12)
+            EQMagnitudePoint(frequency: 10_000, gainDB: 12),
         ])
         curve.points.swapAt(1, 2)
         let profile = EQProfile(
@@ -549,7 +564,7 @@ struct EQCoreTests {
             EQMagnitudePoint(frequency: 20, gainDB: 0),
             EQMagnitudePoint(frequency: 7_000, gainDB: 12),
             EQMagnitudePoint(frequency: 7_200, gainDB: 12),
-            EQMagnitudePoint(frequency: 7_300, gainDB: 0)
+            EQMagnitudePoint(frequency: 7_300, gainDB: 0),
         ])
         let profile = EQProfile(
             name: "Route boundary",
@@ -585,11 +600,12 @@ struct EQCoreTests {
             name: "Route-limited curve",
             mode: .convolution,
             filters: [],
-            convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
-                EQMagnitudePoint(frequency: 20, gainDB: 0),
-                EQMagnitudePoint(frequency: 7_200, gainDB: 0),
-                EQMagnitudePoint(frequency: 7_300, gainDB: 12)
-            ]))
+            convolution: .magnitudeCurve(
+                MagnitudeCurveSource(points: [
+                    EQMagnitudePoint(frequency: 20, gainDB: 0),
+                    EQMagnitudePoint(frequency: 7_200, gainDB: 0),
+                    EQMagnitudePoint(frequency: 7_300, gainDB: 12),
+                ]))
         )
         let renderConfiguration = try EQRenderConfiguration.prepare(
             profile: profile,
@@ -603,11 +619,13 @@ struct EQCoreTests {
         processor.processInterleaved(&impulse, channelCount: 1)
 
         #expect(renderConfiguration.configuration.maximumUsableFrequency == 7_200)
-        #expect(abs(impulseMagnitudeDB(
-            samples: impulse,
-            frequency: 7_300,
-            sampleRate: sampleRate
-        )) < 0.05)
+        #expect(
+            abs(
+                impulseMagnitudeDB(
+                    samples: impulse,
+                    frequency: 7_300,
+                    sampleRate: sampleRate
+                )) < 0.05)
     }
 
     @Test
@@ -617,10 +635,11 @@ struct EQCoreTests {
             name: "Imported impulse",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 16_000,
-                samples: samples
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 16_000,
+                    samples: samples
+                ))
         )
         let renderConfiguration = try EQRenderConfiguration.prepare(
             profile: profile,
@@ -646,7 +665,8 @@ struct EQCoreTests {
         )
         profile.isBypassed = true
 
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
         var samples: [Float] = [0.1, -0.2, 0.3, -0.4]
 
         processor.processInterleaved(&samples, channelCount: 2)
@@ -662,7 +682,8 @@ struct EQCoreTests {
             preampDB: 6,
             filters: []
         )
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
 
         let outOfRange = processor.processSampleWithDiagnostics(0.25, channel: 4)
 
@@ -715,7 +736,8 @@ struct EQCoreTests {
             rightFilters: [rightFilter]
         )
 
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
         var samples = Array(repeating: Float(0), count: 2 * 256)
         for index in stride(from: 0, to: samples.count, by: 2) {
             samples[index] = 0.2
@@ -742,25 +764,27 @@ struct EQCoreTests {
                 EQFilter(kind: .peak, frequency: 55, gainDB: 4.5, q: 4),
                 EQFilter(kind: .lowShelf, frequency: 110, gainDB: 2.5, q: 0.8),
                 EQFilter(kind: .highShelf, frequency: 9_000, gainDB: -3.5, q: 0.7),
-                EQFilter(kind: .highPass, frequency: 24, gainDB: 0, q: 0.707)
+                EQFilter(kind: .highPass, frequency: 24, gainDB: 0, q: 0.707),
             ],
             rightPreampDB: -4,
             rightFilters: [
                 EQFilter(kind: .peak, frequency: 1_250, gainDB: -5, q: 7),
                 EQFilter(kind: .lowPass, frequency: 18_000, gainDB: 0, q: 0.707),
                 EQFilter(kind: .highShelf, frequency: 12_000, gainDB: 2, q: 0.9),
-                EQFilter(kind: .peak, frequency: 72, gainDB: 3, q: 5)
+                EQFilter(kind: .peak, frequency: 72, gainDB: 3, q: 5),
             ]
         )
         let sampleRate = 48_000.0
         var runtimeSamples = makeStereoTestBlock(frameCount: 1_024, sampleRate: sampleRate)
         var legacySamples = runtimeSamples
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: sampleRate, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: profile, sampleRate: sampleRate, channelCount: 2))
 
         processor.processInterleaved(&runtimeSamples, channelCount: 2)
         legacyProcessInterleaved(&legacySamples, profile: profile, sampleRate: sampleRate, channelCount: 2)
 
-        let maxDelta = zip(runtimeSamples, legacySamples)
+        let maxDelta =
+            zip(runtimeSamples, legacySamples)
             .map { abs($0 - $1) }
             .max() ?? 0
         #expect(maxDelta < 0.000_5)
@@ -768,22 +792,26 @@ struct EQCoreTests {
 
     @Test
     func floatRuntimeMatchesLegacyDoublePathForImpulse() {
-        let profile = EQProfile(name: "Graphic", mode: .graphic31, preampDB: -6, filters: EQProfile.flatGraphic31.filters.enumerated().map { index, filter in
-            var filter = filter
-            filter.gainDB = Double((index % 7) - 3)
-            return filter
-        })
+        let profile = EQProfile(
+            name: "Graphic", mode: .graphic31, preampDB: -6,
+            filters: EQProfile.flatGraphic31.filters.enumerated().map { index, filter in
+                var filter = filter
+                filter.gainDB = Double((index % 7) - 3)
+                return filter
+            })
         let sampleRate = 48_000.0
         var runtimeSamples = [Float](repeating: 0, count: 2 * 512)
         runtimeSamples[0] = 0.8
         runtimeSamples[1] = -0.4
         var legacySamples = runtimeSamples
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: sampleRate, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: profile, sampleRate: sampleRate, channelCount: 2))
 
         processor.processInterleaved(&runtimeSamples, channelCount: 2)
         legacyProcessInterleaved(&legacySamples, profile: profile, sampleRate: sampleRate, channelCount: 2)
 
-        let maxDelta = zip(runtimeSamples, legacySamples)
+        let maxDelta =
+            zip(runtimeSamples, legacySamples)
             .map { abs($0 - $1) }
             .max() ?? 0
         #expect(maxDelta < 0.000_05)
@@ -792,7 +820,8 @@ struct EQCoreTests {
     @Test
     func interleavedDiagnosticsReportSaturation() {
         let profile = EQProfile(name: "Hot", mode: .parametric, preampDB: 24, filters: [])
-        var processor = EQProcessor(configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2))
         var samples: [Float] = [0.5, -0.5, 0.25, -0.25]
 
         let saturated = samples.withUnsafeMutableBufferPointer {
@@ -812,7 +841,7 @@ struct EQCoreTests {
             preampDB: -3,
             filters: [
                 EQFilter(kind: .peak, frequency: 1_000, gainDB: 4, q: 1.2),
-                EQFilter(kind: .highShelf, frequency: 8_000, gainDB: -2, q: 0.7)
+                EQFilter(kind: .highShelf, frequency: 8_000, gainDB: -2, q: 0.7),
             ]
         )
         let configuration = EQConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2)
@@ -841,8 +870,10 @@ struct EQCoreTests {
             mode: .parametric,
             filters: [EQFilter(kind: .peak, frequency: 500, gainDB: -2, q: 1)]
         )
-        var processor = EQProcessor(configuration: EQConfiguration(profile: initial, sampleRate: 48_000, channelCount: 2))
-        processor.applyPreparedConfiguration(EQRenderConfiguration(profile: updated, sampleRate: 48_000, channelCount: 2))
+        var processor = EQProcessor(
+            configuration: EQConfiguration(profile: initial, sampleRate: 48_000, channelCount: 2))
+        processor.applyPreparedConfiguration(
+            EQRenderConfiguration(profile: updated, sampleRate: 48_000, channelCount: 2))
         var samples = makeStereoTestBlock(frameCount: 64, sampleRate: 48_000)
 
         processor.processInterleaved(&samples, channelCount: 2)
@@ -884,7 +915,7 @@ struct EQCoreTests {
             mode: .parametric,
             filters: [
                 EQFilter(kind: .lowPass, frequency: 1_200, gainDB: 0, q: 0.707),
-                EQFilter(kind: .peak, frequency: 220, gainDB: 6, q: 2)
+                EQFilter(kind: .peak, frequency: 220, gainDB: 6, q: 2),
             ]
         )
         let prepared = EQRenderConfiguration(profile: profile, sampleRate: 48_000, channelCount: 2)
@@ -967,22 +998,24 @@ struct EQCoreTests {
             filters: []
         )
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: 1_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: 1_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 4,
             channelCount: 1,
             sampleRate: 1_000,
             warmupSeconds: 0,
             blendSeconds: 0.004
         )
-        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
-            profile: incoming,
-            sampleRate: 1_000,
-            channelCount: 1
-        ))
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
+                profile: incoming,
+                sampleRate: 1_000,
+                channelCount: 1
+            ))
         let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
         var samples = [Float](repeating: 0.25, count: 4)
@@ -1016,22 +1049,24 @@ struct EQCoreTests {
             filters: []
         )
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: 1_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: 1_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 4,
             channelCount: 1,
             sampleRate: 1_000,
             warmupSeconds: 0.004,
             blendSeconds: 0.004
         )
-        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
-            profile: incoming,
-            sampleRate: 1_000,
-            channelCount: 1
-        ))
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
+                profile: incoming,
+                sampleRate: 1_000,
+                channelCount: 1
+            ))
         let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
         var warmup = [Float](repeating: 0.25, count: 4)
@@ -1061,11 +1096,12 @@ struct EQCoreTests {
             channelCount: 1
         )
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: 48_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: 48_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 480,
             channelCount: 1,
             sampleRate: 48_000,
@@ -1098,7 +1134,8 @@ struct EQCoreTests {
             #expect(result.completedTransition == false)
             #expect(result.workTiming.directHeadHostTicks > 0)
             #expect(result.workTiming.tailDeadlineMisses == 0)
-            observedTailCompletion = observedTailCompletion
+            observedTailCompletion =
+                observedTailCompletion
                 || result.workTiming.tailCompletionObservations > 0
             renderedFrames += frameCount
         }
@@ -1126,15 +1163,16 @@ struct EQCoreTests {
             mode: .parametric,
             filters: [
                 EQFilter(kind: .lowShelf, frequency: 120, gainDB: 3, q: 0.7),
-                EQFilter(kind: .peak, frequency: 1_500, gainDB: -4, q: 2)
+                EQFilter(kind: .peak, frequency: 1_500, gainDB: -4, q: 2),
             ]
         )
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: 1_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: 1_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 4,
             channelCount: 1,
             sampleRate: 1_000,
@@ -1142,11 +1180,12 @@ struct EQCoreTests {
             blendSeconds: 0.004
         )
 
-        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
-            profile: incoming,
-            sampleRate: 1_000,
-            channelCount: 1
-        ))
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
+                profile: incoming,
+                sampleRate: 1_000,
+                channelCount: 1
+            ))
         let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
 
@@ -1175,22 +1214,24 @@ struct EQCoreTests {
         var bypassed = active
         bypassed.isBypassed = true
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: 1_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: 1_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 4,
             channelCount: 1,
             sampleRate: 1_000,
             warmupSeconds: 0,
             blendSeconds: 0.004
         )
-        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
-            profile: bypassed,
-            sampleRate: 1_000,
-            channelCount: 1
-        ))
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
+                profile: bypassed,
+                sampleRate: 1_000,
+                channelCount: 1
+            ))
         let didBegin = transition.beginTransition(to: &candidate)
         #expect(didBegin)
         var samples = [Float](repeating: 0.25, count: 4)
@@ -1226,11 +1267,12 @@ struct EQCoreTests {
         var profile = EQProfile.flatConvolution
         profile.isBypassed = true
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: profile,
-                sampleRate: 48_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: profile,
+                    sampleRate: 48_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 4,
             channelCount: 1,
             sampleRate: 48_000
@@ -1365,11 +1407,12 @@ struct EQCoreTests {
         )
         let reference = EQProfile(name: "Filters off", mode: .parametric, filters: [])
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: 48_000,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: 48_000,
+                    channelCount: 1
+                )),
             maximumFrameCount: 4,
             channelCount: 1,
             sampleRate: 48_000,
@@ -1377,12 +1420,14 @@ struct EQCoreTests {
             blendSeconds: 4.0 / 48_000
         )
 
-        var equalizedCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
+        var equalizedCandidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
                 profile: equalized,
                 sampleRate: 48_000,
                 channelCount: 1
             ))
-        var referenceCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
+        var referenceCandidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
                 profile: reference,
                 sampleRate: 48_000,
                 channelCount: 1
@@ -1420,11 +1465,12 @@ struct EQCoreTests {
         #expect(abs(comparison[0] - 0.5) < 0.000_001)
         #expect(abs(comparison[3] - 0.25) < 0.000_001)
 
-        var candidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
-            profile: active,
-            sampleRate: 48_000,
-            channelCount: 1
-        ))
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
+                profile: active,
+                sampleRate: 48_000,
+                channelCount: 1
+            ))
         let didBeginExit = transition.beginTransition(to: &candidate)
         #expect(didBeginExit)
         var exitSelection = [Float](repeating: 0.25, count: 4)
@@ -1466,11 +1512,12 @@ struct EQCoreTests {
             convolution: .impulseResponse(ImpulseResponseSource(sampleRate: 48_000, samples: impulse))
         )
         let draftConfiguration = EQConfiguration(profile: draft, sampleRate: 48_000, channelCount: 1)
-        var referenceProcessor: EQProcessor? = EQProcessor(renderConfiguration: try EQRenderConfiguration.prepare(
-            profile: reference,
-            sampleRate: 48_000,
-            channelCount: 1
-        ))
+        var referenceProcessor: EQProcessor? = EQProcessor(
+            renderConfiguration: try EQRenderConfiguration.prepare(
+                profile: reference,
+                sampleRate: 48_000,
+                channelCount: 1
+            ))
         let requiredWarmupFrames = (referenceProcessor?.requiredWarmupFrames)!
         var transition = RealtimeEQTransition(
             activeProcessor: EQProcessor(configuration: draftConfiguration),
@@ -1531,23 +1578,26 @@ struct EQCoreTests {
         )
         let reference = EQProfile(name: "Filters off", mode: .parametric, filters: [])
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: EQConfiguration(
-                profile: active,
-                sampleRate: sampleRate,
-                channelCount: 1
-            )),
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: active,
+                    sampleRate: sampleRate,
+                    channelCount: 1
+                )),
             maximumFrameCount: blockFrames,
             channelCount: 1,
             sampleRate: sampleRate,
             warmupSeconds: 0,
             blendSeconds: Double(blockFrames) / sampleRate
         )
-        var equalizedCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
+        var equalizedCandidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
                 profile: equalized,
                 sampleRate: sampleRate,
                 channelCount: 1
             ))
-        var referenceCandidate: EQProcessor? = EQProcessor(configuration: EQConfiguration(
+        var referenceCandidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(
                 profile: reference,
                 sampleRate: sampleRate,
                 channelCount: 1
@@ -1562,11 +1612,12 @@ struct EQCoreTests {
         var lastOutputPeak: Float = 0
         for block in 0..<40 {
             var samples = (0..<blockFrames).map { frame in
-                Float(sin(
-                    2 * Double.pi * 1_000
-                        * Double(block * blockFrames + frame)
-                        / sampleRate
-                )) * 0.1
+                Float(
+                    sin(
+                        2 * Double.pi * 1_000
+                            * Double(block * blockFrames + frame)
+                            / sampleRate
+                    )) * 0.1
             }
             samples.withUnsafeMutableBufferPointer {
                 lastResult = transition.processInterleavedWithDiagnostics(
@@ -1605,15 +1656,15 @@ struct EQCoreTests {
     @Test
     func profileDecoderDefaultsMissingStereoFieldsToLinked() throws {
         let json = """
-        {
-          "id": "00000000-0000-0000-0000-000000000001",
-          "name": "Legacy",
-          "mode": "parametric",
-          "preampDB": 0,
-          "filters": [],
-          "isBypassed": false
-        }
-        """
+            {
+              "id": "00000000-0000-0000-0000-000000000001",
+              "name": "Legacy",
+              "mode": "parametric",
+              "preampDB": 0,
+              "filters": [],
+              "isBypassed": false
+            }
+            """
 
         let profile = try ProfilePersistence.decoder.decode(EQProfile.self, from: Data(json.utf8))
         #expect(profile.channelMode == EQChannelMode.linked)
@@ -1659,7 +1710,7 @@ struct EQCoreTests {
                 OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: missingProfileID),
                 OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: first.id),
                 OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: second.id),
-                OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id)
+                OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id),
             ],
             fallbackProfileID: missingProfileID
         )
@@ -1670,10 +1721,11 @@ struct EQCoreTests {
         #expect(summary.removedOutputMappings == 2)
         #expect(summary.deduplicatedOutputMappings == 1)
         #expect(store.fallbackProfileID == first.id)
-        #expect(store.outputMappings == [
-            OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: second.id),
-            OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id)
-        ])
+        #expect(
+            store.outputMappings == [
+                OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: second.id),
+                OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id),
+            ])
     }
 
     @Test
@@ -1712,7 +1764,8 @@ struct EQCoreTests {
         for frame in 0..<frameCount {
             let time = Double(frame) / sampleRate
             samples[frame * 2] = Float(0.18 * sin(2 * Double.pi * 73 * time) + 0.07 * sin(2 * Double.pi * 1_007 * time))
-            samples[frame * 2 + 1] = Float(0.16 * sin(2 * Double.pi * 211 * time) - 0.05 * sin(2 * Double.pi * 6_300 * time))
+            samples[frame * 2 + 1] = Float(
+                0.16 * sin(2 * Double.pi * 211 * time) - 0.05 * sin(2 * Double.pi * 6_300 * time))
         }
         return samples
     }
@@ -1754,7 +1807,8 @@ struct EQCoreTests {
                 let channelConfiguration = configuration.channelConfigurations[channel]
                 var value = samples[sampleIndex + channel] * channelConfiguration.preampLinearGain
                 for filterIndex in channelConfiguration.coefficients.indices {
-                    value = states[channel][filterIndex].process(value, coefficients: channelConfiguration.coefficients[filterIndex])
+                    value = states[channel][filterIndex].process(
+                        value, coefficients: channelConfiguration.coefficients[filterIndex])
                 }
                 samples[sampleIndex + channel] = legacySaturate(value)
             }

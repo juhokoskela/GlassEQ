@@ -78,7 +78,8 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
         channelCount: Int,
         gainSmoothingSeconds: Double = 0.5
     ) {
-        let validSampleRate = sampleRate.isFinite && sampleRate > 0
+        let validSampleRate =
+            sampleRate.isFinite && sampleRate > 0
             ? sampleRate
             : 48_000
         let channels = max(channelCount, 1)
@@ -89,7 +90,8 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
             KWeightingChannel(sampleRate: validSampleRate)
         }
         self.segmentFrameCount = max(Int((validSampleRate * 0.1).rounded()), 1)
-        let smoothingSeconds = gainSmoothingSeconds.isFinite && gainSmoothingSeconds > 0
+        let smoothingSeconds =
+            gainSmoothingSeconds.isFinite && gainSmoothingSeconds > 0
             ? gainSmoothingSeconds
             : 0.5
         self.gainSmoothingCoefficient = 1 - exp(-1 / (validSampleRate * smoothingSeconds))
@@ -195,7 +197,8 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
             return
         }
 
-        let relativeGate = absoluteGatedJointEnergy
+        let relativeGate =
+            absoluteGatedJointEnergy
             / Double(absoluteGatedBlockCount)
             * 0.1
         let gate = max(Self.absoluteGateEnergy, relativeGate)
@@ -212,10 +215,11 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
             gatedBlockCount += 1
         }
         guard gatedBlockCount >= Self.minimumGatedBlockCount,
-              equalizedEnergy.isFinite,
-              referenceEnergy.isFinite,
-              equalizedEnergy > 0,
-              referenceEnergy > 0 else {
+            equalizedEnergy.isFinite,
+            referenceEnergy.isFinite,
+            equalizedEnergy > 0,
+            referenceEnergy > 0
+        else {
             return
         }
 
@@ -255,18 +259,15 @@ struct RealtimeProgrammeLoudnessMatcher: Sendable {
     }
 
     private func segmentStorageIndex(forOrderedIndex orderedIndex: Int) -> Int {
-        let oldest = (segmentWriteIndex - storedSegmentCount + Self.windowSegmentCount)
+        let oldest =
+            (segmentWriteIndex - storedSegmentCount + Self.windowSegmentCount)
             % Self.windowSegmentCount
         return (oldest + orderedIndex) % Self.windowSegmentCount
     }
 
     private mutating func advanceSmoothedGains() {
-        currentEqualizedGain += (
-            targetEqualizedGain - currentEqualizedGain
-        ) * gainSmoothingCoefficient
-        currentReferenceGain += (
-            targetReferenceGain - currentReferenceGain
-        ) * gainSmoothingCoefficient
+        currentEqualizedGain += (targetEqualizedGain - currentEqualizedGain) * gainSmoothingCoefficient
+        currentReferenceGain += (targetReferenceGain - currentReferenceGain) * gainSmoothingCoefficient
     }
 }
 

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "indentation": { "spaces": 4 },
+  "lineLength": 120,
+  "rules": {
+    "AlwaysUseLowerCamelCase": false,
+    "AmbiguousTrailingClosureOverload": false,
+    "DontRepeatTypeInStaticProperties": false,
+    "FileScopedDeclarationPrivacy": false,
+    "FullyIndirectEnum": false,
+    "GroupNumericLiterals": false,
+    "NoAccessLevelOnExtensionDeclaration": false,
+    "NoBlockComments": false,
+    "OneVariableDeclarationPerLine": false,
+    "OnlyOneTrailingClosureArgument": false,
+    "ReplaceForEachWithForLoop": false,
+    "TypeNamesShouldBeCapitalized": false,
+    "UseSynthesizedInitializer": false
+  }
+}

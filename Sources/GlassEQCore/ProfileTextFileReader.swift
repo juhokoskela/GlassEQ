@@ -14,7 +14,8 @@ package enum ProfileTextFileReader {
 
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         if let fileSize = values.fileSize,
-           fileSize > maximumBytes {
+            fileSize > maximumBytes
+        {
             throw ProfileImportError.inputTooLarge(
                 byteCount: fileSize,
                 maximum: maximumBytes

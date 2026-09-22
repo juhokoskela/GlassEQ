@@ -7,7 +7,8 @@ import Testing
 struct OnboardingStepSequenceTests {
     @Test
     func licensedBuildsActivateBeforeAudioCapture() {
-        #expect(OnboardingStep.sequence(includingLicense: true) == [.welcome, .license, .audioCapture, .preferences, .done])
+        #expect(
+            OnboardingStep.sequence(includingLicense: true) == [.welcome, .license, .audioCapture, .preferences, .done])
         #expect(OnboardingStep.sequence(includingLicense: false) == [.welcome, .audioCapture, .preferences, .done])
     }
 
@@ -50,7 +51,7 @@ struct LicenseOperationFailureMessageTests {
         .service(.malformedResponse),
         .service(.unexpectedStatus(500)),
         .service(.redirected),
-        .service(.cancelled)
+        .service(.cancelled),
     ]
 
     @Test(arguments: everyError)
@@ -64,21 +65,26 @@ struct LicenseOperationFailureMessageTests {
 
     @Test
     func theStatesOnboardingNamesGetSpecificGuidance() {
-        #expect(LicenseOperationFailureMessage.text(
-            for: LicensingError.service(.service(code: .activationLimit, retryAfterSeconds: nil))
-        ).contains("two Macs"))
-        #expect(LicenseOperationFailureMessage.text(
-            for: LicensingError.service(.transport(.offline))
-        ).contains("offline"))
-        #expect(LicenseOperationFailureMessage.text(
-            for: LicensingError.service(.service(code: .invalidCredentials, retryAfterSeconds: nil))
-        ).contains("not recognized"))
-        #expect(LicenseOperationFailureMessage.text(
-            for: LicensingError.service(.invalidLicenseKey)
-        ).contains("GEQ1-"))
-        #expect(LicenseOperationFailureMessage.text(
-            for: LicensingError.entitlement(.issuedInFuture)
-        ).contains("date and time"))
+        #expect(
+            LicenseOperationFailureMessage.text(
+                for: LicensingError.service(.service(code: .activationLimit, retryAfterSeconds: nil))
+            ).contains("two Macs"))
+        #expect(
+            LicenseOperationFailureMessage.text(
+                for: LicensingError.service(.transport(.offline))
+            ).contains("offline"))
+        #expect(
+            LicenseOperationFailureMessage.text(
+                for: LicensingError.service(.service(code: .invalidCredentials, retryAfterSeconds: nil))
+            ).contains("not recognized"))
+        #expect(
+            LicenseOperationFailureMessage.text(
+                for: LicensingError.service(.invalidLicenseKey)
+            ).contains("GEQ1-"))
+        #expect(
+            LicenseOperationFailureMessage.text(
+                for: LicensingError.entitlement(.issuedInFuture)
+            ).contains("date and time"))
     }
 
     @Test

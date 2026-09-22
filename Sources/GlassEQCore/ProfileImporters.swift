@@ -69,7 +69,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
         case .noSupportedFilters:
             return "No supported filters were found in the imported profile."
         case let .mixedEqualizerAPOFormats(graphicEQLine, filterLine):
-            return "Line \(graphicEQLine) contains GraphicEQ, but line \(filterLine) contains a Filter directive. Import one EqualizerAPO format at a time."
+            return
+                "Line \(graphicEQLine) contains GraphicEQ, but line \(filterLine) contains a Filter directive. Import one EqualizerAPO format at a time."
         case let .unsupportedEqualizerAPOFilter(line, kind):
             if let kind {
                 return "Line \(line) uses unsupported enabled EqualizerAPO filter kind \(kind)."
@@ -88,7 +89,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
             }
             return "Line \(line) is missing an EqualizerAPO channel selector."
         case let .multipleEqualizerAPOGraphicEQ(line, channel):
-            return "Line \(line) adds a second GraphicEQ stage to the \(channel) channel, which cannot be imported without changing its response."
+            return
+                "Line \(line) adds a second GraphicEQ stage to the \(channel) channel, which cannot be imported without changing its response."
         case let .inputTooLarge(byteCount, maximum):
             return "Imported profile is \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
         case let .tooManyLines(lineCount, maximum):
@@ -98,7 +100,8 @@ public enum ProfileImportError: Error, Equatable, Sendable, LocalizedError {
         case let .missingNumber(line, field):
             return "Line \(line) is missing a numeric \(field) value."
         case let .valueOutOfRange(line, field, value, range):
-            return "Line \(line) has \(field) \(format(value)), outside the allowed range \(format(range.lowerBound))...\(format(range.upperBound))."
+            return
+                "Line \(line) has \(field) \(format(value)), outside the allowed range \(format(range.lowerBound))...\(format(range.upperBound))."
         case let .tooManyFilters(line, channel, count, maximum):
             return "Line \(line) adds filter \(count) to \(channel), which exceeds the \(maximum)-filter channel limit."
         case let .tooManyTotalFilters(line, count, maximum):
@@ -143,11 +146,13 @@ public enum EQProfileTextImporter {
             if line.lowercased().hasPrefix("graphiceq") {
                 graphicEQLine = graphicEQLine ?? offset + 1
             }
-            let tokens = line
+            let tokens =
+                line
                 .replacingOccurrences(of: ":", with: " ")
                 .split(whereSeparator: \.isWhitespace)
             if tokens.first?.lowercased() == "filter",
-               !tokens.contains(where: { $0.lowercased() == "off" }) {
+                !tokens.contains(where: { $0.lowercased() == "off" })
+            {
                 filterLine = filterLine ?? offset + 1
             }
         }
@@ -176,14 +181,16 @@ public enum EQProfileTextImporter {
         var importedFilterCount = 0
         var currentChannel = ImportChannel.linked
 
-        for (offset, rawLine) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
+        for (offset, rawLine) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated()
+        {
             let lineNumber = offset + 1
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#") else {
                 continue
             }
 
-            let tokens = line
+            let tokens =
+                line
                 .replacingOccurrences(of: ":", with: " ")
                 .split(whereSeparator: \.isWhitespace)
                 .map(String.init)
@@ -197,7 +204,8 @@ public enum EQProfileTextImporter {
             }
 
             if tokens.first?.caseInsensitiveCompare("Preamp") == .orderedSame,
-               let value = try requiredValue(after: "Preamp", in: tokens, field: "preamp", line: lineNumber) {
+                let value = try requiredValue(after: "Preamp", in: tokens, field: "preamp", line: lineNumber)
+            {
                 try validate(value, in: limits.preampRange, field: "preamp", line: lineNumber)
                 try addPreamp(
                     value,
@@ -221,7 +229,8 @@ public enum EQProfileTextImporter {
             }
             let kindToken = value(afterAnyOf: ["ON", "OFF"], in: tokens)
             guard let kindToken,
-                  let kind = parseEqualizerAPOKind(kindToken) else {
+                let kind = parseEqualizerAPOKind(kindToken)
+            else {
                 throw ProfileImportError.unsupportedEqualizerAPOFilter(
                     line: lineNumber,
                     kind: kindToken
@@ -238,7 +247,10 @@ public enum EQProfileTextImporter {
                 )
             }
 
-            guard let frequency = try requiredValue(afterAnyOf: ["Fc", "F"], in: tokens, field: "frequency", line: lineNumber) else {
+            guard
+                let frequency = try requiredValue(
+                    afterAnyOf: ["Fc", "F"], in: tokens, field: "frequency", line: lineNumber)
+            else {
                 throw ProfileImportError.missingNumber(line: lineNumber, field: "frequency")
             }
             try validate(frequency, in: limits.frequencyRange, field: "frequency", line: lineNumber)
@@ -261,7 +273,8 @@ public enum EQProfileTextImporter {
             )
         }
 
-        let hasImportedEffect = !leftFilters.isEmpty
+        let hasImportedEffect =
+            !leftFilters.isEmpty
             || !rightFilters.isEmpty
             || leftPreampDB != 0
             || rightPreampDB != 0
@@ -270,9 +283,10 @@ public enum EQProfileTextImporter {
         }
 
         if preampDB == leftPreampDB,
-           preampDB == rightPreampDB,
-           filters == leftFilters,
-           filters == rightFilters {
+            preampDB == rightPreampDB,
+            filters == leftFilters,
+            filters == rightFilters
+        {
             return EQProfile(
                 name: profileName,
                 mode: inferredMode(filters: leftFilters),
@@ -317,7 +331,8 @@ public enum EQProfileTextImporter {
                 continue
             }
 
-            let tokens = line
+            let tokens =
+                line
                 .replacingOccurrences(of: ":", with: " ")
                 .split(whereSeparator: \.isWhitespace)
                 .map(String.init)
@@ -331,12 +346,14 @@ public enum EQProfileTextImporter {
             }
 
             if line.lowercased().hasPrefix("preamp") {
-                guard let value = try requiredValue(
-                    after: "Preamp",
-                    in: tokens,
-                    field: "preamp",
-                    line: lineNumber
-                ) else {
+                guard
+                    let value = try requiredValue(
+                        after: "Preamp",
+                        in: tokens,
+                        field: "preamp",
+                        line: lineNumber
+                    )
+                else {
                     throw ProfileImportError.missingNumber(
                         line: lineNumber,
                         field: "preamp"
@@ -361,7 +378,8 @@ public enum EQProfileTextImporter {
             }
 
             guard line.lowercased().hasPrefix("graphiceq"),
-                  let colon = line.firstIndex(of: ":") else {
+                let colon = line.firstIndex(of: ":")
+            else {
                 continue
             }
             let declarations = line[line.index(after: colon)...].split(separator: ";")
@@ -411,7 +429,8 @@ public enum EQProfileTextImporter {
         }
 
         guard let importedPoints = leftPoints ?? rightPoints,
-              importedPoints.count >= 2 else {
+            importedPoints.count >= 2
+        else {
             throw ProfileImportError.noSupportedFilters
         }
         let identityPoints = importedPoints.map {
@@ -421,10 +440,11 @@ public enum EQProfileTextImporter {
         let resolvedRightPoints = rightPoints ?? identityPoints
 
         if let points,
-           preampDB == leftPreampDB,
-           preampDB == rightPreampDB,
-           points == resolvedLeftPoints,
-           points == resolvedRightPoints {
+            preampDB == leftPreampDB,
+            preampDB == rightPreampDB,
+            points == resolvedLeftPoints,
+            points == resolvedRightPoints
+        {
             return EQProfile(
                 name: profileName,
                 mode: .convolution,
@@ -459,7 +479,8 @@ public enum EQProfileTextImporter {
         let selectors = rawSelectors.flatMap { token in
             token.split(separator: ",").map { $0.uppercased() }
         }
-        let description = rawSelectors.isEmpty
+        let description =
+            rawSelectors.isEmpty
             ? nil
             : rawSelectors.joined(separator: " ")
         guard !selectors.isEmpty else {
@@ -683,14 +704,16 @@ public enum EQProfileTextImporter {
 
         var filters: [EQFilter] = []
 
-        for (offset, rawLine) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
+        for (offset, rawLine) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated()
+        {
             let lineNumber = offset + 1
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("*") else {
                 continue
             }
 
-            let tokens = line
+            let tokens =
+                line
                 .replacingOccurrences(of: ":", with: " ")
                 .split(whereSeparator: \.isWhitespace)
                 .map(String.init)
@@ -700,7 +723,8 @@ public enum EQProfileTextImporter {
             }
 
             guard tokens.count > 1,
-                  Int(tokens[1]) != nil else {
+                Int(tokens[1]) != nil
+            else {
                 continue
             }
 
@@ -714,7 +738,8 @@ public enum EQProfileTextImporter {
 
             let kindToken = value(afterAnyOf: ["ON"], in: tokens)
             guard let kindToken,
-                  let kind = parseREWKind(kindToken) else {
+                let kind = parseREWKind(kindToken)
+            else {
                 throw ProfileImportError.unsupportedREWFilter(
                     line: lineNumber,
                     kind: kindToken
@@ -731,8 +756,11 @@ public enum EQProfileTextImporter {
                 )
             }
 
-            guard let frequency = try requiredValue(afterAnyOf: ["Fc", "F"], in: tokens, field: "frequency", line: lineNumber) ??
-                firstNumberFollowingFrequencyUnit(in: tokens, line: lineNumber) else {
+            guard
+                let frequency = try requiredValue(
+                    afterAnyOf: ["Fc", "F"], in: tokens, field: "frequency", line: lineNumber)
+                    ?? firstNumberFollowingFrequencyUnit(in: tokens, line: lineNumber)
+            else {
                 throw ProfileImportError.missingNumber(line: lineNumber, field: "frequency")
             }
             try validate(frequency, in: limits.frequencyRange, field: "frequency", line: lineNumber)
@@ -789,25 +817,30 @@ public enum EQProfileTextImporter {
         kindToken: String
     ) -> String? {
         if tokens.contains(where: { $0.caseInsensitiveCompare("BW") == .orderedSame })
-            || tokens.contains(where: { $0.caseInsensitiveCompare("Oct") == .orderedSame }) {
+            || tokens.contains(where: { $0.caseInsensitiveCompare("Oct") == .orderedSame })
+        {
             return "BW Oct"
         }
 
-        guard let kindIndex = tokens.firstIndex(where: {
-            $0.caseInsensitiveCompare(kindToken) == .orderedSame
-        }),
-        let frequencyIndex = tokens[(kindIndex + 1)...].firstIndex(where: {
-            $0.caseInsensitiveCompare("Fc") == .orderedSame
-                || $0.caseInsensitiveCompare("F") == .orderedSame
-        }),
-        frequencyIndex > kindIndex + 1 else {
+        guard
+            let kindIndex = tokens.firstIndex(where: {
+                $0.caseInsensitiveCompare(kindToken) == .orderedSame
+            }),
+            let frequencyIndex = tokens[(kindIndex + 1)...].firstIndex(where: {
+                $0.caseInsensitiveCompare("Fc") == .orderedSame
+                    || $0.caseInsensitiveCompare("F") == .orderedSame
+            }),
+            frequencyIndex > kindIndex + 1
+        else {
             return nil
         }
 
         return tokens[(kindIndex + 1)..<frequencyIndex].joined(separator: " ")
     }
 
-    private static func optionalValue(after label: String, in tokens: [String], field: String, line: Int) throws -> Double? {
+    private static func optionalValue(after label: String, in tokens: [String], field: String, line: Int) throws
+        -> Double?
+    {
         guard let index = tokens.firstIndex(where: { $0.caseInsensitiveCompare(label) == .orderedSame }) else {
             return nil
         }
@@ -818,14 +851,18 @@ public enum EQProfileTextImporter {
         return try parseNumber(tokens[index + 1], field: field, line: line)
     }
 
-    private static func requiredValue(after label: String, in tokens: [String], field: String, line: Int) throws -> Double? {
+    private static func requiredValue(after label: String, in tokens: [String], field: String, line: Int) throws
+        -> Double?
+    {
         if let value = try optionalValue(after: label, in: tokens, field: field, line: line) {
             return value
         }
         return try firstNumericToken(in: tokens.dropFirst(), field: field, line: line)
     }
 
-    private static func requiredValue(afterAnyOf labels: [String], in tokens: [String], field: String, line: Int) throws -> Double? {
+    private static func requiredValue(afterAnyOf labels: [String], in tokens: [String], field: String, line: Int) throws
+        -> Double?
+    {
         for label in labels {
             if let value = try optionalValue(after: label, in: tokens, field: field, line: line) {
                 return value
@@ -837,16 +874,19 @@ public enum EQProfileTextImporter {
     private static func value(afterAnyOf labels: [String], in tokens: [String]) -> String? {
         for label in labels {
             if let index = tokens.firstIndex(where: { $0.caseInsensitiveCompare(label) == .orderedSame }),
-               tokens.indices.contains(index + 1) {
+                tokens.indices.contains(index + 1)
+            {
                 return tokens[index + 1]
             }
         }
         return nil
     }
 
-    private static func value(beforeUnit unit: String, in tokens: [String], field: String, line: Int) throws -> Double? {
+    private static func value(beforeUnit unit: String, in tokens: [String], field: String, line: Int) throws -> Double?
+    {
         guard let index = tokens.firstIndex(where: { $0.caseInsensitiveCompare(unit) == .orderedSame }),
-              index > tokens.startIndex else {
+            index > tokens.startIndex
+        else {
             return nil
         }
         return try parseNumber(tokens[index - 1], field: field, line: line)
@@ -854,13 +894,15 @@ public enum EQProfileTextImporter {
 
     private static func firstNumberFollowingFrequencyUnit(in tokens: [String], line: Int) throws -> Double? {
         guard let unitIndex = tokens.firstIndex(where: { $0.caseInsensitiveCompare("Hz") == .orderedSame }),
-              unitIndex > tokens.startIndex else {
+            unitIndex > tokens.startIndex
+        else {
             return nil
         }
         return try parseNumber(tokens[unitIndex - 1], field: "frequency", line: line)
     }
 
-    private static func firstNumericToken<S: Sequence>(in tokens: S, field: String, line: Int) throws -> Double? where S.Element == String {
+    private static func firstNumericToken<S: Sequence>(in tokens: S, field: String, line: Int) throws -> Double?
+    where S.Element == String {
         for token in tokens {
             if let value = try parseNumberIfPresent(token, field: field, line: line) {
                 return value
@@ -891,8 +933,9 @@ public enum EQProfileTextImporter {
 
     private static func normalizedDecimalToken(_ token: String) -> String {
         guard token.contains(","),
-              !token.contains("."),
-              token.filter({ $0 == "," }).count == 1 else {
+            !token.contains("."),
+            token.filter({ $0 == "," }).count == 1
+        else {
             return token
         }
         return token.replacingOccurrences(of: ",", with: ".")
@@ -992,8 +1035,9 @@ public enum EQProfileTextImporter {
 
     private static func inferredMode(leftFilters: [EQFilter], rightFilters: [EQFilter]) -> EQMode {
         guard let leftMode = graphicMode(for: leftFilters),
-              let rightMode = graphicMode(for: rightFilters),
-              leftMode == rightMode else {
+            let rightMode = graphicMode(for: rightFilters),
+            leftMode == rightMode
+        else {
             return .parametric
         }
         return leftMode
@@ -1018,8 +1062,7 @@ public enum EQProfileTextImporter {
             return false
         }
         return zip(filters, bands).allSatisfy { filter, band in
-            abs(filter.frequency - band) <= 0.1 &&
-                abs(filter.q - GraphicEQBands.graphicQ) <= 0.01
+            abs(filter.frequency - band) <= 0.1 && abs(filter.q - GraphicEQBands.graphicQ) <= 0.01
         }
     }
 }

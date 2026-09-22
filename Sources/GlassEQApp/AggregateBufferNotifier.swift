@@ -29,7 +29,8 @@ protocol AggregateBufferChangeNotifying: AnyObject {
 @MainActor
 final class AggregateBufferNotifier: NSObject,
     AggregateBufferChangeNotifying,
-    UNUserNotificationCenterDelegate {
+    UNUserNotificationCenterDelegate
+{
     static let shared = AggregateBufferNotifier()
 
     private nonisolated static let categoryIdentifier = "GLASSEQ_BUFFER_RELIABILITY"
@@ -86,7 +87,8 @@ final class AggregateBufferNotifier: NSObject,
 
     func notifyBluetoothBufferDefault() {
         guard !defaults.bool(forKey: Self.bluetoothNoticeDefaultsKey),
-              bluetoothNotificationTask == nil else {
+            bluetoothNotificationTask == nil
+        else {
             return
         }
         bluetoothNotificationTask = Task {
@@ -146,11 +148,12 @@ final class AggregateBufferNotifier: NSObject,
     private func notify(title: String, body: String) {
         Task {
             await authorizationTask?.value
-            _ = try? await deliverNotification(Self.notificationRequest(
-                identifier: "glasseq-buffer-recovery-\(UUID().uuidString)",
-                title: title,
-                body: body
-            ))
+            _ = try? await deliverNotification(
+                Self.notificationRequest(
+                    identifier: "glasseq-buffer-recovery-\(UUID().uuidString)",
+                    title: title,
+                    body: body
+                ))
         }
     }
 
@@ -174,8 +177,10 @@ final class AggregateBufferNotifier: NSObject,
         }
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized
-                || settings.authorizationStatus == .provisional else {
+        guard
+            settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional
+        else {
             return false
         }
         try await center.add(request)
@@ -193,8 +198,10 @@ final class AggregateBufferNotifier: NSObject,
         _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier
-                || response.actionIdentifier == Self.openActionIdentifier else {
+        guard
+            response.actionIdentifier == UNNotificationDefaultActionIdentifier
+                || response.actionIdentifier == Self.openActionIdentifier
+        else {
             return
         }
         await MainActor.run {
