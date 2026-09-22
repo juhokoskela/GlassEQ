@@ -2,7 +2,7 @@
 
 This document defines the v1 protocol for licensing the official GlassEQ distribution. It covers server data, application credentials, signed offline entitlements, Stripe event processing, activation management, and update authorization.
 
-This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Checkout is implemented in the companion server. The server now fulfills both plans and reconciles monthly renewals, recovery, and cancellation through EventBridge/SQS. Refunds/disputes, daily reconciliation, email delivery, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
+This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Checkout is implemented in the companion server. The server now fulfills both plans and reconciles monthly renewals, recovery, cancellation, refunds, and disputes through EventBridge/SQS. Daily reconciliation, billing retention, email delivery, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
 
 ## Product invariants
 
@@ -607,7 +607,11 @@ Use Stripe Link for subscription cancellation and payment-method updates. The ap
 - A perpetual refund or chargeback blocks new activations, downloads, updates, and support without changing cached offline entitlements.
 - A won or withdrawn dispute restores service only after the current Stripe objects confirm that the purchase remains paid.
 
-Partial refunds do not revoke a license automatically. They require an explicit operator decision recorded against the license.
+A monthly refund or formal dispute first persists cancellation intent and confirms Stripe has stopped recurring billing before committing the terminal entitlement. This intent survives retries and dispute resolution during cancellation. The effective time is the Refund or Dispute object's Stripe creation time; later delivery does not restart grace. Separate adjustment records prevent one won dispute from removing another dispute, a refund, or manual revocation.
+
+A won or withdrawn dispute can restore only eligible paid access. A canceled monthly subscription remains canceled and uses `lapsed` with `recovery_until` equal to its paid period end. This grants no new fourteen-day recovery window and does not restart billing. Expired paid access is not restored. Inquiries do not restrict access; withdrawal is recognized when Stripe reports a resolved dispute status.
+
+Partial refunds do not revoke a license automatically. They require an explicit operator decision recorded against the license, including multiple partial Refund objects that cumulatively cover the payment. Automatic full-refund processing requires one succeeded Refund equal to the Charge amount; monthly adjustments must resolve to one Invoice Payment covering the affected paid Invoice. The server billing contract defines the supported bindings and retry behavior.
 
 ## Update authorization
 
