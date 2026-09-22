@@ -30,11 +30,27 @@ jobs:
       - name: Build
         run: swift build
 
+      - name: Check Swift formatting and lint
+        run: ./Scripts/check-swift.sh
+
       - name: Check release channels
         run: python3 Scripts/test-release-app.py
 
       - name: Test
         run: swift test
+
+      - name: Analyze Swift declarations and imports
+        run: ./Scripts/analyze-swift.sh
+
+      - name: Upload Swift analysis
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: swiftlint-analysis
+          path: |
+            .build/swiftlint-analysis/build.log
+            .build/swiftlint-analysis/analysis.json
+          if-no-files-found: ignore
 
       - name: Check audio ring with Thread Sanitizer
         run: ./Scripts/test-audio-ring-tsan.sh

@@ -1,0 +1,47 @@
+only_rules:
+  - force_cast
+  - force_try
+  - optional_data_string_conversion
+  - unneeded_synthesized_initializer
+  - duplicate_conditions
+  - duplicated_key_in_dictionary_literal
+  - unused_setter_value
+  - self_in_property_initialization
+  - void_function_in_ternary
+  - invalid_swiftlint_command
+  - superfluous_disable_command
+  - empty_count
+  - empty_string
+  - first_where
+  - for_where
+  - redundant_nil_coalescing
+  - static_over_final_class
+  - cyclomatic_complexity
+
+included:
+  - Sources
+  - Tests
+  - Scripts
+  - Package.swift
+
+cyclomatic_complexity:
+  warning: 20
+  error: 30
+  ignores_case_statements: true
+
+empty_count:
+  only_after_dot: true
+
+analyzer_rules:
+  - unused_declaration
+  - unused_import
+
+unused_declaration:
+  severity: warning
+
+unused_import:
+  # Keep canonical imports for Foundation's SDK submodules and C APIs even when
+  # another imported framework re-exports the same declarations.
+  always_keep_imports:
+    - Foundation
+    - Darwin
