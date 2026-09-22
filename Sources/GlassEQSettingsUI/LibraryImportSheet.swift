@@ -27,7 +27,7 @@ struct LibraryImportSheet: View {
                 choice(
                     title: localized("Add to your library"),
                     detail: mergeDetail,
-                    warning: preview.mergeExceedsProfileLimit
+                    warning: preview.merge.exceedsProfileLimit
                         ? localized(
                             "Adding these would exceed the limit of 64 profiles. Delete some first, or replace the library."
                         )
@@ -50,7 +50,7 @@ struct LibraryImportSheet: View {
                 Button(localized("Add"), action: onMerge)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(preview.mergeExceedsProfileLimit)
+                    .disabled(preview.merge.exceedsProfileLimit)
             }
             .controlSize(.large)
         }
@@ -73,20 +73,20 @@ struct LibraryImportSheet: View {
 
     private var mergeDetail: String {
         var parts: [String] = []
-        if preview.mergeAddedProfiles > 0 {
-            parts.append(localized("adds \(preview.mergeAddedProfiles) new profiles"))
+        if preview.merge.addedProfiles > 0 {
+            parts.append(localized("adds \(preview.merge.addedProfiles) new profiles"))
         }
-        if preview.mergeCopiedProfiles > 0 {
+        if preview.merge.copiedProfiles > 0 {
             parts.append(
                 localized(
-                    "adds \(preview.mergeCopiedProfiles) as copies because a profile with the same identity here differs"
+                    "adds \(preview.merge.copiedProfiles) as copies because a profile with the same identity here differs"
                 ))
         }
-        if preview.mergeUnchangedProfiles > 0 {
-            parts.append(localized("skips \(preview.mergeUnchangedProfiles) already here"))
+        if preview.merge.unchangedProfiles > 0 {
+            parts.append(localized("skips \(preview.merge.unchangedProfiles) already here"))
         }
-        if preview.mergeAddedMappings > 0 {
-            parts.append(localized("assigns \(preview.mergeAddedMappings) outputs that have no profile yet"))
+        if preview.merge.addedMappings > 0 {
+            parts.append(localized("assigns \(preview.merge.addedMappings) outputs that have no profile yet"))
         }
         guard !parts.isEmpty else {
             return localized("Every profile in this file is already in your library. Nothing would change.")

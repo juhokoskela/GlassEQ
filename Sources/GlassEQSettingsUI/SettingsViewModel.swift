@@ -111,13 +111,9 @@ public final class GlassEQSettingsViewModel {
         }
     }
 
-    public func chooseImportFiles(mode: SettingsFileImportMode) async -> SettingsCommandResponse? {
-        await performPanelCommand(.chooseImportFiles(mode: mode))
-    }
-
     // A panel blocks in the main app until the user dismisses it, so its command is tracked
     // separately to let shutdown cancel it. Only one panel can be outstanding at a time.
-    public func performPanelCommand(_ command: SettingsCommand) async -> SettingsCommandResponse? {
+    private func performPanelCommand(_ command: SettingsCommand) async -> SettingsCommandResponse? {
         guard let client else {
             return reportDisconnected(for: command)
         }

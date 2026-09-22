@@ -73,6 +73,7 @@ public struct SettingsView: View {
             controller.updateMetricsPolling()
         }
         .onDisappear {
+            controller.cancelLibraryImport()
             controller.stopAnalyses()
             controller.stopMetricsPolling()
         }

@@ -590,7 +590,7 @@ struct SettingsIPCTests {
         let model = GlassEQSettingsViewModel(client: client)
         client.model = model
 
-        let response = await model.chooseImportFiles(mode: .single)
+        let response = await model.perform(.chooseImportFiles(mode: .single))
 
         #expect(response == nil)
         #expect(client.callCount == 1)
@@ -604,8 +604,7 @@ struct SettingsIPCTests {
         let preview = SettingsLibraryImportPreviewDTO(
             filename: "library.json", createdAt: Date(timeIntervalSince1970: 0), appVersion: nil,
             profileCount: 2, outputMappingCount: 1, hasBufferPreferences: false,
-            mergeAddedProfiles: 2, mergeCopiedProfiles: 0, mergeUnchangedProfiles: 0,
-            mergeAddedMappings: 1, mergeSkippedMappings: 0, mergeExceedsProfileLimit: false)
+            merge: ProfileLibraryMergeSummary())
         let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(libraryImportPreview: preview))
         let model = GlassEQSettingsViewModel(snapshot: .disconnected, client: client)
         let controller = SettingsController(model: model)
@@ -630,8 +629,7 @@ struct SettingsIPCTests {
         let preview = SettingsLibraryImportPreviewDTO(
             filename: "library.json", createdAt: Date(timeIntervalSince1970: 0), appVersion: nil,
             profileCount: 1, outputMappingCount: 0, hasBufferPreferences: false,
-            mergeAddedProfiles: 1, mergeCopiedProfiles: 0, mergeUnchangedProfiles: 0,
-            mergeAddedMappings: 0, mergeSkippedMappings: 0, mergeExceedsProfileLimit: false)
+            merge: ProfileLibraryMergeSummary())
         let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(libraryImportPreview: preview))
         let controller = SettingsController(model: GlassEQSettingsViewModel(snapshot: .disconnected, client: client))
 
@@ -1832,7 +1830,7 @@ private final class ReentrantCancellingSettingsCommandClient: SettingsCommanding
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
         callCount += 1
         if callCount == 1 {
-            reentrantResponse = await model?.chooseImportFiles(mode: .stereoPair)
+            reentrantResponse = await model?.perform(.chooseImportFiles(mode: .stereoPair))
         }
         throw CancellationError()
     }

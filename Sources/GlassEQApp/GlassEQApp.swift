@@ -564,13 +564,15 @@ extension SettingsAudioMetricsDTO {
 
 private actor ProfileStoreWriter {
     private let url: URL
+    private let write: @Sendable (ProfileStore, URL) throws -> Void
 
-    init(url: URL) {
+    init(url: URL, write: @escaping @Sendable (ProfileStore, URL) throws -> Void) {
         self.url = url
+        self.write = write
     }
 
     func save(_ store: ProfileStore) throws {
-        try ProfilePersistence.save(store, to: url)
+        try write(store, url)
     }
 
     func saveAndSynchronize(_ store: ProfileStore) throws {
@@ -1045,6 +1047,7 @@ final class GlassEQAppModel {
         workspaceOpener: any WorkspaceOpening = NSWorkspace.shared,
         profileImportOperation: (@Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>)? = nil,
         saveDebounceDelay: Duration = .milliseconds(250),
+        writeProfileStore: @escaping @Sendable (ProfileStore, URL) throws -> Void = ProfilePersistence.save,
         outputChangeSettlingDelayOverride: Duration? = nil,
         outputChangeSleep: @escaping @MainActor @Sendable (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
@@ -1112,7 +1115,7 @@ final class GlassEQAppModel {
         self.outputChangeSettlingDelayOverride = outputChangeSettlingDelayOverride
         self.outputChangeSleep = outputChangeSleep
         self.wakeReconnectDelayOverride = wakeReconnectDelayOverride
-        self.storeWriter = ProfileStoreWriter(url: storeURL)
+        self.storeWriter = ProfileStoreWriter(url: storeURL, write: writeProfileStore)
         self.aggregateBufferPolicyStore = AggregateBufferPolicyStore(
             url: aggregateBufferPolicyURL ?? AggregateBufferPolicyStore.defaultURL()
         )
@@ -3064,7 +3067,9 @@ final class GlassEQAppModel {
         }
     }
 
-    private func synchronizeActiveProfileProcessing(rollback: ProfileRollback? = nil) {
+    private func synchronizeActiveProfileProcessing(
+        rollback: ProfileRollback? = nil, rebuildRoute: Bool = false
+    ) {
         // A new active profile replaces whatever the comparison was returning to.
         clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         guard lifecycleState != .terminating,
@@ -3103,6 +3108,8 @@ final class GlassEQAppModel {
             statusMessage = message
             return
         }
+
+        if rebuildRoute && rebuildRouteWithSelectedBuffer() { return }
 
         if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
@@ -4241,15 +4248,28 @@ final class GlassEQAppModel {
         }
     }
 
-    func flushStoreBeforeQuit() async -> Bool {
-        pendingSaveTask?.cancel()
-        await pendingSaveTask?.value
-        pendingSaveTask = nil
-        guard !profilePersistenceMode.isProtected else {
-            return true
+    private func drainPendingSave() async {
+        while let task = pendingSaveTask {
+            pendingSaveTask = nil
+            task.cancel()
+            await task.value
         }
+    }
+
+    private func synchronizeStore() async throws {
+        while true {
+            await drainPendingSave()
+            let current = profileStore
+            try await storeWriter.saveAndSynchronize(current)
+            if profileStore == current { return }
+        }
+    }
+
+    func flushStoreBeforeQuit() async -> Bool {
+        await drainPendingSave()
+        guard !profilePersistenceMode.isProtected else { return true }
         do {
-            try await storeWriter.saveAndSynchronize(profileStore)
+            try await synchronizeStore()
             return true
         } catch {
             statusMessage = localized("Quit canceled: failed to save profiles: \(error.localizedDescription)")
@@ -4337,7 +4357,11 @@ final class GlassEQAppModel {
         pendingLibraryImport = pending
         let summary = ProfileLibraryMerge.preview(current: profileStore, incoming: backup.profileStore)
         lifecycleLog.record("Library import staged from \(filename)")
-        return SettingsLibraryImportPreviewDTO(pending: pending, summary: summary)
+        return SettingsLibraryImportPreviewDTO(
+            filename: filename, createdAt: backup.createdAt, appVersion: backup.appVersion,
+            profileCount: backup.profileStore.profiles.count,
+            outputMappingCount: backup.profileStore.outputMappings.count,
+            hasBufferPreferences: backup.bufferPreferences != nil, merge: summary)
     }
 
     func cancelLibraryImport() {
@@ -4347,21 +4371,19 @@ final class GlassEQAppModel {
     /// Applies the staged library. Replacing writes an automatic backup of the current library
     /// first, so the step is reversible by importing that file.
     func applyLibraryImport(mode: SettingsLibraryImportMode) async throws -> String {
-        try ensureProfileStoreWritable()
         guard let pending = pendingLibraryImport else {
             throw SettingsCommandFailure(message: localized("Choose a library file before importing."))
         }
+        pendingLibraryImport = nil
+        try ensureProfileStoreWritable()
+        await drainPendingSave()
+        try Task.checkCancellation()
         let incoming = pending.backup.profileStore
         let nextStore: ProfileStore
         let message: String
         switch mode {
         case .merge:
-            let result: (store: ProfileStore, summary: ProfileLibraryMergeSummary)
-            do {
-                result = try ProfileLibraryMerge.merge(current: profileStore, incoming: incoming)
-            } catch let error as ProfileLibraryBackupError {
-                throw SettingsCommandFailure(message: error.localizedDescription)
-            }
+            let result = try ProfileLibraryMerge.merge(current: profileStore, incoming: incoming)
             nextStore = result.store
             message = Self.mergeMessage(result.summary, filename: pending.filename)
         case .replace:
@@ -4371,18 +4393,18 @@ final class GlassEQAppModel {
                 "Replaced the library with \(incoming.profiles.count) profiles from \(pending.filename). The previous library was saved as \(backupURL.lastPathComponent)."
             )
         }
-        try ProfilePersistence.validateForCommit(nextStore)
-
-        // The candidate reaches disk before it is published, so a failed write changes nothing in
-        // memory. The library may change while the write is in flight; then the candidate is
-        // stale, the current library goes back to disk, and the import is refused.
+        // Persist before publishing. If an edit or cancellation wins during the write, restore
+        // the current library before returning; a debounced save would leave the refused import on disk.
         let libraryBeforeSave = profileStore
-        pendingSaveTask?.cancel()
-        await pendingSaveTask?.value
-        pendingSaveTask = nil
         try await storeWriter.saveAndSynchronize(nextStore)
-        guard profileStore == libraryBeforeSave else {
-            saveStore()
+        if profileStore != libraryBeforeSave || pendingSaveTask != nil || Task.isCancelled {
+            do {
+                try await synchronizeStore()
+            } catch {
+                saveStore()
+                throw error
+            }
+            try Task.checkCancellation()
             throw SettingsCommandFailure(
                 message: localized("The library changed while the import was being saved. Try again."))
         }
@@ -4390,13 +4412,12 @@ final class GlassEQAppModel {
         let previousActive = activeProfile
         let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
         profileStore = nextStore
-        pendingLibraryImport = nil
         var outcome = message
         if let preferences = pending.backup.bufferPreferences {
             do {
                 try aggregateBufferPolicyStore.importDocument(preferences, replacingExisting: mode == .replace)
             } catch {
-                lifecycleLog.record("Library import: buffer preferences could not be saved: \(error)")
+                lifecycleLog.record("Library import: buffer preferences could not be saved")
                 outcome += " " + localized("The buffer preferences in the library could not be saved.")
             }
         }
@@ -4406,20 +4427,18 @@ final class GlassEQAppModel {
         selectedProfileID = nextActive.id
         draftProfile = nextActive
         clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
-        if !rebuildRouteIfBufferSelectionChanged(from: previousBufferSelection), nextActive != previousActive {
-            synchronizeActiveProfileProcessing(rollback: rollback)
+        let bufferChanged = activeAggregateRoute.map { aggregateBufferSelection(for: $0) } != previousBufferSelection
+        if nextActive != previousActive || bufferChanged {
+            synchronizeActiveProfileProcessing(rollback: rollback, rebuildRoute: bufferChanged)
         }
         lifecycleLog.record("Library import applied (\(mode.rawValue)): \(nextStore.profiles.count) profiles")
         notifyModelDidChange()
         return outcome
     }
 
-    /// Restored buffer preferences only matter to a running route if its own selection changed.
-    /// The rebuild is the one a manual buffer change makes, and it starts with the active profile,
-    /// so a changed profile rides along.
-    private func rebuildRouteIfBufferSelectionChanged(from previous: AggregateBufferSelection?) -> Bool {
-        guard let previous,
-            let activeAggregateRoute,
+    /// Called only after checking the active profile's bypass and compatibility state.
+    private func rebuildRouteWithSelectedBuffer() -> Bool {
+        guard let activeAggregateRoute,
             lifecycleState == .running,
             isRunning,
             engineStartTask == nil,
@@ -4428,9 +4447,6 @@ final class GlassEQAppModel {
             return false
         }
         let selection = aggregateBufferSelection(for: activeAggregateRoute)
-        guard selection != previous else {
-            return false
-        }
         fixedBufferRecovery = nil
         pendingAggregateBufferIncrease = nil
         statusMessage = localized("Rebuilding \(output.name) with \(selection.frameSize)-frame buffers...")
@@ -4467,7 +4483,8 @@ final class GlassEQAppModel {
         let backup = try makeLibraryBackup()
         let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: storeURL)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appending(path: LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
+        let name = LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt)
+        let url = directory.appending(path: String(name.dropLast(5)) + " \(UUID().uuidString).json")
         try ProfileLibraryBackupCodec.encode(backup).write(to: url, options: .atomic)
         LibraryBackupFile.pruneAutomaticBackups(in: directory)
         return url
@@ -4538,26 +4555,15 @@ final class GlassEQAppModel {
             lifecycleState == .running,
             isRunning,
             engineStartTask == nil,
-            case .running(let output) = engine.state
+            case .running = engine.state
         else {
             throw SettingsCommandFailure(
                 message: localized("Automatic buffer tuning is unavailable on this output route.")
             )
         }
-        fixedBufferRecovery = nil
         try aggregateBufferPolicyStore.setMode(mode, for: activeAggregateRoute)
-        let selection = aggregateBufferSelection(for: activeAggregateRoute)
-        pendingAggregateBufferIncrease = nil
-        statusMessage = localized(
-            "Rebuilding \(output.name) with \(selection.frameSize)-frame buffers..."
-        )
+        synchronizeActiveProfileProcessing(rebuildRoute: true)
         notifyModelDidChange()
-        scheduleEngineStart(
-            output: output,
-            profile: activeProfile,
-            rollback: nil,
-            aggregateBufferFrameSize: selection.frameSize
-        )
     }
 
     func retryAutomaticAggregateBuffer() throws {

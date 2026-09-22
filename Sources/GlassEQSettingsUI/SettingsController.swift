@@ -369,7 +369,7 @@ final class SettingsController {
     }
 
     func chooseImportFiles(_ mode: SettingsFileImportMode) async -> SettingsFileImportChoice {
-        let response = await model.chooseImportFiles(mode: mode)
+        let response = await model.perform(.chooseImportFiles(mode: mode))
         return SettingsFileImportChoice(
             selection: response?.fileImportSelection,
             errorMessage: response == nil ? model.commandErrorMessage : nil

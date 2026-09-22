@@ -1089,26 +1089,11 @@ public struct SettingsLibraryImportPreviewDTO: Codable, Equatable, Sendable {
     public var profileCount: Int
     public var outputMappingCount: Int
     public var hasBufferPreferences: Bool
-    public var mergeAddedProfiles: Int
-    public var mergeCopiedProfiles: Int
-    public var mergeUnchangedProfiles: Int
-    public var mergeAddedMappings: Int
-    public var mergeSkippedMappings: Int
-    public var mergeExceedsProfileLimit: Bool
+    public var merge: ProfileLibraryMergeSummary
 
     public init(
-        filename: String,
-        createdAt: Date,
-        appVersion: String?,
-        profileCount: Int,
-        outputMappingCount: Int,
-        hasBufferPreferences: Bool,
-        mergeAddedProfiles: Int,
-        mergeCopiedProfiles: Int,
-        mergeUnchangedProfiles: Int,
-        mergeAddedMappings: Int,
-        mergeSkippedMappings: Int,
-        mergeExceedsProfileLimit: Bool
+        filename: String, createdAt: Date, appVersion: String?, profileCount: Int,
+        outputMappingCount: Int, hasBufferPreferences: Bool, merge: ProfileLibraryMergeSummary
     ) {
         self.filename = filename
         self.createdAt = createdAt
@@ -1116,12 +1101,7 @@ public struct SettingsLibraryImportPreviewDTO: Codable, Equatable, Sendable {
         self.profileCount = profileCount
         self.outputMappingCount = outputMappingCount
         self.hasBufferPreferences = hasBufferPreferences
-        self.mergeAddedProfiles = mergeAddedProfiles
-        self.mergeCopiedProfiles = mergeCopiedProfiles
-        self.mergeUnchangedProfiles = mergeUnchangedProfiles
-        self.mergeAddedMappings = mergeAddedMappings
-        self.mergeSkippedMappings = mergeSkippedMappings
-        self.mergeExceedsProfileLimit = mergeExceedsProfileLimit
+        self.merge = merge
     }
 }
 

@@ -306,6 +306,44 @@ struct AggregateBufferPolicyTests {
         #expect(AggregateBufferPolicyStore(url: url).selection(for: route).frameSize == 16)
     }
 
+    @Test(arguments: [true, false])
+    func unreadableImportsPreservePreferences(replacing: Bool) throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = AggregateBufferPolicyStore(url: url)
+        let route = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        try store.setMode(.frames128, for: route)
+        let original = try store.exportDocument()
+        for data in [
+            Data("bad JSON".utf8), Data(#"{"schemaVersion":999,"records":[]}"#.utf8),
+            Data(repeating: 0, count: AggregateBufferPolicyStore.maximumStoreBytes + 1),
+        ] {
+            #expect(throws: (any Error).self) { try store.importDocument(data, replacingExisting: replacing) }
+            #expect(try store.exportDocument() == original)
+            #expect(try Data(contentsOf: url) == original)
+        }
+    }
+
+    @Test(arguments: [true, false])
+    func importedRoutesAreUniqueAndExistingMergePreferencesWin(replacing: Bool) throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let route = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames128, for: route)
+        let data = Data(
+            #"{"schemaVersion":2,"records":[{"route":{"outputDeviceUID":"saved","nativeOutputStreamIndex":0,"nominalSampleRate":48000},"mode":"frames32","automaticFrameSize":16},{"route":{"outputDeviceUID":"new","nativeOutputStreamIndex":0,"nominalSampleRate":48000},"mode":"frames64","automaticFrameSize":16},{"route":{"outputDeviceUID":"new","nativeOutputStreamIndex":0,"nominalSampleRate":48000},"mode":"frames128","automaticFrameSize":16}]}"#
+                .utf8)
+        try store.importDocument(data, replacingExisting: replacing)
+        #expect(store.selection(for: route).mode == (replacing ? .frames32 : .frames128))
+        let newRoute = fingerprint(uid: "new", stream: 0, sampleRate: 48_000)
+        #expect(store.selection(for: newRoute).mode == .frames64)
+        let document = try #require(JSONSerialization.jsonObject(with: store.exportDocument()) as? [String: Any])
+        #expect((document["records"] as? [Any])?.count == 2)
+        try store.importDocument(Data(#"{"schemaVersion":2,"records":[]}"#.utf8), replacingExisting: true)
+        #expect(store.selectionSnapshot().isEmpty)
+    }
+
     private func fingerprint(
         uid: String,
         stream: Int,

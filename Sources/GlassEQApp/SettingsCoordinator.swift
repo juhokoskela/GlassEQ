@@ -87,7 +87,6 @@ final class SettingsCoordinator: NSObject {
     private let helperValidator: any SettingsHelperLaunchValidating
     private let settingsHelperURLProvider: () throws -> URL
     private let fileImportPicker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO?
-    private let libraryBackupPanels: any LibraryBackupPanelPresenting
     private var launchToken: String?
     private var runningApplication: NSRunningApplication?
     private var helperProcess: Process?
@@ -113,15 +112,13 @@ final class SettingsCoordinator: NSObject {
         fileImportPicker:
             @escaping @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
                 try await SettingsFileImportPicker.choose(mode: mode)
-            },
-        libraryBackupPanels: any LibraryBackupPanelPresenting = LiveLibraryBackupPanels()
+            }
     ) {
         self.model = model
         self.helperLauncher = helperLauncher
         self.helperValidator = helperValidator
         self.settingsHelperURLProvider = settingsHelperURLProvider ?? { try Self.defaultSettingsHelperURL() }
         self.fileImportPicker = fileImportPicker
-        self.libraryBackupPanels = libraryBackupPanels
         super.init()
     }
 
@@ -326,8 +323,7 @@ final class SettingsCoordinator: NSObject {
         }
         if let response = try await libraryBackupPanelResponse(
             for: command,
-            model: model,
-            panels: libraryBackupPanels
+            model: model
         ) {
             return response
         }
@@ -730,6 +726,7 @@ final class SettingsCoordinator: NSObject {
 
     @discardableResult
     private func cleanupSession(terminateHelper: Bool) -> Task<Void, Never>? {
+        model?.cancelLibraryImport()
         if settingsConnected {
             model?.stopMetricsPolling()
         }

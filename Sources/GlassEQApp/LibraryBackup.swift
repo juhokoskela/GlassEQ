@@ -6,7 +6,7 @@ import GlassEQSettingsUI
 import UniformTypeIdentifiers
 
 /// A library the user chose to import, kept until they pick merge or replace, or cancel.
-struct PendingLibraryImport: Equatable {
+struct PendingLibraryImport {
     let backup: ProfileLibraryBackup
     let filename: String
 }
@@ -17,7 +17,7 @@ enum LibraryBackupFile {
 
     static func suggestedFilename(createdAt: Date) -> String {
         let stamp = createdAt.formatted(
-            Date.ISO8601FormatStyle(dateSeparator: .dash, timeSeparator: .omitted, timeZone: .current)
+            Date.ISO8601FormatStyle(dateSeparator: .dash, timeSeparator: .omitted, timeZone: .gmt)
                 .year().month().day().dateTimeSeparator(.standard).time(includingFractionalSeconds: false)
         )
         return "GlassEQ Library \(stamp).json"
@@ -27,52 +27,27 @@ enum LibraryBackupFile {
         storeURL.deletingLastPathComponent().appending(path: automaticBackupsDirectoryName, directoryHint: .isDirectory)
     }
 
-    /// Removes the oldest automatic backups beyond the retained count. Names sort by their
-    /// timestamp, so lexical order is chronological.
+    /// Uses filesystem dates so older backups with local-time names are ordered correctly too.
     static func pruneAutomaticBackups(in directory: URL, keeping count: Int = automaticBackupsToKeep) {
         guard
-            let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path)
-                .filter({ $0.hasPrefix("GlassEQ Library ") && $0.hasSuffix(".json") })
-                .sorted()
-        else {
-            return
-        }
-        for name in names.dropLast(count) {
-            try? FileManager.default.removeItem(at: directory.appending(path: name))
+            let urls = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.creationDateKey])
+        else { return }
+        let backups = urls.compactMap { url -> (url: URL, date: Date)? in
+            guard url.lastPathComponent.hasPrefix("GlassEQ Library "), url.pathExtension == "json",
+                let date = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate
+            else { return nil }
+            return (url, date)
+        }.sorted { $0.date < $1.date }
+        for backup in backups.dropLast(count) {
+            try? FileManager.default.removeItem(at: backup.url)
         }
     }
 }
 
-extension SettingsLibraryImportPreviewDTO {
-    init(pending: PendingLibraryImport, summary: ProfileLibraryMergeSummary) {
-        self.init(
-            filename: pending.filename,
-            createdAt: pending.backup.createdAt,
-            appVersion: pending.backup.appVersion,
-            profileCount: pending.backup.profileStore.profiles.count,
-            outputMappingCount: pending.backup.profileStore.outputMappings.count,
-            hasBufferPreferences: pending.backup.bufferPreferences != nil,
-            mergeAddedProfiles: summary.addedProfiles,
-            mergeCopiedProfiles: summary.copiedProfiles,
-            mergeUnchangedProfiles: summary.unchangedProfiles,
-            mergeAddedMappings: summary.addedMappings,
-            mergeSkippedMappings: summary.skippedMappings,
-            mergeExceedsProfileLimit: summary.exceedsProfileLimit
-        )
-    }
-}
-
-/// The open and save panels behind library export and import. They run in the main app because
-/// only it may write the chosen file, and they are a seam so tests can answer them.
-@MainActor
-protocol LibraryBackupPanelPresenting {
-    func chooseExportDestination(suggestedName: String) async throws -> URL?
-    func chooseBackupToImport() async throws -> URL?
-}
-
-@MainActor
-struct LiveLibraryBackupPanels: LibraryBackupPanelPresenting {
-    func chooseExportDestination(suggestedName: String) async throws -> URL? {
+enum LibraryBackupPanels {
+    @MainActor
+    static func chooseExportDestination(suggestedName: String) async throws -> URL? {
         try await SettingsFileImportPicker.presentingPanel {
             let panel = NSSavePanel()
             panel.title = localized("Export Library")
@@ -91,7 +66,8 @@ struct LiveLibraryBackupPanels: LibraryBackupPanelPresenting {
         }
     }
 
-    func chooseBackupToImport() async throws -> URL? {
+    @MainActor
+    static func chooseBackupToImport() async throws -> URL? {
         try await SettingsFileImportPicker.presentingPanel {
             let panel = NSOpenPanel()
             panel.title = localized("Import Library")
@@ -115,7 +91,8 @@ struct LiveLibraryBackupPanels: LibraryBackupPanelPresenting {
 func libraryBackupPanelResponse(
     for command: SettingsCommand,
     model: GlassEQAppModel,
-    panels: any LibraryBackupPanelPresenting = LiveLibraryBackupPanels()
+    chooseExportDestination: @MainActor (String) async throws -> URL? = LibraryBackupPanels.chooseExportDestination,
+    chooseBackupToImport: @MainActor () async throws -> URL? = LibraryBackupPanels.chooseBackupToImport
 ) async throws -> SettingsCommandResponse? {
     switch command {
     case .exportLibrary:
@@ -126,8 +103,8 @@ func libraryBackupPanelResponse(
         let backup = try model.makeLibraryBackup()
         let data = try ProfileLibraryBackupCodec.encode(backup)
         guard
-            let url = try await panels.chooseExportDestination(
-                suggestedName: LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
+            let url = try await chooseExportDestination(
+                LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
         else {
             return SettingsCommandResponse()
         }
@@ -143,15 +120,11 @@ func libraryBackupPanelResponse(
             model.finishSettingsCommand()
         }
         try model.ensureProfileStoreWritable()
-        guard let url = try await panels.chooseBackupToImport() else {
+        guard let url = try await chooseBackupToImport() else {
             return SettingsCommandResponse()
         }
-        let backup: ProfileLibraryBackup
-        do {
-            backup = try ProfileLibraryBackupCodec.read(from: url)
-        } catch let error as ProfileLibraryBackupError {
-            throw SettingsCommandFailure(message: error.localizedDescription)
-        }
+        try Task.checkCancellation()
+        let backup = try ProfileLibraryBackupCodec.read(from: url)
         let preview = model.stageLibraryImport(backup, filename: url.lastPathComponent)
         return SettingsCommandResponse(libraryImportPreview: preview)
 
