@@ -331,7 +331,12 @@ public enum ProfilePersistence {
         if store.schemaVersion < ProfileStore.currentSchemaVersion {
             var migratedStore = store
             migratedStore.schemaVersion = ProfileStore.currentSchemaVersion
+            // The old file is kept beside the store so an older GlassEQ can still read it.
             do {
+                try FileManager.default.copyItem(
+                    at: url,
+                    to: migrationBackupURL(for: url, fromSchemaVersion: store.schemaVersion, timestamp: timestamp)
+                )
                 try save(migratedStore, to: url)
                 return ProfileStoreLoadResult(store: migratedStore, status: .loaded)
             } catch {
@@ -340,6 +345,22 @@ public enum ProfilePersistence {
         }
 
         return ProfileStoreLoadResult(store: store, status: .loaded)
+    }
+
+    public static func migrationBackupURL(
+        for storeURL: URL,
+        fromSchemaVersion schemaVersion: Int,
+        timestamp: Date = Date()
+    ) -> URL {
+        let baseName = storeURL.deletingPathExtension().lastPathComponent
+        let pathExtension = storeURL.pathExtension
+        let backupName =
+            if pathExtension.isEmpty {
+                "\(baseName).schema-\(schemaVersion)-\(timestampString(from: timestamp))"
+            } else {
+                "\(baseName).schema-\(schemaVersion)-\(timestampString(from: timestamp)).\(pathExtension)"
+            }
+        return storeURL.deletingLastPathComponent().appendingPathComponent(backupName)
     }
 
     public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {

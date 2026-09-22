@@ -927,3 +927,28 @@ struct ProfilePersistenceTests {
         return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     }
 }
+
+@Suite
+struct ProfilePersistenceMigrationBackupTests {
+    @Test
+    func migrationKeepsTheOriginalFileBesideTheStore() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQCoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Profiles.json")
+        let timestamp = Date(timeIntervalSince1970: 1_704_067_200)
+        let profile = EQProfile(name: "Schema One", mode: .parametric, filters: [])
+        let store = ProfileStore(schemaVersion: 1, profiles: [profile], fallbackProfileID: profile.id)
+        let schemaOneData = try ProfilePersistence.encoder.encode(store)
+        try schemaOneData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.status == .loaded)
+        #expect(result.store.schemaVersion == ProfileStore.currentSchemaVersion)
+        let backupURL = ProfilePersistence.migrationBackupURL(for: url, fromSchemaVersion: 1, timestamp: timestamp)
+        #expect(try Data(contentsOf: backupURL) == schemaOneData)
+        #expect(try Data(contentsOf: url) != schemaOneData)
+    }
+}
