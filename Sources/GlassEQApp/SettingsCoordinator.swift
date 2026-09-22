@@ -4,10 +4,8 @@ import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
-// Required for Logger and its privacy-aware string interpolation.
-// swiftlint:disable:next unused_import
-import OSLog
 import Security
+import os
 
 enum SettingsOpenDisposition: Equatable {
     case helper
@@ -918,7 +916,7 @@ enum SettingsHelperVerifier {
         let bundleURL = resolvedBundleURL ?? standardizedExpectedHelperURL
 
         if let resolvedBundleURL,
-            resolvedBundleURL.path != standardizedExpectedHelperURL.path
+            !isSameFile(resolvedBundleURL, standardizedExpectedHelperURL)
         {
             throw SettingsCommandFailure(
                 message: localized("GlassEQSettings.app resolved to an unexpected location after launch."))
@@ -936,7 +934,7 @@ enum SettingsHelperVerifier {
             fileManager: fileManager
         )
         guard let actualExecutableURL = processExecutableURL(processIdentifier)?.standardizedFileURL,
-            actualExecutableURL.path == expectedExecutableURL.path
+            isSameFile(actualExecutableURL, expectedExecutableURL)
         else {
             throw SettingsCommandFailure(
                 message: localized("GlassEQSettings executable could not be resolved after launch."))
@@ -1001,21 +999,31 @@ enum SettingsHelperVerifier {
         return executableURL
     }
 
+    private static func isSameFile(_ first: URL, _ second: URL) -> Bool {
+        var firstInfo = stat()
+        var secondInfo = stat()
+        guard stat(first.path, &firstInfo) == 0,
+            stat(second.path, &secondInfo) == 0
+        else {
+            return false
+        }
+        return firstInfo.st_dev == secondInfo.st_dev && firstInfo.st_ino == secondInfo.st_ino
+    }
+
     private static func runningExecutableURL(processIdentifier: pid_t) -> URL? {
         var pathBuffer = [CChar](repeating: 0, count: 4_096)
         let length = proc_pidpath(processIdentifier, &pathBuffer, UInt32(pathBuffer.count))
         guard length > 0 else {
             return nil
         }
-        let bytes = pathBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-        return executableURL(pathBytes: bytes)
+        return executableURL(pathBytes: pathBuffer.prefix(Int(length)))
     }
 
-    static func executableURL(pathBytes: [UInt8]) -> URL? {
-        guard let path = String(bytes: pathBytes, encoding: .utf8) else {
+    static func executableURL(pathBytes: some Sequence<CChar>) -> URL? {
+        guard let path = String(validating: pathBytes, as: UTF8.self) else {
             return nil
         }
-        return URL(fileURLWithPath: path).standardizedFileURL
+        return URL(filePath: path, directoryHint: .notDirectory).standardizedFileURL
     }
 }
 

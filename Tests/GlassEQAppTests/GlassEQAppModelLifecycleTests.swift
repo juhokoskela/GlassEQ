@@ -5634,13 +5634,132 @@ struct GlassEQAppModelLifecycleTests {
 
     @Test(arguments: ["/Applications/GlassEQ.app/Contents/MacOS/GlassEQ", "/tmp/Ääni 🎧/GlassEQ"])
     func settingsHelperExecutablePathPreservesValidUTF8(_ path: String) {
-        #expect(SettingsHelperVerifier.executableURL(pathBytes: Array(path.utf8))?.path == path)
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: path.utf8.map { CChar(bitPattern: $0) })?.path == path)
     }
 
     @Test(arguments: [[UInt8(0xFF)], [0xC3], [0xC0, 0xAF]])
     func settingsHelperExecutablePathRejectsInvalidUTF8(_ suffix: [UInt8]) {
         let bytes = Array("/Applications/".utf8) + suffix + Array("/GlassEQ".utf8)
-        #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes) == nil)
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes.map { CChar(bitPattern: $0) }) == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func settingsHelperRunningValidationAcceptsSymlinkAliases(hasRunningBundleURL: Bool) throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperAliasValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL.appendingPathComponent("Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let aliasHostURL = root.appendingPathComponent("Alias.app", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: aliasHostURL, withDestinationURL: hostURL)
+        let aliasHelperURL = aliasHostURL.appendingPathComponent(
+            "Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        let helperSignature = SettingsCodeSignatureInfo(
+            signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        let validator = FakeCodeSigningValidator(signatures: [
+            aliasHostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: helperSignature,
+            aliasHelperURL.standardizedFileURL.path: helperSignature,
+            "pid:123": helperSignature,
+        ])
+
+        _ = try SettingsHelperVerifier.validatedExecutableURL(
+            for: aliasHelperURL,
+            hostBundleURL: aliasHostURL,
+            codeSigningValidator: validator
+        )
+        try SettingsHelperVerifier.validateRunningProcess(
+            processIdentifier: 123,
+            expectedHelperURL: aliasHelperURL,
+            hostBundleURL: aliasHostURL,
+            runningBundleURL: { _ in hasRunningBundleURL ? helperURL : nil },
+            processExecutableURL: { _ in helperExecutableURL(for: helperURL) },
+            codeSigningValidator: validator
+        )
+    }
+
+    @Test(arguments: [false, true])
+    func settingsHelperRunningValidationRejectsDifferentOrMissingExecutable(actualExecutableExists: Bool) throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperExecutableValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL.appendingPathComponent("Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let otherExecutableURL = root.appendingPathComponent("OtherSettings", isDirectory: false)
+        if actualExecutableExists {
+            try FileManager.default.copyItem(at: helperExecutableURL(for: helperURL), to: otherExecutableURL)
+        }
+        let helperSignature = SettingsCodeSignatureInfo(
+            signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        let validator = FakeCodeSigningValidator(signatures: [
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: helperSignature,
+            "pid:123": helperSignature,
+        ])
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try SettingsHelperVerifier.validateRunningProcess(
+                processIdentifier: 123,
+                expectedHelperURL: helperURL,
+                hostBundleURL: hostURL,
+                runningBundleURL: { _ in helperURL },
+                processExecutableURL: { _ in otherExecutableURL },
+                codeSigningValidator: validator
+            )
+        }
+    }
+
+    @Test
+    func settingsHelperRunningValidationRejectsMissingResolvedBundleIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQHelperMissingBundleValidation-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let hostURL = root.appendingPathComponent("GlassEQ.app", isDirectory: true)
+        let helperURL = hostURL.appendingPathComponent("Contents/Helpers/GlassEQSettings.app", isDirectory: true)
+        try makeFakeAppBundle(
+            at: helperURL,
+            bundleIdentifier: SettingsHelperVerifier.helperBundleIdentifier,
+            executableName: "GlassEQSettings"
+        )
+        let missingBundleURL = root.appendingPathComponent("Missing.app", isDirectory: true)
+        let helperSignature = SettingsCodeSignatureInfo(
+            signingIdentifier: SettingsHelperVerifier.helperBundleIdentifier, teamIdentifier: "TEAMID")
+        let validator = FakeCodeSigningValidator(signatures: [
+            hostURL.standardizedFileURL.path: SettingsCodeSignatureInfo(
+                signingIdentifier: SettingsHelperVerifier.hostBundleIdentifier, teamIdentifier: "TEAMID"),
+            helperURL.standardizedFileURL.path: helperSignature,
+            missingBundleURL.standardizedFileURL.path: helperSignature,
+            "pid:123": helperSignature,
+        ])
+
+        #expect(throws: SettingsCommandFailure.self) {
+            try SettingsHelperVerifier.validateRunningProcess(
+                processIdentifier: 123,
+                expectedHelperURL: helperURL,
+                hostBundleURL: hostURL,
+                runningBundleURL: { _ in missingBundleURL },
+                processExecutableURL: { _ in helperExecutableURL(for: helperURL) },
+                codeSigningValidator: validator
+            )
+        }
     }
 
     @Test
