@@ -42,7 +42,7 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 
 ### Perpetual licenses
 
-- [ ] Convert a completed EUR 29.99 Managed Payments purchase into a non-expiring GlassEQ entitlement.
+- [x] Convert a completed EUR 29.99 Managed Payments purchase into a perpetual license and key; activation issues a non-expiring GlassEQ entitlement. Email delivery and live purchase-to-activation verification remain pending.
 - [x] Implement server-signed entitlement issuance and client verification. Production key provisioning and packaged-app interoperability remain release checks.
 - [x] Store the entitlement and license credential in Keychain.
 - [x] Keep an installed version working without recurring license checks.
