@@ -33,6 +33,8 @@ Download `GlassEQ-beta-0.9.3-macos26-arm64.zip` from the [beta-0.9.3 release](ht
 2. Move `GlassEQ.app` to `/Applications`.
 3. Open it from Finder.
 
+New builds from the release script also include a disk image (`.dmg`), which is the supported format for future downloads. Open it, drag GlassEQ to the Applications shortcut, then open GlassEQ from Applications and eject the image. The published beta linked above is still a ZIP.
+
 The beta is ad hoc-signed and not yet notarized ([you can help change that](#support-the-project)), so macOS asks you to confirm the first launch: open **System Settings → Privacy & Security**, find the GlassEQ notice, and click **Open Anyway**. It opens normally after that.
 
 On first run GlassEQ asks for **system audio capture permission** — that's what lets it read and equalize the system mix. Grant it and you're set.

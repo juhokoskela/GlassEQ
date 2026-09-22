@@ -125,10 +125,10 @@ License verification must run outside the realtime path. It must not make Core A
 - [x] Publish a SHA-256 checksum for the shipped artifact. The zip, the disk image, and the dSYM archive each get one.
 - [x] Keep the notarization submission ID, artifact hash, signing identity, build number, source revision, and toolchain version in the release evidence. The script writes them to a release-evidence file in `.build/dist`.
 - [ ] Install the browser-downloaded artifact on a clean account without development certificates.
-- [x] Detect or explain launches from a read-only DMG, Downloads, or another location where updates cannot be installed reliably. The popover shows a notice, and the support report names the location.
+- [x] Detect or explain launches from a read-only DMG or another location where updates cannot be installed reliably. The popover shows a notice, and the support report names the location.
 - [x] Update `Docs/Distribution.md` for the production channel. Update the README installation instructions and release notes when the first production build ships.
 - [x] Embed the entitlement public keys in the official build's Info.plist under `GlassEQEntitlementPublicKeys`. The release script embeds the keys from `ENTITLEMENT_PUBLIC_KEYS_FILE`; a build without the key dictionary runs unrestricted by design.
-- [x] Add a "licensing required" marker to the release checks so a build that is missing the key dictionary fails the release instead of shipping unrestricted. Production builds refuse to start without the keys file and fail if the packaged Info.plist lacks the dictionary.
+- [x] Require licensing keys for production builds. Validate the dictionary before building and fail if inserting it into the packaged Info.plist fails.
 
 ## Diagnostics and support
 

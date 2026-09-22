@@ -3,6 +3,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
+import signal
+import time
 import subprocess
 import tempfile
 import unittest
@@ -100,6 +103,112 @@ class ReleaseChannelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("GlassEQ-beta-preview-macos26-arm64.zip", result.stdout)
         self.assertNotEqual(self.dry_run("RELEASE_CHANNEL=unknown").returncode, 0)
+
+
+class ReleaseArtifactTests(unittest.TestCase):
+    def functions(self, *names):
+        source = (ROOT / "Scripts/build-release-app.sh").read_text()
+        definitions = []
+        for name in names:
+            match = re.search(rf"^{name}\(\) ([{{(])$", source, re.MULTILINE)
+            self.assertIsNotNone(match, name)
+            end = "}" if match[1] == "{" else ")"
+            tail = source[match.start():]
+            finish = re.search(rf"^{re.escape(end)}$", tail, re.MULTILINE)
+            definitions.append(tail[:finish.end()])
+        return "\n".join(definitions) + "\n"
+
+    def test_embedding_uses_the_validated_keys_even_if_the_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            keys = Path(directory) / "keys.json"
+            info = Path(directory) / "Info.plist"
+            expected = {"fixture": base64.b64encode(bytes(32)).decode()}
+            keys.write_text(json.dumps(expected))
+            info.write_bytes(plistlib.dumps({}))
+            script = self.functions("fail", "validate_entitlement_public_keys_file", "embed_entitlement_public_keys")
+            script += 'ENTITLEMENT_PUBLIC_KEYS_INFO_KEY=GlassEQEntitlementPublicKeys; validate_entitlement_public_keys_file "$1"; echo invalid > "$1"; embed_entitlement_public_keys "$2"'
+            subprocess.run(["bash", "-eu", "-c", script, "test", str(keys), str(info)], check=True)
+            self.assertEqual(plistlib.loads(info.read_bytes())["GlassEQEntitlementPublicKeys"], expected)
+
+    def test_checksums_verify_after_artifacts_are_moved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            build = Path(directory) / "build"
+            download = Path(directory) / "download"
+            build.mkdir()
+            download.mkdir()
+            for extension in ("dmg", "zip", "dSYMs.zip"):
+                artifact = build / f"GlassEQ.{extension}"
+                artifact.write_bytes(b"artifact")
+                script = self.functions("write_checksum") + 'DIST_DIR="$1"; write_checksum "$2"'
+                subprocess.run(["bash", "-eu", "-c", script, "test", str(build), str(artifact)], check=True)
+            for artifact in build.iterdir():
+                artifact.rename(download / artifact.name)
+            for checksum in download.glob("*.sha256"):
+                self.assertNotIn(directory, checksum.read_text())
+                subprocess.run(["shasum", "-a", "256", "-c", checksum.name], cwd=download,
+                               check=True, capture_output=True)
+
+    def test_rejected_notarization_reports_the_submission_id(self):
+        for status in (0, 1):
+            script = self.functions("fail", "notarize") + f'''
+xcrun() {{ echo '{{"status":"Invalid","id":"submission-id"}}'; return {status}; }}
+NOTARY_PROFILE=fixture
+result="$(notarize artifact.dmg)"
+'''
+            result = subprocess.run(["bash", "-eu", "-c", script], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("submission-id", result.stderr)
+            self.assertIn("Invalid", result.stderr)
+
+    def test_disk_image_detaches_when_verification_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.functions("fail", "verify_disk_image") + r'''
+DMG_MOUNT_DIR="$1/mount"
+DMG_PATH="$1/test.dmg"
+APP_NAME=GlassEQ
+# The mount lacks the app, so validation fails immediately after attachment.
+hdiutil() { echo "$1" >> "$LOG"; }
+LOG="$1/operations"
+verify_disk_image
+'''
+            result = subprocess.run(["bash", "-eu", "-c", script, "test", directory], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("detach", (Path(directory) / "operations").read_text())
+            self.assertFalse((Path(directory) / "mount").exists())
+
+    def test_disk_image_detaches_on_termination_during_attach(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = self.functions("fail", "verify_disk_image") + r'''
+DMG_MOUNT_DIR="$1/mount"
+DMG_PATH="$1/test.dmg"
+APP_NAME=GlassEQ
+LOG="$1/operations"
+hdiutil() {
+    echo "$1" >> "$LOG"
+    if [[ "$1" == attach ]]; then
+        touch "$READY"
+        while true; do sleep 1; done
+    fi
+}
+READY="$1/ready"
+verify_disk_image
+'''
+            process = subprocess.Popen(["bash", "-eu", "-c", script, "test", directory],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 5
+                while not (Path(directory) / "ready").exists():
+                    if time.monotonic() >= deadline:
+                        self.fail("mock attach did not start")
+                    time.sleep(0.01)
+                os.killpg(process.pid, signal.SIGTERM)
+                process.communicate(timeout=5)
+                self.assertIn("detach", (Path(directory) / "operations").read_text())
+                self.assertFalse((Path(directory) / "mount").exists())
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
 
 
 if __name__ == "__main__":

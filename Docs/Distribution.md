@@ -13,8 +13,10 @@ Build the beta artifact:
 With no overrides, the script uses the beta channel and the version from the app's Info.plist. It derives the release label from the channel and version and produces:
 
 - `.build/release-app/GlassEQ.app`
-- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip`
-- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64-dSYMs.zip`
+- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64.dmg` (supported download) and its `.sha256`
+- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip` and its `.sha256`
+- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64-dSYMs.zip` and its `.sha256`
+- `.build/dist/GlassEQ-beta-0.9.3-macos26-arm64-release-evidence.md`
 
 `RELEASE_CHANNEL=alpha` selects an alpha build and label. Alpha and beta builds both require Apple Silicon and ad hoc signing. `RELEASE_CHANNEL=production` requires Developer ID signing, Hardened Runtime, and notarization. `RELEASE_LABEL` can override the archive label without changing the channel or its signing requirements.
 
@@ -26,7 +28,7 @@ The release script requires a clean Git checkout so the packaged source matches 
 - `TRADEMARKS.md`, the policy for redistributed and modified builds. The app repeats the GPL and trademark notices in its About window.
 - `GlassEQ-beta-0.9.3-source.tar.gz`, containing the machine-readable Corresponding Source for that commit.
 
-The source archive is generated from the same clean commit used for the build. The script verifies the license inside the app, at the ZIP root, and inside the source archive before writing the release checksum. Do not publish an app-only ZIP. A future DMG or other download format must provide the same license and Corresponding Source access.
+The source archive is generated from the same clean commit used for the build. The script verifies the license inside the app, at the ZIP root, and inside the source archive before writing the release checksum. Do not publish an app-only ZIP. The disk image includes the same license and Corresponding Source access.
 
 The bundle is ad hoc-signed with `codesign --sign -`. It is not Developer ID signed and is not notarized, so this command should reject it:
 
@@ -47,7 +49,7 @@ Production builds use the same script with Developer ID signing, Hardened Runtim
     ENTITLEMENT_PUBLIC_KEYS_FILE=/path/to/entitlement-public-keys.json
 ```
 
-`ENTITLEMENT_PUBLIC_KEYS_FILE` is a JSON object of key identifier to base64 Ed25519 public key. The script validates it, embeds it in the packaged Info.plist under `GlassEQEntitlementPublicKeys`, and refuses a production build whose Info.plist lacks the dictionary, because such a build would run unrestricted. Prerelease builds may embed the keys to test licensing and otherwise run unrestricted. `NOTARY_PROFILE` names a keychain profile created with `xcrun notarytool store-credentials`.
+`ENTITLEMENT_PUBLIC_KEYS_FILE` is a JSON object of key identifier to base64 Ed25519 public key. The script requires valid keys for production, validates their contents once, and inserts that validated dictionary in the packaged Info.plist under `GlassEQEntitlementPublicKeys`. Failed insertion stops the build because an app without the dictionary would run unrestricted. Prerelease builds may embed the keys to test licensing and otherwise run unrestricted. `NOTARY_PROFILE` names a keychain profile created with `xcrun notarytool store-credentials`.
 
 The order of operations is: sign the helper and the app, notarize the app and staple it, verify signatures, entitlements, and Gatekeeper assessment, package the zip, then build the disk image from the stapled app, sign it, notarize and staple it, and assess it with `spctl --assess --type open`. The script then mounts the image and checks its contents and the app's signature and staple before writing checksums.
 
@@ -55,14 +57,14 @@ Every channel produces, under `.build/dist`:
 
 - `GlassEQ-<label>-macos26-arm64.zip` and its `.sha256`, as before.
 - `GlassEQ-<label>-macos26-arm64.dmg` and its `.sha256`: the supported download. It contains `GlassEQ.app`, an `Applications` link for the drag install, `LICENSE`, `TRADEMARKS.md`, `SOURCE.md`, and the Corresponding Source archive.
-- `GlassEQ-<label>-macos26-arm64-dSYMs.zip`, described below.
+- `GlassEQ-<label>-macos26-arm64-dSYMs.zip` and its `.sha256`, described below.
 - `GlassEQ-<label>-macos26-arm64-release-evidence.md`: the release label, version and build, channel, source revision, signing identity, notarization submission identifiers for the app and the disk image, licensing status, Xcode and Swift versions, binary UUIDs, and the SHA-256 of every artifact. Keep it with the release.
 
-Publish the disk image, its checksum, and the evidence file. Keep the dSYM archive private with the release records. When GlassEQ runs from the mounted disk image, a Gatekeeper translocation copy, or the Downloads folder, the menu bar popover asks the user to move it to Applications, because an update cannot replace the app in those places.
+Publish the disk image, its checksum, and the evidence file. Keep the dSYM archive private with the release records. When GlassEQ runs from the mounted disk image or a Gatekeeper translocation copy, the menu bar popover asks the user to move it to Applications, because an update cannot replace the app in those places.
 
 ## Beta Installer Instructions
 
-Technical testers can install by unzipping the artifact and moving `GlassEQ.app` to `/Applications`.
+Open the disk image, drag `GlassEQ.app` to the Applications shortcut, then open it from Applications and eject the image.
 
 Because the app is not notarized, a browser-downloaded build should be blocked on first launch. The preferred tester path is to open System Settings > Privacy & Security and explicitly allow GlassEQ to open.
 

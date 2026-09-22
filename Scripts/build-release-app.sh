@@ -231,27 +231,25 @@ create_source_archive() {
     } > "$SOURCE_NOTICE_PATH"
 }
 
-verify_disk_image() {
+verify_disk_image() (
     local mounted_app="$DMG_MOUNT_DIR/$APP_NAME.app"
     hdiutil verify -quiet "$DMG_PATH" || fail "disk image failed its integrity check"
-    rm -rf "$DMG_MOUNT_DIR"
     mkdir -p "$DMG_MOUNT_DIR"
+    trap 'hdiutil detach -quiet "$DMG_MOUNT_DIR" || hdiutil detach -force -quiet "$DMG_MOUNT_DIR" || exit 1; rmdir "$DMG_MOUNT_DIR"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     hdiutil attach -readonly -nobrowse -noautoopen -quiet -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH"
-    local failure=""
-    [[ -d "$mounted_app" ]] || failure="disk image is missing $APP_NAME.app"
-    [[ -n "$failure" || -L "$DMG_MOUNT_DIR/Applications" ]] || failure="disk image is missing the Applications link"
-    [[ -n "$failure" ]] || cmp -s "$DMG_MOUNT_DIR/LICENSE" "$LICENSE_FILE" || failure="disk image contains the wrong license"
-    [[ -n "$failure" || -f "$DMG_MOUNT_DIR/TRADEMARKS.md" ]] || failure="disk image is missing TRADEMARKS.md"
-    [[ -n "$failure" || -f "$DMG_MOUNT_DIR/SOURCE.md" ]] || failure="disk image is missing SOURCE.md"
-    [[ -n "$failure" || -f "$DMG_MOUNT_DIR/$SOURCE_ARCHIVE_NAME" ]] || failure="disk image is missing Corresponding Source"
-    [[ -n "$failure" ]] || codesign --verify --strict --verbose=2 "$mounted_app" >/dev/null 2>&1 || failure="the app inside the disk image fails signature verification"
-    if [[ -z "$failure" && "$RELEASE_CHANNEL" == "production" ]]; then
-        xcrun stapler validate "$mounted_app" >/dev/null 2>&1 || failure="the app inside the disk image is not stapled"
+    [[ -d "$mounted_app" ]] || fail "disk image is missing $APP_NAME.app"
+    [[ -L "$DMG_MOUNT_DIR/Applications" ]] || fail "disk image is missing the Applications link"
+    cmp -s "$DMG_MOUNT_DIR/LICENSE" "$LICENSE_FILE" || fail "disk image contains the wrong license"
+    [[ -f "$DMG_MOUNT_DIR/TRADEMARKS.md" ]] || fail "disk image is missing TRADEMARKS.md"
+    [[ -f "$DMG_MOUNT_DIR/SOURCE.md" ]] || fail "disk image is missing SOURCE.md"
+    [[ -f "$DMG_MOUNT_DIR/$SOURCE_ARCHIVE_NAME" ]] || fail "disk image is missing Corresponding Source"
+    codesign --verify --strict --verbose=2 "$mounted_app" >/dev/null || fail "the app inside the disk image fails signature verification"
+    if [[ "$RELEASE_CHANNEL" == "production" ]]; then
+        xcrun stapler validate "$mounted_app" >/dev/null || fail "the app inside the disk image is not stapled"
     fi
-    hdiutil detach -quiet "$DMG_MOUNT_DIR" || hdiutil detach -force -quiet "$DMG_MOUNT_DIR"
-    rm -rf "$DMG_MOUNT_DIR"
-    [[ -z "$failure" ]] || fail "$failure"
-}
+)
 
 write_release_evidence() {
     {
@@ -320,17 +318,15 @@ copy_spm_resources() {
 
 # Validates the keys file with the rules the app applies at launch: a non-empty JSON object whose
 # values are canonical base64 of 32-byte Ed25519 public keys, and whose identifiers have no
-# whitespace. The converted plist is what gets merged into Info.plist, so nothing is re-parsed
-# from display output.
-ENTITLEMENT_PUBLIC_KEYS_PLIST=""
+# whitespace. Keep the validated JSON in memory so embedding cannot reread a changed source file.
+ENTITLEMENT_PUBLIC_KEYS_JSON=""
 validate_entitlement_public_keys_file() {
     local file="$1"
     [[ -f "$file" ]] || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' does not exist"
-    ENTITLEMENT_PUBLIC_KEYS_PLIST="$(mktemp)"
-    /usr/bin/python3 - "$file" "$ENTITLEMENT_PUBLIC_KEYS_PLIST" <<'PYTHON' || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' was rejected"
-import base64, json, plistlib, sys
+    ENTITLEMENT_PUBLIC_KEYS_JSON="$(/usr/bin/python3 - "$file" <<'PYTHON'
+import base64, json, sys
 
-source, destination = sys.argv[1], sys.argv[2]
+source = sys.argv[1]
 try:
     with open(source, "rb") as handle:
         keys = json.load(handle)
@@ -349,34 +345,19 @@ for identifier, encoded in keys.items():
         sys.exit(f"error: key {identifier!r} is not strict base64")
     if len(raw) != 32 or base64.b64encode(raw).decode() != encoded:
         sys.exit(f"error: key {identifier!r} is not the canonical base64 of a 32-byte public key")
-with open(destination, "wb") as handle:
-    plistlib.dump(keys, handle)
+print(json.dumps(keys))
 PYTHON
+    )" || fail "ENTITLEMENT_PUBLIC_KEYS_FILE '$file' was rejected"
 }
 
 embed_entitlement_public_keys() {
     local plist="$1"
-    [[ -n "$ENTITLEMENT_PUBLIC_KEYS_PLIST" && -f "$ENTITLEMENT_PUBLIC_KEYS_PLIST" ]] ||
-        fail "entitlement public keys were not validated before embedding"
-    /usr/libexec/PlistBuddy -c "Delete :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Add :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY dict" "$plist"
-    /usr/libexec/PlistBuddy -c "Merge $ENTITLEMENT_PUBLIC_KEYS_PLIST :$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" "$plist"
-}
-
-# The licensing marker: a production build without the key dictionary would ship unrestricted.
-verify_licensing_marker() {
-    local plist="$1"
-    [[ "$RELEASE_CHANNEL" == "production" ]] || return 0
-    plutil -extract "$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" json -o - "$plist" 2>/dev/null |
-        /usr/bin/python3 -c 'import json, sys; keys = json.load(sys.stdin); sys.exit(0 if isinstance(keys, dict) and keys else 1)' ||
-        fail "production build is missing $ENTITLEMENT_PUBLIC_KEYS_INFO_KEY and would run unrestricted"
+    plutil -insert "$ENTITLEMENT_PUBLIC_KEYS_INFO_KEY" -json "$ENTITLEMENT_PUBLIC_KEYS_JSON" "$plist"
 }
 
 licensing_summary() {
     if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
         echo "embedded from $ENTITLEMENT_PUBLIC_KEYS_FILE"
-    elif [[ "$RELEASE_CHANNEL" == "production" ]]; then
-        echo "required"
     else
         echo "none (unrestricted $RELEASE_CHANNEL build)"
     fi
@@ -499,7 +480,6 @@ verify_no_unresolved_plist_tokens "$INFO_PLIST" "$SETTINGS_INFO_PLIST"
 if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
     embed_entitlement_public_keys "$INFO_PLIST"
 fi
-verify_licensing_marker "$INFO_PLIST"
 
 chmod +x "$MACOS_DIR/$APP_NAME"
 chmod +x "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
@@ -559,17 +539,24 @@ verify_signed_entitlement_keys \
 
 APP_NOTARIZATION_ID="not notarized"
 DMG_NOTARIZATION_ID="not notarized"
-notarize() {
+notarize() (
     local artifact="$1"
-    local result
+    local result submission_status=0 id status
     result="$(mktemp)"
-    xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$result"
-    local status
-    status="$(plutil -extract status raw -o - "$result")"
-    [[ "$status" == "Accepted" ]] || fail "notarization of $(basename "$artifact") ended with status '$status'"
-    plutil -extract id raw -o - "$result"
-    rm -f "$result"
-}
+    trap 'rm -f "$result"' EXIT
+    xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$result" || submission_status=$?
+    id="$(plutil -extract id raw -o - "$result" 2>/dev/null)" || id="unavailable"
+    status="$(plutil -extract status raw -o - "$result" 2>/dev/null)" || status="unavailable"
+    echo "Notarization submission for $(basename "$artifact"): $id" >&2
+    [[ "$submission_status" == 0 && "$status" == "Accepted" ]] ||
+        fail "notarization of $(basename "$artifact") ended with status '$status' (submission $id)"
+    echo "$id"
+)
+
+write_checksum() (
+    cd "$DIST_DIR"
+    shasum -a 256 "$(basename "$1")" > "$(basename "$1").sha256"
+)
 
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     NOTARY_ZIP="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-notary-submit.zip"
@@ -598,16 +585,16 @@ create_source_archive
 rm -f "$ZIP_PATH"
 ditto -c -k --norsrc --noextattr --noqtn --noacl "$PACKAGE_DIR" "$ZIP_PATH"
 verify_release_archive
-shasum -a 256 "$ZIP_PATH" > "$CHECKSUM_PATH"
+write_checksum "$ZIP_PATH"
 rm -f "$DSYM_ZIP_PATH"
 ditto -c -k --norsrc --noextattr --noqtn --noacl "$DSYM_DIR" "$DSYM_ZIP_PATH"
+write_checksum "$DSYM_ZIP_PATH"
 
 # The disk image is the supported delivery artifact: the app, an Applications link for the drag
 # install, and the same license and Corresponding Source access as the zip.
 rm -rf "$DMG_STAGING_DIR"
 ditto "$PACKAGE_DIR" "$DMG_STAGING_DIR"
 ln -s /Applications "$DMG_STAGING_DIR/Applications"
-rm -f "$DMG_PATH"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO -quiet "$DMG_PATH"
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG_PATH"
@@ -617,7 +604,7 @@ if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
 fi
 verify_disk_image
-shasum -a 256 "$DMG_PATH" > "$DMG_CHECKSUM_PATH"
+write_checksum "$DMG_PATH"
 write_release_evidence
 
 echo "App: $APP_DIR"
