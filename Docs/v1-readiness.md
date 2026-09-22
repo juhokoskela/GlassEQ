@@ -81,16 +81,16 @@ License verification must run outside the realtime path. It must not make Core A
 
 ## First-time onboarding
 
-- [ ] Present a normal foreground window on first launch. Keep a Dock presence until onboarding finishes so the app cannot appear to launch invisibly.
-- [ ] Explain that GlassEQ lives in the menu bar and show where to find it.
-- [ ] Explain system audio capture before asking macOS for permission.
-- [ ] Handle permission granted, denied, dismissed, and later revoked.
+- [x] Present a normal foreground window on first launch. Keep a Dock presence until onboarding finishes so the app cannot appear to launch invisibly.
+- [x] Explain that GlassEQ lives in the menu bar and show where to find it.
+- [x] Explain system audio capture before asking macOS for permission.
+- [x] Handle permission granted, denied, dismissed, and later revoked.
 - [x] Activate or restore a license.
-- [ ] Offer Launch at Login through `SMAppService.mainApp`.
-- [ ] Confirm the current output and active profile.
-- [ ] Show a clear success state after GlassEQ starts processing.
-- [ ] Let the user reopen onboarding or permission help later.
-- [ ] Verify onboarding with keyboard navigation and VoiceOver.
+- [x] Offer Launch at Login through `SMAppService.mainApp`.
+- [x] Confirm the current output and active profile.
+- [x] Show a clear success state after GlassEQ starts processing.
+- [x] Let the user reopen onboarding or permission help later, from About GlassEQ and Settings → Output.
+- [ ] Verify onboarding with keyboard navigation and VoiceOver on a packaged build.
 
 ## Automatic updates
 

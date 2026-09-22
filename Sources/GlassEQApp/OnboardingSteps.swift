@@ -540,7 +540,7 @@ struct OnboardingDoneStep: View {
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
-            Text(localized("You can reopen this guide from the Output tab in Settings."))
+            Text(localized("You can reopen this guide from About GlassEQ or the Output tab in Settings."))
                 .font(.callout)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

@@ -146,7 +146,8 @@ struct OnboardingView: View {
     @State private var isAdvancing = true
 
     static let width: CGFloat = 560
-    static let stepHeight: CGFloat = 440
+    // Tall enough for the denied-permission and ended-subscription states without scrolling.
+    static let stepHeight: CGFloat = 480
 
     private var steps: [OnboardingStep] {
         OnboardingStep.sequence(includingLicense: model.onboardingLicenseState != nil)
