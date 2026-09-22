@@ -36,6 +36,30 @@ spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 
 That rejection is expected for beta. Document it clearly for testers.
 
+## Production Distribution
+
+Production builds use the same script with Developer ID signing, Hardened Runtime, notarization, and the entitlement public keys:
+
+```sh
+./Scripts/build-release-app.sh RELEASE_CHANNEL=production VERSION=1.0.0 BUILD=20 \
+    SIGN_IDENTITY="Developer ID Application: Juho Koskela (TEAMID)" \
+    ENABLE_HARDENED_RUNTIME=1 NOTARIZE=1 NOTARY_PROFILE=glasseq-notary \
+    ENTITLEMENT_PUBLIC_KEYS_FILE=/path/to/entitlement-public-keys.json
+```
+
+`ENTITLEMENT_PUBLIC_KEYS_FILE` is a JSON object of key identifier to base64 Ed25519 public key. The script validates it, embeds it in the packaged Info.plist under `GlassEQEntitlementPublicKeys`, and refuses a production build whose Info.plist lacks the dictionary, because such a build would run unrestricted. Prerelease builds may embed the keys to test licensing and otherwise run unrestricted. `NOTARY_PROFILE` names a keychain profile created with `xcrun notarytool store-credentials`.
+
+The order of operations is: sign the helper and the app, notarize the app and staple it, verify signatures, entitlements, and Gatekeeper assessment, package the zip, then build the disk image from the stapled app, sign it, notarize and staple it, and assess it with `spctl --assess --type open`. The script then mounts the image and checks its contents and the app's signature and staple before writing checksums.
+
+Every channel produces, under `.build/dist`:
+
+- `GlassEQ-<label>-macos26-arm64.zip` and its `.sha256`, as before.
+- `GlassEQ-<label>-macos26-arm64.dmg` and its `.sha256`: the supported download. It contains `GlassEQ.app`, an `Applications` link for the drag install, `LICENSE`, `TRADEMARKS.md`, `SOURCE.md`, and the Corresponding Source archive.
+- `GlassEQ-<label>-macos26-arm64-dSYMs.zip`, described below.
+- `GlassEQ-<label>-macos26-arm64-release-evidence.md`: the release label, version and build, channel, source revision, signing identity, notarization submission identifiers for the app and the disk image, licensing status, Xcode and Swift versions, binary UUIDs, and the SHA-256 of every artifact. Keep it with the release.
+
+Publish the disk image, its checksum, and the evidence file. Keep the dSYM archive private with the release records. When GlassEQ runs from the mounted disk image, a Gatekeeper translocation copy, or the Downloads folder, the menu bar popover asks the user to move it to Applications, because an update cannot replace the app in those places.
+
 ## Beta Installer Instructions
 
 Technical testers can install by unzipping the artifact and moving `GlassEQ.app` to `/Applications`.
@@ -70,7 +94,7 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 - App Sandbox: enabled.
 - Audio input entitlement: enabled for Core Audio system/process tap permission.
 - Outgoing network entitlement: enabled for the built-in AutoEq browser.
-- User-selected read-only file entitlement: enabled on the main app, which presents the open panel and reads guided text-profile and WAV impulse-response imports.
+- User-selected read-write file entitlement: enabled on the main app, which presents the open panel for guided text-profile, WAV impulse-response, and library imports, and the save panel for support reports and library exports.
 - The settings helper is signed with only `com.apple.security.app-sandbox` and `com.apple.security.inherit`. Adding another App Sandbox entitlement makes macOS abort the inherited child process during sandbox initialization.
 - Info.plist: use `Sources/GlassEQApp/Info.plist`.
 - Entitlements: use `GlassEQ.entitlements`.

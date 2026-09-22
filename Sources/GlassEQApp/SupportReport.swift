@@ -13,6 +13,7 @@ struct SupportReportInputs {
     var architecture: String
     var modelIdentifier: String?
     var launchedWithDebugFlag: Bool
+    var installLocation: String
     var lifecycleState: String
     var statusMessage: String
     var isRunning: Bool
@@ -41,6 +42,7 @@ enum SupportReport {
             "## App",
             "Version: \(inputs.build.versionLine)",
             "Launched with \(LifecycleLog.debugFlag): \(yesNo(inputs.launchedWithDebugFlag))",
+            "Install location: \(inputs.installLocation)",
             "",
             "## Mac",
             "macOS: \(inputs.operatingSystemVersion)",

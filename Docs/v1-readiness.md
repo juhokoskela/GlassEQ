@@ -118,17 +118,17 @@ License verification must run outside the realtime path. It must not make Core A
 
 ## Production distribution
 
-- [ ] Create a DMG containing `GlassEQ.app` and an Applications shortcut.
-- [ ] Sign the app and all nested code with Developer ID and Hardened Runtime.
-- [ ] Notarize the shipped DMG or the exact supported delivery artifact and staple its ticket.
-- [ ] Verify nested signatures, exact entitlements, Gatekeeper assessment, and stapling after packaging.
-- [ ] Publish a SHA-256 checksum for the shipped artifact.
-- [ ] Keep the notarization submission ID, artifact hash, signing identity, build number, source revision, and toolchain version in the release evidence.
+- [x] Create a DMG containing `GlassEQ.app` and an Applications shortcut. The release script builds it for every channel, with the license, trademark policy, source notice, and Corresponding Source beside the app.
+- [x] Sign the app and all nested code with Developer ID and Hardened Runtime.
+- [x] Notarize the shipped DMG or the exact supported delivery artifact and staple its ticket. Production notarizes and staples the app, then signs, notarizes, and staples the disk image.
+- [x] Verify nested signatures, exact entitlements, Gatekeeper assessment, and stapling after packaging. The mounted disk image is checked as well.
+- [x] Publish a SHA-256 checksum for the shipped artifact. The zip, the disk image, and the dSYM archive each get one.
+- [x] Keep the notarization submission ID, artifact hash, signing identity, build number, source revision, and toolchain version in the release evidence. The script writes them to a release-evidence file in `.build/dist`.
 - [ ] Install the browser-downloaded artifact on a clean account without development certificates.
-- [ ] Detect or explain launches from a read-only DMG, Downloads, or another location where updates cannot be installed reliably.
-- [ ] Update `Docs/Distribution.md`, README installation instructions, and the release notes for the production channel.
-- [ ] Embed the entitlement public keys in the official build's Info.plist under `GlassEQEntitlementPublicKeys`. A build without the key dictionary runs unrestricted by design.
-- [ ] Add a "licensing required" marker to the release checks so a build that is missing the key dictionary fails the release instead of shipping unrestricted.
+- [x] Detect or explain launches from a read-only DMG, Downloads, or another location where updates cannot be installed reliably. The popover shows a notice, and the support report names the location.
+- [x] Update `Docs/Distribution.md` for the production channel. Update the README installation instructions and release notes when the first production build ships.
+- [x] Embed the entitlement public keys in the official build's Info.plist under `GlassEQEntitlementPublicKeys`. The release script embeds the keys from `ENTITLEMENT_PUBLIC_KEYS_FILE`; a build without the key dictionary runs unrestricted by design.
+- [x] Add a "licensing required" marker to the release checks so a build that is missing the key dictionary fails the release instead of shipping unrestricted. Production builds refuse to start without the keys file and fail if the packaged Info.plist lacks the dictionary.
 
 ## Diagnostics and support
 

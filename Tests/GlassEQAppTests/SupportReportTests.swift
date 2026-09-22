@@ -122,6 +122,7 @@ struct SupportReportTextTests {
             architecture: "arm64",
             modelIdentifier: "Mac15,6",
             launchedWithDebugFlag: true,
+            installLocation: "installed normally",
             lifecycleState: "running",
             statusMessage: "Processing on Studio Monitors",
             isRunning: true,
@@ -149,6 +150,7 @@ struct SupportReportTextTests {
         #expect(text.hasPrefix("# GlassEQ support report\nGenerated: 2023-11-14T22:13:20Z\n"))
         #expect(text.contains("Version: Version 1.0 (20) · production-1.0"))
         #expect(text.contains("Launched with --debug: yes"))
+        #expect(text.contains("Install location: installed normally"))
         #expect(text.contains("macOS: Version 26.1 (Build 25B99)"))
         #expect(text.contains("Model identifier: Mac15,6"))
         #expect(text.contains("License: Perpetual license."))

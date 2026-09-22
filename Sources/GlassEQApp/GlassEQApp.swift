@@ -736,6 +736,8 @@ final class GlassEQAppModel {
     private let launchRecordURL: URL
     private let storeURL: URL
     private(set) var pendingLibraryImport: PendingLibraryImport?
+    let installLocationIssue: InstallLocationIssue?
+    private(set) var isInstallLocationNoticeDismissed = false
     /// The previous run's record when it crashed or was killed; cleared when the user dismisses
     /// the notice.
     private(set) var previousRunEndedUncleanly: LaunchRecord?
@@ -1060,7 +1062,8 @@ final class GlassEQAppModel {
         licenseStopTransitionTimeout: Duration = .milliseconds(500),
         licenseOperationCancellationGrace: Duration = .seconds(3),
         lifecycleLog: LifecycleLog = LifecycleLog(),
-        launchRecordURL: URL? = nil
+        launchRecordURL: URL? = nil,
+        installLocationIssue: InstallLocationIssue? = InstallLocation.issue()
     ) {
         let loadResult: ProfileStoreLoadResult?
         let loadedStore: ProfileStore
@@ -1132,6 +1135,7 @@ final class GlassEQAppModel {
         self.profilePersistenceMode = persistenceMode
         self.lifecycleLog = lifecycleLog
         self.storeURL = storeURL
+        self.installLocationIssue = installLocationIssue
         self.launchRecordURL = launchRecordURL ?? LaunchRecordStore.defaultURL(besideStoreAt: storeURL)
         let licensingKind =
             switch licensing {
@@ -1152,6 +1156,9 @@ final class GlassEQAppModel {
         if let previousRun = previousRunEndedUncleanly {
             lifecycleLog.record(
                 "Previous run did not quit cleanly; it started \(previousRun.startedAt.formatted(.iso8601))")
+        }
+        if let installLocationIssue {
+            lifecycleLog.record("Install location: \(installLocationIssue.reportDescription)")
         }
         engine.setPlaybackBufferRenegotiationHandler { [weak self] renegotiation in
             Task { @MainActor [weak self] in
@@ -1927,6 +1934,14 @@ final class GlassEQAppModel {
         previousRunEndedUncleanly = nil
     }
 
+    var visibleInstallLocationIssue: InstallLocationIssue? {
+        isInstallLocationNoticeDismissed ? nil : installLocationIssue
+    }
+
+    func dismissInstallLocationNotice() {
+        isInstallLocationNoticeDismissed = true
+    }
+
     func supportReportInputs(generatedAt: Date = Date()) -> SupportReportInputs {
         let snapshot = settingsSnapshot()
         let launchAtLogin = LaunchAtLoginModel()
@@ -1937,6 +1952,7 @@ final class GlassEQAppModel {
             architecture: SupportReport.architecture,
             modelIdentifier: SupportReport.modelIdentifier,
             launchedWithDebugFlag: lifecycleLog.streamsToStandardError,
+            installLocation: installLocationIssue?.reportDescription ?? "installed normally",
             lifecycleState: "\(lifecycleState)",
             statusMessage: statusMessage,
             isRunning: isRunning,
@@ -5162,6 +5178,10 @@ private struct MenuBarView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel(Text(localized("License")))
                     .accessibilityValue(Text(licenseStatusMessage))
+            }
+
+            if let issue = model.visibleInstallLocationIssue {
+                InstallLocationNotice(issue: issue, dismissNotice: model.dismissInstallLocationNotice)
             }
 
             if let previousRun = model.previousRunEndedUncleanly {
