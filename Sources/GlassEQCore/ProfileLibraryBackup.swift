@@ -81,8 +81,10 @@ public enum ProfileLibraryBackupCodec {
         committed.format = ProfileLibraryBackup.formatIdentifier
         committed.version = ProfileLibraryBackup.currentVersion
         committed.profileStore.schemaVersion = ProfileStore.currentSchemaVersion
+        // Compact output: a pretty-printed store nested one level deeper would grow past the
+        // store's own size limit before the backup limit allows for it.
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(committed)
         guard data.count <= ProfileLibraryBackup.maxBytes else {

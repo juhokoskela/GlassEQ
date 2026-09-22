@@ -34,8 +34,8 @@ struct ProfileLibraryBackupCodecTests {
         #expect(decoded == backup)
         #expect(decoded.profileStore.profiles[1].convolution == backup.profileStore.profiles[1].convolution)
         let json = try #require(String(bytes: data, encoding: .utf8))
-        #expect(json.contains("\"format\" : \"glasseq-profile-library\""))
-        #expect(json.contains("\"createdAt\" : \"2024-01-01T00:00:00Z\""))
+        #expect(json.contains("\"format\":\"glasseq-profile-library\""))
+        #expect(json.contains("\"createdAt\":\"2024-01-01T00:00:00Z\""))
     }
 
     @Test

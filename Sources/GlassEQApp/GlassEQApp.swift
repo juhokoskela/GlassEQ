@@ -4372,30 +4372,74 @@ final class GlassEQAppModel {
         }
         try ProfilePersistence.validateForCommit(nextStore)
 
+        // The candidate reaches disk before it is published, so a failed write changes nothing in
+        // memory. The library may change while the write is in flight; then the candidate is
+        // stale, the current library goes back to disk, and the import is refused.
+        let libraryBeforeSave = profileStore
         pendingSaveTask?.cancel()
         await pendingSaveTask?.value
         pendingSaveTask = nil
+        try await storeWriter.saveAndSynchronize(nextStore)
+        guard profileStore == libraryBeforeSave else {
+            saveStore()
+            throw SettingsCommandFailure(
+                message: localized("The library changed while the import was being saved. Try again."))
+        }
         let rollback = profileRollback()
         let previousActive = activeProfile
+        let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
         profileStore = nextStore
-        try await storeWriter.saveAndSynchronize(profileStore)
-        if let preferences = pending.backup.bufferPreferences {
-            try? aggregateBufferPolicyStore.importDocument(preferences, replacingExisting: mode == .replace)
-        }
         pendingLibraryImport = nil
+        var outcome = message
+        if let preferences = pending.backup.bufferPreferences {
+            do {
+                try aggregateBufferPolicyStore.importDocument(preferences, replacingExisting: mode == .replace)
+            } catch {
+                lifecycleLog.record("Library import: buffer preferences could not be saved: \(error)")
+                outcome += " " + localized("The buffer preferences in the library could not be saved.")
+            }
+        }
 
         let nextActive = nextStore.profile(forOutputUID: currentOutputUID.isEmpty ? nil : currentOutputUID)
         activeProfile = nextActive
         selectedProfileID = nextActive.id
         draftProfile = nextActive
-        if nextActive != previousActive {
+        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
+        if !rebuildRouteIfBufferSelectionChanged(from: previousBufferSelection), nextActive != previousActive {
             synchronizeActiveProfileProcessing(rollback: rollback)
-        } else {
-            clearProgrammeComparisonSession()
         }
         lifecycleLog.record("Library import applied (\(mode.rawValue)): \(nextStore.profiles.count) profiles")
         notifyModelDidChange()
-        return message
+        return outcome
+    }
+
+    /// Restored buffer preferences only matter to a running route if its own selection changed.
+    /// The rebuild is the one a manual buffer change makes, and it starts with the active profile,
+    /// so a changed profile rides along.
+    private func rebuildRouteIfBufferSelectionChanged(from previous: AggregateBufferSelection?) -> Bool {
+        guard let previous,
+            let activeAggregateRoute,
+            lifecycleState == .running,
+            isRunning,
+            engineStartTask == nil,
+            case .running(let output) = engine.state
+        else {
+            return false
+        }
+        let selection = aggregateBufferSelection(for: activeAggregateRoute)
+        guard selection != previous else {
+            return false
+        }
+        fixedBufferRecovery = nil
+        pendingAggregateBufferIncrease = nil
+        statusMessage = localized("Rebuilding \(output.name) with \(selection.frameSize)-frame buffers...")
+        scheduleEngineStart(
+            output: output,
+            profile: activeProfile,
+            rollback: nil,
+            aggregateBufferFrameSize: selection.frameSize
+        )
+        return true
     }
 
     private static func mergeMessage(_ summary: ProfileLibraryMergeSummary, filename: String) -> String {

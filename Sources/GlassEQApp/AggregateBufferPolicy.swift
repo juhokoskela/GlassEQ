@@ -312,7 +312,7 @@ final class AggregateBufferPolicyStore {
         let imported = Self.parse(data)
         let previous = records
         if replacingExisting {
-            records = Array(imported.prefix(Self.maximumRecordCount))
+            records = imported
         } else {
             let known = Set(records.map(\.route))
             for record in imported where !known.contains(record.route) && records.count < Self.maximumRecordCount {

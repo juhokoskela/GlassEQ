@@ -2420,6 +2420,37 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func aFailedLibrarySaveLeavesTheLibraryUntouched() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: storeURL.deletingLastPathComponent().path)
+            removeTemporaryStoreDirectory(for: storeURL)
+        }
+        let mine = makeProfile(name: "Mine")
+        let current = ProfileStore(profiles: [mine], fallbackProfileID: mine.id)
+        let model = makeModel(store: current, storeURL: storeURL)
+        let theirs = makeProfile(name: "Theirs")
+        let panels = FakeLibraryBackupPanels(
+            importURL: try writeLibraryFile(ProfileStore(profiles: [theirs]), beside: storeURL))
+        _ = try await libraryBackupPanelResponse(for: .chooseLibraryBackup, model: model, panels: panels)
+        try ProfilePersistence.save(current, to: storeURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o555], ofItemAtPath: storeURL.deletingLastPathComponent().path)
+
+        await #expect(throws: (any Error).self) {
+            _ = try await model.performSettingsCommand(.applyLibraryImport(.merge))
+        }
+
+        #expect(model.profileStore == current)
+        #expect(model.activeProfile == mine)
+        #expect(model.pendingLibraryImport?.filename == "library.json")
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: storeURL.deletingLastPathComponent().path)
+        #expect(ProfilePersistence.load(from: storeURL).store == current)
+    }
+
+    @Test
     func libraryImportNeedsAStagedFileAndCancelDropsIt() async throws {
         let storeURL = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: storeURL) }
