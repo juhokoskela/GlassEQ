@@ -29,9 +29,13 @@ struct ImportedImpulseResponseSummary: View {
                 localized("Sample rate"),
                 value: ImportedImpulseResponse.sampleRateLabel(imported.sampleRate)
             )
-            Text(localized("GlassEQ will convolve audio with these samples directly; it will not reconstruct or normalize the file."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(
+                localized(
+                    "GlassEQ will convolve audio with these samples directly; it will not reconstruct or normalize the file."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .importedSourceCard()
     }
@@ -57,9 +61,13 @@ struct ImportedStereoTextPairSummary: View {
             LabeledContent(localized("Left"), value: imported.leftFilename)
             LabeledContent(localized("Right"), value: imported.rightFilename)
             LabeledContent(localized("Profile type"), value: imported.profile.mode.importPairTitle)
-            Text(localized("GlassEQ parsed each file independently and will keep its filters and preamp on the assigned channel."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(
+                localized(
+                    "GlassEQ parsed each file independently and will keep its filters and preamp on the assigned channel."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .importedSourceCard()
     }

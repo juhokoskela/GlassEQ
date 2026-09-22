@@ -24,9 +24,10 @@ struct SeparateClockPlaybackRecoveryTests {
             #expect(stalled.currentBufferedFrames == SeparateClockAudioBackend.runtimeRingCapacityFrames)
             #expect(stalled.droppedInputFrames > before.droppedInputFrames)
             #expect(recovery.first?.isSilent == true)
-            #expect(recovery.filter { !$0.isSilent }.allSatisfy {
-                $0.midpointAgeMS.map { abs($0 - baselineAge) < 2 } == true
-            })
+            #expect(
+                recovery.filter { !$0.isSilent }.allSatisfy {
+                    $0.midpointAgeMS.map { abs($0 - baselineAge) < 2 } == true
+                })
         } else {
             #expect(stalled.droppedInputFrames == before.droppedInputFrames)
         }
@@ -137,9 +138,10 @@ struct SeparateClockPlaybackRecoveryTests {
         #expect(recovery.suffix(16).allSatisfy { !$0.isSilent })
         // Both destinations have unity gain. Decoding a recent timestamp also verifies that
         // the output has reached the new bank, rather than merely publishing completion.
-        #expect(recovery.suffix(16).allSatisfy {
-            $0.midpointAgeMS.map { (0..<100).contains($0) } ?? false
-        })
+        #expect(
+            recovery.suffix(16).allSatisfy {
+                $0.midpointAgeMS.map { (0..<100).contains($0) } ?? false
+            })
         #expect(harness.runtime.snapshotMetrics().adaptivePlaybackRenderFailures == 0)
     }
 }
@@ -198,19 +200,22 @@ private final class PlaybackRecoveryHarness {
                     runtime.playback(outputData: $0, outputSampleTime: Double(sourceFrame) * outputRate / 48_000)
                 }
                 #expect(output.allSatisfy { $0.isFinite })
-                #expect(stride(from: 0, to: output.count, by: 2).allSatisfy {
-                    abs(output[$0] + output[$0 + 1]) < 0.000_001
-                })
+                #expect(
+                    stride(from: 0, to: output.count, by: 2).allSatisfy {
+                        abs(output[$0] + output[$0 + 1]) < 0.000_001
+                    })
                 let isSilent = output.allSatisfy { abs($0) <= 0.000_1 }
                 let midpoint = Double(output[(outputFrames / 2) * 2])
-                let age = midpoint > 0.05
+                let age =
+                    midpoint > 0.05
                     ? (Double(sourceFrame + captureFrames) - (midpoint - 0.1) * 1_000_000) / 48
                     : nil
-                observations.append(Observation(
-                    isSilent: isSilent,
-                    midpointAgeMS: age,
-                    bufferedFrames: runtime.ringBuffer.occupancyFrames()
-                ))
+                observations.append(
+                    Observation(
+                        isSilent: isSilent,
+                        midpointAgeMS: age,
+                        bufferedFrames: runtime.ringBuffer.occupancyFrames()
+                    ))
             }
             sourceFrame += captureFrames
         }
@@ -229,10 +234,12 @@ private final class PlaybackRecoveryHarness {
 
     private static func withBuffer(_ samples: inout [Float], _ body: (UnsafeMutablePointer<AudioBufferList>) -> Void) {
         samples.withUnsafeMutableBufferPointer {
-            var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
-                mNumberChannels: 2,
-                mDataByteSize: UInt32($0.count * MemoryLayout<Float>.stride), mData: $0.baseAddress
-            ))
+            var buffer = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: 2,
+                    mDataByteSize: UInt32($0.count * MemoryLayout<Float>.stride), mData: $0.baseAddress
+                ))
             body(&buffer)
         }
     }

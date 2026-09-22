@@ -24,9 +24,11 @@ final class EQAnalysisCache {
     @ObservationIgnored private var selectedProfileID: UUID?
     @ObservationIgnored private let makeResponse: @Sendable (EQProfile, Double) async throws -> EQAnalysisSnapshot
 
-    init(makeResponse: @escaping @Sendable (EQProfile, Double) async throws -> EQAnalysisSnapshot = {
-        try await EQAnalysisSnapshot.response(profile: $0, sampleRate: $1)
-    }) {
+    init(
+        makeResponse: @escaping @Sendable (EQProfile, Double) async throws -> EQAnalysisSnapshot = {
+            try await EQAnalysisSnapshot.response(profile: $0, sampleRate: $1)
+        }
+    ) {
         self.makeResponse = makeResponse
     }
 
@@ -42,9 +44,10 @@ final class EQAnalysisCache {
         if stored?.signature == signature { return stored }
         // Keep the curve steady during edits, but never offer headroom from an older edit or route.
         guard var previous = draft ?? stored,
-              previous.signature.sampleRate == signature.sampleRate,
-              previous.signature.mode == signature.mode,
-              previous.signature.channelMode == signature.channelMode else { return nil }
+            previous.signature.sampleRate == signature.sampleRate,
+            previous.signature.mode == signature.mode,
+            previous.signature.channelMode == signature.channelMode
+        else { return nil }
         previous.recommendedPreampDB = nil
         return previous
     }
@@ -57,17 +60,19 @@ final class EQAnalysisCache {
         selectedProfileID = selected.id
         let signature = EQAnalysisSignature(profile: selected, sampleRate: sampleRate)
         requests = profiles.map {
-            Request(slot: .profile($0.id), profile: $0, signature: EQAnalysisSignature(profile: $0, sampleRate: sampleRate))
+            Request(
+                slot: .profile($0.id), profile: $0, signature: EQAnalysisSignature(profile: $0, sampleRate: sampleRate))
         }
         if let index = requests.firstIndex(where: { $0.profile.id == selected.id && $0.signature == signature }) {
             requests.insert(requests.remove(at: index), at: 0)
         } else {
-            requests.insert(Request(
-                slot: .draft, profile: selected, signature: signature,
-                debounce: previous?.profile.id == selected.id
-                    && previous?.signature.mode == signature.mode
-                    && previous?.signature.channelMode == signature.channelMode
-            ), at: 0)
+            requests.insert(
+                Request(
+                    slot: .draft, profile: selected, signature: signature,
+                    debounce: previous?.profile.id == selected.id
+                        && previous?.signature.mode == signature.mode
+                        && previous?.signature.channelMode == signature.channelMode
+                ), at: 0)
         }
         let slots = Set(requests.map(\.slot))
         snapshots = snapshots.filter { slots.contains($0.key) }
@@ -75,11 +80,13 @@ final class EQAnalysisCache {
         for request in requests {
             let existing = snapshots[request.slot] ?? snapshots[.profile(request.profile.id)]
             if existing?.signature != request.signature,
-               let updated = existing?.updatingPreamp(profile: request.profile, sampleRate: sampleRate) {
+                let updated = existing?.updatingPreamp(profile: request.profile, sampleRate: sampleRate)
+            {
                 snapshots[request.slot] = updated
             }
         }
-        for (slot, job) in jobs where !requests.contains(where: {
+        for (slot, job) in jobs
+        where !requests.contains(where: {
             $0.slot == slot && $0.signature.hasSameResponseContent(as: job.request.signature)
         }) {
             job.task.cancel()
@@ -131,10 +138,11 @@ final class EQAnalysisCache {
 
     private func publish(_ analysis: EQAnalysisSnapshot, for request: Request) {
         guard !Task.isCancelled,
-              let current = requests.first(where: { $0.slot == request.slot }),
-              let updated = analysis.updatingPreamp(
+            let current = requests.first(where: { $0.slot == request.slot }),
+            let updated = analysis.updatingPreamp(
                 profile: current.profile, sampleRate: current.signature.sampleRate
-              ) else { return }
+            )
+        else { return }
         snapshots[request.slot] = updated
     }
 }

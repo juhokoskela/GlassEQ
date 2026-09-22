@@ -16,27 +16,30 @@ struct AudioRenderWatchdogTests {
         )
         let start = ContinuousClock.now
 
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 100,
-            at: start
-        ) == nil)
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 200,
-            at: start.advanced(by: .seconds(2))
-        ) == nil)
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 200,
-            at: start.advanced(by: .seconds(4))
-        ) == nil)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 100,
+                at: start
+            ) == nil)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 200,
+                at: start.advanced(by: .seconds(2))
+            ) == nil)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 200,
+                at: start.advanced(by: .seconds(4))
+            ) == nil)
     }
 
     @Test
@@ -54,20 +57,22 @@ struct AudioRenderWatchdogTests {
             playedFrames: 100,
             at: start
         )
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 100,
-            at: start.advanced(by: .seconds(3))
-        ) == .restart)
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 100,
-            at: start.advanced(by: .seconds(5))
-        ) == nil)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 100,
+                at: start.advanced(by: .seconds(3))
+            ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 100,
+                at: start.advanced(by: .seconds(5))
+            ) == nil)
 
         _ = watchdog.observe(
             generation: 2,
@@ -76,13 +81,14 @@ struct AudioRenderWatchdogTests {
             playedFrames: 0,
             at: start.advanced(by: .seconds(6))
         )
-        #expect(watchdog.observe(
-            generation: 2,
-            route: route,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(9))
-        ) == .stop)
+        #expect(
+            watchdog.observe(
+                generation: 2,
+                route: route,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(9))
+            ) == .stop)
     }
 
     @Test
@@ -100,34 +106,38 @@ struct AudioRenderWatchdogTests {
             playedFrames: 10,
             at: start
         )
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 10,
-            at: start.advanced(by: .seconds(3))
-        ) == .restart)
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: false,
-            playedFrames: 10,
-            at: start.advanced(by: .seconds(4))
-        ) == nil)
-        #expect(watchdog.observe(
-            generation: 2,
-            route: route,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(5))
-        ) == nil)
-        #expect(watchdog.observe(
-            generation: 2,
-            route: route,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(8))
-        ) == .stop)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 10,
+                at: start.advanced(by: .seconds(3))
+            ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: false,
+                playedFrames: 10,
+                at: start.advanced(by: .seconds(4))
+            ) == nil)
+        #expect(
+            watchdog.observe(
+                generation: 2,
+                route: route,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(5))
+            ) == nil)
+        #expect(
+            watchdog.observe(
+                generation: 2,
+                route: route,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(8))
+            ) == .stop)
     }
 
     @Test
@@ -149,13 +159,14 @@ struct AudioRenderWatchdogTests {
             playedFrames: 0,
             at: start
         )
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(3))
-        ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(3))
+            ) == .restart)
         _ = watchdog.observe(
             generation: 2,
             route: nextRoute,
@@ -164,13 +175,14 @@ struct AudioRenderWatchdogTests {
             at: start.advanced(by: .seconds(4))
         )
 
-        #expect(watchdog.observe(
-            generation: 2,
-            route: nextRoute,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(7))
-        ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 2,
+                route: nextRoute,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(7))
+            ) == .restart)
     }
 
     @Test
@@ -198,13 +210,14 @@ struct AudioRenderWatchdogTests {
             playedFrames: 0,
             at: start
         )
-        #expect(watchdog.observe(
-            generation: 1,
-            route: firstStream,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(3))
-        ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: firstStream,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(3))
+            ) == .restart)
         _ = watchdog.observe(
             generation: 2,
             route: secondStream,
@@ -213,13 +226,14 @@ struct AudioRenderWatchdogTests {
             at: start.advanced(by: .seconds(4))
         )
 
-        #expect(watchdog.observe(
-            generation: 2,
-            route: secondStream,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(7))
-        ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 2,
+                route: secondStream,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(7))
+            ) == .restart)
     }
 
     @Test
@@ -237,13 +251,14 @@ struct AudioRenderWatchdogTests {
             playedFrames: 0,
             at: start
         )
-        #expect(watchdog.observe(
-            generation: 1,
-            route: route,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(3))
-        ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 1,
+                route: route,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(3))
+            ) == .restart)
 
         watchdog.reset()
         _ = watchdog.observe(
@@ -253,13 +268,14 @@ struct AudioRenderWatchdogTests {
             playedFrames: 0,
             at: start.advanced(by: .seconds(4))
         )
-        #expect(watchdog.observe(
-            generation: 2,
-            route: route,
-            isRunning: true,
-            playedFrames: 0,
-            at: start.advanced(by: .seconds(7))
-        ) == .restart)
+        #expect(
+            watchdog.observe(
+                generation: 2,
+                route: route,
+                isRunning: true,
+                playedFrames: 0,
+                at: start.advanced(by: .seconds(7))
+            ) == .restart)
     }
 
     @Test

@@ -67,7 +67,10 @@ struct MagnitudeCurveEditor: View {
         } header: {
             Text(localized("Target Response"))
         } footer: {
-            Text(localized("GlassEQ interpolates these points in log-frequency space and compiles a 16,384-tap minimum-phase filter when you apply the profile."))
+            Text(
+                localized(
+                    "GlassEQ interpolates these points in log-frequency space and compiles a 16,384-tap minimum-phase filter when you apply the profile."
+                ))
         }
     }
 
@@ -158,7 +161,8 @@ struct ParametricFilterEditor: View {
     @State private var showsColumns = false
 
     var body: some View {
-        let layout = showsColumns
+        let layout =
+            showsColumns
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
             : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
         Section(localized("Filters")) {
@@ -203,14 +207,17 @@ struct ParametricFilterEditor: View {
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .onGeometryChange(for: Bool.self) { geometry in
                 geometry.size.width >= 640
-            } action: { showsColumns = $0 }
+            } action: {
+                showsColumns = $0
+            }
             .padding(.vertical, 4)
         }
     }
 
     private var effectiveSelectedFilterID: UUID? {
         if let selectedFilterID,
-           filters.contains(where: { $0.id == selectedFilterID }) {
+            filters.contains(where: { $0.id == selectedFilterID })
+        {
             return selectedFilterID
         }
         return filters.first?.id
@@ -290,7 +297,8 @@ struct CompactFilterRow: View {
     private var accessibilityValue: String {
         let state = filter.isEnabled ? localized("Enabled") : localized("Disabled")
         let selection = isSelected ? localized("Selected") : localized("Not selected")
-        return localized("\(state), \(selection), \(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel), Q \(qLabel)")
+        return localized(
+            "\(state), \(selection), \(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel), Q \(qLabel)")
     }
 }
 

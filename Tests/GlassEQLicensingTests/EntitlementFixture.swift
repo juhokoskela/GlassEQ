@@ -37,9 +37,10 @@ struct EntitlementFixture: Sendable {
         payload: String,
         using signingKey: Curve25519.Signing.PrivateKey? = nil
     ) throws -> String {
-        let header = header ?? """
-        {"alg":"EdDSA","kid":"\(keyID)","typ":"glasseq-entitlement+jwt"}
-        """
+        let header =
+            header ?? """
+                {"alg":"EdDSA","kid":"\(keyID)","typ":"glasseq-entitlement+jwt"}
+                """
         let encodedHeader = base64URL(Data(header.utf8))
         let encodedPayload = base64URL(Data(payload.utf8))
         let signingInput = "\(encodedHeader).\(encodedPayload)"
@@ -96,12 +97,13 @@ struct EntitlementFixture: Sendable {
     ) throws -> ActivationState {
         ActivationState(
             activationToken: activationToken,
-            entitlement: try sign(payload: monthlyPayload(
-                issuedAt: issuedAt,
-                revision: revision,
-                refreshAfter: refreshAfter,
-                installationID: installationID
-            )),
+            entitlement: try sign(
+                payload: monthlyPayload(
+                    issuedAt: issuedAt,
+                    revision: revision,
+                    refreshAfter: refreshAfter,
+                    installationID: installationID
+                )),
             highestAcceptedRevision: revision,
             highestTrustedTime: highestTrustedTime ?? self.issuedAt
         )

@@ -65,7 +65,7 @@ public struct KeychainCredentialStore: LicenseCredentialStore {
         [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.service,
-            kSecAttrAccount: account.rawValue
+            kSecAttrAccount: account.rawValue,
         ]
     }
 

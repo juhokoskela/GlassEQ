@@ -64,10 +64,11 @@ final class AggregateBufferPolicyStore {
                 forKey: .failureWindowStartedAt
             )
             failureCount = try container.decodeIfPresent(Int.self, forKey: .failureCount) ?? 0
-            cleanSessionCount = try container.decodeIfPresent(
-                Int.self,
-                forKey: .cleanSessionCount
-            ) ?? 0
+            cleanSessionCount =
+                try container.decodeIfPresent(
+                    Int.self,
+                    forKey: .cleanSessionCount
+                ) ?? 0
         }
     }
 
@@ -90,11 +91,13 @@ final class AggregateBufferPolicyStore {
     }
 
     static func defaultURL() -> URL {
-        let baseURL = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        return baseURL
+        let baseURL =
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first ?? FileManager.default.temporaryDirectory
+        return
+            baseURL
             .appendingPathComponent("GlassEQ", isDirectory: true)
             .appendingPathComponent("aggregate-buffer-policy.json")
     }
@@ -109,18 +112,19 @@ final class AggregateBufferPolicyStore {
             Self.validatedAutomaticFrameSize(record?.automaticFrameSize ?? 16),
             Self.defaultFrameSize(isBluetooth: isBluetooth)
         )
-        let frameSize: UInt32 = switch mode {
-        case .automatic:
-            automaticFrameSize
-        case .frames16:
-            16
-        case .frames32:
-            32
-        case .frames64:
-            64
-        case .frames128:
-            128
-        }
+        let frameSize: UInt32 =
+            switch mode {
+            case .automatic:
+                automaticFrameSize
+            case .frames16:
+                16
+            case .frames32:
+                32
+            case .frames64:
+                64
+            case .frames128:
+                128
+            }
         return AggregateBufferSelection(
             mode: mode,
             frameSize: frameSize,
@@ -159,7 +163,8 @@ final class AggregateBufferPolicyStore {
         at now: Date = Date()
     ) throws -> UInt32? {
         guard occurrences > 0,
-              selection(for: route).mode == .automatic else {
+            selection(for: route).mode == .automatic
+        else {
             return nil
         }
         var resultingFrameSize: UInt32?
@@ -168,8 +173,9 @@ final class AggregateBufferPolicyStore {
                 now.timeIntervalSince($0)
             }
             if let windowAge,
-               windowAge >= 0,
-               windowAge <= Self.failureWindow {
+                windowAge >= 0,
+                windowAge <= Self.failureWindow
+            {
                 record.failureCount += Int(clamping: occurrences)
             } else {
                 record.failureWindowStartedAt = now
@@ -182,9 +188,11 @@ final class AggregateBufferPolicyStore {
             }
             record.failureWindowStartedAt = nil
             record.failureCount = 0
-            guard let nextFrameSize = Self.nextAutomaticFrameSize(
-                after: max(record.automaticFrameSize, Self.defaultFrameSize(isBluetooth: isBluetooth))
-            ) else {
+            guard
+                let nextFrameSize = Self.nextAutomaticFrameSize(
+                    after: max(record.automaticFrameSize, Self.defaultFrameSize(isBluetooth: isBluetooth))
+                )
+            else {
                 return
             }
             record.automaticFrameSize = nextFrameSize
@@ -200,7 +208,8 @@ final class AggregateBufferPolicyStore {
     ) throws -> UInt32? {
         let selection = selection(for: route, isBluetooth: isBluetooth)
         guard selection.mode == .automatic,
-              selection.automaticFrameSize > Self.defaultFrameSize(isBluetooth: isBluetooth) else {
+            selection.automaticFrameSize > Self.defaultFrameSize(isBluetooth: isBluetooth)
+        else {
             return nil
         }
         var resultingFrameSize: UInt32?
@@ -209,9 +218,10 @@ final class AggregateBufferPolicyStore {
             record.failureCount = 0
             record.cleanSessionCount += 1
             guard record.cleanSessionCount >= Self.cleanSessionsBeforeRetry,
-                  let previousFrameSize = Self.previousAutomaticFrameSize(
-                      before: record.automaticFrameSize
-                  ) else {
+                let previousFrameSize = Self.previousAutomaticFrameSize(
+                    before: record.automaticFrameSize
+                )
+            else {
                 return
             }
             record.automaticFrameSize = previousFrameSize
@@ -254,11 +264,12 @@ final class AggregateBufferPolicyStore {
             guard records.count < Self.maximumRecordCount else {
                 throw PersistenceError.tooManyRecords
             }
-            records.append(Record(
-                route: route,
-                mode: .automatic,
-                automaticFrameSize: 16
-            ))
+            records.append(
+                Record(
+                    route: route,
+                    mode: .automatic,
+                    automaticFrameSize: 16
+                ))
             index = records.index(before: records.endIndex)
             inserted = true
         }
@@ -311,14 +322,16 @@ final class AggregateBufferPolicyStore {
 
     private static func load(from url: URL) -> [Record] {
         guard let data = try? readBoundedData(from: url),
-              let document = try? JSONDecoder().decode(Document.self, from: data),
-              [1, Document.schemaVersion].contains(document.schemaVersion),
-              document.records.count <= maximumRecordCount else {
+            let document = try? JSONDecoder().decode(Document.self, from: data),
+            [1, Document.schemaVersion].contains(document.schemaVersion),
+            document.records.count <= maximumRecordCount
+        else {
             return []
         }
         return document.records.compactMap { record in
             guard record.route.isValid,
-                  [16, 32, 64, 128].contains(record.automaticFrameSize) else {
+                [16, 32, 64, 128].contains(record.automaticFrameSize)
+            else {
                 return nil
             }
             var record = record

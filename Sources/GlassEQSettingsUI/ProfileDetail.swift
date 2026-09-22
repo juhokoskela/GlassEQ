@@ -88,10 +88,14 @@ struct StartingPointHint: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(localized("Start with a profile for your headphones"))
                     .font(.headline)
-                Text(localized("Every profile here is still flat, so GlassEQ is not changing the sound yet. Search AutoEq for your headphone model and import a ready correction, or build one by hand."))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    localized(
+                        "Every profile here is still flat, so GlassEQ is not changing the sound yet. Search AutoEq for your headphone model and import a ready correction, or build one by hand."
+                    )
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
                     Button {
                         onImport()

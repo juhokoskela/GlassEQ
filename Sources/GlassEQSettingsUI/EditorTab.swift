@@ -92,12 +92,13 @@ extension EQProfile {
     // a channel past the persistable preamp range.
     func headroomAttenuation(toReach recommendedPreampDB: Double) -> Double? {
         let attenuation = max(activePreampDB - recommendedPreampDB, 0)
-        let adjustedPreamps = switch channelMode {
-        case .linked:
-            [preampDB - attenuation]
-        case .stereo:
-            [leftPreampDB - attenuation, rightPreampDB - attenuation]
-        }
+        let adjustedPreamps =
+            switch channelMode {
+            case .linked:
+                [preampDB - attenuation]
+            case .stereo:
+                [leftPreampDB - attenuation, rightPreampDB - attenuation]
+            }
         guard adjustedPreamps.allSatisfy(ProfilePersistence.preampRange.contains) else {
             return nil
         }
@@ -224,7 +225,9 @@ struct EditorTab: View {
                     }
                     .pickerStyle(.segmented)
                     .accessibilityValue(Text(draftProfile.channelMode.accessibilityTitle))
-                    .accessibilityHint(Text(localized("Chooses whether channels share one EQ or use separate left and right settings")))
+                    .accessibilityHint(
+                        Text(localized("Chooses whether channels share one EQ or use separate left and right settings"))
+                    )
 
                     if draftProfile.channelMode == .stereo {
                         Picker(localized("Editing"), selection: $controller.editChannel) {
@@ -309,7 +312,11 @@ private struct EditorResponseSection: View {
                     .frame(height: 165)
                     .accessibilityLabel(Text(localized("Frequency response graph")))
                     .accessibilityValue(Text(analysis.accessibilitySummary))
-                    .accessibilityHint(Text(localized("Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))")))
+                    .accessibilityHint(
+                        Text(
+                            localized(
+                                "Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))"
+                            )))
                 if let inactiveFilterSummary = analysis.inactiveFilterSummary {
                     Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -346,13 +353,14 @@ struct HeadroomRow: View {
     var body: some View {
         let needsHeadroom = recommendedPreampDB < profile.activePreampDB - 0.1
         let attenuation = profile.headroomAttenuation(toReach: recommendedPreampDB)
-        let status = if !needsHeadroom {
-            localized("OK")
-        } else if attenuation == nil {
-            localized("Required headroom exceeds the profile limit")
-        } else {
-            localized("Recommend \(localizedDecibels(recommendedPreampDB))")
-        }
+        let status =
+            if !needsHeadroom {
+                localized("OK")
+            } else if attenuation == nil {
+                localized("Required headroom exceeds the profile limit")
+            } else {
+                localized("Recommend \(localizedDecibels(recommendedPreampDB))")
+            }
         LabeledContent(localized("Headroom")) {
             Text(status)
                 .monospacedDigit()
@@ -360,7 +368,8 @@ struct HeadroomRow: View {
                 .accessibilityLabel(Text(localized("Headroom")))
                 .accessibilityValue(Text(status))
             Button(localized("Use Recommended")) {
-                if let adjusted = profileApplyingRecommendedHeadroom(profile, recommendedPreampDB: recommendedPreampDB) {
+                if let adjusted = profileApplyingRecommendedHeadroom(profile, recommendedPreampDB: recommendedPreampDB)
+                {
                     profile = adjusted
                 }
             }

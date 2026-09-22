@@ -45,7 +45,9 @@ struct EQAnalysisCacheTests {
         #expect(cache.analysis(for: edited, sampleRate: 48_000)?.linkedPoints == stored.linkedPoints)
         #expect(cache.analysis(for: edited, sampleRate: 48_000)?.recommendedPreampDB == nil)
         await cache.waitForPendingAnalyses()
-        #expect(cache.analysis(for: edited, sampleRate: 48_000)?.signature == EQAnalysisSignature(profile: edited, sampleRate: 48_000))
+        #expect(
+            cache.analysis(for: edited, sampleRate: 48_000)?.signature
+                == EQAnalysisSignature(profile: edited, sampleRate: 48_000))
 
         cache.update(profiles: [first, second], selected: first, sampleRate: 48_000)
         cache.update(profiles: [first, second], selected: second, sampleRate: 48_000)
@@ -62,12 +64,16 @@ struct EQAnalysisCacheTests {
         cache.update(profiles: [saved], selected: saved, sampleRate: 48_000)
         #expect(cache.analysis(for: saved, sampleRate: 48_000)?.recommendedPreampDB == nil)
         await cache.waitForPendingAnalyses()
-        #expect(cache.analysis(for: saved, sampleRate: 48_000) == (try await EQAnalysisSnapshot.analyze(profile: saved, sampleRate: 48_000)))
+        #expect(
+            cache.analysis(for: saved, sampleRate: 48_000)
+                == (try await EQAnalysisSnapshot.analyze(profile: saved, sampleRate: 48_000)))
 
         cache.update(profiles: [saved], selected: saved, sampleRate: 96_000)
         #expect(cache.analysis(for: saved, sampleRate: 96_000) == nil)
         await cache.waitForPendingAnalyses()
-        #expect(cache.analysis(for: saved, sampleRate: 96_000) == (try await EQAnalysisSnapshot.analyze(profile: saved, sampleRate: 96_000)))
+        #expect(
+            cache.analysis(for: saved, sampleRate: 96_000)
+                == (try await EQAnalysisSnapshot.analyze(profile: saved, sampleRate: 96_000)))
     }
 
     @Test
@@ -97,7 +103,9 @@ struct EQAnalysisCacheTests {
         #expect(cache.analysis(for: second, sampleRate: 96_000) == nil)
         cache.update(profiles: [second], selected: second, sampleRate: 96_000)
         await cache.waitForPendingAnalyses()
-        #expect(cache.analysis(for: second, sampleRate: 96_000) == (try await EQAnalysisSnapshot.analyze(profile: second, sampleRate: 96_000)))
+        #expect(
+            cache.analysis(for: second, sampleRate: 96_000)
+                == (try await EQAnalysisSnapshot.analyze(profile: second, sampleRate: 96_000)))
     }
 
     @Test
@@ -114,7 +122,9 @@ struct EQAnalysisCacheTests {
         controller.startAnalyses()
         await controller.analysisCache.waitForPendingAnalyses()
         controller.selectProfile(second.id)
-        #expect(controller.analysisCache.analysis(for: controller.draftProfile, sampleRate: controller.analysisSampleRate)?.recommendedPreampDB != nil)
+        #expect(
+            controller.analysisCache.analysis(for: controller.draftProfile, sampleRate: controller.analysisSampleRate)?
+                .recommendedPreampDB != nil)
         model.accept(patch: SettingsSnapshotPatchDTO(currentProcessingSampleRate: 96_000))
         controller.refreshAnalyses()
         await controller.analysisCache.waitForPendingAnalyses()

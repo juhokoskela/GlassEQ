@@ -150,9 +150,12 @@ final class ScriptedLicenseService: LicenseServicing {
         state.withLock { $0.deactivate = handler }
     }
 
-    func activate(licenseKey: String, installationID: UUID, idempotencyKey: UUID) async throws(LicenseServiceError) -> ActivationResponse {
+    func activate(licenseKey: String, installationID: UUID, idempotencyKey: UUID) async throws(LicenseServiceError)
+        -> ActivationResponse
+    {
         let handler = state.withLock {
-            $0.calls.append(.activate(licenseKey: licenseKey, installationID: installationID, idempotencyKey: idempotencyKey))
+            $0.calls.append(
+                .activate(licenseKey: licenseKey, installationID: installationID, idempotencyKey: idempotencyKey))
             return $0.activate
         }
         do {
@@ -436,11 +439,12 @@ struct ControllerHarness {
         let fixture = fixture
         let issuedAt = issuedAt ?? wall.time
         service.onRefresh { _, installationID in
-            try fixture.sign(payload: fixture.monthlyPayload(
-                startingAt: issuedAt,
-                revision: revision,
-                installationID: installationID
-            ))
+            try fixture.sign(
+                payload: fixture.monthlyPayload(
+                    startingAt: issuedAt,
+                    revision: revision,
+                    installationID: installationID
+                ))
         }
     }
 

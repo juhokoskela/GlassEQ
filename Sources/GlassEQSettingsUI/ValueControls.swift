@@ -110,7 +110,8 @@ struct EditableValueText: View {
                     }
                     .onChange(of: value) { _, newValue in
                         guard isEditing,
-                              editSession.valueChanged(newValue) else {
+                            editSession.valueChanged(newValue)
+                        else {
                             return
                         }
                         editText = editableNumberText(newValue)
@@ -179,7 +180,8 @@ struct EditableValueText: View {
     @discardableResult
     private func updateValue(from text: String) -> Bool {
         guard isEditing, editSession.isActive(in: context),
-              let parsed = clampedEditableNumber(text, range: range) else {
+            let parsed = clampedEditableNumber(text, range: range)
+        else {
             return false
         }
         editSession.recordTextDrivenValue(parsed)

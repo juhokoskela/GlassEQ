@@ -11,7 +11,8 @@ public enum ImportedEQTextDetector {
         if lowercased.contains("room eq wizard")
             || lowercased.contains("equaliser: generic")
             || lowercased.contains("filter settings file")
-            || lowercased.contains(" on modal ") {
+            || lowercased.contains(" on modal ")
+        {
             return .rew
         }
         return .autoEQ

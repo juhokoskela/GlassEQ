@@ -8,7 +8,7 @@ private let settingsResourcesBundle: Bundle = {
         Bundle.main.bundleURL.appendingPathComponent(resourceBundleName),
         Bundle.main.bundleURL
             .deletingLastPathComponent()
-            .appendingPathComponent(resourceBundleName)
+            .appendingPathComponent(resourceBundleName),
     ].compactMap { $0 }
 
     for candidate in candidates {
@@ -35,10 +35,11 @@ public func localizedDecimal(
     maximumFractionDigits: Int,
     signed: Bool = false
 ) -> String {
-    value.formatted(.number
-        .locale(.autoupdatingCurrent)
-        .precision(.fractionLength(minimumFractionDigits...maximumFractionDigits))
-        .sign(strategy: signed ? .always(includingZero: true) : .automatic))
+    value.formatted(
+        .number
+            .locale(.autoupdatingCurrent)
+            .precision(.fractionLength(minimumFractionDigits...maximumFractionDigits))
+            .sign(strategy: signed ? .always(includingZero: true) : .automatic))
 }
 
 func editableNumberText(_ value: Double, locale: Locale = .autoupdatingCurrent) -> String {
@@ -62,30 +63,35 @@ func parseEditableNumber(_ text: String, locale: Locale = .autoupdatingCurrent) 
     formatter.locale = locale
     formatter.numberStyle = .decimal
     if let groupingSeparator = formatter.groupingSeparator,
-       !groupingSeparator.isEmpty,
-       groupingSeparator != formatter.decimalSeparator,
-       trimmed.contains(groupingSeparator) {
+        !groupingSeparator.isEmpty,
+        groupingSeparator != formatter.decimalSeparator,
+        trimmed.contains(groupingSeparator)
+    {
         return nil
     }
 
     var normalized = trimmed
     if let decimalSeparator = formatter.decimalSeparator,
-       decimalSeparator != "." {
+        decimalSeparator != "."
+    {
         normalized = normalized.replacingOccurrences(of: decimalSeparator, with: ".")
     }
     if let minusSign = formatter.minusSign,
-       minusSign != "-" {
+        minusSign != "-"
+    {
         normalized = normalized.replacingOccurrences(of: minusSign, with: "-")
     }
     if let plusSign = formatter.plusSign,
-       plusSign != "+" {
+        plusSign != "+"
+    {
         normalized = normalized.replacingOccurrences(of: plusSign, with: "+")
     }
     var asciiNormalized = ""
     for scalar in normalized.unicodeScalars {
         if scalar.properties.numericType == .decimal,
-           let numericValue = scalar.properties.numericValue,
-           let asciiDigit = UnicodeScalar(Int(numericValue) + 48) {
+            let numericValue = scalar.properties.numericValue,
+            let asciiDigit = UnicodeScalar(Int(numericValue) + 48)
+        {
             asciiNormalized.unicodeScalars.append(asciiDigit)
         } else {
             asciiNormalized.unicodeScalars.append(scalar)
@@ -188,7 +194,8 @@ extension Double {
 
     var axisFrequencyLabel: String {
         if self >= 1_000 {
-            return localized("\(localizedDecimal(self / 1_000, minimumFractionDigits: 0, maximumFractionDigits: 0)) kHz")
+            return localized(
+                "\(localizedDecimal(self / 1_000, minimumFractionDigits: 0, maximumFractionDigits: 0)) kHz")
         }
         return localized("\(localizedDecimal(self, minimumFractionDigits: 0, maximumFractionDigits: 0)) Hz")
     }

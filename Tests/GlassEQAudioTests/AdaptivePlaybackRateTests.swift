@@ -150,9 +150,10 @@ struct AdaptivePlaybackRateTests {
         #expect(convertedFrameCount == outputFrameCount)
 
         let settledSamples = output.dropFirst(1_024 * channelCount)
-        let meanSquare = settledSamples.reduce(0.0) { partial, sample in
-            partial + Double(sample * sample)
-        } / Double(settledSamples.count)
+        let meanSquare =
+            settledSamples.reduce(0.0) { partial, sample in
+                partial + Double(sample * sample)
+            } / Double(settledSamples.count)
         return sqrt(meanSquare)
     }
 
@@ -166,30 +167,33 @@ struct AdaptivePlaybackRateTests {
         }
 
         let legacyJSON = """
-        [
-          {"outputUID":"output-a","sampleRate":48000,"frameSize":256},
-          {"outputUID":"output-a","sampleRate":48000,"frameSize":128},
-          {"outputUID":"output-a","sampleRate":44100,"frameSize":128}
-        ]
-        """
+            [
+              {"outputUID":"output-a","sampleRate":48000,"frameSize":256},
+              {"outputUID":"output-a","sampleRate":48000,"frameSize":128},
+              {"outputUID":"output-a","sampleRate":44100,"frameSize":128}
+            ]
+            """
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try #require(legacyJSON.data(using: .utf8)).write(to: url)
 
-        #expect(PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
-            outputUID: "output-a",
-            sampleRate: 48_000,
-            from: url
-        ) == 256)
-        #expect(PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
-            outputUID: "output-a",
-            sampleRate: 44_100,
-            from: url
-        ) == 128)
-        #expect(PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
-            outputUID: "output-b",
-            sampleRate: 48_000,
-            from: url
-        ) == nil)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
+                outputUID: "output-a",
+                sampleRate: 48_000,
+                from: url
+            ) == 256)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
+                outputUID: "output-a",
+                sampleRate: 44_100,
+                from: url
+            ) == 128)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
+                outputUID: "output-b",
+                sampleRate: 48_000,
+                from: url
+            ) == nil)
 
         try PersistedPlaybackBufferCalibrationStore.recordStable(
             outputUID: "output-b",
@@ -198,16 +202,18 @@ struct AdaptivePlaybackRateTests {
             targetFrames: 128,
             at: url
         )
-        #expect(PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
-            outputUID: "output-a",
-            sampleRate: 48_000,
-            from: url
-        ) == 256)
-        #expect(PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
-            outputUID: "output-b",
-            sampleRate: 48_000,
-            from: url
-        ) == 64)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
+                outputUID: "output-a",
+                sampleRate: 48_000,
+                from: url
+            ) == 256)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.preferredFrameSize(
+                outputUID: "output-b",
+                sampleRate: 48_000,
+                from: url
+            ) == 64)
     }
 
     @Test
@@ -245,40 +251,42 @@ struct AdaptivePlaybackRateTests {
             try? FileManager.default.removeItem(at: directory)
         }
         let callbackOnlyJSON = """
-        {
-          "schemaVersion": 1,
-          "calibrations": [
             {
-              "outputUID": "scarlett",
-              "sampleRate": 48000,
-              "stableFrameSize": 128,
-              "events": [
+              "schemaVersion": 1,
+              "calibrations": [
                 {
-                  "kind": "stabilized",
-                  "timestamp": "2026-08-18T07:45:14Z",
-                  "resultingFrameSize": 128
+                  "outputUID": "scarlett",
+                  "sampleRate": 48000,
+                  "stableFrameSize": 128,
+                  "events": [
+                    {
+                      "kind": "stabilized",
+                      "timestamp": "2026-08-18T07:45:14Z",
+                      "resultingFrameSize": 128
+                    }
+                  ]
                 }
               ]
             }
-          ]
-        }
-        """
+            """
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try #require(callbackOnlyJSON.data(using: .utf8)).write(to: url)
 
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == 128)
         #expect(calibration.operatingPoint(for: 128) == nil)
         #expect(calibration.events.first?.resultingTargetFrames == nil)
-        #expect(PlaybackBufferCalibrationPolicy.shouldProbe(
-            frameSize: 128,
-            targetFrames: 256,
-            calibration: calibration
-        ))
+        #expect(
+            PlaybackBufferCalibrationPolicy.shouldProbe(
+                frameSize: 128,
+                targetFrames: 256,
+                calibration: calibration
+            ))
     }
 
     @Test
@@ -290,27 +298,28 @@ struct AdaptivePlaybackRateTests {
             try? FileManager.default.removeItem(at: directory)
         }
         let scalarTargetJSON = """
-        {
-          "schemaVersion": 1,
-          "calibrations": [
             {
-              "outputUID": "scarlett",
-              "sampleRate": 48000,
-              "stableFrameSize": 128,
-              "stableTargetFrames": 256,
-              "events": []
+              "schemaVersion": 1,
+              "calibrations": [
+                {
+                  "outputUID": "scarlett",
+                  "sampleRate": 48000,
+                  "stableFrameSize": 128,
+                  "stableTargetFrames": 256,
+                  "events": []
+                }
+              ]
             }
-          ]
-        }
-        """
+            """
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try #require(scalarTargetJSON.data(using: .utf8)).write(to: url)
 
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == 128)
         #expect(calibration.operatingPoint(for: 128)?.stableTargetFrames == 256)
         #expect(calibration.preferredTargetFrames(for: 64) == nil)
@@ -325,32 +334,33 @@ struct AdaptivePlaybackRateTests {
             try? FileManager.default.removeItem(at: directory)
         }
         let contaminatedJSON = """
-        {
-          "schemaVersion": 2,
-          "calibrations": [
             {
-              "outputUID": "scarlett",
-              "sampleRate": 48000,
-              "stableFrameSize": 512,
-              "operatingPoints": [
+              "schemaVersion": 2,
+              "calibrations": [
                 {
-                  "frameSize": 512,
-                  "stableTargetFrames": 704
+                  "outputUID": "scarlett",
+                  "sampleRate": 48000,
+                  "stableFrameSize": 512,
+                  "operatingPoints": [
+                    {
+                      "frameSize": 512,
+                      "stableTargetFrames": 704
+                    }
+                  ],
+                  "events": []
                 }
-              ],
-              "events": []
+              ]
             }
-          ]
-        }
-        """
+            """
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try #require(contaminatedJSON.data(using: .utf8)).write(to: url)
 
-        #expect(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ) == nil)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                from: url
+            ) == nil)
 
         try PersistedPlaybackBufferCalibrationStore.recordStable(
             outputUID: "scarlett",
@@ -359,11 +369,12 @@ struct AdaptivePlaybackRateTests {
             targetFrames: 128,
             at: url
         )
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == 64)
         #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == 128)
         #expect(calibration.operatingPoint(for: 512) == nil)
@@ -385,11 +396,12 @@ struct AdaptivePlaybackRateTests {
             targetFrames: 128,
             at: url
         )
-        var calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "airpods",
-            sampleRate: 48_000,
-            from: url
-        ))
+        var calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "airpods",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == nil)
         #expect(calibration.probingFrameSize == 64)
         #expect(calibration.operatingPoint(for: 64)?.probingTargetFrames == 128)
@@ -403,11 +415,12 @@ struct AdaptivePlaybackRateTests {
             timestamp: Date(timeIntervalSince1970: 1),
             at: url
         )
-        calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "airpods",
-            sampleRate: 48_000,
-            from: url
-        ))
+        calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "airpods",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == 64)
         #expect(calibration.probingFrameSize == nil)
         #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == 128)
@@ -425,11 +438,12 @@ struct AdaptivePlaybackRateTests {
             timestamp: Date(timeIntervalSince1970: 2),
             at: url
         )
-        calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "airpods",
-            sampleRate: 48_000,
-            from: url
-        ))
+        calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "airpods",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == nil)
         #expect(calibration.probingFrameSize == 128)
         #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == nil)
@@ -450,11 +464,12 @@ struct AdaptivePlaybackRateTests {
             timestamp: Date(timeIntervalSince1970: 3),
             at: url
         )
-        calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "airpods",
-            sampleRate: 48_000,
-            from: url
-        ))
+        calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "airpods",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == 128)
         #expect(calibration.probingFrameSize == nil)
         #expect(calibration.operatingPoint(for: 128)?.stableTargetFrames == 256)
@@ -489,24 +504,27 @@ struct AdaptivePlaybackRateTests {
             at: url
         )
 
-        let routeA = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "output-a",
-            sampleRate: 48_000,
-            from: url
-        ))
-        let routeB = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "output-b",
-            sampleRate: 44_100,
-            from: url
-        ))
+        let routeA = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "output-a",
+                sampleRate: 48_000,
+                from: url
+            ))
+        let routeB = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "output-b",
+                sampleRate: 44_100,
+                from: url
+            ))
         #expect(routeA.events.count == PlaybackBufferCalibrationPolicy.maximumEventCount)
         #expect(routeA.events.first?.timestamp == Date(timeIntervalSince1970: 4))
         #expect(routeB.stableFrameSize == 64)
-        #expect(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "output-a",
-            sampleRate: 44_100,
-            from: url
-        ) == nil)
+        #expect(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "output-a",
+                sampleRate: 44_100,
+                from: url
+            ) == nil)
     }
 
     @Test
@@ -544,11 +562,12 @@ struct AdaptivePlaybackRateTests {
         )
 
         #expect(try Data(contentsOf: url) == firstWrite)
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "output-a",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "output-a",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.events.count == 1)
         #expect(calibration.events.first?.timestamp == Date(timeIntervalSince1970: 1))
     }
@@ -585,11 +604,12 @@ struct AdaptivePlaybackRateTests {
         )
 
         #expect(try Data(contentsOf: url) == stableWrite)
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "output-a",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "output-a",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.stableFrameSize == 64)
         #expect(calibration.operatingPoint(for: 64)?.stableTargetFrames == 128)
         #expect(calibration.events.map(\.kind) == [.stabilized])
@@ -739,46 +759,54 @@ struct AdaptivePlaybackRateTests {
             operatingPoint.probingTargetFrames = 512
         }
 
-        #expect(PlaybackBufferCalibrationPolicy.shouldProbe(
-            frameSize: 64,
-            targetFrames: 128,
-            calibration: nil
-        ))
-        #expect(!PlaybackBufferCalibrationPolicy.shouldProbe(
-            frameSize: 128,
-            targetFrames: 256,
-            calibration: stable
-        ))
-        #expect(PlaybackBufferCalibrationPolicy.shouldProbe(
-            frameSize: 256,
-            targetFrames: 512,
-            calibration: pending
-        ))
+        #expect(
+            PlaybackBufferCalibrationPolicy.shouldProbe(
+                frameSize: 64,
+                targetFrames: 128,
+                calibration: nil
+            ))
+        #expect(
+            !PlaybackBufferCalibrationPolicy.shouldProbe(
+                frameSize: 128,
+                targetFrames: 256,
+                calibration: stable
+            ))
+        #expect(
+            PlaybackBufferCalibrationPolicy.shouldProbe(
+                frameSize: 256,
+                targetFrames: 512,
+                calibration: pending
+            ))
     }
 
     @Test
     func underrunsGrowTheReservoirBeforeTheCallbackSizeChanges() {
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            callbackFrames: 64,
-            after: 128
-        ) == 192)
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            callbackFrames: 64,
-            after: 256
-        ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            callbackFrames: 128,
-            after: 192
-        ) == 256)
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            callbackFrames: 128,
-            after: 320
-        ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.nextTargetFrames(
-            callbackFrames: 3_072,
-            after: 4_096,
-            maximumReservoirFrames: 2_048
-        ) == 4_160)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextTargetFrames(
+                callbackFrames: 64,
+                after: 128
+            ) == 192)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextTargetFrames(
+                callbackFrames: 64,
+                after: 256
+            ) == nil)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextTargetFrames(
+                callbackFrames: 128,
+                after: 192
+            ) == 256)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextTargetFrames(
+                callbackFrames: 128,
+                after: 320
+            ) == nil)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextTargetFrames(
+                callbackFrames: 3_072,
+                after: 4_096,
+                maximumReservoirFrames: 2_048
+            ) == 4_160)
     }
 
     @Test
@@ -824,14 +852,16 @@ struct AdaptivePlaybackRateTests {
 
     @Test
     func activeAdaptiveRenderFailureTakesPriorityOverLaterInstability() {
-        #expect(AdaptivePlaybackRenderRecoveryPolicy.effectiveInstabilityReason(
-            latest: .underrun,
-            renderFailureActive: true
-        ) == .adaptiveRenderFailure)
-        #expect(AdaptivePlaybackRenderRecoveryPolicy.effectiveInstabilityReason(
-            latest: .underrun,
-            renderFailureActive: false
-        ) == .underrun)
+        #expect(
+            AdaptivePlaybackRenderRecoveryPolicy.effectiveInstabilityReason(
+                latest: .underrun,
+                renderFailureActive: true
+            ) == .adaptiveRenderFailure)
+        #expect(
+            AdaptivePlaybackRenderRecoveryPolicy.effectiveInstabilityReason(
+                latest: .underrun,
+                renderFailureActive: false
+            ) == .underrun)
     }
 
     @Test
@@ -858,11 +888,12 @@ struct AdaptivePlaybackRateTests {
             at: url
         )
 
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                from: url
+            ))
         #expect(calibration.preferredFrameSize == 128)
         #expect(calibration.preferredTargetFrames(for: 64) == 256)
         #expect(calibration.preferredTargetFrames(for: 128) == 192)
@@ -895,18 +926,20 @@ struct AdaptivePlaybackRateTests {
             at: url
         )
 
-        let convertedRoute = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            tapSampleRate: 24_000,
-            from: url
-        ))
-        let directRoute = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            tapSampleRate: 48_000,
-            from: url
-        ))
+        let convertedRoute = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                tapSampleRate: 24_000,
+                from: url
+            ))
+        let directRoute = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                tapSampleRate: 48_000,
+                from: url
+            ))
         #expect(convertedRoute.preferredTargetFrames(for: 64) == 1_056)
         #expect(directRoute.preferredTargetFrames(for: 64) == 192)
     }
@@ -945,45 +978,51 @@ struct AdaptivePlaybackRateTests {
             at: url
         )
 
-        let calibration = try #require(PersistedPlaybackBufferCalibrationStore.calibration(
-            outputUID: "scarlett",
-            sampleRate: 48_000,
-            from: url
-        ))
+        let calibration = try #require(
+            PersistedPlaybackBufferCalibrationStore.calibration(
+                outputUID: "scarlett",
+                sampleRate: 48_000,
+                from: url
+            ))
         let operatingPoint = try #require(calibration.operatingPoint(for: 128))
         #expect(operatingPoint.stableTargetFrames == 256)
         #expect(operatingPoint.probingTargetFrames == 256)
         #expect(operatingPoint.unstableThroughTargetFrames == 192)
-        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
-            callbackFrames: 128,
-            stableTargetFrames: 256,
-            unstableThroughTargetFrames: operatingPoint.unstableThroughTargetFrames
-        ) == nil)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
+                callbackFrames: 128,
+                stableTargetFrames: 256,
+                unstableThroughTargetFrames: operatingPoint.unstableThroughTargetFrames
+            ) == nil)
     }
 
     @Test
     func targetDecayIsConservativeAndRemembersFailures() {
-        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
-            callbackFrames: 128,
-            stableTargetFrames: 256,
-            unstableThroughTargetFrames: nil
-        ) == 192)
-        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
-            callbackFrames: 128,
-            stableTargetFrames: 256,
-            unstableThroughTargetFrames: 192
-        ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
-            callbackFrames: 64,
-            stableTargetFrames: 128,
-            unstableThroughTargetFrames: nil
-        ) == nil)
-        #expect(AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
-            callbackFrames: 128,
-            stableTargetFrames: 256,
-            unstableThroughTargetFrames: nil,
-            baselineTargetFrames: 256
-        ) == nil)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
+                callbackFrames: 128,
+                stableTargetFrames: 256,
+                unstableThroughTargetFrames: nil
+            ) == 192)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
+                callbackFrames: 128,
+                stableTargetFrames: 256,
+                unstableThroughTargetFrames: 192
+            ) == nil)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
+                callbackFrames: 64,
+                stableTargetFrames: 128,
+                unstableThroughTargetFrames: nil
+            ) == nil)
+        #expect(
+            AdaptivePlaybackBufferPolicy.nextDecayTargetFrames(
+                callbackFrames: 128,
+                stableTargetFrames: 256,
+                unstableThroughTargetFrames: nil,
+                baselineTargetFrames: 256
+            ) == nil)
     }
 
     @Test
@@ -994,14 +1033,16 @@ struct AdaptivePlaybackRateTests {
             probingTargetFrames: nil,
             unstableThroughTargetFrames: nil
         )
-        #expect(AdaptivePlaybackBufferPolicy.startupTargetFrames(
-            baselineTargetFrames: 192,
-            operatingPoint: nil
-        ) == 192)
-        #expect(AdaptivePlaybackBufferPolicy.startupTargetFrames(
-            baselineTargetFrames: 192,
-            operatingPoint: stable
-        ) == 256)
+        #expect(
+            AdaptivePlaybackBufferPolicy.startupTargetFrames(
+                baselineTargetFrames: 192,
+                operatingPoint: nil
+            ) == 192)
+        #expect(
+            AdaptivePlaybackBufferPolicy.startupTargetFrames(
+                baselineTargetFrames: 192,
+                operatingPoint: stable
+            ) == 256)
     }
 
     @Test
@@ -1016,19 +1057,21 @@ struct AdaptivePlaybackRateTests {
         )
         let range = AudioBufferFrameSizeRange(minimum: 64, maximum: 512)
 
-        #expect(AdaptivePlaybackBufferPolicy.startupFrameSize(
-            preferredFrameSize: 64,
-            calibration: calibration,
-            supportedRange: range
-        ) == 256)
+        #expect(
+            AdaptivePlaybackBufferPolicy.startupFrameSize(
+                preferredFrameSize: 64,
+                calibration: calibration,
+                supportedRange: range
+            ) == 256)
 
         var probing = calibration
         probing.probingFrameSize = 512
-        #expect(AdaptivePlaybackBufferPolicy.startupFrameSize(
-            preferredFrameSize: 64,
-            calibration: probing,
-            supportedRange: range
-        ) == 512)
+        #expect(
+            AdaptivePlaybackBufferPolicy.startupFrameSize(
+                preferredFrameSize: 64,
+                calibration: probing,
+                supportedRange: range
+            ) == 512)
     }
 
     @Test
@@ -1162,10 +1205,11 @@ struct AdaptivePlaybackRateTests {
         for _ in 0..<Int(48_000 / 64) {
             _ = reprimeServo.update(occupancyFrames: 128, outputFrames: 64)
         }
-        #expect(abs(
-            reprimeServo.correctionPartsPerMillion
-                - reprimeServo.learnedCorrectionPartsPerMillion
-        ) < 0.5)
+        #expect(
+            abs(
+                reprimeServo.correctionPartsPerMillion
+                    - reprimeServo.learnedCorrectionPartsPerMillion
+            ) < 0.5)
 
         servo.retarget(192)
         #expect(servo.learnedCorrectionPartsPerMillion == learnedCorrection)
@@ -1174,26 +1218,30 @@ struct AdaptivePlaybackRateTests {
 
     @Test
     func occupancyRecoveryAllowsCallbackJitterButRejectsStepBacklog() {
-        #expect(!PlaybackOccupancyRecoveryPolicy.shouldReprime(
-            occupancyFrames: 3_072,
-            targetFrames: 1_024,
-            outputFrames: 512
-        ))
-        #expect(PlaybackOccupancyRecoveryPolicy.shouldReprime(
-            occupancyFrames: 3_073,
-            targetFrames: 1_024,
-            outputFrames: 512
-        ))
-        #expect(!PlaybackOccupancyRecoveryPolicy.shouldReprime(
-            occupancyFrames: 384,
-            targetFrames: 128,
-            outputFrames: 64
-        ))
-        #expect(PlaybackOccupancyRecoveryPolicy.shouldReprime(
-            occupancyFrames: 385,
-            targetFrames: 128,
-            outputFrames: 64
-        ))
+        #expect(
+            !PlaybackOccupancyRecoveryPolicy.shouldReprime(
+                occupancyFrames: 3_072,
+                targetFrames: 1_024,
+                outputFrames: 512
+            ))
+        #expect(
+            PlaybackOccupancyRecoveryPolicy.shouldReprime(
+                occupancyFrames: 3_073,
+                targetFrames: 1_024,
+                outputFrames: 512
+            ))
+        #expect(
+            !PlaybackOccupancyRecoveryPolicy.shouldReprime(
+                occupancyFrames: 384,
+                targetFrames: 128,
+                outputFrames: 64
+            ))
+        #expect(
+            PlaybackOccupancyRecoveryPolicy.shouldReprime(
+                occupancyFrames: 385,
+                targetFrames: 128,
+                outputFrames: 64
+            ))
     }
 
     @Test

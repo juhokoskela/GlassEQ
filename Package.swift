@@ -16,7 +16,7 @@ let package = Package(
         .library(name: "GlassEQSettingsUI", targets: ["GlassEQSettingsUI"]),
         .executable(name: "GlassEQ", targets: ["GlassEQApp"]),
         .executable(name: "GlassEQSettings", targets: ["GlassEQSettings"]),
-        .executable(name: "GlassEQDiagnostics", targets: ["GlassEQDiagnostics"])
+        .executable(name: "GlassEQDiagnostics", targets: ["GlassEQDiagnostics"]),
     ],
     targets: [
         .target(
@@ -30,7 +30,7 @@ let package = Package(
             dependencies: ["GlassEQCore"],
             linkerSettings: [
                 .linkedFramework("CoreAudio"),
-                .linkedFramework("AudioToolbox")
+                .linkedFramework("AudioToolbox"),
             ]
         ),
         .target(
@@ -47,7 +47,7 @@ let package = Package(
             name: "GlassEQProfileImport",
             dependencies: [
                 "GlassEQCore",
-                "GlassEQSettingsIPC"
+                "GlassEQSettingsIPC",
             ],
             linkerSettings: [
                 .linkedFramework("AVFoundation")
@@ -58,7 +58,7 @@ let package = Package(
             dependencies: [
                 "GlassEQCore",
                 "GlassEQSettingsIPC",
-                "GlassEQProfileImport"
+                "GlassEQProfileImport",
             ],
             resources: [
                 .process("Resources")
@@ -66,7 +66,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("Security")
+                .linkedFramework("Security"),
             ]
         ),
         .executableTarget(
@@ -76,7 +76,7 @@ let package = Package(
                 "GlassEQAudio",
                 "GlassEQLicensing",
                 "GlassEQSettingsIPC",
-                "GlassEQSettingsUI"
+                "GlassEQSettingsUI",
             ],
             exclude: [
                 "Info.plist"
@@ -88,28 +88,28 @@ let package = Package(
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("Security"),
-                .linkedFramework("UserNotifications")
+                .linkedFramework("UserNotifications"),
             ]
         ),
         .executableTarget(
             name: "GlassEQSettings",
             dependencies: [
                 "GlassEQSettingsIPC",
-                "GlassEQSettingsUI"
+                "GlassEQSettingsUI",
             ],
             exclude: [
                 "Info.plist"
             ],
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
-                .linkedFramework("AppKit")
+                .linkedFramework("AppKit"),
             ]
         ),
         .executableTarget(
             name: "GlassEQDiagnostics",
             dependencies: [
                 "GlassEQCore",
-                "GlassEQAudio"
+                "GlassEQAudio",
             ]
         ),
         .testTarget(
@@ -120,7 +120,7 @@ let package = Package(
             name: "GlassEQAudioTests",
             dependencies: [
                 "GlassEQAudio",
-                "GlassEQCore"
+                "GlassEQCore",
             ]
         ),
         .testTarget(
@@ -135,7 +135,7 @@ let package = Package(
                 "GlassEQCore",
                 "GlassEQLicensing",
                 "GlassEQSettingsIPC",
-                "GlassEQSettingsUI"
+                "GlassEQSettingsUI",
             ]
         ),
         .testTarget(
@@ -143,7 +143,7 @@ let package = Package(
             dependencies: [
                 "GlassEQCore",
                 "GlassEQProfileImport",
-                "GlassEQSettingsIPC"
+                "GlassEQSettingsIPC",
             ]
         ),
         .testTarget(
@@ -152,9 +152,9 @@ let package = Package(
                 "GlassEQCore",
                 "GlassEQSettings",
                 "GlassEQSettingsIPC",
-                "GlassEQSettingsUI"
+                "GlassEQSettingsUI",
             ]
-        )
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

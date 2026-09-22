@@ -9,10 +9,12 @@ struct ProfileImportSafetyTests {
         let exactName = String(repeating: "é", count: 60)
         #expect(ProfileImportNameValidation("  \(exactName)\n") == .valid(trimmedName: exactName))
         #expect(ProfileImportNameValidation(" \n\t ") == .empty)
-        #expect(ProfileImportNameValidation(String(repeating: "é", count: 61)) == .tooLong(
-            byteCount: 122,
-            maximum: ProfilePersistence.maxProfileNameUTF8Bytes
-        ))
+        #expect(
+            ProfileImportNameValidation(String(repeating: "é", count: 61))
+                == .tooLong(
+                    byteCount: 122,
+                    maximum: ProfilePersistence.maxProfileNameUTF8Bytes
+                ))
     }
 
     @Test

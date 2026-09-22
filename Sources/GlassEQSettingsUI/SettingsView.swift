@@ -13,7 +13,9 @@ public struct SettingsView: View {
         @Bindable var controller = controller
         NavigationSplitView {
             ProfileSidebar(controller: controller)
-                .sheet(isPresented: $controller.isNewProfileSheetPresented, onDismiss: controller.newProfileSheetDidDismiss) {
+                .sheet(
+                    isPresented: $controller.isNewProfileSheetPresented, onDismiss: controller.newProfileSheetDidDismiss
+                ) {
                     NewProfileSheet(
                         onCreate: controller.createProfile,
                         onImport: controller.requestImportFromNewProfileSheet
@@ -29,7 +31,8 @@ public struct SettingsView: View {
                         controller.deleteProfile(profile.id)
                     }
                 } message: { _ in
-                    Text(localized("This also removes any output assignment that uses the profile. It can't be undone."))
+                    Text(
+                        localized("This also removes any output assignment that uses the profile. It can't be undone."))
                 }
         } detail: {
             ProfileDetail(controller: controller)

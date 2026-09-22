@@ -63,14 +63,17 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         #expect(result.store.profiles == ProfileStore.defaultProfiles)
-        #expect(result.status == .oversizedStore(
-            byteCount: oversizedData.count,
-            maximum: ProfilePersistence.maxStoreBytes
-        ))
+        #expect(
+            result.status
+                == .oversizedStore(
+                    byteCount: oversizedData.count,
+                    maximum: ProfilePersistence.maxStoreBytes
+                ))
         #expect(try Data(contentsOf: url) == oversizedData)
-        #expect(!FileManager.default.fileExists(
-            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
-        ))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+            ))
     }
 
     @Test
@@ -78,25 +81,29 @@ struct ProfilePersistenceTests {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let futureVersion = ProfileStore.currentSchemaVersion + 1
-        let data = Data("""
-        {
-          "padding" : "\(String(repeating: "x", count: ProfilePersistence.maxStoreBytes))",
-          "schemaVersion" : \(futureVersion)
-        }
-        """.utf8)
+        let data = Data(
+            """
+            {
+              "padding" : "\(String(repeating: "x", count: ProfilePersistence.maxStoreBytes))",
+              "schemaVersion" : \(futureVersion)
+            }
+            """.utf8)
         try data.write(to: url)
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         #expect(result.store.profiles == ProfileStore.defaultProfiles)
-        #expect(result.status == .oversizedStore(
-            byteCount: data.count,
-            maximum: ProfilePersistence.maxStoreBytes
-        ))
+        #expect(
+            result.status
+                == .oversizedStore(
+                    byteCount: data.count,
+                    maximum: ProfilePersistence.maxStoreBytes
+                ))
         #expect(try Data(contentsOf: url) == data)
-        #expect(!FileManager.default.fileExists(
-            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
-        ))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+            ))
     }
 
     @Test
@@ -115,10 +122,12 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         #expect(result.store.profiles == ProfileStore.defaultProfiles)
-        #expect(result.status == .unsupportedSchemaVersion(
-            version: ProfileStore.currentSchemaVersion + 1,
-            maximumSupported: ProfileStore.currentSchemaVersion
-        ))
+        #expect(
+            result.status
+                == .unsupportedSchemaVersion(
+                    version: ProfileStore.currentSchemaVersion + 1,
+                    maximumSupported: ProfileStore.currentSchemaVersion
+                ))
         #expect(try Data(contentsOf: url) == data)
     }
 
@@ -158,10 +167,11 @@ struct ProfilePersistenceTests {
         defer { removeTemporaryStoreDirectory(for: url) }
         var profile = EQProfile.flatConvolution
         profile.name = "Imported IR"
-        profile.convolution = .impulseResponse(ImpulseResponseSource(
-            sampleRate: 48_000,
-            samples: [1, 0.25, -0.125]
-        ))
+        profile.convolution = .impulseResponse(
+            ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [1, 0.25, -0.125]
+            ))
         let store = ProfileStore(
             schemaVersion: 2,
             profiles: [profile],
@@ -241,9 +251,10 @@ struct ProfilePersistenceTests {
         #expect(result.status == .loaded)
         #expect(result.store == store)
         #expect(try Data(contentsOf: url) == schemaOneData)
-        #expect(!FileManager.default.fileExists(
-            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
-        ))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+            ))
     }
 
     @Test
@@ -264,10 +275,12 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         #expect(result.store.profiles == ProfileStore.defaultProfiles)
-        #expect(result.status == .unsupportedSchemaVersion(
-            version: ProfileStore.currentSchemaVersion + 1,
-            maximumSupported: ProfileStore.currentSchemaVersion
-        ))
+        #expect(
+            result.status
+                == .unsupportedSchemaVersion(
+                    version: ProfileStore.currentSchemaVersion + 1,
+                    maximumSupported: ProfileStore.currentSchemaVersion
+                ))
         #expect(try Data(contentsOf: url) == data)
     }
 
@@ -276,27 +289,31 @@ struct ProfilePersistenceTests {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let futureVersion = ProfileStore.currentSchemaVersion + 1
-        let data = Data("""
-        {
-          "fallbackProfileID" : { "reference" : "future" },
-          "outputMappings" : "future mappings",
-          "profiles" : { "storage" : "future profiles" },
-          "schemaVersion" : \(futureVersion)
-        }
-        """.utf8)
+        let data = Data(
+            """
+            {
+              "fallbackProfileID" : { "reference" : "future" },
+              "outputMappings" : "future mappings",
+              "profiles" : { "storage" : "future profiles" },
+              "schemaVersion" : \(futureVersion)
+            }
+            """.utf8)
         try data.write(to: url)
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         #expect(result.store.profiles == ProfileStore.defaultProfiles)
-        #expect(result.status == .unsupportedSchemaVersion(
-            version: futureVersion,
-            maximumSupported: ProfileStore.currentSchemaVersion
-        ))
+        #expect(
+            result.status
+                == .unsupportedSchemaVersion(
+                    version: futureVersion,
+                    maximumSupported: ProfileStore.currentSchemaVersion
+                ))
         #expect(try Data(contentsOf: url) == data)
-        #expect(!FileManager.default.fileExists(
-            atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
-        ))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: ProfilePersistence.invalidStoreBackupURL(for: url, timestamp: timestamp).path
+            ))
     }
 
     @Test
@@ -336,7 +353,7 @@ struct ProfilePersistenceTests {
             profiles: [valid, invalid],
             outputMappings: [
                 OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: valid.id),
-                OutputDeviceProfileMapping(outputDeviceUID: "broken", profileID: invalid.id)
+                OutputDeviceProfileMapping(outputDeviceUID: "broken", profileID: invalid.id),
             ],
             fallbackProfileID: invalid.id
         )
@@ -351,7 +368,9 @@ struct ProfilePersistenceTests {
         }
         #expect(try Data(contentsOf: backupURL) == invalidData)
         #expect(result.store.profiles == [valid])
-        #expect(result.store.outputMappings == [OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: valid.id)])
+        #expect(
+            result.store.outputMappings == [OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: valid.id)]
+        )
         #expect(result.store.fallbackProfileID == valid.id)
         #expect(summary.removedInvalidProfiles == 1)
         #expect(summary.repairedFallbackProfileID)
@@ -375,11 +394,11 @@ struct ProfilePersistenceTests {
         let invalidData = try rawStoreData(
             profiles: [
                 try profileJSONObject(valid),
-                invalidObject
+                invalidObject,
             ],
             outputMappings: [
                 OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: valid.id),
-                OutputDeviceProfileMapping(outputDeviceUID: "broken", profileID: invalid.id)
+                OutputDeviceProfileMapping(outputDeviceUID: "broken", profileID: invalid.id),
             ],
             fallbackProfileID: invalid.id
         )
@@ -393,9 +412,10 @@ struct ProfilePersistenceTests {
         }
         #expect(try Data(contentsOf: backupURL) == invalidData)
         #expect(result.store.profiles == [valid])
-        #expect(result.store.outputMappings == [
-            OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: valid.id)
-        ])
+        #expect(
+            result.store.outputMappings == [
+                OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: valid.id)
+            ])
         #expect(result.store.fallbackProfileID == valid.id)
         #expect(summary.removedInvalidProfiles == 1)
         #expect(summary.removedOutputMappings == 1)
@@ -449,7 +469,7 @@ struct ProfilePersistenceTests {
             profiles: [first, duplicate, valid],
             outputMappings: [
                 OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: duplicateID),
-                OutputDeviceProfileMapping(outputDeviceUID: "missing", profileID: missingProfileID)
+                OutputDeviceProfileMapping(outputDeviceUID: "missing", profileID: missingProfileID),
             ],
             fallbackProfileID: missingProfileID
         )
@@ -464,9 +484,10 @@ struct ProfilePersistenceTests {
         }
         #expect(try Data(contentsOf: backupURL) == invalidData)
         #expect(result.store.profiles == [first, valid])
-        #expect(result.store.outputMappings == [
-            OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: duplicateID)
-        ])
+        #expect(
+            result.store.outputMappings == [
+                OutputDeviceProfileMapping(outputDeviceUID: "speaker", profileID: duplicateID)
+            ])
         #expect(result.store.fallbackProfileID == first.id)
         #expect(summary.removedInvalidProfiles == 1)
         #expect(summary.repairedFallbackProfileID)
@@ -487,7 +508,7 @@ struct ProfilePersistenceTests {
                 OutputDeviceProfileMapping(outputDeviceUID: "", profileID: first.id),
                 OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: missingProfileID),
                 OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: first.id),
-                OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id)
+                OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id),
             ],
             fallbackProfileID: missingProfileID
         )
@@ -502,9 +523,10 @@ struct ProfilePersistenceTests {
         #expect(summary.repairedFallbackProfileID)
         #expect(summary.removedOutputMappings == 2)
         #expect(summary.deduplicatedOutputMappings == 1)
-        #expect(result.store.outputMappings == [
-            OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id)
-        ])
+        #expect(
+            result.store.outputMappings == [
+                OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: second.id)
+            ])
 
         let savedStore = try ProfilePersistence.decode(Data(contentsOf: url))
         #expect(savedStore == result.store)
@@ -518,10 +540,12 @@ struct ProfilePersistenceTests {
             _ = try ProfilePersistence.decode(oversizedData)
             Issue.record("Expected oversized profile store to fail")
         } catch let error as ProfileStoreValidationError {
-            #expect(error == .inputTooLarge(
-                byteCount: oversizedData.count,
-                maximum: ProfilePersistence.maxStoreBytes
-            ))
+            #expect(
+                error
+                    == .inputTooLarge(
+                        byteCount: oversizedData.count,
+                        maximum: ProfilePersistence.maxStoreBytes
+                    ))
         }
     }
 
@@ -714,11 +738,12 @@ struct ProfilePersistenceTests {
         var profile = EQProfile.flatConvolution
         profile.name = "Room Curve"
         profile.preampDB = -5.5
-        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 20, gainDB: 4),
-            EQMagnitudePoint(frequency: 1_000, gainDB: -2),
-            EQMagnitudePoint(frequency: 20_000, gainDB: 1)
-        ]))
+        profile.convolution = .magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 20, gainDB: 4),
+                EQMagnitudePoint(frequency: 1_000, gainDB: -2),
+                EQMagnitudePoint(frequency: 20_000, gainDB: 1),
+            ]))
         let store = ProfileStore(profiles: [profile], fallbackProfileID: profile.id)
 
         let decoded = try ProfilePersistence.decode(ProfilePersistence.encode(store))
@@ -779,13 +804,14 @@ struct ProfilePersistenceTests {
     @Test
     func decodeRejectsOversizedImportedImpulseResponse() throws {
         var profile = EQProfile.flatConvolution
-        profile.convolution = .impulseResponse(ImpulseResponseSource(
-            sampleRate: 48_000,
-            samples: [Float](
-                repeating: 0,
-                count: ImpulseResponseSource.maximumFrameCount + 1
-            )
-        ))
+        profile.convolution = .impulseResponse(
+            ImpulseResponseSource(
+                sampleRate: 48_000,
+                samples: [Float](
+                    repeating: 0,
+                    count: ImpulseResponseSource.maximumFrameCount + 1
+                )
+            ))
 
         try expectValidationFailure(
             ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
@@ -818,13 +844,14 @@ struct ProfilePersistenceTests {
     @Test
     func decodeRejectsUnsupportedConvolutionSynthesisVersion() throws {
         var profile = EQProfile.flatConvolution
-        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(
-            synthesisVersion: MinimumPhaseFIRCompiler.synthesisVersion + 1,
-            points: [
-                EQMagnitudePoint(frequency: 20, gainDB: 0),
-                EQMagnitudePoint(frequency: 20_000, gainDB: 0)
-            ]
-        ))
+        profile.convolution = .magnitudeCurve(
+            MagnitudeCurveSource(
+                synthesisVersion: MinimumPhaseFIRCompiler.synthesisVersion + 1,
+                points: [
+                    EQMagnitudePoint(frequency: 20, gainDB: 0),
+                    EQMagnitudePoint(frequency: 20_000, gainDB: 0),
+                ]
+            ))
 
         try expectValidationFailure(
             ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
@@ -838,10 +865,11 @@ struct ProfilePersistenceTests {
     @Test
     func decodeRejectsConvolutionCurveWithDuplicateFrequency() throws {
         var profile = EQProfile.flatConvolution
-        profile.convolution = .magnitudeCurve(MagnitudeCurveSource(points: [
-            EQMagnitudePoint(frequency: 100, gainDB: 1),
-            EQMagnitudePoint(frequency: 100, gainDB: -1)
-        ]))
+        profile.convolution = .magnitudeCurve(
+            MagnitudeCurveSource(points: [
+                EQMagnitudePoint(frequency: 100, gainDB: 1),
+                EQMagnitudePoint(frequency: 100, gainDB: -1),
+            ]))
 
         try expectValidationFailure(
             ProfileStore(profiles: [profile], fallbackProfileID: profile.id),
@@ -894,7 +922,7 @@ struct ProfilePersistenceTests {
             "schemaVersion": schemaVersion,
             "profiles": profiles,
             "outputMappings": try #require(mappingObject as? [[String: Any]]),
-            "fallbackProfileID": fallbackProfileID.uuidString
+            "fallbackProfileID": fallbackProfileID.uuidString,
         ]
         return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     }

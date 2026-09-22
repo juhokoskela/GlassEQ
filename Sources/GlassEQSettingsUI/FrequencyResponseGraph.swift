@@ -126,7 +126,8 @@ struct FrequencyResponseGraph: View {
 
     private func axisLabel(for frequency: Double) -> String {
         if frequency == analysis.maximumUsableFrequency,
-           frequency != EQRouteFrequencyPolicy.maximumProfileFrequency {
+            frequency != EQRouteFrequencyPolicy.maximumProfileFrequency
+        {
             return frequency.frequencyLabel
         }
         return frequency.axisFrequencyLabel

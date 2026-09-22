@@ -48,7 +48,8 @@ private final class ExplicitOutputClientState: @unchecked Sendable {
             let channelCount = max(Int(buffer.mNumberChannels), 1)
             let bytesPerFrame = channelCount * MemoryLayout<Float>.size
             guard bytesPerFrame > 0,
-                  Int(buffer.mDataByteSize) % bytesPerFrame == 0 else {
+                Int(buffer.mDataByteSize) % bytesPerFrame == 0
+            else {
                 supportsFloat32 = false
                 if let data = buffer.mData {
                     memset(data, 0, Int(buffer.mDataByteSize))
@@ -68,7 +69,8 @@ private final class ExplicitOutputClientState: @unchecked Sendable {
                     continue
                 }
                 let channelCount = max(Int(buffer.mNumberChannels), 1)
-                let frames = Int(buffer.mDataByteSize)
+                let frames =
+                    Int(buffer.mDataByteSize)
                     / (channelCount * MemoryLayout<Float>.size)
                 let samples = data.assumingMemoryBound(to: Float.self)
                 for frame in 0..<frames {
@@ -91,7 +93,8 @@ private final class ExplicitOutputClientState: @unchecked Sendable {
 
         if outputTime.mFlags.contains(.sampleTimeValid) {
             if let previousSampleTime {
-                let gap = outputTime.mSampleTime
+                let gap =
+                    outputTime.mSampleTime
                     - previousSampleTime
                     - Double(previousFrameCount)
                 if abs(gap) > 0.5 {
@@ -230,7 +233,8 @@ private func disableExplicitClientInput(
             status: kAudioHardwareUnspecifiedError
         )
     }
-    let values = storage
+    let values =
+        storage
         .advanced(by: explicitClientStreamUsageValuesOffset)
         .assumingMemoryBound(to: UInt32.self)
     let appliedUsage = (0..<inputStreamCount).map { values[$0] }
@@ -289,7 +293,8 @@ private func explicitClientStreamUsageStorage(
     let header = storage.assumingMemoryBound(to: AudioHardwareIOProcStreamUsage.self)
     header.pointee.mIOProc = unsafeBitCast(ioProcID, to: UnsafeMutableRawPointer.self)
     header.pointee.mNumberStreams = UInt32(usage.count)
-    let values = storage
+    let values =
+        storage
         .advanced(by: explicitClientStreamUsageValuesOffset)
         .assumingMemoryBound(to: UInt32.self)
     for (index, enabled) in usage.enumerated() {

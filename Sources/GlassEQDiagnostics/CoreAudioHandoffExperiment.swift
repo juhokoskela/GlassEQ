@@ -137,7 +137,8 @@ private func runRouteSwitchExperiment(
     }
 
     let victimState = readExperimentValue(
-        prompt: "Prepare the default-following victim and explicitly routed destination client, then enter their state:",
+        prompt:
+            "Prepare the default-following victim and explicitly routed destination client, then enter their state:",
         defaultValue: "unspecified"
     )
     trace.record(message: "route-switch victims prepared state=\(victimState)")
@@ -306,7 +307,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
         &systemSoundTapID
     )
     trace.record(
-        message: "AudioHardwareCreateProcessTap(create-only system sounds) return status=\(systemSoundTapStatus) tap=\(systemSoundTapID)"
+        message:
+            "AudioHardwareCreateProcessTap(create-only system sounds) return status=\(systemSoundTapStatus) tap=\(systemSoundTapID)"
     )
     try requireNoErr(
         systemSoundTapStatus,
@@ -328,7 +330,7 @@ private func runCombinedAggregateCreateOnlyExperiment(
             kAudioSubTapUIDKey: uid,
             kAudioSubTapDriftCompensationKey: true,
             kAudioSubTapDriftCompensationQualityKey:
-                kAudioAggregateDriftCompensationHighQuality
+                kAudioAggregateDriftCompensationHighQuality,
         ]
     }
     let aggregateDescription: [String: Any] = [
@@ -341,24 +343,26 @@ private func runCombinedAggregateCreateOnlyExperiment(
                 kAudioSubDeviceUIDKey: liveOutput.uid,
                 kAudioSubDeviceInputChannelsKey: 0,
                 kAudioSubDeviceOutputChannelsKey: liveOutput.outputChannelCount,
-                kAudioSubDeviceDriftCompensationKey: false
+                kAudioSubDeviceDriftCompensationKey: false,
             ]
         ],
         kAudioAggregateDeviceTapListKey: [
             tapDescription(mainTapUID),
-            tapDescription(systemSoundTapUID)
-        ]
+            tapDescription(systemSoundTapUID),
+        ],
     ]
 
     trace.record(
-        message: "AudioHardwareCreateAggregateDevice(combined create-only) begin physicalDevice=\(liveOutput.id) physicalBuffer=\(liveOutput.bufferFrameSize)"
+        message:
+            "AudioHardwareCreateAggregateDevice(combined create-only) begin physicalDevice=\(liveOutput.id) physicalBuffer=\(liveOutput.bufferFrameSize)"
     )
     let createStatus = AudioHardwareCreateAggregateDevice(
         aggregateDescription as CFDictionary,
         &aggregateID
     )
     trace.record(
-        message: "AudioHardwareCreateAggregateDevice(combined create-only) return status=\(createStatus) device=\(aggregateID)"
+        message:
+            "AudioHardwareCreateAggregateDevice(combined create-only) return status=\(createStatus) device=\(aggregateID)"
     )
     try requireNoErr(
         createStatus,
@@ -367,7 +371,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
     try waitUntilDeviceIsAlive(aggregateID)
     let aggregate = try CoreAudioDeviceQuery.outputDevice(id: aggregateID)
     trace.record(
-        message: "combined create-only aggregate alive device=\(aggregateID) buffer=\(aggregate.bufferFrameSize); no IOProc will be created or started"
+        message:
+            "combined create-only aggregate alive device=\(aggregateID) buffer=\(aggregate.bufferFrameSize); no IOProc will be created or started"
     )
     printCoreAudioRouteSnapshot(
         label: "combined create-only aggregate alive",
@@ -399,7 +404,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
             }
         }
         trace.record(
-            message: "AudioDeviceCreateIOProcIDWithBlock(combined output-only) return status=\(createIOProcStatus) device=\(aggregateID)"
+            message:
+                "AudioDeviceCreateIOProcIDWithBlock(combined output-only) return status=\(createIOProcStatus) device=\(aggregateID)"
         )
         try requireNoErr(
             createIOProcStatus,
@@ -417,7 +423,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
         let inputStreamCount = try aggregateDevice.inputStreamConfiguration.count
         let inputUsage = [UInt32](repeating: 0, count: inputStreamCount)
         trace.record(
-            message: "set combined output-only input usage begin device=\(aggregateID) streams=\(inputStreamCount) usage=\(inputUsage)"
+            message:
+                "set combined output-only input usage begin device=\(aggregateID) streams=\(inputStreamCount) usage=\(inputUsage)"
         )
         try setDiagnosticInputStreamUsage(
             inputUsage,
@@ -462,7 +469,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
             createdIOProcID
         )
         trace.record(
-            message: "AudioDeviceDestroyIOProcID(combined output-only) return status=\(destroyIOProcStatus) device=\(aggregateID)"
+            message:
+                "AudioDeviceDestroyIOProcID(combined output-only) return status=\(destroyIOProcStatus) device=\(aggregateID)"
         )
         try requireNoErr(
             destroyIOProcStatus,
@@ -476,7 +484,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
     )
     let destroyAggregateStatus = AudioHardwareDestroyAggregateDevice(aggregateID)
     trace.record(
-        message: "AudioHardwareDestroyAggregateDevice(combined create-only) return status=\(destroyAggregateStatus) device=\(aggregateID)"
+        message:
+            "AudioHardwareDestroyAggregateDevice(combined create-only) return status=\(destroyAggregateStatus) device=\(aggregateID)"
     )
     try requireNoErr(
         destroyAggregateStatus,
@@ -486,7 +495,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
 
     let destroyMainTapStatus = AudioHardwareDestroyProcessTap(mainTapID)
     trace.record(
-        message: "AudioHardwareDestroyProcessTap(create-only main) return status=\(destroyMainTapStatus) tap=\(mainTapID)"
+        message:
+            "AudioHardwareDestroyProcessTap(create-only main) return status=\(destroyMainTapStatus) tap=\(mainTapID)"
     )
     try requireNoErr(
         destroyMainTapStatus,
@@ -495,7 +505,8 @@ private func runCombinedAggregateCreateOnlyExperiment(
     mainTapID = AudioObjectID(kAudioObjectUnknown)
     let destroySystemSoundTapStatus = AudioHardwareDestroyProcessTap(systemSoundTapID)
     trace.record(
-        message: "AudioHardwareDestroyProcessTap(create-only system sounds) return status=\(destroySystemSoundTapStatus) tap=\(systemSoundTapID)"
+        message:
+            "AudioHardwareDestroyProcessTap(create-only system sounds) return status=\(destroySystemSoundTapStatus) tap=\(systemSoundTapID)"
     )
     try requireNoErr(
         destroySystemSoundTapStatus,
@@ -537,9 +548,9 @@ private func runPhysicalAggregateCreateOnlyExperiment(
                 kAudioSubDeviceUIDKey: liveOutput.uid,
                 kAudioSubDeviceInputChannelsKey: 0,
                 kAudioSubDeviceOutputChannelsKey: liveOutput.outputChannelCount,
-                kAudioSubDeviceDriftCompensationKey: false
+                kAudioSubDeviceDriftCompensationKey: false,
             ]
-        ]
+        ],
     ]
 
     var aggregateID = AudioObjectID(kAudioObjectUnknown)
@@ -550,13 +561,15 @@ private func runPhysicalAggregateCreateOnlyExperiment(
             )
             let status = AudioHardwareDestroyAggregateDevice(aggregateID)
             trace.record(
-                message: "AudioHardwareDestroyAggregateDevice(physical-only) return status=\(status) device=\(aggregateID)"
+                message:
+                    "AudioHardwareDestroyAggregateDevice(physical-only) return status=\(status) device=\(aggregateID)"
             )
         }
     }
 
     trace.record(
-        message: "AudioHardwareCreateAggregateDevice(physical-only) begin physicalDevice=\(liveOutput.id) physicalBuffer=\(liveOutput.bufferFrameSize)"
+        message:
+            "AudioHardwareCreateAggregateDevice(physical-only) begin physicalDevice=\(liveOutput.id) physicalBuffer=\(liveOutput.bufferFrameSize)"
     )
     let createStatus = AudioHardwareCreateAggregateDevice(
         description as CFDictionary,
@@ -581,7 +594,8 @@ private func runPhysicalAggregateCreateOnlyExperiment(
 
     Thread.sleep(forTimeInterval: holdDuration)
     let attachedResult = readExperimentValue(
-        prompt: "While the physical-only aggregate exists, enter the Firefox result (clean, robotic, silent, or notes):",
+        prompt:
+            "While the physical-only aggregate exists, enter the Firefox result (clean, robotic, silent, or notes):",
         defaultValue: "unreported"
     )
     trace.record(message: "physical-only attached result=\(attachedResult)")
@@ -591,7 +605,8 @@ private func runPhysicalAggregateCreateOnlyExperiment(
     )
     let destroyStatus = AudioHardwareDestroyAggregateDevice(aggregateID)
     trace.record(
-        message: "AudioHardwareDestroyAggregateDevice(physical-only) return status=\(destroyStatus) device=\(aggregateID)"
+        message:
+            "AudioHardwareDestroyAggregateDevice(physical-only) return status=\(destroyStatus) device=\(aggregateID)"
     )
     try requireNoErr(
         destroyStatus,
@@ -653,19 +668,21 @@ private func runPhysicalFirstLiveTapExperiment(
                 kAudioSubDeviceUIDKey: liveOutput.uid,
                 kAudioSubDeviceInputChannelsKey: 0,
                 kAudioSubDeviceOutputChannelsKey: liveOutput.outputChannelCount,
-                kAudioSubDeviceDriftCompensationKey: false
+                kAudioSubDeviceDriftCompensationKey: false,
             ]
-        ]
+        ],
     ]
     trace.record(
-        message: "AudioHardwareCreateAggregateDevice(physical-first) begin physicalDevice=\(liveOutput.id) physicalBuffer=\(liveOutput.bufferFrameSize)"
+        message:
+            "AudioHardwareCreateAggregateDevice(physical-first) begin physicalDevice=\(liveOutput.id) physicalBuffer=\(liveOutput.bufferFrameSize)"
     )
     let createAggregateStatus = AudioHardwareCreateAggregateDevice(
         aggregateDescription as CFDictionary,
         &aggregateID
     )
     trace.record(
-        message: "AudioHardwareCreateAggregateDevice(physical-first) return status=\(createAggregateStatus) device=\(aggregateID)"
+        message:
+            "AudioHardwareCreateAggregateDevice(physical-first) return status=\(createAggregateStatus) device=\(aggregateID)"
     )
     try requireNoErr(
         createAggregateStatus,
@@ -685,7 +702,8 @@ private func runPhysicalFirstLiveTapExperiment(
     )
     let aggregateOutput = try CoreAudioDeviceQuery.outputDevice(id: aggregateID)
     trace.record(
-        message: "physical-first aggregate alive device=\(aggregateID) buffer=\(aggregateOutput.bufferFrameSize) tapListSettable=\(tapListSettable) compositionSettable=\(compositionSettable)"
+        message:
+            "physical-first aggregate alive device=\(aggregateID) buffer=\(aggregateOutput.bufferFrameSize) tapListSettable=\(tapListSettable) compositionSettable=\(compositionSettable)"
     )
     printCoreAudioRouteSnapshot(
         label: "physical-first aggregate alive",
@@ -716,7 +734,8 @@ private func runPhysicalFirstLiveTapExperiment(
         )
     }
     trace.record(
-        message: "AudioDeviceCreateIOProcIDWithBlock(physical-first) return status=\(createIOProcStatus) device=\(aggregateID)"
+        message:
+            "AudioDeviceCreateIOProcIDWithBlock(physical-first) return status=\(createIOProcStatus) device=\(aggregateID)"
     )
     try requireNoErr(
         createIOProcStatus,
@@ -741,7 +760,8 @@ private func runPhysicalFirstLiveTapExperiment(
         defaultValue: "unreported"
     )
     trace.record(
-        message: "physical-first physical-only-running result=\(physicalRunningResult) metrics=\(passthrough.snapshot())"
+        message:
+            "physical-first physical-only-running result=\(physicalRunningResult) metrics=\(passthrough.snapshot())"
     )
 
     let ownProcess = try currentDiagnosticAudioProcessObjectID()
@@ -785,7 +805,8 @@ private func runPhysicalFirstLiveTapExperiment(
         &systemSoundTapID
     )
     trace.record(
-        message: "AudioHardwareCreateProcessTap(physical-first system sounds) return status=\(systemSoundTapStatus) tap=\(systemSoundTapID)"
+        message:
+            "AudioHardwareCreateProcessTap(physical-first system sounds) return status=\(systemSoundTapStatus) tap=\(systemSoundTapID)"
     )
     try requireNoErr(
         systemSoundTapStatus,
@@ -799,11 +820,12 @@ private func runPhysicalFirstLiveTapExperiment(
     trace.record(message: "physical-first taps-created result=\(tapsCreatedResult)")
 
     trace.record(
-        message: "AudioHardwareAggregateDevice.setSubtaps begin device=\(aggregateID) taps=[\(mainTapID), \(systemSoundTapID)]"
+        message:
+            "AudioHardwareAggregateDevice.setSubtaps begin device=\(aggregateID) taps=[\(mainTapID), \(systemSoundTapID)]"
     )
     try aggregate.setSubtaps([
         AudioHardwareTap(id: mainTapID),
-        AudioHardwareTap(id: systemSoundTapID)
+        AudioHardwareTap(id: systemSoundTapID),
     ])
     trace.record(
         message: "AudioHardwareAggregateDevice.setSubtaps return device=\(aggregateID)"
@@ -811,7 +833,8 @@ private func runPhysicalFirstLiveTapExperiment(
     let activeSubtaps = try waitForAggregateSubtaps(2, aggregate: aggregate)
     let inputStreamCount = try aggregate.inputStreamConfiguration.count
     trace.record(
-        message: "physical-first subtaps active ids=\(activeSubtaps.map(\.id)) inputStreams=\(inputStreamCount) composition=\(try aggregate.composition)"
+        message:
+            "physical-first subtaps active ids=\(activeSubtaps.map(\.id)) inputStreams=\(inputStreamCount) composition=\(try aggregate.composition)"
     )
     if inputStreamCount > 0 {
         do {
@@ -844,7 +867,8 @@ private func runPhysicalFirstLiveTapExperiment(
 
     if stepDownTo16Frames {
         trace.record(
-            message: "set physical-first aggregate buffer begin device=\(aggregateID) requested=16 current=\((try CoreAudioDeviceQuery.outputDevice(id: aggregateID)).bufferFrameSize)"
+            message:
+                "set physical-first aggregate buffer begin device=\(aggregateID) requested=16 current=\((try CoreAudioDeviceQuery.outputDevice(id: aggregateID)).bufferFrameSize)"
         )
         try CoreAudioDeviceQuery.setBufferFrameSize(16, objectID: aggregateID)
         let resizedAggregate = try waitForAggregateBufferFrameSize(
@@ -852,7 +876,8 @@ private func runPhysicalFirstLiveTapExperiment(
             aggregateID: aggregateID
         )
         trace.record(
-            message: "set physical-first aggregate buffer end device=\(aggregateID) actual=\(resizedAggregate.bufferFrameSize)"
+            message:
+                "set physical-first aggregate buffer end device=\(aggregateID) actual=\(resizedAggregate.bufferFrameSize)"
         )
         Thread.sleep(forTimeInterval: holdDuration)
         let resizedResult = readExperimentValue(
@@ -884,7 +909,8 @@ private func runPhysicalFirstLiveTapExperiment(
     )
     let destroyAggregateStatus = AudioHardwareDestroyAggregateDevice(aggregateID)
     trace.record(
-        message: "AudioHardwareDestroyAggregateDevice(physical-first) return status=\(destroyAggregateStatus) device=\(aggregateID)"
+        message:
+            "AudioHardwareDestroyAggregateDevice(physical-first) return status=\(destroyAggregateStatus) device=\(aggregateID)"
     )
     try requireNoErr(
         destroyAggregateStatus,
@@ -893,7 +919,8 @@ private func runPhysicalFirstLiveTapExperiment(
     aggregateID = AudioObjectID(kAudioObjectUnknown)
     let destroyMainTapStatus = AudioHardwareDestroyProcessTap(mainTapID)
     trace.record(
-        message: "AudioHardwareDestroyProcessTap(physical-first main) return status=\(destroyMainTapStatus) tap=\(mainTapID)"
+        message:
+            "AudioHardwareDestroyProcessTap(physical-first main) return status=\(destroyMainTapStatus) tap=\(mainTapID)"
     )
     try requireNoErr(
         destroyMainTapStatus,
@@ -902,7 +929,8 @@ private func runPhysicalFirstLiveTapExperiment(
     mainTapID = AudioObjectID(kAudioObjectUnknown)
     let destroySystemSoundTapStatus = AudioHardwareDestroyProcessTap(systemSoundTapID)
     trace.record(
-        message: "AudioHardwareDestroyProcessTap(physical-first system sounds) return status=\(destroySystemSoundTapStatus) tap=\(systemSoundTapID)"
+        message:
+            "AudioHardwareDestroyProcessTap(physical-first system sounds) return status=\(destroySystemSoundTapStatus) tap=\(systemSoundTapID)"
     )
     try requireNoErr(
         destroySystemSoundTapStatus,
@@ -970,14 +998,16 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
         lastOutputHostTime.store(outputTime.mHostTime, ordering: .relaxed)
         lastOutputFlags.store(UInt64(outputTime.mFlags.rawValue), ordering: .relaxed)
 
-        guard let inputFrameCount = Self.frameCount(
-            buffers: inputs,
-            channelRange: 0..<2
-        ),
-              let outputFrameCount = Self.frameCount(
+        guard
+            let inputFrameCount = Self.frameCount(
+                buffers: inputs,
+                channelRange: 0..<2
+            ),
+            let outputFrameCount = Self.frameCount(
                 buffers: outputs,
                 channelRange: 0..<2
-              ) else {
+            )
+        else {
             return
         }
         let frameCount = min(inputFrameCount, outputFrameCount)
@@ -1005,8 +1035,9 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
             discontinuities: outputTimestampDiscontinuities
         )
         if inputTime.mFlags.contains(.hostTimeValid),
-           outputTime.mFlags.contains(.hostTimeValid),
-           outputTime.mHostTime >= inputTime.mHostTime {
+            outputTime.mFlags.contains(.hostTimeValid),
+            outputTime.mHostTime >= inputTime.mHostTime
+        {
             lastTapToOutputLatencyNanoseconds.store(
                 AudioConvertHostTimeToNanos(outputTime.mHostTime - inputTime.mHostTime),
                 ordering: .relaxed
@@ -1054,7 +1085,8 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
     }
 
     func snapshot() -> String {
-        let peak = Double(maximumInputNanoAmplitude.load(ordering: .relaxed))
+        let peak =
+            Double(maximumInputNanoAmplitude.load(ordering: .relaxed))
             / 1_000_000_000
         let inputSampleTime = Double(
             bitPattern: lastInputSampleTimeBits.load(ordering: .relaxed)
@@ -1062,7 +1094,8 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
         let outputSampleTime = Double(
             bitPattern: lastOutputSampleTimeBits.load(ordering: .relaxed)
         )
-        return "callbacks=\(callbackCount.load(ordering: .relaxed)) inputCallbacks=\(inputCallbackCount.load(ordering: .relaxed)) nonzeroInputCallbacks=\(nonzeroInputCallbackCount.load(ordering: .relaxed)) copiedFrames=\(copiedFrames.load(ordering: .relaxed)) maxInputPeak=\(peak) lastInputFrames=\(lastInputFrameCount.load(ordering: .relaxed)) lastOutputFrames=\(lastOutputFrameCount.load(ordering: .relaxed)) inputTimestampDiscontinuities=\(inputTimestampDiscontinuities.load(ordering: .relaxed)) outputTimestampDiscontinuities=\(outputTimestampDiscontinuities.load(ordering: .relaxed)) lastTapToOutputLatencyNs=\(lastTapToOutputLatencyNanoseconds.load(ordering: .relaxed)) lastSampleTimeDeltaFrames=\(outputSampleTime - inputSampleTime) firstCallbackHostNs=\(firstCallbackHostTimeNanoseconds.load(ordering: .relaxed)) lastInputSampleTime=\(inputSampleTime) lastInputHostTime=\(lastInputHostTime.load(ordering: .relaxed)) lastInputFlags=\(lastInputFlags.load(ordering: .relaxed)) lastOutputSampleTime=\(outputSampleTime) lastOutputHostTime=\(lastOutputHostTime.load(ordering: .relaxed)) lastOutputFlags=\(lastOutputFlags.load(ordering: .relaxed))"
+        return
+            "callbacks=\(callbackCount.load(ordering: .relaxed)) inputCallbacks=\(inputCallbackCount.load(ordering: .relaxed)) nonzeroInputCallbacks=\(nonzeroInputCallbackCount.load(ordering: .relaxed)) copiedFrames=\(copiedFrames.load(ordering: .relaxed)) maxInputPeak=\(peak) lastInputFrames=\(lastInputFrameCount.load(ordering: .relaxed)) lastOutputFrames=\(lastOutputFrameCount.load(ordering: .relaxed)) inputTimestampDiscontinuities=\(inputTimestampDiscontinuities.load(ordering: .relaxed)) outputTimestampDiscontinuities=\(outputTimestampDiscontinuities.load(ordering: .relaxed)) lastTapToOutputLatencyNs=\(lastTapToOutputLatencyNanoseconds.load(ordering: .relaxed)) lastSampleTimeDeltaFrames=\(outputSampleTime - inputSampleTime) firstCallbackHostNs=\(firstCallbackHostTimeNanoseconds.load(ordering: .relaxed)) lastInputSampleTime=\(inputSampleTime) lastInputHostTime=\(lastInputHostTime.load(ordering: .relaxed)) lastInputFlags=\(lastInputFlags.load(ordering: .relaxed)) lastOutputSampleTime=\(outputSampleTime) lastOutputHostTime=\(lastOutputHostTime.load(ordering: .relaxed)) lastOutputFlags=\(lastOutputFlags.load(ordering: .relaxed))"
     }
 
     private func recordTimestampContinuity(
@@ -1081,7 +1114,8 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
             let previous = Double(
                 bitPattern: previousSampleTimeBits.load(ordering: .relaxed)
             )
-            let expected = previous
+            let expected =
+                previous
                 + Double(previousFrameCount.load(ordering: .relaxed))
             if abs(sampleTime - expected) > 0.5 {
                 discontinuities.wrappingAdd(1, ordering: .relaxed)
@@ -1108,8 +1142,9 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
             let overlap = bufferRange.clamped(to: channelRange)
             if !overlap.isEmpty {
                 guard buffer.mData != nil,
-                      buffer.mDataByteSize
-                        % UInt32(channels * MemoryLayout<Float>.stride) == 0 else {
+                    buffer.mDataByteSize
+                        % UInt32(channels * MemoryLayout<Float>.stride) == 0
+                else {
                     return nil
                 }
                 coveredChannels += overlap.count
@@ -1121,7 +1156,8 @@ private final class LiveTapPassthroughState: @unchecked Sendable {
             globalChannelOffset = bufferRange.upperBound
         }
         guard coveredChannels == channelRange.count,
-              minimumFrameCount != Int.max else {
+            minimumFrameCount != Int.max
+        else {
             return nil
         }
         return minimumFrameCount
@@ -1279,11 +1315,13 @@ private func runCombinedExperiment(
     trace.record(message: "victim prepared state=\(victimState)")
 
     let liveOutput = try CoreAudioDeviceQuery.outputDevice(id: output.id)
-    let targetFrameSize = experiment == .combinedIncumbent
+    let targetFrameSize =
+        experiment == .combinedIncumbent
         ? liveOutput.bufferFrameSize
         : 16
     trace.record(
-        message: "DIRECT COMBINED CONTROL begin physicalBuffer=\(liveOutput.bufferFrameSize) targetAggregateBuffer=\(targetFrameSize)"
+        message:
+            "DIRECT COMBINED CONTROL begin physicalBuffer=\(liveOutput.bufferFrameSize) targetAggregateBuffer=\(targetFrameSize)"
     )
     printCoreAudioRouteSnapshot(label: "before combined attach", physicalDeviceID: output.id)
     try engine.startDiagnosticCombinedPath(
@@ -1307,7 +1345,8 @@ private func readExperimentValue(prompt: String, defaultValue: String) -> String
     print(prompt)
     fflush(stdout)
     guard let value = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !value.isEmpty else {
+        !value.isEmpty
+    else {
         return defaultValue
     }
     return value.replacingOccurrences(of: "\n", with: " ")
@@ -1334,10 +1373,13 @@ private final class CoreAudioExperimentTrace: @unchecked Sendable {
         hostTimeNanoseconds: UInt64? = nil,
         message: String
     ) {
-        let timestamp = hostTimeNanoseconds ?? AudioConvertHostTimeToNanos(
-            AudioGetCurrentHostTime()
-        )
-        let relativeNanoseconds = timestamp >= originHostTimeNanoseconds
+        let timestamp =
+            hostTimeNanoseconds
+            ?? AudioConvertHostTimeToNanos(
+                AudioGetCurrentHostTime()
+            )
+        let relativeNanoseconds =
+            timestamp >= originHostTimeNanoseconds
             ? timestamp - originHostTimeNanoseconds
             : 0
         let prefix = String(
@@ -1403,30 +1445,35 @@ private func audioProcessSnapshots(
         scope: kAudioObjectPropertyScopeGlobal
     )
     return processObjectIDs.compactMap { processObjectID in
-        guard let outputDeviceIDs = try? getAudioObjectIDs(
-            objectID: processObjectID,
-            selector: kAudioProcessPropertyDevices,
-            scope: kAudioObjectPropertyScopeOutput
-        ), outputDeviceIDs.contains(physicalDeviceID) else {
+        guard
+            let outputDeviceIDs = try? getAudioObjectIDs(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyDevices,
+                scope: kAudioObjectPropertyScopeOutput
+            ), outputDeviceIDs.contains(physicalDeviceID)
+        else {
             return nil
         }
-        let pid = (try? getAudioProperty(
-            objectID: processObjectID,
-            selector: kAudioProcessPropertyPID,
-            scope: kAudioObjectPropertyScopeGlobal,
-            initialValue: pid_t(0)
-        )) ?? 0
-        let bundleID = (try? getAudioStringProperty(
-            objectID: processObjectID,
-            selector: kAudioProcessPropertyBundleID,
-            scope: kAudioObjectPropertyScopeGlobal
-        )) ?? "unknown"
-        let isRunningOutput = ((try? getAudioProperty(
-            objectID: processObjectID,
-            selector: kAudioProcessPropertyIsRunningOutput,
-            scope: kAudioObjectPropertyScopeGlobal,
-            initialValue: UInt32(0)
-        )) ?? 0) != 0
+        let pid =
+            (try? getAudioProperty(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyPID,
+                scope: kAudioObjectPropertyScopeGlobal,
+                initialValue: pid_t(0)
+            )) ?? 0
+        let bundleID =
+            (try? getAudioStringProperty(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyBundleID,
+                scope: kAudioObjectPropertyScopeGlobal
+            )) ?? "unknown"
+        let isRunningOutput =
+            ((try? getAudioProperty(
+                objectID: processObjectID,
+                selector: kAudioProcessPropertyIsRunningOutput,
+                scope: kAudioObjectPropertyScopeGlobal,
+                initialValue: UInt32(0)
+            )) ?? 0) != 0
         return AudioProcessSnapshot(
             objectID: processObjectID,
             pid: pid,
@@ -1592,7 +1639,8 @@ private func setDiagnosticInputStreamUsage(
         to: UnsafeMutableRawPointer.self
     )
     header.pointee.mNumberStreams = UInt32(usage.count)
-    let values = storage
+    let values =
+        storage
         .advanced(by: valuesOffset)
         .assumingMemoryBound(to: UInt32.self)
     for (index, enabled) in usage.enumerated() {

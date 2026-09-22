@@ -58,7 +58,8 @@ final class SettingsAppDelegate: NSObject, NSApplicationDelegate {
 
     private static var iconSourceBundleURL: URL {
         let helperURL = Bundle.main.bundleURL
-        let enclosing = helperURL
+        let enclosing =
+            helperURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -205,24 +206,24 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
     }
 
     #if DEBUG
-    init(
-        testingToken: String,
-        model: GlassEQSettingsViewModel,
-        output: FileHandle,
-        requestTimeout: Duration = .seconds(30)
-    ) {
-        self.token = testingToken
-        self.mainProcessIdentifier = getpid()
-        self.model = model
-        self.input = .nullDevice
-        self.bootstrapTimeout = .seconds(5)
-        self.requestTimeout = requestTimeout
-        self.pipeWritePump = SettingsPipeWritePump(
-            label: "com.glasseq.settings.pipe-write.tests",
-            fileHandle: output
-        )
-        super.init()
-    }
+        init(
+            testingToken: String,
+            model: GlassEQSettingsViewModel,
+            output: FileHandle,
+            requestTimeout: Duration = .seconds(30)
+        ) {
+            self.token = testingToken
+            self.mainProcessIdentifier = getpid()
+            self.model = model
+            self.input = .nullDevice
+            self.bootstrapTimeout = .seconds(5)
+            self.requestTimeout = requestTimeout
+            self.pipeWritePump = SettingsPipeWritePump(
+                label: "com.glasseq.settings.pipe-write.tests",
+                fileHandle: output
+            )
+            super.init()
+        }
     #endif
 
     func connect() async throws -> SettingsSnapshotDTO {
@@ -307,7 +308,8 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
             let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
             Task { @MainActor in
                 guard let self,
-                      application?.processIdentifier == self.mainProcessIdentifier else {
+                    application?.processIdentifier == self.mainProcessIdentifier
+                else {
                     return
                 }
                 NSApplication.shared.terminate(nil)
@@ -344,7 +346,8 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                         }
                     }
                 }
-                let message = SettingsPipeMessage.request(sessionToken: token, id: requestID, kind: kind, command: command)
+                let message = SettingsPipeMessage.request(
+                    sessionToken: token, id: requestID, kind: kind, command: command)
                 pipeWritePump.enqueue(message) { [weak self] result in
                     guard case .failure(let error) = result else {
                         return
@@ -357,9 +360,10 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                             return
                         }
                         self.requestTimeoutTasks.removeValue(forKey: requestID)?.cancel()
-                        continuation.resume(throwing: SettingsCommandFailure(
-                            message: localized("Settings IPC write failed: \(error.localizedDescription)")
-                        ))
+                        continuation.resume(
+                            throwing: SettingsCommandFailure(
+                                message: localized("Settings IPC write failed: \(error.localizedDescription)")
+                            ))
                     }
                 }
                 if Task.isCancelled {
@@ -396,14 +400,16 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         }
         requestTimeoutTasks.removeValue(forKey: requestID)?.cancel()
         if notifyMainProcess,
-           !disconnected,
-           self.token == token {
-            writePipeMessage(.request(
-                sessionToken: token,
-                id: requestID,
-                kind: .cancel,
-                command: nil
-            ))
+            !disconnected,
+            self.token == token
+        {
+            writePipeMessage(
+                .request(
+                    sessionToken: token,
+                    id: requestID,
+                    kind: .cancel,
+                    command: nil
+                ))
         }
         continuation.resume(throwing: error)
     }
@@ -441,7 +447,9 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                 return
             }
             guard let response else {
-                continuation.resume(throwing: SettingsCommandFailure(message: localized("GlassEQ returned an empty settings response.")))
+                continuation.resume(
+                    throwing: SettingsCommandFailure(message: localized("GlassEQ returned an empty settings response."))
+                )
                 return
             }
             continuation.resume(returning: response)
@@ -508,7 +516,8 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
                         return
                     }
                     self.bootstrapContinuation = nil
-                    continuation.resume(throwing: SettingsCommandFailure(message: localized("Settings IPC bootstrap timed out.")))
+                    continuation.resume(
+                        throwing: SettingsCommandFailure(message: localized("Settings IPC bootstrap timed out.")))
                 }
             }
         }
@@ -531,8 +540,9 @@ struct SettingsLaunchInfo {
 
     init?(commandLineArguments arguments: [String]) {
         guard let pidIndex = arguments.firstIndex(of: "--glasseq-main-pid"),
-              arguments.indices.contains(pidIndex + 1),
-              let mainPID = Int32(arguments[pidIndex + 1]) else {
+            arguments.indices.contains(pidIndex + 1),
+            let mainPID = Int32(arguments[pidIndex + 1])
+        else {
             return nil
         }
         self.mainProcessIdentifier = mainPID
@@ -561,13 +571,16 @@ enum SettingsHostValidator {
             throw SettingsCommandFailure(message: localized("GlassEQ is no longer running."))
         }
         if let parentProcessIdentifier = snapshot.parentProcessIdentifier,
-           parentProcessIdentifier > 1,
-           parentProcessIdentifier != launchInfo.mainProcessIdentifier {
-            throw SettingsCommandFailure(message: localized("Settings was not launched by the current GlassEQ process."))
+            parentProcessIdentifier > 1,
+            parentProcessIdentifier != launchInfo.mainProcessIdentifier
+        {
+            throw SettingsCommandFailure(
+                message: localized("Settings was not launched by the current GlassEQ process."))
         }
         if let bundleIdentifier = snapshot.bundleIdentifier,
-           !bundleIdentifier.isEmpty,
-           bundleIdentifier != hostBundleIdentifier {
+            !bundleIdentifier.isEmpty,
+            bundleIdentifier != hostBundleIdentifier
+        {
             throw SettingsCommandFailure(message: localized("Settings was launched by an unexpected host application."))
         }
     }

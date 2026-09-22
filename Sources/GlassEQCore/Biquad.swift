@@ -55,12 +55,13 @@ public struct BiquadCoefficients: Equatable, Sendable {
         let processingCeiling = EQRouteFrequencyPolicy.maximumUsableFrequency(sampleRate: sampleRate)
         let routeCeiling = maximumUsableFrequency ?? processingCeiling
         guard filter.isEnabled,
-              sampleRate.isFinite,
-              sampleRate > 0,
-              routeCeiling.isFinite,
-              routeCeiling > 0,
-              filter.frequency.isFinite,
-              filter.frequency <= min(processingCeiling, routeCeiling) else {
+            sampleRate.isFinite,
+            sampleRate > 0,
+            routeCeiling.isFinite,
+            routeCeiling > 0,
+            filter.frequency.isFinite,
+            filter.frequency <= min(processingCeiling, routeCeiling)
+        else {
             return .identity
         }
 
@@ -188,7 +189,8 @@ public struct BiquadState: Sendable {
         let y = c.b0 * input + z1
         let nextZ1 = c.b1 * input - c.a1 * y + z2
         let nextZ2 = c.b2 * input - c.a2 * y
-        let encounteredNonFinite = !input.isFinite
+        let encounteredNonFinite =
+            !input.isFinite
             || !y.isFinite
             || !nextZ1.isFinite
             || !nextZ2.isFinite
@@ -299,10 +301,11 @@ public enum FrequencyResponse {
         guard coefficients.allSatisfy(\.isNumericallySafe) else {
             return .infinity
         }
-        return preampDB + (try boundedPeakMagnitudeDB(
-            for: coefficients,
-            cancellationCheck: cancellationCheck
-        ))
+        return preampDB
+            + (try boundedPeakMagnitudeDB(
+                for: coefficients,
+                cancellationCheck: cancellationCheck
+            ))
     }
 
     public static func points(
@@ -352,10 +355,11 @@ public enum FrequencyResponse {
             return frequencies.map { frequency in
                 FrequencyResponsePoint(
                     frequency: frequency,
-                    magnitudeDB: preampDB + MinimumPhaseFIRCompiler.interpolatedGainDB(
-                        frequency: frequency,
-                        points: adjustedPoints
-                    )
+                    magnitudeDB: preampDB
+                        + MinimumPhaseFIRCompiler.interpolatedGainDB(
+                            frequency: frequency,
+                            points: adjustedPoints
+                        )
                 )
             }
         case .impulseResponse(let impulse):
@@ -377,11 +381,12 @@ public enum FrequencyResponse {
                 return try frequencies.map { frequency in
                     FrequencyResponsePoint(
                         frequency: frequency,
-                        magnitudeDB: preampDB + (try impulseResponseMagnitudeDB(
-                            impulse,
-                            frequency: frequency,
-                            cancellationCheck: cancellationCheck
-                        ))
+                        magnitudeDB: preampDB
+                            + (try impulseResponseMagnitudeDB(
+                                impulse,
+                                frequency: frequency,
+                                cancellationCheck: cancellationCheck
+                            ))
                     )
                 }
             }
@@ -500,12 +505,14 @@ public enum FrequencyResponse {
         }
 
         let responses = coefficients.map(BiquadMagnitudeSquared.init)
-        var intervals = PeakSearchQueue(PeakSearchInterval(
-            lower: 0,
-            upper: 1,
-            upperBoundDB: cascadeUpperBoundDB(responses, lower: 0, upper: 1)
-        ))
-        var bestMagnitudeDB = [0.0, 0.5, 1.0]
+        var intervals = PeakSearchQueue(
+            PeakSearchInterval(
+                lower: 0,
+                upper: 1,
+                upperBoundDB: cascadeUpperBoundDB(responses, lower: 0, upper: 1)
+            ))
+        var bestMagnitudeDB =
+            [0.0, 0.5, 1.0]
             .map { cascadeMagnitudeDB(responses, at: $0) }
             .max() ?? 0
 
@@ -533,24 +540,26 @@ public enum FrequencyResponse {
                 bestMagnitudeDB,
                 cascadeMagnitudeDB(responses, at: middle)
             )
-            intervals.insert(PeakSearchInterval(
-                lower: interval.lower,
-                upper: middle,
-                upperBoundDB: cascadeUpperBoundDB(
-                    responses,
+            intervals.insert(
+                PeakSearchInterval(
                     lower: interval.lower,
-                    upper: middle
-                )
-            ))
-            intervals.insert(PeakSearchInterval(
-                lower: middle,
-                upper: interval.upper,
-                upperBoundDB: cascadeUpperBoundDB(
-                    responses,
+                    upper: middle,
+                    upperBoundDB: cascadeUpperBoundDB(
+                        responses,
+                        lower: interval.lower,
+                        upper: middle
+                    )
+                ))
+            intervals.insert(
+                PeakSearchInterval(
                     lower: middle,
-                    upper: interval.upper
-                )
-            ))
+                    upper: interval.upper,
+                    upperBoundDB: cascadeUpperBoundDB(
+                        responses,
+                        lower: middle,
+                        upper: interval.upper
+                    )
+                ))
         }
 
         try cancellationCheck()
@@ -565,10 +574,12 @@ public enum FrequencyResponse {
         at position: Double
     ) -> Double {
         responses.reduce(0.0) { magnitudeDB, response in
-            magnitudeDB + 10 * log10(max(
-                response.ratio(at: position),
-                .leastNonzeroMagnitude
-            ))
+            magnitudeDB + 10
+                * log10(
+                    max(
+                        response.ratio(at: position),
+                        .leastNonzeroMagnitude
+                    ))
         }
     }
 
@@ -671,8 +682,9 @@ private struct PeakSearchQueue {
                 break
             }
             let right = left + 1
-            let child = right < storage.count
-                && storage[right].upperBoundDB > storage[left].upperBoundDB
+            let child =
+                right < storage.count
+                    && storage[right].upperBoundDB > storage[left].upperBoundDB
                 ? right
                 : left
             guard storage[child].upperBoundDB > storage[parent].upperBoundDB else {
@@ -736,9 +748,11 @@ private struct BiquadMagnitudeSquared {
     }
 
     func maximumRatio(lower: Double, upper: Double) -> Double {
-        let candidates = [lower, upper] + stationaryPoints().filter {
-            $0 > lower && $0 < upper
-        }
+        let candidates =
+            [lower, upper]
+            + stationaryPoints().filter {
+                $0 > lower && $0 < upper
+            }
         return candidates.reduce(0.0) { maximum, position in
             max(maximum, ratio(at: position))
         }.nextUp
@@ -761,7 +775,8 @@ private struct BiquadMagnitudeSquared {
         var discriminant = linear * linear - 4 * quadratic * constant
         let discriminantScale = linear * linear + abs(4 * quadratic * constant)
         if discriminant < 0,
-           abs(discriminant) <= 64 * Double.ulpOfOne * discriminantScale {
+            abs(discriminant) <= 64 * Double.ulpOfOne * discriminantScale
+        {
             discriminant = 0
         }
         guard discriminant >= 0, discriminant.isFinite else {
@@ -776,7 +791,7 @@ private struct BiquadMagnitudeSquared {
         }
         return [
             firstTerm / quadratic,
-            constant / firstTerm
+            constant / firstTerm,
         ]
     }
 }

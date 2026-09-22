@@ -23,19 +23,26 @@ enum LicenseRecovery: Equatable {
         case .activated:
             self = .renew
         case .revoked:
-            self = .remove(notice: localized("This Mac's place on the license was released, and the subscription has ended. Remove the stored license, then activate again."))
+            self = .remove(
+                notice: localized(
+                    "This Mac's place on the license was released, and the subscription has ended. Remove the stored license, then activate again."
+                ))
         case .available:
-            self = .activate(notice: content.state == .invalidEntitlement
-                ? localized("The stored license is invalid. Activate again to continue.")
-                : nil)
+            self = .activate(
+                notice: content.state == .invalidEntitlement
+                    ? localized("The stored license is invalid. Activate again to continue.")
+                    : nil)
         case .releasingPreviousActivation:
-            self = .wait(message: localized("The previous license is still being released. Activation opens as soon as that finishes."))
+            self = .wait(
+                message: localized(
+                    "The previous license is still being released. Activation opens as soon as that finishes."))
         case .storageUnavailable:
             self = .wait(message: localized("The license could not be read from Keychain. GlassEQ keeps trying."))
         case .needsAppUpdate:
             self = .wait(message: localized("This Mac's license needs a newer version of GlassEQ."))
         case .needsRemoval:
-            self = .remove(notice: localized("The stored license can't be verified on this Mac. Remove it, then activate again."))
+            self = .remove(
+                notice: localized("The stored license can't be verified on this Mac. Remove it, then activate again."))
         }
     }
 
@@ -108,11 +115,13 @@ enum LicenseOperationFailureMessage {
         case .service(.invalidCredentials, _):
             return localized("That license key was not recognized. Check it and try again.")
         case .service(.activationLimit, _):
-            return localized("This license is already active on two Macs. A third can't be added until one of them is released.")
+            return localized(
+                "This license is already active on two Macs. A third can't be added until one of them is released.")
         case .service(.licenseNotEligible, _):
-            return localized("This license can't be activated. It may have been refunded, or its subscription may have ended.")
+            return localized(
+                "This license can't be activated. It may have been refunded, or its subscription may have ended.")
         case let .service(.rateLimited, retryAfterSeconds),
-             let .service(.temporarilyUnavailable, retryAfterSeconds):
+            let .service(.temporarilyUnavailable, retryAfterSeconds):
             guard let retryAfterSeconds else {
                 return localized("The licensing service is busy. Try again in a moment.")
             }

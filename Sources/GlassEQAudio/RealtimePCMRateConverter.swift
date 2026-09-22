@@ -83,10 +83,10 @@ final class RealtimePCMRateConverter {
 
         self.converter = converter
         self.latencyFrames = Int(primeInfo.trailingFrames)
-        self.historyOutputFrames = Int((
-            (Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames))
-                * outputSampleRate / inputSampleRate
-        ).rounded(.up)) + 1
+        self.historyOutputFrames =
+            Int(
+                ((Double(primeInfo.leadingFrames) + Double(primeInfo.trailingFrames))
+                    * outputSampleRate / inputSampleRate).rounded(.up)) + 1
     }
 
     deinit {

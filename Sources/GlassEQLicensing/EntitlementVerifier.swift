@@ -68,7 +68,8 @@ public struct EntitlementVerifier: Sendable {
 
         let parts = compactJWS.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
-              parts.allSatisfy({ !$0.isEmpty }) else {
+            parts.allSatisfy({ !$0.isEmpty })
+        else {
             throw EntitlementVerificationError.malformedCompactSerialization
         }
 
@@ -112,8 +113,9 @@ public struct EntitlementVerifier: Sendable {
         }
 
         guard header.algorithm == "EdDSA",
-              header.type == Self.type,
-              !header.keyID.isEmpty else {
+            header.type == Self.type,
+            !header.keyID.isEmpty
+        else {
             throw EntitlementVerificationError.invalidHeader
         }
         return header.keyID
@@ -138,10 +140,10 @@ public struct EntitlementVerifier: Sendable {
             }
             let commonKeys: Set<String> = [
                 "iss", "aud", "sub", "jti", "iat", "schema", "plan", "activation_id",
-                "installation_id", "revision", "release_scope", "security_updates_after_expiry"
+                "installation_id", "revision", "release_scope", "security_updates_after_expiry",
             ]
             let monthlyKeys: Set<String> = [
-                "billing_state", "billing_period_end", "recovery_until", "refresh_after", "exp"
+                "billing_state", "billing_period_end", "recovery_until", "refresh_after", "exp",
             ]
             payload = try decodeExactJSONObject(
                 EntitlementPayload.self,
@@ -156,18 +158,20 @@ public struct EntitlementVerifier: Sendable {
         }
 
         guard let plan = EntitlementPlan(rawValue: payload.plan),
-              let releaseScope = EntitlementReleaseScope(rawValue: payload.releaseScope),
-              payload.schema == 1 else {
+            let releaseScope = EntitlementReleaseScope(rawValue: payload.releaseScope),
+            payload.schema == 1
+        else {
             throw EntitlementVerificationError.unsupportedClaims
         }
         guard let claimedInstallationID = UUID(uuidString: payload.installationID),
-              payload.issuer == Self.issuer,
-              payload.audience == Self.audience,
-              payload.revision > 0,
-              !payload.licenseID.isEmpty,
-              !payload.entitlementID.isEmpty,
-              !payload.activationID.isEmpty,
-              payload.issuedAt >= 0 else {
+            payload.issuer == Self.issuer,
+            payload.audience == Self.audience,
+            payload.revision > 0,
+            !payload.licenseID.isEmpty,
+            !payload.entitlementID.isEmpty,
+            !payload.activationID.isEmpty,
+            payload.issuedAt >= 0
+        else {
             throw EntitlementVerificationError.invalidClaims
         }
 
@@ -220,16 +224,17 @@ public struct EntitlementVerifier: Sendable {
         securityUpdatesAfterExpiry: Bool
     ) throws(EntitlementVerificationError) -> EntitlementClaims {
         guard releaseScope == .current,
-              let billingStateValue = payload.billingState,
-              let billingState = MonthlyBillingState(rawValue: billingStateValue),
-              let billingPeriodEnd = payload.billingPeriodEnd,
-              let recoveryUntil = payload.recoveryUntil,
-              let refreshAfter = payload.refreshAfter,
-              let expiresAt = payload.expiresAt,
-              billingPeriodEnd >= 0,
-              payload.issuedAt <= refreshAfter,
-              refreshAfter <= expiresAt,
-              recoveryUntil < expiresAt else {
+            let billingStateValue = payload.billingState,
+            let billingState = MonthlyBillingState(rawValue: billingStateValue),
+            let billingPeriodEnd = payload.billingPeriodEnd,
+            let recoveryUntil = payload.recoveryUntil,
+            let refreshAfter = payload.refreshAfter,
+            let expiresAt = payload.expiresAt,
+            billingPeriodEnd >= 0,
+            payload.issuedAt <= refreshAfter,
+            refreshAfter <= expiresAt,
+            recoveryUntil < expiresAt
+        else {
             throw EntitlementVerificationError.invalidTimeline
         }
 
@@ -259,26 +264,28 @@ public struct EntitlementVerifier: Sendable {
             revision: payload.revision,
             releaseScope: releaseScope,
             securityUpdatesAfterExpiry: securityUpdatesAfterExpiry,
-            terms: .monthly(MonthlyTerms(
-                billingState: billingState,
-                billingPeriodEnd: billingPeriodEnd,
-                recoveryUntil: recoveryUntil,
-                refreshAfter: refreshAfter,
-                expiresAt: expiresAt
-            ))
+            terms: .monthly(
+                MonthlyTerms(
+                    billingState: billingState,
+                    billingPeriodEnd: billingPeriodEnd,
+                    recoveryUntil: recoveryUntil,
+                    refreshAfter: refreshAfter,
+                    expiresAt: expiresAt
+                ))
         )
     }
 
     private func decodeBase64URL(_ value: Substring) throws(EntitlementVerificationError) -> Data {
         guard !value.contains("="),
-              value.utf8.allSatisfy({ byte in
-                  (0x41 ... 0x5A).contains(byte)
-                      || (0x61 ... 0x7A).contains(byte)
-                      || (0x30 ... 0x39).contains(byte)
-                      || byte == 0x2D
-                      || byte == 0x5F
-              }),
-              value.utf8.count % 4 != 1 else {
+            value.utf8.allSatisfy({ byte in
+                (0x41...0x5A).contains(byte)
+                    || (0x61...0x7A).contains(byte)
+                    || (0x30...0x39).contains(byte)
+                    || byte == 0x2D
+                    || byte == 0x5F
+            }),
+            value.utf8.count % 4 != 1
+        else {
             throw EntitlementVerificationError.invalidBase64URL
         }
 

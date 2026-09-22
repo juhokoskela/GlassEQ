@@ -22,10 +22,11 @@ package enum SettingsFileImportLoader {
             throw StereoTextPairImportError.filesMustUseSameFormat
         }
         if isWAV(leftURL) {
-            return selection(for: try ImpulseResponseWAVImporter.loadStereoPair(
-                leftURL: leftURL,
-                rightURL: rightURL
-            ))
+            return selection(
+                for: try ImpulseResponseWAVImporter.loadStereoPair(
+                    leftURL: leftURL,
+                    rightURL: rightURL
+                ))
         }
         let imported = try StereoTextPairImporter.load(
             leftURL: leftURL,
@@ -45,12 +46,13 @@ package enum SettingsFileImportLoader {
     private static func selection(
         for imported: ImportedImpulseResponse
     ) -> SettingsFileImportSelectionDTO {
-        let channels: [ImportedImpulseResponse.Channel] = switch imported.channels {
-        case .mono(let channel):
-            [channel]
-        case let .stereo(left, right):
-            [left, right]
-        }
+        let channels: [ImportedImpulseResponse.Channel] =
+            switch imported.channels {
+            case .mono(let channel):
+                [channel]
+            case let .stereo(left, right):
+                [left, right]
+            }
         return .impulseResponse(
             profile: imported.profile,
             channels: channels.map {

@@ -32,7 +32,8 @@ public struct EQTransitionRenderResult: ~Copyable, Sendable {
     @inline(__always)
     public func incomingBlendWeight(frameOffset: Int) -> Float {
         guard let blendStartFrame,
-              blendFrameCount > 0 else {
+            blendFrameCount > 0
+        else {
             return 0
         }
         if blendFrameCount == 1 {
@@ -87,10 +88,12 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
         blendSeconds: Double = Self.defaultBlendSeconds
     ) {
         let validSampleRate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 48_000
-        let validWarmup = warmupSeconds.isFinite && warmupSeconds >= 0
+        let validWarmup =
+            warmupSeconds.isFinite && warmupSeconds >= 0
             ? warmupSeconds
             : Self.defaultWarmupSeconds
-        let validBlend = blendSeconds.isFinite && blendSeconds > 0
+        let validBlend =
+            blendSeconds.isFinite && blendSeconds > 0
             ? blendSeconds
             : Self.defaultBlendSeconds
         self.activeProcessor = activeProcessor
@@ -120,8 +123,9 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
     @discardableResult
     public mutating func beginTransition(to processor: inout EQProcessor?) -> Bool {
         guard incomingProcessor == nil,
-              processor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
-              processor?.configuration.channelCount == activeProcessor.configuration.channelCount else {
+            processor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
+            processor?.configuration.channelCount == activeProcessor.configuration.channelCount
+        else {
             return false
         }
         swap(&incomingProcessor, &processor)
@@ -141,12 +145,13 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
         referenceProcessor: inout EQProcessor?
     ) -> Bool {
         guard incomingProcessor == nil,
-              comparisonReferenceProcessor == nil,
-              pendingComparisonReferenceProcessor == nil,
-              equalizedProcessor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
-              referenceProcessor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
-              equalizedProcessor?.configuration.channelCount == activeProcessor.configuration.channelCount,
-              referenceProcessor?.configuration.channelCount == activeProcessor.configuration.channelCount else {
+            comparisonReferenceProcessor == nil,
+            pendingComparisonReferenceProcessor == nil,
+            equalizedProcessor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
+            referenceProcessor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
+            equalizedProcessor?.configuration.channelCount == activeProcessor.configuration.channelCount,
+            referenceProcessor?.configuration.channelCount == activeProcessor.configuration.channelCount
+        else {
             return false
         }
         swap(&incomingProcessor, &equalizedProcessor)
@@ -190,7 +195,8 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             return EQTransitionRenderResult(programmeComparison: programmeComparisonSnapshot)
         }
         guard channels == self.channelCount,
-              availableFrames * channels <= alternateSamples.count else {
+            availableFrames * channels <= alternateSamples.count
+        else {
             return processActiveProcessor(
                 samples,
                 frameCount: availableFrames,
@@ -303,18 +309,21 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 let incomingWeight = blendWindow.incomingBlendWeight(frameOffset: frame)
                 for channel in 0..<channelCount {
                     let oldSample = samples[sampleIndex + channel]
-                    samples[sampleIndex + channel] = oldSample
+                    samples[sampleIndex + channel] =
+                        oldSample
                         + (alternate[sampleIndex + channel] - oldSample) * incomingWeight
                 }
                 sampleIndex += channelCount
             }
             blendedFrames += frameCount
-            let saturated = activeDiagnostics.nonFiniteSamples
+            let saturated =
+                activeDiagnostics.nonFiniteSamples
                 &+ incomingDiagnostics.nonFiniteSamples
                 &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
 
             guard blendedFrames >= blendFrameCount,
-                  incomingProcessor != nil else {
+                incomingProcessor != nil
+            else {
                 result = EQTransitionRenderResult(
                     saturatedSamples: saturated,
                     blendStartFrame: renderedBlendStartFrame,
@@ -426,13 +435,15 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                     comparisonSelectionWeight = selectionTarget
                     referenceWeight = selectionTarget
                 } else {
-                    let progress = blendFrameCount == 1
+                    let progress =
+                        blendFrameCount == 1
                         ? 1
                         : EQTransitionRenderResult.smoothstep(
                             Float(comparisonSelectionBlendedFrames)
                                 / Float(blendFrameCount - 1)
                         )
-                    comparisonSelectionWeight = comparisonSelectionStartWeight
+                    comparisonSelectionWeight =
+                        comparisonSelectionStartWeight
                         + (selectionTarget - comparisonSelectionStartWeight) * progress
                     comparisonSelectionBlendedFrames += 1
                     if comparisonSelectionBlendedFrames >= blendFrameCount {
@@ -443,15 +454,17 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 for channel in 0..<channelCount {
                     let equalizedSample = samples[sampleIndex + channel] * match.equalized
                     let referenceSample = alternate[sampleIndex + channel] * match.reference
-                    samples[sampleIndex + channel] = equalizedSample
+                    samples[sampleIndex + channel] =
+                        equalizedSample
                         + (referenceSample - equalizedSample) * referenceWeight
                 }
                 sampleIndex += channelCount
             }
 
             if comparisonExitRequested,
-               comparisonSelection == .equalized,
-               comparisonSelectionBlendedFrames >= blendFrameCount {
+                comparisonSelection == .equalized,
+                comparisonSelectionBlendedFrames >= blendFrameCount
+            {
                 let gain = programmeLoudnessMatcher.gains.equalized
                 if abs(gain - 1) < 0.000_001 {
                     shouldFinishComparison = true
@@ -491,7 +504,8 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 comparisonExitGainBlendedFrames + frame,
                 blendFrameCount - 1
             )
-            let progress = blendFrameCount == 1
+            let progress =
+                blendFrameCount == 1
                 ? 1
                 : EQTransitionRenderResult.smoothstep(
                     Float(transitionFrame) / Float(blendFrameCount - 1)

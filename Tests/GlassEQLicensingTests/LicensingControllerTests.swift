@@ -27,7 +27,7 @@ struct LicensingControllerTests {
         #expect(!snapshot.content.permitsProcessing)
         #expect(snapshot.sequence == 1)
         #expect(harness.service.calls.isEmpty)
-        for _ in 0 ..< 20 { await Task.yield() }
+        for _ in 0..<20 { await Task.yield() }
         #expect(harness.clock.requestedDeadlines.isEmpty)
     }
 
@@ -56,7 +56,7 @@ struct LicensingControllerTests {
         (LicenseState.monthlyActive, Int64(0)),
         (.monthlyRecovery, 0),
         (.monthlyGrace, 0),
-        (.monthlyExpired, 0)
+        (.monthlyExpired, 0),
     ])
     func timelineStatesFollowEffectiveTime(expected: LicenseState, _: Int64) async throws {
         let fixture = try EntitlementFixture()
@@ -64,7 +64,7 @@ struct LicensingControllerTests {
             .monthlyActive: [fixture.issuedAt, fixture.billingPeriodEnd - 1],
             .monthlyRecovery: [fixture.billingPeriodEnd, fixture.recoveryUntil - 1],
             .monthlyGrace: [fixture.recoveryUntil, fixture.expiresAt - 1],
-            .monthlyExpired: [fixture.expiresAt, fixture.expiresAt + 1]
+            .monthlyExpired: [fixture.expiresAt, fixture.expiresAt + 1],
         ]
         for time in times[expected]! {
             let harness = ControllerHarness(
@@ -75,13 +75,15 @@ struct LicensingControllerTests {
             let snapshot = await harness.subscribe()
             #expect(snapshot.content.state == expected, "at \(time)")
             #expect(snapshot.content.permitsProcessing == expected.permitsProcessing)
-            #expect(snapshot.content.terms == MonthlyTerms(
-                billingState: .active,
-                billingPeriodEnd: fixture.billingPeriodEnd,
-                recoveryUntil: fixture.recoveryUntil,
-                refreshAfter: fixture.refreshAfter,
-                expiresAt: fixture.expiresAt
-            ))
+            #expect(
+                snapshot.content.terms
+                    == MonthlyTerms(
+                        billingState: .active,
+                        billingPeriodEnd: fixture.billingPeriodEnd,
+                        recoveryUntil: fixture.recoveryUntil,
+                        refreshAfter: fixture.refreshAfter,
+                        expiresAt: fixture.expiresAt
+                    ))
         }
     }
 
@@ -98,7 +100,7 @@ struct LicensingControllerTests {
 
         #expect(snapshot.content.state == .perpetual)
         #expect(snapshot.content.terms == nil)
-        for _ in 0 ..< 20 { await Task.yield() }
+        for _ in 0..<20 { await Task.yield() }
         #expect(harness.clock.requestedDeadlines.isEmpty)
         #expect(harness.service.calls.isEmpty)
     }
@@ -153,28 +155,33 @@ struct LicensingControllerTests {
         #expect(foreignSnapshot.content.state == .invalidEntitlement)
         #expect(foreignSnapshot.content.activation == .needsRemoval)
 
-        let unknownKey = ControllerHarness(fixture: fixture, activation: ActivationState(
-            activationToken: "gea_test",
-            entitlement: try fixture.sign(
-                header: """
-                {"alg":"EdDSA","kid":"entitlement-2030-01","typ":"glasseq-entitlement+jwt"}
-                """,
-                payload: fixture.perpetualPayload()
-            ),
-            highestAcceptedRevision: 7,
-            highestTrustedTime: fixture.issuedAt
-        ))
+        let unknownKey = ControllerHarness(
+            fixture: fixture,
+            activation: ActivationState(
+                activationToken: "gea_test",
+                entitlement: try fixture.sign(
+                    header: """
+                        {"alg":"EdDSA","kid":"entitlement-2030-01","typ":"glasseq-entitlement+jwt"}
+                        """,
+                    payload: fixture.perpetualPayload()
+                ),
+                highestAcceptedRevision: 7,
+                highestTrustedTime: fixture.issuedAt
+            ))
         let unknownKeySnapshot = await unknownKey.controller.currentSnapshot()
         #expect(unknownKeySnapshot.content.state == .invalidEntitlement)
         #expect(unknownKeySnapshot.content.activation == .needsAppUpdate)
 
-        let wrongIssuer = ControllerHarness(fixture: fixture, activation: ActivationState(
-            activationToken: "gea_test",
-            entitlement: try fixture.sign(payload: fixture.perpetualPayload()
-                .replacingOccurrences(of: "https://license.glasseq.app", with: "https://example.com")),
-            highestAcceptedRevision: 7,
-            highestTrustedTime: fixture.issuedAt
-        ))
+        let wrongIssuer = ControllerHarness(
+            fixture: fixture,
+            activation: ActivationState(
+                activationToken: "gea_test",
+                entitlement: try fixture.sign(
+                    payload: fixture.perpetualPayload()
+                        .replacingOccurrences(of: "https://license.glasseq.app", with: "https://example.com")),
+                highestAcceptedRevision: 7,
+                highestTrustedTime: fixture.issuedAt
+            ))
         let wrongIssuerSnapshot = await wrongIssuer.controller.currentSnapshot()
         #expect(wrongIssuerSnapshot.content.state == .invalidEntitlement)
         #expect(wrongIssuerSnapshot.content.activation == .needsRemoval)
@@ -218,7 +225,7 @@ struct LicensingControllerTests {
         let expired = await harness.controller.currentSnapshot()
         #expect(expired.content.state == .monthlyExpired)
         #expect(expired.content.activation == .revoked)
-        for _ in 0 ..< 20 { await Task.yield() }
+        for _ in 0..<20 { await Task.yield() }
         #expect(harness.service.refreshCallCount == 0)
 
         // The server no longer knows the token; that counts as released.
@@ -333,7 +340,8 @@ struct LicensingControllerTests {
         let calls = harness.service.calls
         #expect(calls.count == 2)
         guard case let .activate(_, _, firstKey) = calls[0],
-              case let .activate(_, _, secondKey) = calls[1] else {
+            case let .activate(_, _, secondKey) = calls[1]
+        else {
             Issue.record("expected two activation calls")
             return
         }
@@ -356,7 +364,8 @@ struct LicensingControllerTests {
         #expect(harness.store.activation == nil)
 
         harness.service.onActivate { _, _, _ in
-            ActivationResponse(activationToken: "gea_new", entitlement: try fixture.sign(payload: fixture.monthlyPayload()))
+            ActivationResponse(
+                activationToken: "gea_new", entitlement: try fixture.sign(payload: fixture.monthlyPayload()))
         }
         harness.service.onDeactivate { _ in }
         harness.store.saveFailure = .keychain(-25_291)
@@ -405,9 +414,10 @@ struct LicensingControllerTests {
         harness.advance(seconds: 60)
 
         #expect(await waitUntil { harness.store.activation == nil })
-        #expect(harness.service.calls.filter {
-            $0 == .deactivate(activationToken: "gea_unverifiable")
-        }.count == 2)
+        #expect(
+            harness.service.calls.filter {
+                $0 == .deactivate(activationToken: "gea_unverifiable")
+            }.count == 2)
     }
 
     @Test
@@ -437,9 +447,10 @@ struct LicensingControllerTests {
 
         #expect(await waitUntil { harness.store.clearCount == 1 })
         #expect(harness.store.activation == nil)
-        #expect(harness.service.calls.filter {
-            $0 == .deactivate(activationToken: "gea_unsaved")
-        }.count == 2)
+        #expect(
+            harness.service.calls.filter {
+                $0 == .deactivate(activationToken: "gea_unsaved")
+            }.count == 2)
     }
 
     @Test
@@ -492,10 +503,11 @@ struct LicensingControllerTests {
         let stored = try #require(harness.store.activation)
         #expect(stored.highestTrustedTime == fixture.refreshAfter)
         #expect(stored.serverDeniedAt == nil)
-        let snapshot = try #require(await harness.recorder.waitForSnapshot {
-            guard let terms = $0.content.terms else { return false }
-            return terms.billingPeriodEnd != fixture.billingPeriodEnd
-        })
+        let snapshot = try #require(
+            await harness.recorder.waitForSnapshot {
+                guard let terms = $0.content.terms else { return false }
+                return terms.billingPeriodEnd != fixture.billingPeriodEnd
+            })
         #expect(snapshot.content.state == .monthlyActive)
         #expect(snapshot.content.lastRefreshFailure == nil)
     }
@@ -555,11 +567,12 @@ struct LicensingControllerTests {
         let gate = AsyncGate()
         harness.service.onRefresh { _, installationID in
             await gate.wait()
-            return try fixture.sign(payload: fixture.monthlyPayload(
-                startingAt: fixture.expiresAt,
-                revision: 8,
-                installationID: installationID
-            ))
+            return try fixture.sign(
+                payload: fixture.monthlyPayload(
+                    startingAt: fixture.expiresAt,
+                    revision: 8,
+                    installationID: installationID
+                ))
         }
         _ = await harness.subscribe()
 
@@ -615,7 +628,10 @@ struct LicensingControllerTests {
 
         harness.serveMonthlyRefresh(revision: 8)
         harness.advance(seconds: 3_600)
-        let recovered = try #require(await harness.recorder.waitForSnapshot { $0.content.state == .monthlyActive && $0.content.lastRefreshFailure == nil })
+        let recovered = try #require(
+            await harness.recorder.waitForSnapshot {
+                $0.content.state == .monthlyActive && $0.content.lastRefreshFailure == nil
+            })
         #expect(recovered.content.permitsProcessing)
     }
 
@@ -653,7 +669,8 @@ struct LicensingControllerTests {
 
         await harness.clock.fireNextDeadline()
         #expect(await waitUntil { harness.service.refreshCallCount == 1 })
-        let afterFailure = try #require(await harness.recorder.waitForSnapshot { $0.content.lastRefreshFailure == .offline })
+        let afterFailure = try #require(
+            await harness.recorder.waitForSnapshot { $0.content.lastRefreshFailure == .offline })
         #expect(afterFailure.content.state == .monthlyGrace)
         #expect(afterFailure.content.permitsProcessing)
     }
@@ -661,15 +678,16 @@ struct LicensingControllerTests {
     @Test(arguments: [
         (LicenseState.monthlyRecovery, Int64(0)),
         (.monthlyGrace, 0),
-        (.monthlyExpired, 0)
+        (.monthlyExpired, 0),
     ])
     func schedulerWakesAtEachSignedBoundary(expected: LicenseState, _: Int64) async throws {
         let fixture = try EntitlementFixture()
-        let boundary: Int64 = switch expected {
-        case .monthlyRecovery: fixture.billingPeriodEnd
-        case .monthlyGrace: fixture.recoveryUntil
-        default: fixture.expiresAt
-        }
+        let boundary: Int64 =
+            switch expected {
+            case .monthlyRecovery: fixture.billingPeriodEnd
+            case .monthlyGrace: fixture.recoveryUntil
+            default: fixture.expiresAt
+            }
         let start = boundary - 10
         // A recently refreshed entitlement, so no refresh is due before the boundary.
         let harness = ControllerHarness(
@@ -708,7 +726,9 @@ struct LicensingControllerTests {
         harness.advance(seconds: TrustedTimeState.persistenceIntervalSeconds)
 
         #expect(await waitUntil { harness.store.saveActivationCount == 1 })
-        #expect(harness.store.activation?.highestTrustedTime == fixture.issuedAt + TrustedTimeState.persistenceIntervalSeconds)
+        #expect(
+            harness.store.activation?.highestTrustedTime == fixture.issuedAt
+                + TrustedTimeState.persistenceIntervalSeconds)
         #expect(harness.service.calls.isEmpty)
         let next = try #require(await harness.clock.waitForSleeper())
         #expect(next == .seconds(2 * TrustedTimeState.persistenceIntervalSeconds))
@@ -735,10 +755,11 @@ struct LicensingControllerTests {
     func temporaryServiceFailureIsReportedAsUnavailable() async throws {
         let fixture = try EntitlementFixture()
         let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
-        harness.serveRefreshFailure(.service(
-            code: .temporarilyUnavailable,
-            retryAfterSeconds: 120
-        ))
+        harness.serveRefreshFailure(
+            .service(
+                code: .temporarilyUnavailable,
+                retryAfterSeconds: 120
+            ))
 
         await harness.controller.refreshNow()
 
@@ -858,7 +879,7 @@ struct LicensingControllerTests {
         harness.advance(seconds: fixture.recoveryUntil - fixture.issuedAt - 1)
         let grace = await harness.controller.currentSnapshot()
         #expect(grace.content.state == .monthlyRecovery || grace.content.state == .verificationNeeded)
-        for _ in 0 ..< 20 { await Task.yield() }
+        for _ in 0..<20 { await Task.yield() }
         #expect(harness.service.refreshCallCount == 1)
         let deadline = try #require(await harness.clock.waitForSleeper())
         #expect(deadline == harness.clock.now() + .seconds(1))
@@ -965,9 +986,10 @@ struct LicensingControllerTests {
         harness.service.onActivate { _, installationID, _ in
             ActivationResponse(
                 activationToken: "gea_recovered",
-                entitlement: try fixture.sign(payload: fixture.monthlyPayload(
-                    installationID: installationID
-                ))
+                entitlement: try fixture.sign(
+                    payload: fixture.monthlyPayload(
+                        installationID: installationID
+                    ))
             )
         }
 
@@ -1012,7 +1034,8 @@ struct LicensingControllerTests {
         let harness = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
         harness.store.loadFailure = .keychain(-25_300)
         harness.service.onActivate { _, _, _ in
-            ActivationResponse(activationToken: "gea_new", entitlement: try fixture.sign(payload: fixture.monthlyPayload()))
+            ActivationResponse(
+                activationToken: "gea_new", entitlement: try fixture.sign(payload: fixture.monthlyPayload()))
         }
         harness.service.onDeactivate { _ in }
 
@@ -1090,7 +1113,7 @@ struct LicensingControllerTests {
         let first = Task { await harness.controller.refreshNow() }
         #expect(await waitUntil { harness.service.refreshCallCount == 1 })
         let second = Task { await harness.controller.refreshNow() }
-        for _ in 0 ..< 20 { await Task.yield() }
+        for _ in 0..<20 { await Task.yield() }
         gate.open()
         await first.value
         await second.value
@@ -1166,9 +1189,10 @@ struct LicensingControllerTests {
         _ = await harness.subscribe()
 
         let deactivation = Task { try await harness.controller.deactivateCurrent() }
-        #expect(await waitUntil {
-            harness.service.calls.contains(.deactivate(activationToken: "gea_test"))
-        })
+        #expect(
+            await waitUntil {
+                harness.service.calls.contains(.deactivate(activationToken: "gea_test"))
+            })
         #expect(harness.clock.pendingDeadlines.isEmpty)
 
         gate.open()
@@ -1248,9 +1272,10 @@ struct LicensingControllerTests {
         harness.service.onDeactivate { _ in }
         harness.advance(seconds: 60)
         #expect(await waitUntil { harness.store.activation == nil })
-        #expect(harness.service.calls.filter {
-            $0 == .deactivate(activationToken: "gea_new")
-        }.count == 2)
+        #expect(
+            harness.service.calls.filter {
+                $0 == .deactivate(activationToken: "gea_new")
+            }.count == 2)
     }
 
     @Test
@@ -1294,9 +1319,10 @@ struct LicensingControllerTests {
         harness.service.onDeactivate { _ in }
         harness.advance(seconds: 60)
         #expect(await waitUntil { harness.store.activation == nil })
-        #expect(harness.service.calls.filter {
-            $0 == .deactivate(activationToken: "gea_new")
-        }.count == 3)
+        #expect(
+            harness.service.calls.filter {
+                $0 == .deactivate(activationToken: "gea_new")
+            }.count == 3)
     }
 
     // MARK: Trusted time
@@ -1422,7 +1448,8 @@ struct LicensingControllerTests {
     @Test
     func shutdownReleasesTheSchedulerSoTheControllerDeinitializes() async throws {
         let fixture = try EntitlementFixture()
-        var harness: ControllerHarness? = ControllerHarness(fixture: fixture, activation: try fixture.monthlyActivationState())
+        var harness: ControllerHarness? = ControllerHarness(
+            fixture: fixture, activation: try fixture.monthlyActivationState())
         let weakController = WeakControllerBox(harness?.controller)
         _ = await harness?.subscribe()
         _ = try #require(await harness?.clock.waitForSleeper())

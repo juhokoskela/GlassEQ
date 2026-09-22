@@ -3,7 +3,8 @@ import SwiftUI
 
 @MainActor
 private enum OnboardingAppIcon {
-    static let image: NSImage = Bundle.main.url(forResource: "GlassEQ", withExtension: "icns")
+    static let image: NSImage =
+        Bundle.main.url(forResource: "GlassEQ", withExtension: "icns")
         .flatMap { NSImage(contentsOf: $0) } ?? NSApplication.shared.applicationIconImage
 }
 
@@ -17,11 +18,15 @@ struct OnboardingWelcomeStep: View {
             Text(OnboardingStep.welcome.title)
                 .font(.largeTitle.weight(.bold))
                 .accessibilityAddTraits(.isHeader)
-            Text(localized("GlassEQ is a system-wide equalizer. It follows whatever output macOS is using and shapes the sound on the way there."))
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                localized(
+                    "GlassEQ is a system-wide equalizer. It follows whatever output macOS is using and shapes the sound on the way there."
+                )
+            )
+            .font(.title3)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
 
             OnboardingMenuBarHint()
                 .padding(.top, 8)
@@ -50,11 +55,15 @@ private struct OnboardingMenuBarHint: View {
             .background(.regularMaterial, in: .rect(cornerRadius: 10))
             .accessibilityHidden(true)
 
-            Text(localized("There is no Dock icon once setup is done. Look for this icon in the menu bar to switch profiles, pause processing, or open Settings."))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                localized(
+                    "There is no Dock icon once setup is done. Look for this icon in the menu bar to switch profiles, pause processing, or open Settings."
+                )
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -71,15 +80,24 @@ struct OnboardingLicenseStep: View {
             Text(OnboardingStep.license.title)
                 .font(.title.weight(.bold))
                 .accessibilityAddTraits(.isHeader)
-            Text(localized("The official build needs a license. Enter the key from your purchase email to activate this Mac. One license covers two Macs at a time."))
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                localized(
+                    "The official build needs a license. Enter the key from your purchase email to activate this Mac. One license covers two Macs at a time."
+                )
+            )
+            .font(.body)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
-                OnboardingPromiseRow(systemName: "number", text: localized("GlassEQ sends the key and a random installation ID. No device names or hardware identifiers."))
-                OnboardingPromiseRow(systemName: "key.slash", text: localized("The key is not kept on this Mac. Save it in your password manager."))
+                OnboardingPromiseRow(
+                    systemName: "number",
+                    text: localized(
+                        "GlassEQ sends the key and a random installation ID. No device names or hardware identifiers."))
+                OnboardingPromiseRow(
+                    systemName: "key.slash",
+                    text: localized("The key is not kept on this Mac. Save it in your password manager."))
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -152,15 +170,16 @@ private struct OnboardingLicenseStatus: View {
                         Image(systemName: keyIsRevealed ? "eye.slash" : "eye")
                     }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel(Text(keyIsRevealed ? localized("Hide license key") : localized("Show license key")))
+                    .accessibilityLabel(
+                        Text(keyIsRevealed ? localized("Hide license key") : localized("Show license key")))
                     Button(localized("Activate")) {
                         activate(licenseKey)
                     }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(keyIsBlank)
-                        .keyboardShortcut(.defaultAction)
-                        .accessibilityHint(Text(localized("Registers this Mac with the licensing service")))
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(keyIsBlank)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityHint(Text(localized("Registers this Mac with the licensing service")))
                 }
                 if let failure {
                     OnboardingLicenseNote(text: failure)
@@ -241,7 +260,10 @@ private struct OnboardingLicenseRemovalButton: View {
         ) {
             Button(localized("Remove License"), role: .destructive, action: remove)
         } message: {
-            Text(localized("This Mac stops being licensed right away, and its place on the license is released so another Mac can use it. You can activate a key again afterwards."))
+            Text(
+                localized(
+                    "This Mac stops being licensed right away, and its place on the license is released so another Mac can use it. You can activate a key again afterwards."
+                ))
         }
     }
 }
@@ -284,16 +306,24 @@ struct OnboardingAudioCaptureStep: View {
             Text(OnboardingStep.audioCapture.title)
                 .font(.title.weight(.bold))
                 .accessibilityAddTraits(.isHeader)
-            Text(localized("To equalize your Mac's sound, GlassEQ captures the audio other apps play and writes the corrected version to the same output. macOS asks you to allow that once."))
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                localized(
+                    "To equalize your Mac's sound, GlassEQ captures the audio other apps play and writes the corrected version to the same output. macOS asks you to allow that once."
+                )
+            )
+            .font(.body)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
                 OnboardingPromiseRow(systemName: "mic.slash", text: localized("The microphone is never read."))
-                OnboardingPromiseRow(systemName: "lock", text: localized("Audio stays on this Mac. Nothing is recorded or sent anywhere."))
-                OnboardingPromiseRow(systemName: "arrow.uturn.backward", text: localized("If GlassEQ stops or quits, playback returns to normal by itself."))
+                OnboardingPromiseRow(
+                    systemName: "lock",
+                    text: localized("Audio stays on this Mac. Nothing is recorded or sent anywhere."))
+                OnboardingPromiseRow(
+                    systemName: "arrow.uturn.backward",
+                    text: localized("If GlassEQ stops or quits, playback returns to normal by itself."))
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -343,9 +373,12 @@ private struct OnboardingAudioCaptureStatus: View {
                 .transition(.scale(scale: 0.9).combined(with: .opacity))
         case .permissionDenied(let settingsError):
             VStack(spacing: 10) {
-                Label(localized("GlassEQ was not allowed to capture system audio."), systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(Color.macOSSystemOrange)
-                    .font(.body.weight(.medium))
+                Label(
+                    localized("GlassEQ was not allowed to capture system audio."),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(Color.macOSSystemOrange)
+                .font(.body.weight(.medium))
                 Text(localized("Turn on GlassEQ under System Audio Recording in Privacy & Security, then try again."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -415,11 +448,15 @@ struct OnboardingPreferencesStep: View {
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             }
 
-            Text(localized("GlassEQ starts with flat profiles. Settings has an AutoEq search that imports a correction for your headphone model."))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                localized(
+                    "GlassEQ starts with flat profiles. Settings has an AutoEq search that imports a correction for your headphone model."
+                )
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
 
             Button(localized("Open Settings"), action: openSettings)
                 .controlSize(.large)
@@ -491,13 +528,18 @@ struct OnboardingDoneStep: View {
             Text(OnboardingStep.done.title)
                 .font(.largeTitle.weight(.bold))
                 .accessibilityAddTraits(.isHeader)
-            Text(isRunning
-                ? localized("GlassEQ is processing \(outputName) with \(profileName). It lives in the menu bar from here on.")
-                : localized("GlassEQ is in the menu bar. It will start processing as soon as it can capture system audio."))
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                isRunning
+                    ? localized(
+                        "GlassEQ is processing \(outputName) with \(profileName). It lives in the menu bar from here on."
+                    )
+                    : localized(
+                        "GlassEQ is in the menu bar. It will start processing as soon as it can capture system audio.")
+            )
+            .font(.title3)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
             Text(localized("You can reopen this guide from the Output tab in Settings."))
                 .font(.callout)
                 .foregroundStyle(.tertiary)

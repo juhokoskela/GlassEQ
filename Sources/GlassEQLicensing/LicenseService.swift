@@ -104,7 +104,8 @@ public struct LicenseServiceClient: LicenseServicing {
         let data = try await perform(request, accepting: [200, 201])
         let body = try Self.decode(ActivationResponseBody.self, from: data)
         guard Self.isBoundedCredential(body.activationToken),
-              Self.isBoundedEntitlement(body.entitlement) else {
+            Self.isBoundedEntitlement(body.entitlement)
+        else {
             throw LicenseServiceError.malformedResponse
         }
         return ActivationResponse(activationToken: body.activationToken, entitlement: body.entitlement)
@@ -166,7 +167,7 @@ public struct LicenseServiceClient: LicenseServicing {
         guard let http = response as? HTTPURLResponse else {
             throw .malformedResponse
         }
-        if (300 ..< 400).contains(http.statusCode) {
+        if (300..<400).contains(http.statusCode) {
             throw .redirected
         }
         guard http.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
@@ -196,7 +197,8 @@ public struct LicenseServiceClient: LicenseServicing {
 
     private static func error(status: Int, data: Data, response: HTTPURLResponse) -> LicenseServiceError {
         guard status >= 400,
-              let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data) else {
+            let envelope = try? JSONDecoder().decode(ErrorEnvelope.self, from: data)
+        else {
             return .unexpectedStatus(status)
         }
         var retryAfter: Int?
@@ -219,7 +221,7 @@ public struct LicenseServiceClient: LicenseServicing {
         case .timedOut:
             return .transport(.timedOut)
         case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
-             .internationalRoamingOff, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            .internationalRoamingOff, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
             return .transport(.offline)
         default:
             return .transport(.other)

@@ -81,8 +81,9 @@ package enum AutoEQCatalogueParser {
         for rawLine in markdown.split(whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard line.hasPrefix("- ["),
-                  let nameEnd = line.range(of: "]("),
-                  line.hasSuffix(")") else {
+                let nameEnd = line.range(of: "]("),
+                line.hasSuffix(")")
+            else {
                 continue
             }
 
@@ -97,14 +98,16 @@ package enum AutoEQCatalogueParser {
             path.removeFirst(2)
 
             guard !name.isEmpty,
-                  name.utf8.count <= maximumNameUTF8Bytes,
-                  path.utf8.count <= maximumPathUTF8Bytes,
-                  isSafeResultPath(path),
-                  seenPaths.insert(path).inserted else {
+                name.utf8.count <= maximumNameUTF8Bytes,
+                path.utf8.count <= maximumPathUTF8Bytes,
+                isSafeResultPath(path),
+                seenPaths.insert(path).inserted
+            else {
                 continue
             }
 
-            let decodedComponents = path
+            let decodedComponents =
+                path
                 .split(separator: "/")
                 .map { String($0).removingPercentEncoding ?? String($0) }
             guard let source = decodedComponents.first, !source.isEmpty else {
@@ -125,12 +128,13 @@ package enum AutoEQCatalogueParser {
             guard entries.count < maximumEntryCount else {
                 throw AutoEQRepositoryError.catalogueTooLarge
             }
-            entries.append(AutoEQCatalogueEntry(
-                name: name,
-                encodedResultPath: path,
-                source: source,
-                form: form
-            ))
+            entries.append(
+                AutoEQCatalogueEntry(
+                    name: name,
+                    encodedResultPath: path,
+                    source: source,
+                    form: form
+                ))
         }
 
         guard !entries.isEmpty else {
@@ -213,22 +217,25 @@ package struct AutoEQRepositoryClient: Sendable {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/%?#")
         guard AutoEQCatalogueParser.isSafeResultPath(entry.encodedResultPath),
-              let encodedDirectoryName = entry.encodedResultPath.split(separator: "/").last,
-              let directoryName = String(encodedDirectoryName).removingPercentEncoding,
-              !directoryName.isEmpty else {
+            let encodedDirectoryName = entry.encodedResultPath.split(separator: "/").last,
+            let directoryName = String(encodedDirectoryName).removingPercentEncoding,
+            !directoryName.isEmpty
+        else {
             throw AutoEQRepositoryError.invalidResultPath(entry.encodedResultPath)
         }
         let filename = "\(directoryName) \(kind.fileSuffix)"
         guard
-              let encodedFilename = filename.addingPercentEncoding(
-                  withAllowedCharacters: allowed
-              ),
-              let url = URL(string:
-                  Self.resultRoot
-                      + entry.encodedResultPath
-                      + "/"
-                      + encodedFilename
-              ) else {
+            let encodedFilename = filename.addingPercentEncoding(
+                withAllowedCharacters: allowed
+            ),
+            let url = URL(
+                string:
+                    Self.resultRoot
+                    + entry.encodedResultPath
+                    + "/"
+                    + encodedFilename
+            )
+        else {
             throw AutoEQRepositoryError.invalidResultPath(entry.encodedResultPath)
         }
         return url
@@ -248,7 +255,8 @@ package struct AutoEQRepositoryClient: Sendable {
 
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse,
-              response.statusCode == 200 else {
+            response.statusCode == 200
+        else {
             throw AutoEQRepositoryError.invalidResponse
         }
         guard response.expectedContentLength <= Int64(maximumBytes) else {

@@ -16,23 +16,27 @@ struct AggregateBufferPolicyTests {
 
         #expect(store.selection(for: route).frameSize == 16)
         #expect(try store.recordAutomaticFailure(for: route, at: start) == nil)
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            at: start.addingTimeInterval(1)
-        ) == 32)
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            at: start.addingTimeInterval(2)
-        ) == nil)
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            at: start.addingTimeInterval(3)
-        ) == 64)
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            occurrences: 2,
-            at: start.addingTimeInterval(4)
-        ) == 128)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                at: start.addingTimeInterval(1)
+            ) == 32)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                at: start.addingTimeInterval(2)
+            ) == nil)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                at: start.addingTimeInterval(3)
+            ) == 64)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                occurrences: 2,
+                at: start.addingTimeInterval(4)
+            ) == 128)
         #expect(try store.recordAutomaticFailure(for: route, occurrences: 2) == nil)
 
         let reloaded = AggregateBufferPolicyStore(url: url)
@@ -133,10 +137,11 @@ struct AggregateBufferPolicyTests {
         let start = Date(timeIntervalSince1970: 2_000)
 
         #expect(try store.recordAutomaticFailure(for: route, at: start) == nil)
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            at: start.addingTimeInterval(AggregateBufferPolicyStore.failureWindow + 1)
-        ) == nil)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                at: start.addingTimeInterval(AggregateBufferPolicyStore.failureWindow + 1)
+            ) == nil)
         #expect(store.selection(for: route).frameSize == 16)
     }
 
@@ -150,10 +155,11 @@ struct AggregateBufferPolicyTests {
         #expect(try store.recordAutomaticFailure(for: route, at: start) == nil)
 
         let reloaded = AggregateBufferPolicyStore(url: url)
-        #expect(try reloaded.recordAutomaticFailure(
-            for: route,
-            at: start.addingTimeInterval(10)
-        ) == 32)
+        #expect(
+            try reloaded.recordAutomaticFailure(
+                for: route,
+                at: start.addingTimeInterval(10)
+            ) == 32)
     }
 
     @Test
@@ -179,17 +185,19 @@ struct AggregateBufferPolicyTests {
         let route = fingerprint(uid: "reset-clean", stream: 0, sampleRate: 48_000)
         let start = Date(timeIntervalSince1970: 4_000)
 
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            occurrences: 2,
-            at: start
-        ) == 32)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                occurrences: 2,
+                at: start
+            ) == 32)
         #expect(try store.recordCleanAutomaticSession(for: route) == nil)
         #expect(try store.recordCleanAutomaticSession(for: route) == nil)
-        #expect(try store.recordAutomaticFailure(
-            for: route,
-            at: start.addingTimeInterval(1)
-        ) == nil)
+        #expect(
+            try store.recordAutomaticFailure(
+                for: route,
+                at: start.addingTimeInterval(1)
+            ) == nil)
         #expect(try store.recordCleanAutomaticSession(for: route) == nil)
         #expect(try store.recordCleanAutomaticSession(for: route) == nil)
         #expect(try store.recordCleanAutomaticSession(for: route) == 16)
@@ -285,13 +293,13 @@ struct AggregateBufferPolicyTests {
                 "route": [
                     "nativeOutputStreamIndex": 0,
                     "nominalSampleRate": 48_000,
-                    "outputDeviceUID": "route-\(index)"
-                ]
+                    "outputDeviceUID": "route-\(index)",
+                ],
             ]
         }
         let data = try JSONSerialization.data(withJSONObject: [
             "records": records,
-            "schemaVersion": 2
+            "schemaVersion": 2,
         ])
         try data.write(to: url)
 

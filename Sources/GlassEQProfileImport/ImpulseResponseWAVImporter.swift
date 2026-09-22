@@ -93,18 +93,20 @@ package struct ImportedImpulseResponse: Equatable, Sendable {
     package static func sampleRateLabel(_ sampleRate: Double) -> String {
         if sampleRate >= 1_000 {
             return Measurement(value: sampleRate / 1_000, unit: UnitFrequency.kilohertz)
-                .formatted(.measurement(
-                    width: .abbreviated,
-                    usage: .asProvided,
-                    numberFormatStyle: .number.precision(.fractionLength(1))
-                ))
+                .formatted(
+                    .measurement(
+                        width: .abbreviated,
+                        usage: .asProvided,
+                        numberFormatStyle: .number.precision(.fractionLength(1))
+                    ))
         }
         return Measurement(value: sampleRate, unit: UnitFrequency.hertz)
-            .formatted(.measurement(
-                width: .abbreviated,
-                usage: .asProvided,
-                numberFormatStyle: .number.precision(.fractionLength(0))
-            ))
+            .formatted(
+                .measurement(
+                    width: .abbreviated,
+                    usage: .asProvided,
+                    numberFormatStyle: .number.precision(.fractionLength(0))
+                ))
     }
 }
 
@@ -130,7 +132,8 @@ package enum ImpulseResponseWAVImporter {
 
         let sampleRate = format.sampleRate
         guard sampleRate.isFinite,
-              ProfilePersistence.impulseSampleRateRange.contains(sampleRate) else {
+            ProfilePersistence.impulseSampleRateRange.contains(sampleRate)
+        else {
             throw ImpulseResponseWAVImportError.invalidSampleRate(sampleRate)
         }
 
@@ -145,10 +148,12 @@ package enum ImpulseResponseWAVImporter {
         }
 
         let capacity = AVAudioFrameCount(file.length)
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: format,
-            frameCapacity: capacity
-        ) else {
+        guard
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: format,
+                frameCapacity: capacity
+            )
+        else {
             throw ImpulseResponseWAVImportError.unreadableSamples
         }
         try file.read(into: buffer, frameCount: capacity)
@@ -163,20 +168,22 @@ package enum ImpulseResponseWAVImporter {
         var sources: [ImpulseResponseSource] = []
         sources.reserveCapacity(channelCount)
         for channel in 0..<channelCount {
-            let samples = Array(UnsafeBufferPointer(
-                start: channelData[channel],
-                count: frameCount
-            ))
+            let samples = Array(
+                UnsafeBufferPointer(
+                    start: channelData[channel],
+                    count: frameCount
+                ))
             if let frame = samples.firstIndex(where: { !$0.isFinite }) {
                 throw ImpulseResponseWAVImportError.nonFiniteSample(
                     channel: channel,
                     frame: frame
                 )
             }
-            sources.append(ImpulseResponseSource(
-                sampleRate: sampleRate,
-                samples: samples
-            ))
+            sources.append(
+                ImpulseResponseSource(
+                    sampleRate: sampleRate,
+                    samples: samples
+                ))
         }
 
         let name = url.deletingPathExtension().lastPathComponent
@@ -219,7 +226,8 @@ package enum ImpulseResponseWAVImporter {
         let left = try load(from: leftURL)
         let right = try load(from: rightURL)
         guard case .mono(let leftChannel) = left.channels,
-              case .mono(let rightChannel) = right.channels else {
+            case .mono(let rightChannel) = right.channels
+        else {
             throw ImpulseResponseWAVImportError.separateFilesMustBeMono(
                 leftChannels: left.channels.count,
                 rightChannels: right.channels.count
@@ -232,7 +240,8 @@ package enum ImpulseResponseWAVImporter {
             )
         }
         guard case .impulseResponse(let leftSource) = left.profile.convolution,
-              case .impulseResponse(let rightSource) = right.profile.convolution else {
+            case .impulseResponse(let rightSource) = right.profile.convolution
+        else {
             throw ImpulseResponseWAVImportError.unreadableSamples
         }
 

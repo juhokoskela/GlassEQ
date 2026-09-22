@@ -153,10 +153,11 @@ public enum MinimumPhaseFIRCompiler {
         nyquistFrequency: Double
     ) -> [EQMagnitudePoint] {
         guard let maximumUsableFrequency,
-              maximumUsableFrequency.isFinite,
-              nyquistFrequency.isFinite,
-              maximumUsableFrequency > 0,
-              maximumUsableFrequency < nyquistFrequency else {
+            maximumUsableFrequency.isFinite,
+            nyquistFrequency.isFinite,
+            maximumUsableFrequency > 0,
+            maximumUsableFrequency < nyquistFrequency
+        else {
             return points
         }
 
@@ -168,17 +169,19 @@ public enum MinimumPhaseFIRCompiler {
         if let ceilingPoint = points.first(where: { $0.frequency == maximumUsableFrequency }) {
             adjusted.append(ceilingPoint)
         } else {
-            adjusted.append(EQMagnitudePoint(
-                frequency: maximumUsableFrequency,
-                gainDB: ceilingGainDB
-            ))
+            adjusted.append(
+                EQMagnitudePoint(
+                    frequency: maximumUsableFrequency,
+                    gainDB: ceilingGainDB
+                ))
         }
-        adjusted.append(contentsOf: points.lazy
-            .filter {
-                $0.frequency > maximumUsableFrequency
-                    && $0.frequency < nyquistFrequency
-            }
-            .map { EQMagnitudePoint(frequency: $0.frequency, gainDB: 0) })
+        adjusted.append(
+            contentsOf: points.lazy
+                .filter {
+                    $0.frequency > maximumUsableFrequency
+                        && $0.frequency < nyquistFrequency
+                }
+                .map { EQMagnitudePoint(frequency: $0.frequency, gainDB: 0) })
         adjusted.append(EQMagnitudePoint(frequency: nyquistFrequency, gainDB: 0))
         return adjusted
     }
@@ -315,11 +318,13 @@ public enum MinimumPhaseFIRCompiler {
         guard points.count >= 2 else {
             throw MinimumPhaseFIRCompilerError.insufficientPoints
         }
-        guard points.allSatisfy({
-            $0.frequency.isFinite
-                && $0.frequency > 0
-                && $0.gainDB.isFinite
-        }) else {
+        guard
+            points.allSatisfy({
+                $0.frequency.isFinite
+                    && $0.frequency > 0
+                    && $0.gainDB.isFinite
+            })
+        else {
             throw MinimumPhaseFIRCompilerError.invalidPoint
         }
 
@@ -345,7 +350,8 @@ struct ImpulseResponseSpectrum: Sendable {
             throw MinimumPhaseFIRCompilerError.invalidSampleRate
         }
         guard !impulseResponse.isEmpty,
-              impulseResponse.count <= MinimumPhaseFIRCompiler.tapCount else {
+            impulseResponse.count <= MinimumPhaseFIRCompiler.tapCount
+        else {
             throw MinimumPhaseFIRCompilerError.invalidImpulseResponse
         }
 
@@ -397,7 +403,8 @@ struct ImpulseResponseSpectrum: Sendable {
         let lowerIndex = min(Int(bin.rounded(.down)), magnitudes.count - 1)
         let upperIndex = min(lowerIndex + 1, magnitudes.count - 1)
         let fraction = bin - Double(lowerIndex)
-        let magnitude = magnitudes[lowerIndex]
+        let magnitude =
+            magnitudes[lowerIndex]
             + (magnitudes[upperIndex] - magnitudes[lowerIndex]) * fraction
         return 20 * log10(max(magnitude, .leastNonzeroMagnitude))
     }
@@ -408,18 +415,22 @@ private final class ComplexDoubleDFT {
     private let inverseSetup: vDSP_DFT_SetupD
 
     init(length: Int) throws {
-        guard let forwardSetup = vDSP_DFT_zop_CreateSetupD(
-            nil,
-            vDSP_Length(length),
-            .FORWARD
-        ) else {
+        guard
+            let forwardSetup = vDSP_DFT_zop_CreateSetupD(
+                nil,
+                vDSP_Length(length),
+                .FORWARD
+            )
+        else {
             throw MinimumPhaseFIRCompilerError.transformSetupFailed
         }
-        guard let inverseSetup = vDSP_DFT_zop_CreateSetupD(
-            forwardSetup,
-            vDSP_Length(length),
-            .INVERSE
-        ) else {
+        guard
+            let inverseSetup = vDSP_DFT_zop_CreateSetupD(
+                forwardSetup,
+                vDSP_Length(length),
+                .INVERSE
+            )
+        else {
             vDSP_DFT_DestroySetupD(forwardSetup)
             throw MinimumPhaseFIRCompilerError.transformSetupFailed
         }

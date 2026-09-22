@@ -45,7 +45,7 @@ final class ProfileImportModel {
                 } else {
                     onSuccess()
                 }
-            } catch where Task.isCancelled {
+            } catch  where Task.isCancelled {
                 return
             } catch {
                 errorMessage = error.localizedDescription

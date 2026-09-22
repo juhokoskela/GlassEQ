@@ -189,9 +189,11 @@ final class CoreAudioResourceCleanupLedger: @unchecked Sendable {
             isTerminalDestructionStatus(operations.destroyTap(tapID))
         }
 
-        guard !resources.ioProcs.isEmpty
+        guard
+            !resources.ioProcs.isEmpty
                 || !resources.aggregateDeviceIDs.isEmpty
-                || !resources.tapIDs.isEmpty else {
+                || !resources.tapIDs.isEmpty
+        else {
             resources.completion?()
             return nil
         }
@@ -227,7 +229,8 @@ final class CoreAudioResourceCleanupLedger: @unchecked Sendable {
     private func scheduleAutomaticRetry() {
         let delay = automaticRetryState.withLock { state -> Int? in
             guard !automaticRetryDelaysMilliseconds.isEmpty,
-                  !state.isScheduled else {
+                !state.isScheduled
+            else {
                 return nil
             }
             state.isScheduled = true

@@ -70,7 +70,7 @@ public func formatOSStatusFourCC(_ status: OSStatus) -> String? {
         UInt8((value >> 24) & 0xff),
         UInt8((value >> 16) & 0xff),
         UInt8((value >> 8) & 0xff),
-        UInt8(value & 0xff)
+        UInt8(value & 0xff),
     ]
     guard bytes.allSatisfy({ byte in byte >= 0x20 && byte <= 0x7e }) else {
         return nil
@@ -126,14 +126,16 @@ public func classifyCoreAudioError(operation: String, status: OSStatus) -> Audio
 }
 
 private func isSystemAudioCapturePermissionFailure(operation: String, status: OSStatus) -> Bool {
-    let isPermissionStatus = status == kAudioDevicePermissionsError
+    let isPermissionStatus =
+        status == kAudioDevicePermissionsError
         || status == kAudioHardwareIllegalOperationError
         || status == OSStatus(EPERM)
     return isPermissionStatus && isSystemAudioCaptureOperation(operation)
 }
 
 private func isSystemAudioCaptureOperation(_ operation: String) -> Bool {
-    let createsProcessTap = operation == "AudioHardwareCreateProcessTap"
+    let createsProcessTap =
+        operation == "AudioHardwareCreateProcessTap"
         || operation.hasPrefix("AudioHardwareCreateProcessTap(")
     if createsProcessTap {
         return true
@@ -141,8 +143,8 @@ private func isSystemAudioCaptureOperation(_ operation: String) -> Bool {
 
     switch operation {
     case "AudioDeviceStart(capture tap)",
-         "AudioDeviceStart(combined aggregate)",
-         "AudioDeviceStart(profile rebuild mute tap)":
+        "AudioDeviceStart(combined aggregate)",
+        "AudioDeviceStart(profile rebuild mute tap)":
         return true
     default:
         return false

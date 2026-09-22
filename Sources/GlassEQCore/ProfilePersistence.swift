@@ -63,19 +63,25 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
         case .emptyProfileName:
             return "Profile store contains an empty profile name."
         case let .profileNameTooLong(_, byteCount, maximum):
-            return "Profile store contains a profile name with \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
+            return
+                "Profile store contains a profile name with \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
         case let .outputUIDTooLong(mappingIndex, byteCount, maximum):
-            return "Output mapping \(mappingIndex) has \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
+            return
+                "Output mapping \(mappingIndex) has \(byteCount) UTF-8 bytes, which exceeds the \(maximum)-byte limit."
         case let .valueOutOfRange(_, field, value, range):
-            return "Profile store contains \(field) \(format(value)), outside the allowed range \(format(range.lowerBound))...\(format(range.upperBound))."
+            return
+                "Profile store contains \(field) \(format(value)), outside the allowed range \(format(range.lowerBound))...\(format(range.upperBound))."
         case let .tooManyFilters(_, channel, count, maximum):
-            return "Profile store contains \(count) \(channel) filters, which exceeds the \(maximum)-filter channel limit."
+            return
+                "Profile store contains \(count) \(channel) filters, which exceeds the \(maximum)-filter channel limit."
         case let .tooManyActiveFilters(_, channel, count, maximum):
-            return "Profile store contains \(count) active \(channel) filters, which exceeds the \(maximum)-filter channel limit."
+            return
+                "Profile store contains \(count) active \(channel) filters, which exceeds the \(maximum)-filter channel limit."
         case let .tooManyStereoFilters(_, count, maximum):
             return "Profile store contains \(count) stereo filters, which exceeds the \(maximum)-filter stereo limit."
         case let .tooManyStereoActiveFilters(_, count, maximum):
-            return "Profile store contains \(count) active stereo filters, which exceeds the \(maximum)-filter stereo limit."
+            return
+                "Profile store contains \(count) active stereo filters, which exceeds the \(maximum)-filter stereo limit."
         case let .invalidGraphicBandCount(_, channel, count, expected):
             return "Graphic profile contains \(count) active \(channel) bands; expected \(expected)."
         case let .missingConvolutionSource(_, channel):
@@ -83,15 +89,18 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
         case let .unexpectedConvolutionSource(_, channel):
             return "Non-convolution profile contains an unexpected \(channel) convolution source."
         case let .invalidMagnitudePointCount(_, channel, count, allowed):
-            return "Convolution profile contains \(count) \(channel) magnitude points; expected \(allowed.lowerBound)...\(allowed.upperBound)."
+            return
+                "Convolution profile contains \(count) \(channel) magnitude points; expected \(allowed.lowerBound)...\(allowed.upperBound)."
         case let .unsupportedSynthesisVersion(_, version):
             return "Convolution profile uses unsupported synthesis version \(version)."
         case let .duplicateMagnitudeFrequency(_, channel, frequency):
             return "Convolution profile contains duplicate \(channel) frequency \(format(frequency))."
         case let .invalidImpulseSampleRate(_, channel, sampleRate):
-            return "Convolution profile contains an invalid \(channel) impulse-response sample rate (\(format(sampleRate)) Hz)."
+            return
+                "Convolution profile contains an invalid \(channel) impulse-response sample rate (\(format(sampleRate)) Hz)."
         case let .invalidImpulseFrameCount(_, channel, count, allowed):
-            return "Convolution profile contains \(count) \(channel) impulse-response frames; expected \(allowed.lowerBound)...\(allowed.upperBound)."
+            return
+                "Convolution profile contains \(count) \(channel) impulse-response frames; expected \(allowed.lowerBound)...\(allowed.upperBound)."
         case let .nonFiniteImpulseSample(_, channel, frame):
             return "Convolution profile contains a non-finite \(channel) impulse-response sample at frame \(frame)."
         }
@@ -336,11 +345,12 @@ public enum ProfilePersistence {
     public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {
         let baseName = storeURL.deletingPathExtension().lastPathComponent
         let pathExtension = storeURL.pathExtension
-        let backupName = if pathExtension.isEmpty {
-            "\(baseName).invalid-\(timestampString(from: timestamp))"
-        } else {
-            "\(baseName).invalid-\(timestampString(from: timestamp)).\(pathExtension)"
-        }
+        let backupName =
+            if pathExtension.isEmpty {
+                "\(baseName).invalid-\(timestampString(from: timestamp))"
+            } else {
+                "\(baseName).invalid-\(timestampString(from: timestamp)).\(pathExtension)"
+            }
 
         return storeURL.deletingLastPathComponent().appendingPathComponent(backupName)
     }
@@ -386,7 +396,8 @@ public enum ProfilePersistence {
         while data.count <= maxStoreBytes {
             let remaining = maxStoreBytes + 1 - data.count
             guard let chunk = try handle.read(upToCount: remaining),
-                  !chunk.isEmpty else {
+                !chunk.isEmpty
+            else {
                 break
             }
             data.append(chunk)
@@ -413,7 +424,8 @@ public enum ProfilePersistence {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+            schemaVersion =
+                try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
                 ?? ProfileStore.initialSchemaVersion
         }
     }
@@ -431,7 +443,8 @@ public enum ProfilePersistence {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
+            schemaVersion =
+                try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
                 ?? ProfileStore.initialSchemaVersion
             outputMappings = try container.decode([OutputDeviceProfileMapping].self, forKey: .outputMappings)
             fallbackProfileID = try container.decode(UUID.self, forKey: .fallbackProfileID)
@@ -445,7 +458,8 @@ public enum ProfilePersistence {
         let envelope = try decoder.decode(ProfileStoreEnvelope.self, from: data)
         let json = try JSONSerialization.jsonObject(with: data)
         guard let object = json as? [String: Any],
-              let rawProfiles = object["profiles"] as? [Any] else {
+            let rawProfiles = object["profiles"] as? [Any]
+        else {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(codingPath: [], debugDescription: "Profile store profiles array is missing.")
             )
@@ -586,7 +600,8 @@ public enum ProfilePersistence {
         return (activeCount, filters.count)
     }
 
-    private static func validate(_ value: Double, in range: ClosedRange<Double>, field: String, profileID: UUID) throws {
+    private static func validate(_ value: Double, in range: ClosedRange<Double>, field: String, profileID: UUID) throws
+    {
         guard value.isFinite, range.contains(value) else {
             throw ProfileStoreValidationError.valueOutOfRange(
                 profileID: profileID,
@@ -649,8 +664,9 @@ public enum ProfilePersistence {
             }
         case (_, _):
             guard profile.convolution == nil,
-                  profile.leftConvolution == nil,
-                  profile.rightConvolution == nil else {
+                profile.leftConvolution == nil,
+                profile.rightConvolution == nil
+            else {
                 throw ProfileStoreValidationError.unexpectedConvolutionSource(
                     profileID: profile.id,
                     channel: "profile"
@@ -704,7 +720,8 @@ public enum ProfilePersistence {
             }
         case .impulseResponse(let impulse):
             guard impulse.sampleRate.isFinite,
-                  impulseSampleRateRange.contains(impulse.sampleRate) else {
+                impulseSampleRateRange.contains(impulse.sampleRate)
+            else {
                 throw ProfileStoreValidationError.invalidImpulseSampleRate(
                     profileID: profileID,
                     channel: channel,
@@ -797,7 +814,8 @@ public enum ProfilePersistence {
         summary.merge(store.repairReferences())
 
         if store.schemaVersion >= ProfileStore.initialSchemaVersion,
-           store.schemaVersion < ProfileStore.currentSchemaVersion {
+            store.schemaVersion < ProfileStore.currentSchemaVersion
+        {
             store.schemaVersion = ProfileStore.currentSchemaVersion
         }
 
@@ -821,7 +839,8 @@ public enum ProfilePersistence {
         let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
 
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: url, to: backupURL)
         } catch {
             return ProfileStoreLoadResult(store: store, status: .backupFailed)
@@ -848,7 +867,8 @@ public enum ProfilePersistence {
         let baseName = first.deletingPathExtension().lastPathComponent
         let pathExtension = first.pathExtension
         for index in 2...999 {
-            let candidateName = pathExtension.isEmpty
+            let candidateName =
+                pathExtension.isEmpty
                 ? "\(baseName)-\(index)"
                 : "\(baseName)-\(index).\(pathExtension)"
             let candidate = directory.appendingPathComponent(candidateName)
@@ -868,7 +888,8 @@ public enum ProfilePersistence {
 
     private static func storeByteCount(at url: URL) -> Int? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? NSNumber else {
+            let size = attributes[.size] as? NSNumber
+        else {
             return nil
         }
         return size.intValue

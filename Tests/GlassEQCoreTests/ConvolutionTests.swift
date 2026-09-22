@@ -10,7 +10,7 @@ struct ConvolutionTests {
         let impulse = try MinimumPhaseFIRCompiler.compile(
             points: [
                 EQMagnitudePoint(frequency: 20, gainDB: 0),
-                EQMagnitudePoint(frequency: 20_000, gainDB: 0)
+                EQMagnitudePoint(frequency: 20_000, gainDB: 0),
             ],
             sampleRate: 48_000
         )
@@ -24,7 +24,7 @@ struct ConvolutionTests {
         let points = [
             EQMagnitudePoint(frequency: 20, gainDB: 6),
             EQMagnitudePoint(frequency: 1_000, gainDB: -3),
-            EQMagnitudePoint(frequency: 20_000, gainDB: 2)
+            EQMagnitudePoint(frequency: 20_000, gainDB: 2),
         ]
         let sampleRate = 48_000.0
         let impulse = try MinimumPhaseFIRCompiler.compile(
@@ -51,7 +51,7 @@ struct ConvolutionTests {
         let sortedPoints = [
             EQMagnitudePoint(frequency: 20, gainDB: 0),
             EQMagnitudePoint(frequency: 7_200, gainDB: 0),
-            EQMagnitudePoint(frequency: 7_300, gainDB: 12)
+            EQMagnitudePoint(frequency: 7_300, gainDB: 12),
         ]
         let sortedImpulse = try MinimumPhaseFIRCompiler.compile(
             points: sortedPoints,
@@ -75,22 +75,26 @@ struct ConvolutionTests {
             points: [
                 EQMagnitudePoint(frequency: 20, gainDB: 0),
                 EQMagnitudePoint(frequency: 7_000, gainDB: 6),
-                EQMagnitudePoint(frequency: 7_125, gainDB: 12)
+                EQMagnitudePoint(frequency: 7_125, gainDB: 12),
             ],
             sampleRate: 16_000,
             maximumUsableFrequency: 7_000
         )
 
-        #expect(abs(magnitudeDB(
-            impulse: impulse,
-            frequency: 7_000,
-            sampleRate: 16_000
-        ) - 6) < 0.05)
-        #expect(abs(magnitudeDB(
-            impulse: impulse,
-            frequency: 7_125,
-            sampleRate: 16_000
-        )) < 0.05)
+        #expect(
+            abs(
+                magnitudeDB(
+                    impulse: impulse,
+                    frequency: 7_000,
+                    sampleRate: 16_000
+                ) - 6) < 0.05)
+        #expect(
+            abs(
+                magnitudeDB(
+                    impulse: impulse,
+                    frequency: 7_125,
+                    sampleRate: 16_000
+                )) < 0.05)
     }
 
     @Test
@@ -100,7 +104,7 @@ struct ConvolutionTests {
             EQMagnitudePoint(frequency: 7_000, gainDB: 6),
             EQMagnitudePoint(frequency: 7_300, gainDB: 12),
             EQMagnitudePoint(frequency: 8_000, gainDB: 9),
-            EQMagnitudePoint(frequency: 9_000, gainDB: -3)
+            EQMagnitudePoint(frequency: 9_000, gainDB: -3),
         ]
         let expectedCeilingGain = MinimumPhaseFIRCompiler.interpolatedGainDB(
             frequency: 7_200,
@@ -124,22 +128,26 @@ struct ConvolutionTests {
         let impulse = try MinimumPhaseFIRCompiler.compile(
             points: [
                 EQMagnitudePoint(frequency: 20, gainDB: 0),
-                EQMagnitudePoint(frequency: 7_000, gainDB: 6)
+                EQMagnitudePoint(frequency: 7_000, gainDB: 6),
             ],
             sampleRate: 16_000,
             maximumUsableFrequency: 7_200
         )
 
-        #expect(abs(magnitudeDB(
-            impulse: impulse,
-            frequency: 7_200,
-            sampleRate: 16_000
-        ) - 6) < 0.05)
-        #expect(abs(magnitudeDB(
-            impulse: impulse,
-            frequency: 8_000,
-            sampleRate: 16_000
-        )) < 0.05)
+        #expect(
+            abs(
+                magnitudeDB(
+                    impulse: impulse,
+                    frequency: 7_200,
+                    sampleRate: 16_000
+                ) - 6) < 0.05)
+        #expect(
+            abs(
+                magnitudeDB(
+                    impulse: impulse,
+                    frequency: 8_000,
+                    sampleRate: 16_000
+                )) < 0.05)
     }
 
     @Test
@@ -147,7 +155,7 @@ struct ConvolutionTests {
         let points = [
             EQMagnitudePoint(frequency: 20, gainDB: 6),
             EQMagnitudePoint(frequency: 1_000, gainDB: -3),
-            EQMagnitudePoint(frequency: 20_000, gainDB: 2)
+            EQMagnitudePoint(frequency: 20_000, gainDB: 2),
         ]
 
         #expect(MinimumPhaseFIRCompiler.interpolatedGainDB(frequency: 0, points: points) == 6)
@@ -160,7 +168,7 @@ struct ConvolutionTests {
             _ = try MinimumPhaseFIRCompiler.compile(
                 points: [
                     EQMagnitudePoint(frequency: 1_000, gainDB: 1),
-                    EQMagnitudePoint(frequency: 1_000, gainDB: 2)
+                    EQMagnitudePoint(frequency: 1_000, gainDB: 2),
                 ],
                 sampleRate: 48_000
             )
@@ -175,7 +183,7 @@ struct ConvolutionTests {
             _ = try MinimumPhaseFIRCompiler.compile(
                 points: [
                     EQMagnitudePoint(frequency: 20, gainDB: 0),
-                    EQMagnitudePoint(frequency: 20_000, gainDB: 6)
+                    EQMagnitudePoint(frequency: 20_000, gainDB: 6),
                 ],
                 sampleRate: 48_000,
                 maximumUsableFrequency: 20_000,
@@ -264,16 +272,18 @@ struct ConvolutionTests {
             name: "Imported IR",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: impulse
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: impulse
+                ))
         )
-        var processor = EQProcessor(renderConfiguration: try EQRenderConfiguration.prepare(
-            profile: profile,
-            sampleRate: 48_000,
-            channelCount: 1
-        ))
+        var processor = EQProcessor(
+            renderConfiguration: try EQRenderConfiguration.prepare(
+                profile: profile,
+                sampleRate: 48_000,
+                channelCount: 1
+            ))
         var samples: [Float] = [1] + [Float](repeating: 0, count: 7)
 
         processor.processInterleaved(&samples, channelCount: 1)
@@ -289,16 +299,19 @@ struct ConvolutionTests {
             name: "48 kHz IR",
             mode: .convolution,
             filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(
-                sampleRate: 48_000,
-                samples: [1]
-            ))
+            convolution: .impulseResponse(
+                ImpulseResponseSource(
+                    sampleRate: 48_000,
+                    samples: [1]
+                ))
         )
 
-        #expect(throws: HybridConvolverError.sampleRateMismatch(
-            source: 48_000,
-            destination: 96_000
-        )) {
+        #expect(
+            throws: HybridConvolverError.sampleRateMismatch(
+                source: 48_000,
+                destination: 96_000
+            )
+        ) {
             _ = try EQRenderConfiguration.prepare(
                 profile: profile,
                 sampleRate: 96_000,

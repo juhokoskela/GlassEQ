@@ -32,12 +32,14 @@ struct CoreAudioDeviceTests {
             automaticRetryDelaysMilliseconds: []
         )
 
-        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
-            operation: "test",
-            aggregateDeviceIDs: [42],
-            tapIDs: [43],
-            completion: { counts.withLock { $0.completionCount += 1 } }
-        )))
+        #expect(
+            !ledger.dispose(
+                CoreAudioResourceCleanupLedger.PendingResources(
+                    operation: "test",
+                    aggregateDeviceIDs: [42],
+                    tapIDs: [43],
+                    completion: { counts.withLock { $0.completionCount += 1 } }
+                )))
         #expect(ledger.pendingCount == 1)
         #expect(counts.withLock { $0.tapDestroyAttempts } == 1)
         #expect(counts.withLock { $0.completionCount } == 0)
@@ -68,11 +70,13 @@ struct CoreAudioDeviceTests {
             preservesFailuresOnDeinit: false
         )
 
-        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
-            operation: "destroy muted process tap",
-            tapIDs: [42],
-            completion: { completed.signal() }
-        )))
+        #expect(
+            !ledger.dispose(
+                CoreAudioResourceCleanupLedger.PendingResources(
+                    operation: "destroy muted process tap",
+                    tapIDs: [42],
+                    completion: { completed.signal() }
+                )))
         #expect(completed.wait(timeout: .now() + 2) == .success)
         #expect(attempts.withLock { $0 } == 3)
         #expect(ledger.pendingCount == 0)
@@ -120,10 +124,12 @@ struct CoreAudioDeviceTests {
             automaticRetryDelaysMilliseconds: []
         )
 
-        #expect(!ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
-            operation: "retain first tap",
-            tapIDs: [1]
-        )))
+        #expect(
+            !ledger.dispose(
+                CoreAudioResourceCleanupLedger.PendingResources(
+                    operation: "retain first tap",
+                    tapIDs: [1]
+                )))
         retryQueue.async {
             _ = ledger.retryPending()
             retryFinished.signal()
@@ -135,16 +141,18 @@ struct CoreAudioDeviceTests {
         try #require(retryStarted)
 
         disposeQueue.async {
-            let completed = ledger.dispose(CoreAudioResourceCleanupLedger.PendingResources(
-                operation: "queue second tap",
-                tapIDs: [2]
-            ))
+            let completed = ledger.dispose(
+                CoreAudioResourceCleanupLedger.PendingResources(
+                    operation: "queue second tap",
+                    tapIDs: [2]
+                ))
             concurrentDisposeResult.withLock { $0 = completed }
             concurrentDisposeFinished.signal()
         }
-        let disposeReturnedWithoutWaitingForHAL = concurrentDisposeFinished.wait(
-            timeout: .now() + 5
-        ) == .success
+        let disposeReturnedWithoutWaitingForHAL =
+            concurrentDisposeFinished.wait(
+                timeout: .now() + 5
+            ) == .success
         releaseHAL.signal()
         if !disposeReturnedWithoutWaitingForHAL {
             _ = retryFinished.wait(timeout: .now() + 5)
@@ -162,12 +170,14 @@ struct CoreAudioDeviceTests {
     @Test
     func coreAudioCleanupTreatsAlreadyDestroyedObjectsAsTerminal() {
         #expect(CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(noErr))
-        #expect(CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
-            kAudioHardwareBadObjectError
-        ))
-        #expect(!CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
-            kAudioHardwareUnspecifiedError
-        ))
+        #expect(
+            CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
+                kAudioHardwareBadObjectError
+            ))
+        #expect(
+            !CoreAudioResourceCleanupLedger.isTerminalDestructionStatus(
+                kAudioHardwareUnspecifiedError
+            ))
     }
 
     @Test
@@ -398,68 +408,77 @@ struct CoreAudioDeviceTests {
             sampleRate: 48_000
         )
 
-        #expect(SystemTapAudioEngine.combinedTapMatchesRoute(
-            existingOutputUID: output.uid,
-            existingOutputStreamIndex: 1,
-            existingNominalSampleRate: 48_000,
-            output: output,
-            outputStreamIndex: 1
-        ))
-        #expect(!SystemTapAudioEngine.combinedTapMatchesRoute(
-            existingOutputUID: output.uid,
-            existingOutputStreamIndex: 1,
-            existingNominalSampleRate: 44_100,
-            output: output,
-            outputStreamIndex: 1
-        ))
+        #expect(
+            SystemTapAudioEngine.combinedTapMatchesRoute(
+                existingOutputUID: output.uid,
+                existingOutputStreamIndex: 1,
+                existingNominalSampleRate: 48_000,
+                output: output,
+                outputStreamIndex: 1
+            ))
+        #expect(
+            !SystemTapAudioEngine.combinedTapMatchesRoute(
+                existingOutputUID: output.uid,
+                existingOutputStreamIndex: 1,
+                existingNominalSampleRate: 44_100,
+                output: output,
+                outputStreamIndex: 1
+            ))
     }
 
     @Test
     func processTapSampleRateMustMatchThePhysicalOutput() {
-        #expect(SystemTapAudioEngine.tapSampleRateMatchesOutput(
-            tapSampleRate: 48_000,
-            outputSampleRate: 48_000
-        ))
-        #expect(!SystemTapAudioEngine.tapSampleRateMatchesOutput(
-            tapSampleRate: 44_100,
-            outputSampleRate: 48_000
-        ))
-        #expect(!SystemTapAudioEngine.tapSampleRateMatchesOutput(
-            tapSampleRate: 0,
-            outputSampleRate: 48_000
-        ))
+        #expect(
+            SystemTapAudioEngine.tapSampleRateMatchesOutput(
+                tapSampleRate: 48_000,
+                outputSampleRate: 48_000
+            ))
+        #expect(
+            !SystemTapAudioEngine.tapSampleRateMatchesOutput(
+                tapSampleRate: 44_100,
+                outputSampleRate: 48_000
+            ))
+        #expect(
+            !SystemTapAudioEngine.tapSampleRateMatchesOutput(
+                tapSampleRate: 0,
+                outputSampleRate: 48_000
+            ))
     }
 
     @Test
     func aggregateStartupRequiresMatchingFramesAndStableTimestamps() {
-        #expect(SystemTapAudioEngine.startupCallbackIsValid(
-            mainInputFrameCount: 16,
-            systemSoundInputFrameCount: 0,
-            outputFrameCount: 16,
-            expectedFrameCount: 16,
-            timestampsAreStable: true
-        ))
-        #expect(SystemTapAudioEngine.startupCallbackIsValid(
-            mainInputFrameCount: 16,
-            systemSoundInputFrameCount: 16,
-            outputFrameCount: 16,
-            expectedFrameCount: 16,
-            timestampsAreStable: true
-        ))
-        #expect(!SystemTapAudioEngine.startupCallbackIsValid(
-            mainInputFrameCount: 512,
-            systemSoundInputFrameCount: 512,
-            outputFrameCount: 512,
-            expectedFrameCount: 16,
-            timestampsAreStable: true
-        ))
-        #expect(!SystemTapAudioEngine.startupCallbackIsValid(
-            mainInputFrameCount: 16,
-            systemSoundInputFrameCount: 16,
-            outputFrameCount: 16,
-            expectedFrameCount: 16,
-            timestampsAreStable: false
-        ))
+        #expect(
+            SystemTapAudioEngine.startupCallbackIsValid(
+                mainInputFrameCount: 16,
+                systemSoundInputFrameCount: 0,
+                outputFrameCount: 16,
+                expectedFrameCount: 16,
+                timestampsAreStable: true
+            ))
+        #expect(
+            SystemTapAudioEngine.startupCallbackIsValid(
+                mainInputFrameCount: 16,
+                systemSoundInputFrameCount: 16,
+                outputFrameCount: 16,
+                expectedFrameCount: 16,
+                timestampsAreStable: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.startupCallbackIsValid(
+                mainInputFrameCount: 512,
+                systemSoundInputFrameCount: 512,
+                outputFrameCount: 512,
+                expectedFrameCount: 16,
+                timestampsAreStable: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.startupCallbackIsValid(
+                mainInputFrameCount: 16,
+                systemSoundInputFrameCount: 16,
+                outputFrameCount: 16,
+                expectedFrameCount: 16,
+                timestampsAreStable: false
+            ))
     }
 
     @Test
@@ -469,29 +488,33 @@ struct CoreAudioDeviceTests {
         )
 
         expectation.update(appliedFrameCount: 32)
-        #expect(expectation.validateCallback(
-            mainInputFrameCount: 32,
-            systemSoundInputFrameCount: 32,
-            outputFrameCount: 32,
-            timestampsAreStable: true
-        ).isValid)
-        #expect(!expectation.validateCallback(
-            mainInputFrameCount: 16,
-            systemSoundInputFrameCount: 16,
-            outputFrameCount: 16,
-            timestampsAreStable: true
-        ).isValid)
+        #expect(
+            expectation.validateCallback(
+                mainInputFrameCount: 32,
+                systemSoundInputFrameCount: 32,
+                outputFrameCount: 32,
+                timestampsAreStable: true
+            ).isValid)
+        #expect(
+            !expectation.validateCallback(
+                mainInputFrameCount: 16,
+                systemSoundInputFrameCount: 16,
+                outputFrameCount: 16,
+                timestampsAreStable: true
+            ).isValid)
 
         expectation.update(appliedFrameCount: 512)
-        #expect(!SystemTapAudioEngine.startupAttemptFrameSizes(
-            requestedFrameSize: 16
-        ).contains(512))
-        #expect(expectation.validateCallback(
-            mainInputFrameCount: 512,
-            systemSoundInputFrameCount: 512,
-            outputFrameCount: 512,
-            timestampsAreStable: true
-        ).isValid)
+        #expect(
+            !SystemTapAudioEngine.startupAttemptFrameSizes(
+                requestedFrameSize: 16
+            ).contains(512))
+        #expect(
+            expectation.validateCallback(
+                mainInputFrameCount: 512,
+                systemSoundInputFrameCount: 512,
+                outputFrameCount: 512,
+                timestampsAreStable: true
+            ).isValid)
     }
 
     @Test
@@ -568,18 +591,22 @@ struct CoreAudioDeviceTests {
 
     @Test
     func aggregateStartupRetriesBeforeUsingOneSaferBufferRung() {
-        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
-            requestedFrameSize: 16
-        ) == [16, 16, 32])
-        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
-            requestedFrameSize: 32
-        ) == [32, 32, 64])
-        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
-            requestedFrameSize: 64
-        ) == [64, 64, 128])
-        #expect(SystemTapAudioEngine.startupAttemptFrameSizes(
-            requestedFrameSize: 128
-        ) == [128, 128])
+        #expect(
+            SystemTapAudioEngine.startupAttemptFrameSizes(
+                requestedFrameSize: 16
+            ) == [16, 16, 32])
+        #expect(
+            SystemTapAudioEngine.startupAttemptFrameSizes(
+                requestedFrameSize: 32
+            ) == [32, 32, 64])
+        #expect(
+            SystemTapAudioEngine.startupAttemptFrameSizes(
+                requestedFrameSize: 64
+            ) == [64, 64, 128])
+        #expect(
+            SystemTapAudioEngine.startupAttemptFrameSizes(
+                requestedFrameSize: 128
+            ) == [128, 128])
     }
 
     @Test
@@ -677,11 +704,12 @@ struct CoreAudioDeviceTests {
         }
 
         #expect(compatibilityOutputIsActive)
-        #expect(events == [
-            "attempt 16", "restore", "wait",
-            "attempt 16", "restore", "wait",
-            "attempt 32", "restore", "escape",
-        ])
+        #expect(
+            events == [
+                "attempt 16", "restore", "wait",
+                "attempt 16", "restore", "wait",
+                "attempt 32", "restore", "escape",
+            ])
     }
 
     @Test
@@ -810,9 +838,10 @@ struct CoreAudioDeviceTests {
 
         #expect(!compatibilityTapIsActive)
         #expect(!combinedGraphIsActive)
-        #expect(events == [
-            "attempt 16", "restore", "stop", "stop combined", "escape",
-        ])
+        #expect(
+            events == [
+                "attempt 16", "restore", "stop", "stop combined", "escape",
+            ])
     }
 
     @Test
@@ -862,94 +891,110 @@ struct CoreAudioDeviceTests {
             Issue.record("Expected the restoration error, got \(error)")
         }
 
-        #expect(events == [
-            "restore", "stop compatibility", "stop combined", "escape",
-        ])
+        #expect(
+            events == [
+                "restore", "stop compatibility", "stop combined", "escape",
+            ])
     }
 
     @Test
     func activeSeparateClockOutputDoesNotNeedRestoration() {
-        #expect(!SystemTapAudioEngine.requiresSeparateClockRestoration(
-            activeBackendIsSeparate: true,
-            hasActiveOutputAndProfile: true
-        ))
-        #expect(SystemTapAudioEngine.requiresSeparateClockRestoration(
-            activeBackendIsSeparate: false,
-            hasActiveOutputAndProfile: false
-        ))
-        #expect(SystemTapAudioEngine.requiresSeparateClockRestoration(
-            activeBackendIsSeparate: false,
-            hasActiveOutputAndProfile: true
-        ))
-        #expect(SystemTapAudioEngine.requiresSeparateClockRestoration(
-            activeBackendIsSeparate: true,
-            hasActiveOutputAndProfile: false
-        ))
+        #expect(
+            !SystemTapAudioEngine.requiresSeparateClockRestoration(
+                activeBackendIsSeparate: true,
+                hasActiveOutputAndProfile: true
+            ))
+        #expect(
+            SystemTapAudioEngine.requiresSeparateClockRestoration(
+                activeBackendIsSeparate: false,
+                hasActiveOutputAndProfile: false
+            ))
+        #expect(
+            SystemTapAudioEngine.requiresSeparateClockRestoration(
+                activeBackendIsSeparate: false,
+                hasActiveOutputAndProfile: true
+            ))
+        #expect(
+            SystemTapAudioEngine.requiresSeparateClockRestoration(
+                activeBackendIsSeparate: true,
+                hasActiveOutputAndProfile: false
+            ))
     }
 
     @Test
     func aggregateStartupTimeoutScalesForLongCallbacks() {
-        #expect(SystemTapAudioEngine.startupQualificationTimeout(
-            frameCount: 16,
-            sampleRate: 48_000,
-            minimumConsecutiveCallbacks: 32
-        ) == 0.25)
-        #expect(SystemTapAudioEngine.startupQualificationTimeout(
-            frameCount: 480,
-            sampleRate: 24_000,
-            minimumConsecutiveCallbacks: 32
-        ) > 1.5)
+        #expect(
+            SystemTapAudioEngine.startupQualificationTimeout(
+                frameCount: 16,
+                sampleRate: 48_000,
+                minimumConsecutiveCallbacks: 32
+            ) == 0.25)
+        #expect(
+            SystemTapAudioEngine.startupQualificationTimeout(
+                frameCount: 480,
+                sampleRate: 24_000,
+                minimumConsecutiveCallbacks: 32
+            ) > 1.5)
     }
 
     @Test
     func physicalFirstColdStartupIsUsedOnlyWhenNoBackendIsRunning() {
-        #expect(SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-            activeBackendIsSeparate: false,
-            combinedState: .stopped
-        ))
-        #expect(SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-            activeBackendIsSeparate: false,
-            combinedState: .failed("Previous startup failed")
-        ))
-        #expect(!SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-            activeBackendIsSeparate: true,
-            combinedState: .stopped
-        ))
-        #expect(!SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-            activeBackendIsSeparate: false,
-            combinedState: .running(output: AudioOutputDevice(
-                id: 1,
-                uid: "running-output",
-                name: "Running Output",
-                nominalSampleRate: 48_000,
-                outputChannelCount: 2,
-                bufferFrameSize: 16
+        #expect(
+            SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+                activeBackendIsSeparate: false,
+                combinedState: .stopped
             ))
-        ))
+        #expect(
+            SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+                activeBackendIsSeparate: false,
+                combinedState: .failed("Previous startup failed")
+            ))
+        #expect(
+            !SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+                activeBackendIsSeparate: true,
+                combinedState: .stopped
+            ))
+        #expect(
+            !SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
+                activeBackendIsSeparate: false,
+                combinedState: .running(
+                    output: AudioOutputDevice(
+                        id: 1,
+                        uid: "running-output",
+                        name: "Running Output",
+                        nominalSampleRate: 48_000,
+                        outputChannelCount: 2,
+                        bufferFrameSize: 16
+                    ))
+            ))
     }
 
     @Test
     func deferredColdStartupRebuildsStayCompatibleWhileClientsAreActive() {
-        #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-            activeBackendIsSeparate: true,
-            deferredRouteMatches: true,
-            externalClientsMayBeActive: false
-        ))
-        #expect(SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-            activeBackendIsSeparate: true,
-            deferredRouteMatches: false,
-            externalClientsMayBeActive: true
-        ))
-        #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-            activeBackendIsSeparate: false,
-            deferredRouteMatches: true,
-            externalClientsMayBeActive: true
-        ))
-        #expect(!SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-            activeBackendIsSeparate: true,
-            deferredRouteMatches: false,
-            externalClientsMayBeActive: false
-        ))
+        #expect(
+            SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
+                activeBackendIsSeparate: true,
+                deferredRouteMatches: true,
+                externalClientsMayBeActive: false
+            ))
+        #expect(
+            SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
+                activeBackendIsSeparate: true,
+                deferredRouteMatches: false,
+                externalClientsMayBeActive: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
+                activeBackendIsSeparate: false,
+                deferredRouteMatches: true,
+                externalClientsMayBeActive: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
+                activeBackendIsSeparate: true,
+                deferredRouteMatches: false,
+                externalClientsMayBeActive: false
+            ))
     }
 
     @Test
@@ -1033,24 +1078,26 @@ struct CoreAudioDeviceTests {
 
     @Test
     func activeOutputProcessDetectionTreatsProcessListFailuresAsPotentialActivity() {
-        #expect(CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
-            using: 100,
-            excluding: [],
-            processObjectIDs: { throw ActiveProcessQueryTestError.processList },
-            isRunningOutput: { _ in true },
-            outputDeviceIDs: { _ in [100] }
-        ))
+        #expect(
+            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
+                using: 100,
+                excluding: [],
+                processObjectIDs: { throw ActiveProcessQueryTestError.processList },
+                isRunningOutput: { _ in true },
+                outputDeviceIDs: { _ in [100] }
+            ))
     }
 
     @Test
     func activeOutputProcessDetectionTreatsUnknownPropertyFailuresAsPotentialActivity() {
-        #expect(CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
-            using: 100,
-            excluding: [],
-            processObjectIDs: { [10] },
-            isRunningOutput: { _ in true },
-            outputDeviceIDs: { _ in throw ActiveProcessQueryTestError.propertyQuery }
-        ))
+        #expect(
+            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
+                using: 100,
+                excluding: [],
+                processObjectIDs: { [10] },
+                isRunningOutput: { _ in true },
+                outputDeviceIDs: { _ in throw ActiveProcessQueryTestError.propertyQuery }
+            ))
     }
 
     @Test
@@ -1072,14 +1119,16 @@ struct CoreAudioDeviceTests {
         let unknown = aggregateTapEntry(uid: "unknown")
         let uncompensated = aggregateTapEntry(uid: "system-sounds", drift: false)
 
-        #expect(SystemTapAudioEngine.validatedAggregateTapUIDOrder(
-            [main, unknown],
-            expectedTapDriftCompensation: ["main": true, "system-sounds": true]
-        ) == nil)
-        #expect(SystemTapAudioEngine.validatedAggregateTapUIDOrder(
-            [main, uncompensated],
-            expectedTapDriftCompensation: ["main": true, "system-sounds": true]
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.validatedAggregateTapUIDOrder(
+                [main, unknown],
+                expectedTapDriftCompensation: ["main": true, "system-sounds": true]
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.validatedAggregateTapUIDOrder(
+                [main, uncompensated],
+                expectedTapDriftCompensation: ["main": true, "system-sounds": true]
+            ) == nil)
     }
 
     @Test
@@ -1149,8 +1198,12 @@ struct CoreAudioDeviceTests {
 
     @Test
     func availabilityErrorsProvideLocalizedDescriptions() {
-        #expect(AudioDeviceAvailabilityError.noDefaultOutput.localizedDescription == "No default output device is available")
-        #expect(AudioDeviceAvailabilityError.outputDeviceNotAlive(42).localizedDescription == "Output device 42 is not available")
+        #expect(
+            AudioDeviceAvailabilityError.noDefaultOutput.localizedDescription == "No default output device is available"
+        )
+        #expect(
+            AudioDeviceAvailabilityError.outputDeviceNotAlive(42).localizedDescription
+                == "Output device 42 is not available")
     }
 
     @Test
@@ -1158,9 +1211,10 @@ struct CoreAudioDeviceTests {
         #expect(try SystemTapAudioEngine.supportedRuntimeChannelCount(for: output(channelCount: 1)) == 1)
         #expect(try SystemTapAudioEngine.supportedRuntimeChannelCount(for: output(channelCount: 2)) == 2)
         #expect(try SystemTapAudioEngine.supportedRuntimeChannelCount(for: output(channelCount: 6)) == 6)
-        #expect(try SystemTapAudioEngine.supportedRuntimeChannelCount(
-            for: output(channelCount: CoreAudioDeviceQuery.maxChannelCount)
-        ) == CoreAudioDeviceQuery.maxChannelCount)
+        #expect(
+            try SystemTapAudioEngine.supportedRuntimeChannelCount(
+                for: output(channelCount: CoreAudioDeviceQuery.maxChannelCount)
+            ) == CoreAudioDeviceQuery.maxChannelCount)
 
         do {
             _ = try SystemTapAudioEngine.supportedRuntimeChannelCount(for: output(channelCount: 0))
@@ -1212,23 +1266,26 @@ struct CoreAudioDeviceTests {
         outputTime.mHostTime = inputTime.mHostTime + latencyHostTime
         outputTime.mFlags = .hostTimeValid
 
-        #expect(SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
-            inputTime: inputTime,
-            outputTime: outputTime
-        ) == AudioConvertHostTimeToNanos(latencyHostTime))
+        #expect(
+            SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
+                inputTime: inputTime,
+                outputTime: outputTime
+            ) == AudioConvertHostTimeToNanos(latencyHostTime))
 
         var invalidInputTime = inputTime
         invalidInputTime.mFlags = []
-        #expect(SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
-            inputTime: invalidInputTime,
-            outputTime: outputTime
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
+                inputTime: invalidInputTime,
+                outputTime: outputTime
+            ) == nil)
 
         outputTime.mHostTime = inputTime.mHostTime - 1
-        #expect(SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
-            inputTime: inputTime,
-            outputTime: outputTime
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.tapToOutputLatencyNanoseconds(
+                inputTime: inputTime,
+                outputTime: outputTime
+            ) == nil)
     }
 
     @Test
@@ -1244,31 +1301,35 @@ struct CoreAudioDeviceTests {
         outputTime.mHostTime = callbackHostTime + outputLeadHostTime
         outputTime.mFlags = .hostTimeValid
 
-        let timing = try #require(SystemTapAudioEngine.callbackTimingNanoseconds(
-            inputTime: inputTime,
-            callbackHostTime: callbackHostTime,
-            outputTime: outputTime
-        ))
+        let timing = try #require(
+            SystemTapAudioEngine.callbackTimingNanoseconds(
+                inputTime: inputTime,
+                callbackHostTime: callbackHostTime,
+                outputTime: outputTime
+            ))
         #expect(timing.inputAge == AudioConvertHostTimeToNanos(inputAgeHostTime))
         #expect(timing.outputLead == AudioConvertHostTimeToNanos(outputLeadHostTime))
 
         var invalidInputTime = inputTime
         invalidInputTime.mFlags = []
-        #expect(SystemTapAudioEngine.callbackTimingNanoseconds(
-            inputTime: invalidInputTime,
-            callbackHostTime: callbackHostTime,
-            outputTime: outputTime
-        ) == nil)
-        #expect(SystemTapAudioEngine.callbackTimingNanoseconds(
-            inputTime: inputTime,
-            callbackHostTime: inputTime.mHostTime - 1,
-            outputTime: outputTime
-        ) == nil)
-        #expect(SystemTapAudioEngine.callbackTimingNanoseconds(
-            inputTime: inputTime,
-            callbackHostTime: outputTime.mHostTime + 1,
-            outputTime: outputTime
-        ) == nil)
+        #expect(
+            SystemTapAudioEngine.callbackTimingNanoseconds(
+                inputTime: invalidInputTime,
+                callbackHostTime: callbackHostTime,
+                outputTime: outputTime
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.callbackTimingNanoseconds(
+                inputTime: inputTime,
+                callbackHostTime: inputTime.mHostTime - 1,
+                outputTime: outputTime
+            ) == nil)
+        #expect(
+            SystemTapAudioEngine.callbackTimingNanoseconds(
+                inputTime: inputTime,
+                callbackHostTime: outputTime.mHostTime + 1,
+                outputTime: outputTime
+            ) == nil)
     }
 
     @Test
@@ -1290,25 +1351,28 @@ struct CoreAudioDeviceTests {
             bufferFrameSize: 512
         )
 
-        #expect(!SeparateClockAudioBackend.shouldUseSampleRateConversion(
-            tapSampleRate: 48_000,
-            output: nativeOutput
-        ))
-        #expect(SeparateClockAudioBackend.shouldUseSampleRateConversion(
-            tapSampleRate: 48_000,
-            output: nativeOutput,
-            preservingOutputSampleRate: true
-        ))
+        #expect(
+            !SeparateClockAudioBackend.shouldUseSampleRateConversion(
+                tapSampleRate: 48_000,
+                output: nativeOutput
+            ))
+        #expect(
+            SeparateClockAudioBackend.shouldUseSampleRateConversion(
+                tapSampleRate: 48_000,
+                output: nativeOutput,
+                preservingOutputSampleRate: true
+            ))
 
         let convertedCallbackFrames = PlaybackSampleRatePlan(
             inputSampleRate: 48_000,
             outputSampleRate: 44_100
         ).inputFrames(forOutputFrames: 512)
-        #expect(SeparateClockAudioBackend.preferredPlaybackPrimeFrames(
-            for: nativeOutput,
-            tapSampleRate: 48_000,
-            captureCallbackFrames: 64
-        ) >= convertedCallbackFrames + 64)
+        #expect(
+            SeparateClockAudioBackend.preferredPlaybackPrimeFrames(
+                for: nativeOutput,
+                tapSampleRate: 48_000,
+                captureCallbackFrames: 64
+            ) >= convertedCallbackFrames + 64)
     }
 
     @Test
@@ -1329,22 +1393,26 @@ struct CoreAudioDeviceTests {
             sampleRate: 24_000
         )
 
-        #expect(!SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-            tapSampleRate: 48_000,
-            output: output48
-        ))
-        #expect(SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-            tapSampleRate: 44_100,
-            output: output48
-        ))
-        #expect(SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-            tapSampleRate: 48_000,
-            output: output88
-        ))
-        #expect(!SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-            tapSampleRate: 48_000,
-            output: lowRateOutput
-        ))
+        #expect(
+            !SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+                tapSampleRate: 48_000,
+                output: output48
+            ))
+        #expect(
+            SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+                tapSampleRate: 44_100,
+                output: output48
+            ))
+        #expect(
+            SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+                tapSampleRate: 48_000,
+                output: output88
+            ))
+        #expect(
+            !SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
+                tapSampleRate: 48_000,
+                output: lowRateOutput
+            ))
     }
 
     @Test
@@ -1629,7 +1697,7 @@ struct CoreAudioDeviceTests {
             PersistedAudioDeviceRestorationRecord(uid: "dac", originalSampleRate: 44_100),
             PersistedAudioDeviceRestorationRecord(uid: "dac", originalBufferFrameSize: 256),
             PersistedAudioDeviceRestorationRecord(uid: "dac", originalBufferFrameSize: 512),
-            PersistedAudioDeviceRestorationRecord(uid: "headphones", originalBufferFrameSize: 1_024)
+            PersistedAudioDeviceRestorationRecord(uid: "headphones", originalBufferFrameSize: 1_024),
         ]
         try JSONEncoder().encode(records).write(to: url)
 
@@ -1667,7 +1735,7 @@ struct CoreAudioDeviceTests {
             PersistedAudioDeviceRestorationRecord(
                 uid: "invalid-buffer",
                 originalBufferFrameSize: UInt32.max
-            )
+            ),
         ]
         let encoder = JSONEncoder()
         encoder.nonConformingFloatEncodingStrategy = .convertToString(
@@ -1685,7 +1753,7 @@ struct CoreAudioDeviceTests {
         let samples: [Float] = [
             1, 3,
             -2, 4,
-            10, -4
+            10, -4,
         ]
 
         samples.withUnsafeBufferPointer { pointer in
@@ -1728,35 +1796,40 @@ struct CoreAudioDeviceTests {
 
     @Test
     func renderDeadlineMissesRequireAtLeastTwoCallbackPeriods() {
-        #expect(SystemTapAudioEngine.missedRenderDeadlines(
-            elapsedNanoseconds: 650_000,
-            frameCount: 16,
-            sampleRate: 48_000
-        ) == 0)
-        #expect(SystemTapAudioEngine.missedRenderDeadlines(
-            elapsedNanoseconds: 700_000,
-            frameCount: 16,
-            sampleRate: 48_000
-        ) == 1)
-        #expect(SystemTapAudioEngine.missedRenderDeadlines(
-            elapsedNanoseconds: 4_500_000,
-            frameCount: 16,
-            sampleRate: 48_000
-        ) == 12)
+        #expect(
+            SystemTapAudioEngine.missedRenderDeadlines(
+                elapsedNanoseconds: 650_000,
+                frameCount: 16,
+                sampleRate: 48_000
+            ) == 0)
+        #expect(
+            SystemTapAudioEngine.missedRenderDeadlines(
+                elapsedNanoseconds: 700_000,
+                frameCount: 16,
+                sampleRate: 48_000
+            ) == 1)
+        #expect(
+            SystemTapAudioEngine.missedRenderDeadlines(
+                elapsedNanoseconds: 4_500_000,
+                frameCount: 16,
+                sampleRate: 48_000
+            ) == 12)
     }
 
     @Test
     func renderOverrunBeginsAfterOneCallbackPeriod() {
-        #expect(!SystemTapAudioEngine.renderOverranPeriod(
-            elapsedNanoseconds: 333_333,
-            frameCount: 16,
-            sampleRate: 48_000
-        ))
-        #expect(SystemTapAudioEngine.renderOverranPeriod(
-            elapsedNanoseconds: 333_334,
-            frameCount: 16,
-            sampleRate: 48_000
-        ))
+        #expect(
+            !SystemTapAudioEngine.renderOverranPeriod(
+                elapsedNanoseconds: 333_333,
+                frameCount: 16,
+                sampleRate: 48_000
+            ))
+        #expect(
+            SystemTapAudioEngine.renderOverranPeriod(
+                elapsedNanoseconds: 333_334,
+                frameCount: 16,
+                sampleRate: 48_000
+            ))
     }
 
     @Test
@@ -1795,11 +1868,12 @@ struct CoreAudioDeviceTests {
         tracker.record(512)
         tracker.record(17)
 
-        #expect(tracker.snapshot() == [
-            AudioCallbackSizeObservation(frameCount: 16, observations: 2),
-            AudioCallbackSizeObservation(frameCount: 512, observations: 1),
-            AudioCallbackSizeObservation(frameCount: nil, observations: 1)
-        ])
+        #expect(
+            tracker.snapshot() == [
+                AudioCallbackSizeObservation(frameCount: 16, observations: 2),
+                AudioCallbackSizeObservation(frameCount: 512, observations: 1),
+                AudioCallbackSizeObservation(frameCount: nil, observations: 1),
+            ])
 
         tracker.reset()
 
@@ -1808,86 +1882,96 @@ struct CoreAudioDeviceTests {
 
     @Test
     func aggregateTimestampSlopeQualificationRequiresStableNominalTiming() {
-        #expect(SystemTapAudioEngine.timestampSlopeAgrees(
-            frameCount: 16,
-            sampleRate: 48_000,
-            sampleTimeDeltaFrames: 0,
-            hostIntervalErrorNanoseconds: 40_000,
-            rateScalar: 1.000005752,
-            rateScalarIsValid: true
-        ))
-        #expect(!SystemTapAudioEngine.timestampSlopeAgrees(
-            frameCount: 16,
-            sampleRate: 48_000,
-            sampleTimeDeltaFrames: 1,
-            hostIntervalErrorNanoseconds: 40_000,
-            rateScalar: 1,
-            rateScalarIsValid: true
-        ))
-        #expect(!SystemTapAudioEngine.timestampSlopeAgrees(
-            frameCount: 16,
-            sampleRate: 48_000,
-            sampleTimeDeltaFrames: 0,
-            hostIntervalErrorNanoseconds: 100_000,
-            rateScalar: 1,
-            rateScalarIsValid: true
-        ))
-        #expect(!SystemTapAudioEngine.timestampSlopeAgrees(
-            frameCount: 16,
-            sampleRate: 48_000,
-            sampleTimeDeltaFrames: 0,
-            hostIntervalErrorNanoseconds: 0,
-            rateScalar: 1.02,
-            rateScalarIsValid: true
-        ))
+        #expect(
+            SystemTapAudioEngine.timestampSlopeAgrees(
+                frameCount: 16,
+                sampleRate: 48_000,
+                sampleTimeDeltaFrames: 0,
+                hostIntervalErrorNanoseconds: 40_000,
+                rateScalar: 1.000005752,
+                rateScalarIsValid: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.timestampSlopeAgrees(
+                frameCount: 16,
+                sampleRate: 48_000,
+                sampleTimeDeltaFrames: 1,
+                hostIntervalErrorNanoseconds: 40_000,
+                rateScalar: 1,
+                rateScalarIsValid: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.timestampSlopeAgrees(
+                frameCount: 16,
+                sampleRate: 48_000,
+                sampleTimeDeltaFrames: 0,
+                hostIntervalErrorNanoseconds: 100_000,
+                rateScalar: 1,
+                rateScalarIsValid: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.timestampSlopeAgrees(
+                frameCount: 16,
+                sampleRate: 48_000,
+                sampleTimeDeltaFrames: 0,
+                hostIntervalErrorNanoseconds: 0,
+                rateScalar: 1.02,
+                rateScalarIsValid: true
+            ))
     }
 
     @Test
     func headsetPromotionRequiresDeviceClockToMatchTheNominalRate() {
-        #expect(SystemTapAudioEngine.deviceClockSlopeAgrees(
-            sampleTimeDeltaFrames: 2_400,
-            hostTimeDeltaNanoseconds: 100_000_000,
-            nominalSampleRate: 24_000,
-            rateScalar: 1,
-            rateScalarIsValid: true
-        ))
-        #expect(!SystemTapAudioEngine.deviceClockSlopeAgrees(
-            sampleTimeDeltaFrames: 4_800,
-            hostTimeDeltaNanoseconds: 100_000_000,
-            nominalSampleRate: 24_000,
-            rateScalar: 1,
-            rateScalarIsValid: true
-        ))
-        #expect(!SystemTapAudioEngine.deviceClockSlopeAgrees(
-            sampleTimeDeltaFrames: 2_400,
-            hostTimeDeltaNanoseconds: 100_000_000,
-            nominalSampleRate: 24_000,
-            rateScalar: 1.03,
-            rateScalarIsValid: true
-        ))
+        #expect(
+            SystemTapAudioEngine.deviceClockSlopeAgrees(
+                sampleTimeDeltaFrames: 2_400,
+                hostTimeDeltaNanoseconds: 100_000_000,
+                nominalSampleRate: 24_000,
+                rateScalar: 1,
+                rateScalarIsValid: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.deviceClockSlopeAgrees(
+                sampleTimeDeltaFrames: 4_800,
+                hostTimeDeltaNanoseconds: 100_000_000,
+                nominalSampleRate: 24_000,
+                rateScalar: 1,
+                rateScalarIsValid: true
+            ))
+        #expect(
+            !SystemTapAudioEngine.deviceClockSlopeAgrees(
+                sampleTimeDeltaFrames: 2_400,
+                hostTimeDeltaNanoseconds: 100_000_000,
+                nominalSampleRate: 24_000,
+                rateScalar: 1.03,
+                rateScalarIsValid: true
+            ))
     }
 
     @Test
     func headsetModeUsesSeparateClockBackend() {
-        #expect(SystemTapAudioEngine.shouldUseSeparateClockBackend(
-            for: output(
-                channelCount: 2,
-                sampleRate: 24_000,
-                bufferFrameSize: 480,
-                transportType: kAudioDeviceTransportTypeBluetooth
-            )
-        ))
-        #expect(!SystemTapAudioEngine.shouldUseSeparateClockBackend(
-            for: output(
-                channelCount: 2,
-                sampleRate: 48_000,
-                bufferFrameSize: 512,
-                transportType: kAudioDeviceTransportTypeBluetooth
-            )
-        ))
-        #expect(!SystemTapAudioEngine.shouldUseSeparateClockBackend(
-            for: output(channelCount: 2, sampleRate: 24_000, bufferFrameSize: 480)
-        ))
+        #expect(
+            SystemTapAudioEngine.shouldUseSeparateClockBackend(
+                for: output(
+                    channelCount: 2,
+                    sampleRate: 24_000,
+                    bufferFrameSize: 480,
+                    transportType: kAudioDeviceTransportTypeBluetooth
+                )
+            ))
+        #expect(
+            !SystemTapAudioEngine.shouldUseSeparateClockBackend(
+                for: output(
+                    channelCount: 2,
+                    sampleRate: 48_000,
+                    bufferFrameSize: 512,
+                    transportType: kAudioDeviceTransportTypeBluetooth
+                )
+            ))
+        #expect(
+            !SystemTapAudioEngine.shouldUseSeparateClockBackend(
+                for: output(channelCount: 2, sampleRate: 24_000, bufferFrameSize: 480)
+            ))
     }
 
     @Test
@@ -1983,32 +2067,38 @@ struct CoreAudioDeviceTests {
         let changeGuard = CoreAudioSelfChangeGuard(windowMilliseconds: 1_000)
         changeGuard.beginSelfChange(deviceID: 42)
 
-        #expect(DefaultOutputDeviceObserver.shouldSuppressSelfInducedOutputChange(
-            selector: kAudioDevicePropertyBufferFrameSize,
-            deviceID: 42,
-            selfChangeGuard: changeGuard
-        ))
-        #expect(!DefaultOutputDeviceObserver.shouldSuppressSelfInducedOutputChange(
-            selector: kAudioDevicePropertyDeviceIsAlive,
-            deviceID: 42,
-            selfChangeGuard: changeGuard
-        ))
+        #expect(
+            DefaultOutputDeviceObserver.shouldSuppressSelfInducedOutputChange(
+                selector: kAudioDevicePropertyBufferFrameSize,
+                deviceID: 42,
+                selfChangeGuard: changeGuard
+            ))
+        #expect(
+            !DefaultOutputDeviceObserver.shouldSuppressSelfInducedOutputChange(
+                selector: kAudioDevicePropertyDeviceIsAlive,
+                deviceID: 42,
+                selfChangeGuard: changeGuard
+            ))
     }
 
     @Test
     func outputObserverRefreshesRateAndStreamChangesImmediately() {
-        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
-            selector: kAudioDevicePropertyNominalSampleRate
-        ))
-        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
-            selector: kAudioDevicePropertyStreamConfiguration
-        ))
-        #expect(DefaultOutputDeviceObserver.shouldRefreshImmediately(
-            selector: kAudioDevicePropertyDeviceIsAlive
-        ))
-        #expect(!DefaultOutputDeviceObserver.shouldRefreshImmediately(
-            selector: kAudioDevicePropertyBufferFrameSize
-        ))
+        #expect(
+            DefaultOutputDeviceObserver.shouldRefreshImmediately(
+                selector: kAudioDevicePropertyNominalSampleRate
+            ))
+        #expect(
+            DefaultOutputDeviceObserver.shouldRefreshImmediately(
+                selector: kAudioDevicePropertyStreamConfiguration
+            ))
+        #expect(
+            DefaultOutputDeviceObserver.shouldRefreshImmediately(
+                selector: kAudioDevicePropertyDeviceIsAlive
+            ))
+        #expect(
+            !DefaultOutputDeviceObserver.shouldRefreshImmediately(
+                selector: kAudioDevicePropertyBufferFrameSize
+            ))
     }
 
     @Test
@@ -2112,12 +2202,13 @@ struct CoreAudioDeviceTests {
         next.filters[1].frequency = 70
         next.isBypassed = true
 
-        #expect(SystemTapAudioEngine.canHotSwapDSP(
-            from: active,
-            to: next,
-            sampleRate: 48_000,
-            channelCount: 2
-        ))
+        #expect(
+            SystemTapAudioEngine.canHotSwapDSP(
+                from: active,
+                to: next,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
     }
 
     @Test
@@ -2130,12 +2221,13 @@ struct CoreAudioDeviceTests {
 
         var disabledBand = graphic
         disabledBand.filters[0].isEnabled = false
-        #expect(SystemTapAudioEngine.canHotSwapDSP(
-            from: graphic,
-            to: disabledBand,
-            sampleRate: 48_000,
-            channelCount: 2
-        ))
+        #expect(
+            SystemTapAudioEngine.canHotSwapDSP(
+                from: graphic,
+                to: disabledBand,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
 
         let parametric = EQProfile(
             name: "Parametric",
@@ -2144,33 +2236,36 @@ struct CoreAudioDeviceTests {
         )
         var addedFilter = parametric
         addedFilter.filters.append(EQFilter(kind: .peak, frequency: 2_000, gainDB: 0, q: 1))
-        #expect(SystemTapAudioEngine.canHotSwapDSP(
-            from: parametric,
-            to: addedFilter,
-            sampleRate: 48_000,
-            channelCount: 2
-        ))
+        #expect(
+            SystemTapAudioEngine.canHotSwapDSP(
+                from: parametric,
+                to: addedFilter,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
 
         let modeSwitch = EQProfile(
             name: "Parametric Same Count",
             mode: .parametric,
             filters: graphic.filters
         )
-        #expect(SystemTapAudioEngine.canHotSwapDSP(
-            from: graphic,
-            to: modeSwitch,
-            sampleRate: 48_000,
-            channelCount: 2
-        ))
+        #expect(
+            SystemTapAudioEngine.canHotSwapDSP(
+                from: graphic,
+                to: modeSwitch,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
 
         var stereoSwitch = graphic
         stereoSwitch.channelMode = .stereo
-        #expect(SystemTapAudioEngine.canHotSwapDSP(
-            from: graphic,
-            to: stereoSwitch,
-            sampleRate: 48_000,
-            channelCount: 2
-        ))
+        #expect(
+            SystemTapAudioEngine.canHotSwapDSP(
+                from: graphic,
+                to: stereoSwitch,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
     }
 
     @Test
@@ -2179,12 +2274,13 @@ struct CoreAudioDeviceTests {
         var unsafe = active
         unsafe.preampDB = .nan
 
-        #expect(!SystemTapAudioEngine.canHotSwapDSP(
-            from: active,
-            to: unsafe,
-            sampleRate: 48_000,
-            channelCount: 2
-        ))
+        #expect(
+            !SystemTapAudioEngine.canHotSwapDSP(
+                from: active,
+                to: unsafe,
+                sampleRate: 48_000,
+                channelCount: 2
+            ))
     }
 
     @Test
@@ -2258,7 +2354,7 @@ struct CoreAudioDeviceTests {
             kAudioSubTapUIDKey: uid,
             kAudioSubTapDriftCompensationKey: NSNumber(value: drift),
             kAudioSubTapDriftCompensationQualityKey:
-                NSNumber(value: kAudioAggregateDriftCompensationHighQuality)
+                NSNumber(value: kAudioAggregateDriftCompensationHighQuality),
         ] as NSDictionary
     }
 

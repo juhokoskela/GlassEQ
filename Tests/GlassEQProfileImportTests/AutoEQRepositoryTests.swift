@@ -7,35 +7,36 @@ struct AutoEQRepositoryTests {
     @Test
     func autoEQCatalogueParserReadsRecommendedResults() throws {
         let markdown = """
-        # Recommended Results
-        - [Sennheiser HD 58X](./oratory1990/over-ear/Sennheiser%20HD%2058X)
-        - [7Hz Salnotes Zero](./crinacle/711%20in-ear/7Hz%20Salnotes%20Zero)
-        """
+            # Recommended Results
+            - [Sennheiser HD 58X](./oratory1990/over-ear/Sennheiser%20HD%2058X)
+            - [7Hz Salnotes Zero](./crinacle/711%20in-ear/7Hz%20Salnotes%20Zero)
+            """
 
         let entries = try AutoEQCatalogueParser.parse(markdown)
 
-        #expect(entries == [
-            AutoEQCatalogueEntry(
-                name: "Sennheiser HD 58X",
-                encodedResultPath: "oratory1990/over-ear/Sennheiser%20HD%2058X",
-                source: "oratory1990",
-                form: "Over-ear"
-            ),
-            AutoEQCatalogueEntry(
-                name: "7Hz Salnotes Zero",
-                encodedResultPath: "crinacle/711%20in-ear/7Hz%20Salnotes%20Zero",
-                source: "crinacle",
-                form: "In-ear"
-            )
-        ])
+        #expect(
+            entries == [
+                AutoEQCatalogueEntry(
+                    name: "Sennheiser HD 58X",
+                    encodedResultPath: "oratory1990/over-ear/Sennheiser%20HD%2058X",
+                    source: "oratory1990",
+                    form: "Over-ear"
+                ),
+                AutoEQCatalogueEntry(
+                    name: "7Hz Salnotes Zero",
+                    encodedResultPath: "crinacle/711%20in-ear/7Hz%20Salnotes%20Zero",
+                    source: "crinacle",
+                    form: "In-ear"
+                ),
+            ])
     }
 
     @Test
     func autoEQCatalogueParserDeduplicatesResultPaths() throws {
         let markdown = """
-        - [First](./source/over-ear/model)
-        - [Duplicate](./source/over-ear/model)
-        """
+            - [First](./source/over-ear/model)
+            - [Duplicate](./source/over-ear/model)
+            """
 
         let entries = try AutoEQCatalogueParser.parse(markdown)
 
@@ -45,10 +46,10 @@ struct AutoEQRepositoryTests {
     @Test
     func autoEQCatalogueParserRejectsEntryCountAmplification() {
         let markdown = """
-        - [One](./source/over-ear/one)
-        - [Two](./source/over-ear/two)
-        - [Three](./source/over-ear/three)
-        """
+            - [One](./source/over-ear/one)
+            - [Two](./source/over-ear/two)
+            - [Three](./source/over-ear/three)
+            """
 
         #expect(throws: AutoEQRepositoryError.catalogueTooLarge) {
             _ = try AutoEQCatalogueParser.parse(markdown, maximumEntryCount: 2)
@@ -59,10 +60,10 @@ struct AutoEQRepositoryTests {
     func autoEQCatalogueParserSkipsOversizedAndEncodedSeparatorComponents() throws {
         let longName = String(repeating: "x", count: 513)
         let markdown = """
-        - [\(longName)](./source/over-ear/long-name)
-        - [Encoded separator](./source%2Fother/over-ear/model)
-        - [Valid](./source/over-ear/valid)
-        """
+            - [\(longName)](./source/over-ear/long-name)
+            - [Encoded separator](./source%2Fother/over-ear/model)
+            - [Valid](./source/over-ear/valid)
+            """
 
         let entries = try AutoEQCatalogueParser.parse(markdown)
 
@@ -87,12 +88,14 @@ struct AutoEQRepositoryTests {
             kind: .parametric
         )
 
-        #expect(responseCurveURL.absoluteString.hasSuffix(
-            "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20GraphicEQ.txt"
-        ))
-        #expect(parametricURL.absoluteString.hasSuffix(
-            "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20ParametricEQ.txt"
-        ))
+        #expect(
+            responseCurveURL.absoluteString.hasSuffix(
+                "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20GraphicEQ.txt"
+            ))
+        #expect(
+            parametricURL.absoluteString.hasSuffix(
+                "/Sennheiser%20HD%2058X/Sennheiser%20HD%2058X%20ParametricEQ.txt"
+            ))
     }
 
     @Test
@@ -279,15 +282,16 @@ private final class AutoEQTestURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         guard let url = request.url,
-              let stub = Self.responseStore.response(for: url),
-              let response = HTTPURLResponse(
-                  url: url,
-                  statusCode: stub.statusCode,
-                  httpVersion: "HTTP/1.1",
-                  headerFields: stub.includesContentLength
-                      ? ["Content-Length": String(stub.body.count)]
-                      : nil
-              ) else {
+            let stub = Self.responseStore.response(for: url),
+            let response = HTTPURLResponse(
+                url: url,
+                statusCode: stub.statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: stub.includesContentLength
+                    ? ["Content-Length": String(stub.body.count)]
+                    : nil
+            )
+        else {
             client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
             return
         }

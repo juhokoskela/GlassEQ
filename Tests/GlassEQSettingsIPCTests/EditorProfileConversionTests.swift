@@ -64,10 +64,11 @@ struct EditorProfileConversionTests {
             name: "Flat response curve",
             mode: .convolution,
             filters: [EQFilter(kind: .highPass, frequency: 100)],
-            convolution: .magnitudeCurve(MagnitudeCurveSource(points: [
-                EQMagnitudePoint(frequency: 20, gainDB: 0),
-                EQMagnitudePoint(frequency: 20_000, gainDB: 0)
-            ]))
+            convolution: .magnitudeCurve(
+                MagnitudeCurveSource(points: [
+                    EQMagnitudePoint(frequency: 20, gainDB: 0),
+                    EQMagnitudePoint(frequency: 20_000, gainDB: 0),
+                ]))
         )
 
         #expect(profile.isNeutral)

@@ -56,7 +56,9 @@ struct AutoEQImportPane: View {
                     ContentUnavailableView {
                         Label(localized("Search AutoEq"), systemImage: "magnifyingglass")
                     } description: {
-                        Text(localized("Type a manufacturer or model name to search \(entries.count) recommended profiles."))
+                        Text(
+                            localized(
+                                "Type a manufacturer or model name to search \(entries.count) recommended profiles."))
                     }
                     .frame(maxWidth: .infinity, minHeight: 170)
                 } else if filteredEntries.isEmpty {
@@ -126,7 +128,7 @@ struct AutoEQImportPane: View {
         model.errorMessage = nil
         do {
             entries = try await client.catalogue()
-        } catch where Task.isCancelled {
+        } catch  where Task.isCancelled {
             return
         } catch {
             entries = []
