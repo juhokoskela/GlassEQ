@@ -1,3 +1,4 @@
+import GlassEQCore
 import GlassEQSettingsIPC
 import SwiftUI
 
@@ -29,7 +30,7 @@ struct LibraryImportSheet: View {
                     detail: mergeDetail,
                     warning: preview.merge.exceedsProfileLimit
                         ? localized(
-                            "Adding these would exceed the limit of 64 profiles. Delete some first, or replace the library."
+                            "Adding these would exceed the limit of \(ProfilePersistence.profileCountRange.upperBound) profiles. Delete some first, or replace the library."
                         )
                         : nil
                 )
@@ -46,7 +47,7 @@ struct LibraryImportSheet: View {
                 Button(localized("Cancel"), role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(localized("Replace…"), role: .destructive, action: onReplace)
+                Button(localized("Replace"), role: .destructive, action: onReplace)
                 Button(localized("Add"), action: onMerge)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)

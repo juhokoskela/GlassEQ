@@ -209,8 +209,7 @@ struct AboutView: View {
                 ))
             if let licenseSummary = model.licenseSummaryMessage {
                 AboutGroup(title: localized("License")) {
-                    Text(licenseSummary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    AboutParagraph(licenseSummary)
                     Button(localized("Manage License…")) {
                         model.requestOnboardingPresentation(step: .license)
                     }
@@ -218,12 +217,10 @@ struct AboutView: View {
                 }
             }
             AboutGroup(title: localized("Help")) {
-                Text(
+                AboutParagraph(
                     localized(
                         "Questions and bug reports: contact@juhokoskela.fi, or an issue on GitHub. A support report gives either one the details it needs."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
+                    ))
                 HStack(spacing: 10) {
                     Button(localized("Support Report…")) {
                         model.requestSupportReportPresentation()
@@ -256,12 +253,10 @@ struct AboutView: View {
                     .font(.callout)
             }
             AboutGroup(title: localized("Trademarks")) {
-                Text(
+                AboutParagraph(
                     localized(
                         "“GlassEQ” and the GlassEQ logo are trademarks of Juho Koskela. A build that Juho Koskela did not publish and sign must use a different name and logo, and must not claim to be an official release."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
+                    ))
                 Link(localized("Trademark Policy"), destination: GlassEQLinks.trademarkPolicy)
                     .font(.callout)
             }
@@ -275,26 +270,20 @@ struct AboutView: View {
                     "Audio, profiles, output devices, and diagnostics stay on this Mac. GlassEQ has no analytics, telemetry, crash reporting, or cloud sync. Diagnostics leave this Mac only when you copy or export them yourself."
                 ))
             AboutGroup(title: localized("License service")) {
-                Text(
+                AboutParagraph(
                     localized(
                         "Activating the official build sends your license key and a random installation identifier to license.glasseq.app. Later checks send that identifier and the activation token the service issued. The service never receives audio, profiles, device names, or hardware identifiers, and the app stores only the signed entitlement in Keychain."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
-                Text(
+                    ))
+                AboutParagraph(
                     localized(
                         "The service keeps the activation records needed to operate your license. To ask about or delete them, write to contact@juhokoskela.fi."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
+                    ))
             }
             AboutGroup(title: localized("AutoEq search")) {
-                Text(
+                AboutParagraph(
                     localized(
                         "Searching AutoEq downloads the public result list and the result you choose from GitHub. Like any download, the request shows GitHub your IP address. Nothing else is sent."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
+                    ))
             }
         }
     }
@@ -303,12 +292,10 @@ struct AboutView: View {
         VStack(alignment: .leading, spacing: 16) {
             AboutParagraph(localized("GlassEQ is made by Juho Koskela."))
             AboutGroup(title: localized("AutoEq")) {
-                Text(
+                AboutParagraph(
                     localized(
                         "Headphone measurements and recommended corrections come from AutoEq by Jaakko Pasanen, used under the MIT License."
-                    )
-                )
-                .fixedSize(horizontal: false, vertical: true)
+                    ))
                 Link(localized("AutoEq on GitHub"), destination: GlassEQLinks.autoEq)
                     .font(.callout)
                 Text(verbatim: LegalNotices.autoEqCopyright)

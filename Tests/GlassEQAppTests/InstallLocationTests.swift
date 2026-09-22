@@ -21,7 +21,7 @@ struct InstallLocationTests {
     }
 
     @Test
-    func downloadsIsWritableAndTranslocationIsReported() {
+    func writableDownloadsIsAllowedAndTranslocationIsReported() {
         #expect(
             InstallLocation.issue(
                 bundleURL: URL(filePath: "/Users/someone/Downloads/GlassEQ.app"))
