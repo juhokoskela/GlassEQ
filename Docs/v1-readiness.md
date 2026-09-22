@@ -27,8 +27,8 @@ The GPL permits redistribution of official binaries, so the paid product cannot 
 Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks, and international consumer tax handling through Managed Payments. GlassEQ owns license issuance and product access.
 
 - [ ] Receive Stripe purchase, subscription, refund, and chargeback events through EventBridge and SQS Standard.
-- [ ] Validate the configured EventBridge source, AWS account, environment, and API version; process events idempotently and reconcile current Stripe state.
-- [ ] Issue a GlassEQ license key after a successful perpetual purchase or subscription start.
+- [x] Validate the configured EventBridge source, AWS account, environment, and API version; process supported Checkout, Invoice, and Subscription events idempotently and reconcile current Stripe state. Refund/dispute events remain pending.
+- [x] Issue a GlassEQ license key after a successful perpetual purchase or subscription start. Both plans create a durable delivery record; email dispatch remains pending.
 - [x] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
 - [ ] Use the same entitlement service to authorize Sparkle archive downloads.
 - [ ] Keep Stripe API secrets on the server. The app must never contain or receive them; EventBridge ingestion does not use a public webhook secret.
@@ -37,7 +37,7 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 - [x] License one purchaser for two concurrently activated Macs under either payment plan.
 - [x] Generate a random installation identifier and store it in Keychain. Do not derive it from hardware identifiers.
 - [ ] Let the purchaser deactivate an old Mac and transfer an activation without support intervention.
-- [ ] Record the policy version accepted at checkout with the purchase.
+- [x] Record the policy version accepted at checkout with the purchase.
 - [x] Apply material entitlement restrictions prospectively. Do not silently reduce the rights attached to an existing purchase.
 
 ### Perpetual licenses
