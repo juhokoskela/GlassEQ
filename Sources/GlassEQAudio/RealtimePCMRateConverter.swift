@@ -1,5 +1,5 @@
 import AudioToolbox
-import Foundation
+import Darwin
 
 final class RealtimePCMRateConverter {
     let inputSampleRate: Double

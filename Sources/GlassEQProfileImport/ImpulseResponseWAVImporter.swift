@@ -1,4 +1,4 @@
-import AVFoundation
+import AVFAudio
 import Foundation
 import GlassEQCore
 

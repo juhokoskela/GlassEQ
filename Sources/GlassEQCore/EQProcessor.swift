@@ -841,8 +841,11 @@ struct ConvolverBank: ~Copyable, @unchecked Sendable {
     // Checking through the borrowing subscript materializes the large optional in Swift 6.4.
     func hasConvolver(at index: Int) -> Bool { storage[index] != nil }
 
+    // SwiftLint does not recognize uses of these borrowing and mutating accessors.
+    // swiftlint:disable unused_declaration
     subscript(index: Int) -> RealtimeHybridConvolver? {
         _read { yield storage[index] }
         _modify { yield &storage[index] }
     }
+    // swiftlint:enable unused_declaration
 }

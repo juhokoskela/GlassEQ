@@ -1,6 +1,5 @@
 import Foundation
 @_spi(GlassEQSettingsUI) import GlassEQCore
-import SwiftUI
 
 struct EQAnalysisSignature: Equatable, Sendable {
     static let defaultSampleRate = 48_000.0

@@ -1,5 +1,4 @@
-import CoreAudio
-import Foundation
+import CoreAudioTypes
 import GlassEQCore
 import Testing
 @testable import GlassEQAudio

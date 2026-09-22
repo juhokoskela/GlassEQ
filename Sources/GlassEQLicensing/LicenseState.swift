@@ -1,5 +1,3 @@
-import Foundation
-
 public enum LicenseState: Equatable, Sendable {
     case unlicensed
     case perpetual

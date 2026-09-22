@@ -14,6 +14,8 @@ private enum GlassEQWindowID {
 
 @main
 struct GlassEQApp: App {
+    // SwiftUI creates and retains the delegate through this property wrapper.
+    // swiftlint:disable:next unused_declaration
     @NSApplicationDelegateAdaptor(GlassEQAppDelegate.self) private var appDelegate
     // A first launch waits for the onboarding permission step before touching Core Audio, so the
     // system audio capture prompt appears after GlassEQ has explained it.
@@ -163,7 +165,6 @@ extension SettingsImportFormat {
 private extension Notification.Name {
     static let glassEQModelDidChange = Notification.Name("com.glasseq.modelDidChange")
     static let glassEQMetricsDidChange = Notification.Name("com.glasseq.metricsDidChange")
-    static let glassEQBringSettingsToFront = Notification.Name("com.glasseq.bringSettingsToFront")
 }
 
 private enum AppBuildInfo {
@@ -1132,10 +1133,6 @@ final class GlassEQAppModel {
         }
     }
 
-    var hasUnsavedDraft: Bool {
-        draftProfile != selectedProfile
-    }
-
     var selectedProfile: EQProfile {
         profileStore.profiles.first(where: { $0.id == selectedProfileID }) ?? activeProfile
     }
@@ -1922,14 +1919,6 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func applyDraft() {
-        do {
-            try apply(profile: draftProfile)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
     func activateProfile(_ id: UUID) {
         guard let profile = profileStore.profiles.first(where: { $0.id == id }),
               profile.id != activeProfile.id else {
@@ -1957,18 +1946,6 @@ final class GlassEQAppModel {
         saveStore()
         synchronizeActiveProfileProcessing(rollback: rollback)
         notifyModelDidChange()
-    }
-
-    func revertDraft() {
-        draftProfile = selectedProfile
-    }
-
-    func useDraftForCurrentOutput() {
-        do {
-            try useForCurrentOutput(profile: draftProfile)
-        } catch {
-            reportProfileActionFailure(error)
-        }
     }
 
     func useForCurrentOutput(profile: EQProfile) throws {
@@ -2026,22 +2003,6 @@ final class GlassEQAppModel {
         }
     }
 
-    func duplicateSelectedProfile() {
-        do {
-            try duplicateProfile(id: selectedProfileID)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
-    func deleteSelectedProfile() {
-        do {
-            try deleteProfile(id: selectedProfileID)
-        } catch {
-            reportProfileActionFailure(error)
-        }
-    }
-
     func importProfile(format: ImportFormat, name: String, text: String) async throws -> Bool {
         try ensureProfileStoreWritable()
         statusMessage = localized("Importing \(format.title)...")
@@ -2080,14 +2041,6 @@ final class GlassEQAppModel {
             status: localized("Imported \(profile.name)")
         )
         return true
-    }
-
-    func setFallbackToDraft() {
-        do {
-            try setFallback(profile: draftProfile)
-        } catch {
-            reportProfileActionFailure(error)
-        }
     }
 
     func setFallback(profile: EQProfile) throws {
@@ -3841,16 +3794,6 @@ final class GlassEQAppModel {
                 preferredFrameSize: preferredFrameSize,
                 runtimeFrameSize: pendingAggregateBufferIncrease.newFrameSize
             )
-        }
-    }
-
-    private func restoreProfileRollback(_ rollback: ProfileRollback, persist: Bool) {
-        profileStore = rollback.profileStore
-        activeProfile = rollback.activeProfile
-        selectedProfileID = rollback.selectedProfileID
-        draftProfile = rollback.draftProfile
-        if persist {
-            saveStore()
         }
     }
 

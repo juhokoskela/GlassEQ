@@ -1,5 +1,3 @@
-import Foundation
-
 /// The trusted-time floor for one activation. Effective time is the greatest of the wall clock,
 /// the highest time ever trusted, and the latest authenticated issuance time advanced by the
 /// monotonic clock. The signed `exp` evaluated against this floor is the final cutoff.

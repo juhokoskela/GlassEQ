@@ -1,6 +1,5 @@
 import Accelerate
 import Darwin
-import Foundation
 
 enum HybridConvolverError: Error, Equatable, Sendable {
     case invalidImpulseResponse

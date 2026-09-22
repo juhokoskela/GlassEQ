@@ -304,15 +304,6 @@ struct OutputDiagnosticsReport {
         )
     }
 
-    private var tapToOutputLatencyLabel: String {
-        guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
-            return localized("No samples")
-        }
-        return localizedLatency(
-            milliseconds: snapshot.metrics.averageTapToOutputLatencyNanoseconds / 1_000_000
-        )
-    }
-
     private var usesSeparateClockDiagnostics: Bool {
         diagnostics.status.routeMode == .compatibility
             || diagnostics.status.routeMode == .headsetCompatibility

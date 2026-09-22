@@ -1,4 +1,3 @@
-import Foundation
 import Synchronization
 
 struct RingBufferWriteResult: Equatable, Sendable {

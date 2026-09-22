@@ -1,5 +1,3 @@
-import Foundation
-
 enum AudioRenderWatchdogAction: Equatable, Sendable {
     case restart
     case stop

@@ -1,5 +1,5 @@
 import CoreAudio
-import Foundation
+import Dispatch
 
 public enum DefaultOutputDeviceChangeReason: Equatable, Sendable {
     case initial

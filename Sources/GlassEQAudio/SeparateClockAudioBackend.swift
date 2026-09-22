@@ -2667,22 +2667,18 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
 
     private func restoreDeviceSettingsIfNeeded(_ state: inout ControlState) {
         var restoredSampleRateUIDs: [String] = []
-        for (uid, restoration) in state.sampleRateRestorations {
-            if Self.restoreSampleRateRestoration(restoration) {
-                try? PersistedAudioDeviceRestorationStore.clearSampleRate(uid: uid, at: restorationStoreURL)
-                restoredSampleRateUIDs.append(uid)
-            }
+        for (uid, restoration) in state.sampleRateRestorations where Self.restoreSampleRateRestoration(restoration) {
+            try? PersistedAudioDeviceRestorationStore.clearSampleRate(uid: uid, at: restorationStoreURL)
+            restoredSampleRateUIDs.append(uid)
         }
         for uid in restoredSampleRateUIDs {
             state.sampleRateRestorations.removeValue(forKey: uid)
         }
 
         var restoredBufferFrameSizeUIDs: [String] = []
-        for (uid, restoration) in state.bufferFrameSizeRestorations {
-            if Self.restoreBufferFrameSizeRestoration(restoration) {
-                try? PersistedAudioDeviceRestorationStore.clearBufferFrameSize(uid: uid, at: restorationStoreURL)
-                restoredBufferFrameSizeUIDs.append(uid)
-            }
+        for (uid, restoration) in state.bufferFrameSizeRestorations where Self.restoreBufferFrameSizeRestoration(restoration) {
+            try? PersistedAudioDeviceRestorationStore.clearBufferFrameSize(uid: uid, at: restorationStoreURL)
+            restoredBufferFrameSizeUIDs.append(uid)
         }
         for uid in restoredBufferFrameSizeUIDs {
             state.bufferFrameSizeRestorations.removeValue(forKey: uid)

@@ -1,4 +1,3 @@
-import CoreAudio
 import Foundation
 
 public enum PlaybackBufferInstabilityReason: UInt8, Codable, Equatable, Sendable {

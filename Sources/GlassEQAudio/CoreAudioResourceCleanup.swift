@@ -1,5 +1,5 @@
 import CoreAudio
-import Foundation
+import Dispatch
 import Synchronization
 
 final class CoreAudioResourceCleanupLedger: @unchecked Sendable {

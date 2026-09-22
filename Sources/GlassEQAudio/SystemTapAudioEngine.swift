@@ -182,10 +182,6 @@ public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Send
 public struct DSPTransitionProgress: Equatable, Sendable {
     public struct Target: Equatable, Sendable {
         let id: UInt64
-
-        init(id: UInt64) {
-            self.id = id
-        }
     }
 
     public var published: UInt64

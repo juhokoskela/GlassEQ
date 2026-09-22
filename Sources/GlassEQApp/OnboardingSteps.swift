@@ -105,6 +105,8 @@ private struct OnboardingLicenseStatus: View {
     // the step settles.
     @State private var licenseKey = ""
     @State private var keyIsRevealed = false
+    // The removal buttons use the projected binding; SwiftLint misses those references.
+    // swiftlint:disable:next unused_declaration
     @State private var isConfirmingRemoval = false
 
     private var keyIsBlank: Bool {

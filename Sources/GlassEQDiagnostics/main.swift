@@ -311,23 +311,6 @@ private func optionalChannelCounts(_ counts: [Int]?) -> String {
     counts.map { String(describing: $0) } ?? "unavailable"
 }
 
-private func audioEngineStatus(from state: AudioEngineState) -> AudioEngineStatus {
-    switch state {
-    case .stopped:
-        return .stopped
-    case .running(let output):
-        return .running(output: output)
-    case .failed(let message):
-        return .failed(
-            AudioEngineFailure(
-                category: .coreAudioOperationFailed,
-                userMessage: message,
-                operation: "SystemTapAudioEngine"
-            )
-        )
-    }
-}
-
 private func audioEngineStatus(from error: Error) -> AudioEngineStatus {
     if let availabilityError = error as? AudioDeviceAvailabilityError {
         let category: AudioEngineFailure.Category
@@ -642,13 +625,11 @@ private func runDSPBenchmark(
     print("")
 
     var passed = true
-    for benchmarkCase in cases {
-        if !run(
-            benchmarkCase,
-            maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
-        ) {
-            passed = false
-        }
+    for benchmarkCase in cases where !run(
+        benchmarkCase,
+        maximumCallbackBudgetPercent: maximumCallbackBudgetPercent
+    ) {
+        passed = false
     }
     for transitionCase in cases where (
         transitionCase.name.hasPrefix("31-band graphic")

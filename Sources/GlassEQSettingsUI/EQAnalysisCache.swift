@@ -79,12 +79,10 @@ final class EQAnalysisCache {
                 snapshots[request.slot] = updated
             }
         }
-        for (slot, job) in jobs {
-            if !requests.contains(where: {
-                $0.slot == slot && $0.signature.hasSameResponseContent(as: job.request.signature)
-            }) {
-                job.task.cancel()
-            }
+        for (slot, job) in jobs where !requests.contains(where: {
+            $0.slot == slot && $0.signature.hasSameResponseContent(as: job.request.signature)
+        }) {
+            job.task.cancel()
         }
         if let selected = requests.first, needsAnalysis(selected), jobs[selected.slot] == nil, jobs.count == 2 {
             jobs.values.first?.task.cancel()

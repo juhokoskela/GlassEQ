@@ -1,4 +1,3 @@
-import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
 import Testing

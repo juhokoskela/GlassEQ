@@ -5546,6 +5546,17 @@ struct GlassEQAppModelLifecycleTests {
         }
     }
 
+    @Test(arguments: ["/Applications/GlassEQ.app/Contents/MacOS/GlassEQ", "/tmp/Ääni 🎧/GlassEQ"])
+    func settingsHelperExecutablePathPreservesValidUTF8(_ path: String) {
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: Array(path.utf8))?.path == path)
+    }
+
+    @Test(arguments: [[UInt8(0xFF)], [0xC3], [0xC0, 0xAF]])
+    func settingsHelperExecutablePathRejectsInvalidUTF8(_ suffix: [UInt8]) {
+        let bytes = Array("/Applications/".utf8) + suffix + Array("/GlassEQ".utf8)
+        #expect(SettingsHelperVerifier.executableURL(pathBytes: bytes) == nil)
+    }
+
     @Test
     func settingsHelperRunningValidationRejectsUnexpectedResolvedBundleURL() throws {
         let root = FileManager.default.temporaryDirectory
@@ -6216,22 +6227,17 @@ private final class BlockingAsyncDefaultOutputObserverFactory: DefaultOutputObse
     private(set) var observers: [BlockingAsyncDefaultOutputObserver] = []
 
     func makeObserver(onChange: @escaping DefaultOutputObserverHandler) -> any DefaultOutputObserving {
-        let observer = BlockingAsyncDefaultOutputObserver(onChange: onChange)
+        let observer = BlockingAsyncDefaultOutputObserver()
         observers.append(observer)
         return observer
     }
 }
 
 private final class BlockingAsyncDefaultOutputObserver: DefaultOutputObserving, @unchecked Sendable {
-    private let onChange: DefaultOutputObserverHandler
     private let lock = NSLock()
     private var _startCalls: [Bool] = []
     private var _stopCallCount = 0
     private var startContinuation: CheckedContinuation<Void, Never>?
-
-    init(onChange: @escaping DefaultOutputObserverHandler) {
-        self.onChange = onChange
-    }
 
     var startCalls: [Bool] {
         withLock {
@@ -6270,13 +6276,6 @@ private final class BlockingAsyncDefaultOutputObserver: DefaultOutputObserving, 
         stop()
     }
 
-    func emit(
-        _ result: Result<AudioOutputDevice, Error>,
-        reason: DefaultOutputDeviceChangeReason = .settled
-    ) {
-        onChange(result, reason)
-    }
-
     func resumeStart() {
         let continuation = withLock {
             let continuation = startContinuation
@@ -6311,9 +6310,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateError: Error?
     private var _updateErrorPreservesRunningState = false
     private var _updateDSPResult = true
-    private var _beginProgrammeComparisonResult = true
     private var _startDelaySeconds: TimeInterval = 0
-    private var _startDelaySecondsByUID: [String: TimeInterval] = [:]
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
     private var _preferredFrameSizeBlockers: [UInt32: FakeStartBlocker] = [:]
     private var _updateBlockersByProfileID: [UUID: FakeStartBlocker] = [:]
@@ -6412,19 +6409,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _updateDSPResult = newValue } }
     }
 
-    var beginProgrammeComparisonResult: Bool {
-        get { withLock { _beginProgrammeComparisonResult } }
-        set { withLock { _beginProgrammeComparisonResult = newValue } }
-    }
-
     var startDelaySeconds: TimeInterval {
         get { withLock { _startDelaySeconds } }
         set { withLock { _startDelaySeconds = newValue } }
-    }
-
-    var startDelaySecondsByUID: [String: TimeInterval] {
-        get { withLock { _startDelaySecondsByUID } }
-        set { withLock { _startDelaySecondsByUID = newValue } }
     }
 
     private(set) var startCalls: [StartCall] {
@@ -6652,7 +6639,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 aggregateBufferFrameSize: _preferredAggregateBufferFrameSize
             ))
             return (
-                delay: _startDelaySecondsByUID[output.uid] ?? _startDelaySeconds,
+                delay: _startDelaySeconds,
                 blocker: _startBlockersByUID[output.uid],
                 error: _startErrorProfileID == nil || _startErrorProfileID == profile.id
                     ? _startError
@@ -6837,13 +6824,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         withLock {
             _programmeComparisonCalls.append(profile)
             _programmeComparisonReferences.append(reference)
-            if _beginProgrammeComparisonResult {
-                _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
-                    isActive: true,
-                    selection: .equalized
-                )
-            }
-            return _beginProgrammeComparisonResult
+            _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
+                isActive: true,
+                selection: .equalized
+            )
+            return true
         }
     }
 

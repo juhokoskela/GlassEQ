@@ -4,12 +4,10 @@ import Foundation
 import GlassEQCore
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
+// Required for Logger and its privacy-aware string interpolation.
+// swiftlint:disable:next unused_import
 import OSLog
 import Security
-
-private struct UncheckedSendable<Value>: @unchecked Sendable {
-    var value: Value
-}
 
 enum SettingsOpenDisposition: Equatable {
     case helper
@@ -977,7 +975,13 @@ enum SettingsHelperVerifier {
             return nil
         }
         let bytes = pathBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-        let path = String(decoding: bytes, as: UTF8.self)
+        return executableURL(pathBytes: bytes)
+    }
+
+    static func executableURL(pathBytes: [UInt8]) -> URL? {
+        guard let path = String(bytes: pathBytes, encoding: .utf8) else {
+            return nil
+        }
         return URL(fileURLWithPath: path).standardizedFileURL
     }
 }
