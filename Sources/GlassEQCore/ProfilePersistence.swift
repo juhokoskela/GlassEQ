@@ -315,6 +315,12 @@ public enum ProfilePersistence {
             var committedStore = store
             committedStore.upgradeSchema()
             do {
+                if store.schemaVersion < ProfileStore.currentSchemaVersion {
+                    try FileManager.default.copyItem(
+                        at: url,
+                        to: migrationBackupURL(for: url, fromSchemaVersion: store.schemaVersion, timestamp: timestamp)
+                    )
+                }
                 try save(committedStore, to: url)
                 return ProfileStoreLoadResult(
                     store: committedStore,
