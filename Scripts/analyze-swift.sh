@@ -17,5 +17,4 @@ swift build --build-tests --scratch-path "$BUILD_DIR" -v -Xswiftc -disable-batch
     }
 
 ./Scripts/swiftlint.sh analyze --compiler-log-path "$REPORT_DIR/build.log" \
-    --reporter json > "$REPORT_DIR/analysis.json"
-echo "Analyzer report: $REPORT_DIR/analysis.json"
+    --strict --quiet --reporter github-actions-logging

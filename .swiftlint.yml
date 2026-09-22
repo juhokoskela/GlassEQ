@@ -36,9 +36,6 @@ analyzer_rules:
   - unused_declaration
   - unused_import
 
-unused_declaration:
-  severity: warning
-
 unused_import:
   # Keep canonical imports for Foundation's SDK submodules and C APIs even when
   # another imported framework re-exports the same declarations.

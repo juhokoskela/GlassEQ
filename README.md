@@ -129,17 +129,13 @@ swift run GlassEQDiagnostics 2
 
 ### Formatting and lint
 
-Use the pinned Xcode toolchain's `swift format` and SwiftLint 0.65.1:
-
 ```sh
 swift format format --in-place --recursive Sources Tests Scripts Package.swift
 ./Scripts/check-swift.sh
 ./Scripts/analyze-swift.sh
 ```
 
-The SwiftLint wrapper downloads the pinned macOS release into `.build/tools` on first use and verifies its SHA-256 checksum. It does not change a system-wide installation. The formatter owns layout and import ordering; `.swiftlint.yml` selects correctness checks and straightforward simplifications. Complexity above 20 is advisory and above 30 fails lint, with switch cases excluded from the score. Do not pass `--strict` to SwiftLint: that would turn the advisory threshold into a build failure. Formatting violations do fail the check.
-
-The analyzer makes a fresh debug build, including tests, in a separate scratch directory. It preserves the normal build cache and writes its build log and JSON report to `.build/swiftlint-analysis`. Analyzer findings are warnings that need review, especially around property wrappers, coroutine accessors, and SDK re-exports. CI runs both checks and retains the analyzer report. See [the rule evaluation](Docs/SwiftTooling.md) for the reviewed exceptions.
+See [Swift tooling policy](Docs/SwiftTooling.md) for the toolchain, enforced checks, and local exceptions.
 
 ### Creating a beta build
 

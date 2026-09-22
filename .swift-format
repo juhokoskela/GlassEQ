@@ -5,21 +5,16 @@
   "rules": {
     "AlwaysUseLowerCamelCase": false,
     "AmbiguousTrailingClosureOverload": false,
-    "AvoidRetroactiveConformances": false,
     "DontRepeatTypeInStaticProperties": false,
     "FileScopedDeclarationPrivacy": false,
     "FullyIndirectEnum": false,
     "GroupNumericLiterals": false,
-    "IdentifiersMustBeASCII": false,
     "NoAccessLevelOnExtensionDeclaration": false,
-    "NoAssignmentInExpressions": false,
     "NoBlockComments": false,
-    "NoCasesWithOnlyFallthrough": false,
     "OneVariableDeclarationPerLine": false,
     "OnlyOneTrailingClosureArgument": false,
     "ReplaceForEachWithForLoop": false,
     "TypeNamesShouldBeCapitalized": false,
-    "UseSynthesizedInitializer": false,
-    "UseTripleSlashForDocumentationComments": false
+    "UseSynthesizedInitializer": false
   }
 }
