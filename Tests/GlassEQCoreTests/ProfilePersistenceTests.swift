@@ -1,5 +1,5 @@
 import Foundation
-import GlassEQCore
+@testable import GlassEQCore
 import Testing
 
 @Suite
@@ -154,7 +154,7 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         var expectedStore = store
-        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        expectedStore.upgradeSchema()
         #expect(result.status == .loaded)
         #expect(result.store == expectedStore)
         #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)
@@ -183,7 +183,7 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         var expectedStore = store
-        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        expectedStore.upgradeSchema()
         #expect(ProfileStore.currentSchemaVersion == 3)
         #expect(result.status == .loaded)
         #expect(result.store == expectedStore)
@@ -214,7 +214,7 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         var expectedStore = store
-        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        expectedStore.upgradeSchema()
         #expect(result.status == .loaded)
         #expect(result.store == expectedStore)
         #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)

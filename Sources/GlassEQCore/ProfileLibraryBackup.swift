@@ -10,8 +10,8 @@ public struct ProfileLibraryBackup: Codable, Equatable, Sendable {
     /// The store's own limit plus room for the envelope, pretty printing, and buffer preferences.
     public static let maxBytes = ProfilePersistence.maxStoreBytes + maxBufferPreferencesBytes + 262_144
 
-    public var format: String
-    public var version: Int
+    public let format: String
+    public let version: Int
     public var createdAt: Date
     public var appVersion: String?
     public var profileStore: ProfileStore
@@ -78,9 +78,7 @@ public enum ProfileLibraryBackupCodec {
             )
         }
         var committed = backup
-        committed.format = ProfileLibraryBackup.formatIdentifier
-        committed.version = ProfileLibraryBackup.currentVersion
-        committed.profileStore.schemaVersion = ProfileStore.currentSchemaVersion
+        committed.profileStore.upgradeSchema()
         // Compact output: a pretty-printed store nested one level deeper would grow past the
         // store's own size limit before the backup limit allows for it.
         let encoder = JSONEncoder()
@@ -117,7 +115,7 @@ public enum ProfileLibraryBackupCodec {
         } catch {
             throw ProfileLibraryBackupError.invalidStore(String(describing: error))
         }
-        guard backup.profileStore.schemaVersion <= ProfileStore.currentSchemaVersion else {
+        guard (1...ProfileStore.currentSchemaVersion).contains(backup.profileStore.schemaVersion) else {
             throw ProfileLibraryBackupError.unsupportedStoreSchema(
                 version: backup.profileStore.schemaVersion, maximum: ProfileStore.currentSchemaVersion)
         }
@@ -129,8 +127,13 @@ public enum ProfileLibraryBackupCodec {
                 maximum: ProfileLibraryBackup.maxBufferPreferencesBytes
             )
         }
+        guard !backup.profileStore.profiles.isEmpty else {
+            throw ProfileLibraryBackupError.invalidStore(
+                ProfileStoreValidationError.invalidProfileCount(count: 0, allowed: ProfilePersistence.profileCountRange)
+                    .localizedDescription)
+        }
         _ = backup.profileStore.repairReferences()
-        backup.profileStore.schemaVersion = ProfileStore.currentSchemaVersion
+        backup.profileStore.upgradeSchema()
         do {
             try ProfilePersistence.validate(backup.profileStore)
         } catch {
@@ -142,21 +145,15 @@ public enum ProfileLibraryBackupCodec {
     /// Reads at most the size limit plus one byte so an oversized file is rejected without being
     /// loaded whole.
     public static func read(from url: URL) throws -> ProfileLibraryBackup {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var data = Data()
-        while data.count <= ProfileLibraryBackup.maxBytes {
-            let remaining = ProfileLibraryBackup.maxBytes + 1 - data.count
-            guard let chunk = try handle.read(upToCount: remaining), !chunk.isEmpty else {
-                break
-            }
-            data.append(chunk)
+        do {
+            return try decode(ProfilePersistence.readStoreData(from: url, maxBytes: ProfileLibraryBackup.maxBytes))
+        } catch let ProfileStoreValidationError.inputTooLarge(byteCount, maximum) {
+            throw ProfileLibraryBackupError.inputTooLarge(byteCount: byteCount, maximum: maximum)
         }
-        return try decode(data)
     }
 }
 
-public struct ProfileLibraryMergeSummary: Equatable, Sendable {
+public struct ProfileLibraryMergeSummary: Codable, Equatable, Sendable {
     /// Profiles whose identifier was new to the library.
     public var addedProfiles = 0
     /// Profiles whose identifier already existed with different contents; they were added under a

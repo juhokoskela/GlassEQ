@@ -22,6 +22,17 @@ struct ProfileLibraryBackupCodecTests {
     }
 
     @Test
+    func emptyLibraryIsRefusedInsteadOfBecomingDefaults() throws {
+        let backup = ProfileLibraryBackup(
+            createdAt: createdAt, appVersion: nil, profileStore: ProfileStore(profiles: []))
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        #expect(throws: ProfileLibraryBackupError.self) {
+            try ProfileLibraryBackupCodec.decode(encoder.encode(backup))
+        }
+    }
+
+    @Test
     func roundTripsProfilesImpulseResponsesMappingsFallbackAndPreferences() throws {
         let preferences = Data("{\"records\":[]}".utf8)
         let backup = ProfileLibraryBackup(
@@ -82,8 +93,11 @@ struct ProfileLibraryBackupCodecTests {
             try ProfileLibraryBackupCodec.decode(newerFormat)
         }
 
-        var futureStore = makeLibrary()
-        futureStore.schemaVersion = ProfileStore.currentSchemaVersion + 1
+        let library = makeLibrary()
+        let futureStore = ProfileStore(
+            schemaVersion: ProfileStore.currentSchemaVersion + 1,
+            profiles: library.profiles, outputMappings: library.outputMappings,
+            fallbackProfileID: library.fallbackProfileID)
         let backup = ProfileLibraryBackup(createdAt: createdAt, appVersion: nil, profileStore: futureStore)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

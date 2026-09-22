@@ -313,7 +313,7 @@ public enum ProfilePersistence {
 
         if repairSummary.didRepair {
             var committedStore = store
-            committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+            committedStore.upgradeSchema()
             do {
                 try save(committedStore, to: url)
                 return ProfileStoreLoadResult(
@@ -330,7 +330,7 @@ public enum ProfilePersistence {
 
         if store.schemaVersion < ProfileStore.currentSchemaVersion {
             var migratedStore = store
-            migratedStore.schemaVersion = ProfileStore.currentSchemaVersion
+            migratedStore.upgradeSchema()
             // The old file is kept beside the store so an older GlassEQ can still read it.
             do {
                 try FileManager.default.copyItem(
@@ -410,12 +410,12 @@ public enum ProfilePersistence {
         }
     }
 
-    private static func readStoreData(from url: URL) throws -> Data {
+    static func readStoreData(from url: URL, maxBytes: Int = maxStoreBytes) throws -> Data {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var data = Data()
-        while data.count <= maxStoreBytes {
-            let remaining = maxStoreBytes + 1 - data.count
+        while data.count <= maxBytes {
+            let remaining = maxBytes + 1 - data.count
             guard let chunk = try handle.read(upToCount: remaining),
                 !chunk.isEmpty
             else {
@@ -423,14 +423,16 @@ public enum ProfilePersistence {
             }
             data.append(chunk)
         }
-        try validateStoreSize(byteCount: data.count)
+        guard data.count <= maxBytes else {
+            throw ProfileStoreValidationError.inputTooLarge(byteCount: data.count, maximum: maxBytes)
+        }
         return data
     }
 
     private static func encodeForCommit(_ store: ProfileStore) throws -> Data {
         try validate(store)
         var committedStore = store
-        committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        committedStore.upgradeSchema()
         let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
         return data
@@ -837,7 +839,7 @@ public enum ProfilePersistence {
         if store.schemaVersion >= ProfileStore.initialSchemaVersion,
             store.schemaVersion < ProfileStore.currentSchemaVersion
         {
-            store.schemaVersion = ProfileStore.currentSchemaVersion
+            store.upgradeSchema()
         }
 
         do {
