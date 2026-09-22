@@ -36,8 +36,12 @@ jobs:
       - name: Check release channels
         run: python3 Scripts/test-release-app.py
 
+      - name: Check sandboxed launch records
+        run: python3 Scripts/test-launch-records.py
+
       - name: Test
-        run: swift test
+        # Blocking engine and filesystem fixtures must not exhaust the cooperative worker pool.
+        run: swift test --no-parallel
 
       - name: Analyze Swift declarations and imports
         run: ./Scripts/analyze-swift.sh

@@ -17,6 +17,7 @@ public enum ProfileStoreLoadStatus: Equatable, Sendable {
     case repairedInvalidStore(backupURL: URL, ProfileStoreRepairSummary)
     case recoveredDefaults(backupURL: URL)
     case backupFailed
+    case migrationBackupFailed
     case unsupportedSchemaVersion(version: Int, maximumSupported: Int)
     case oversizedStore(byteCount: Int, maximum: Int)
 }
@@ -311,48 +312,48 @@ public enum ProfilePersistence {
             )
         }
 
-        if repairSummary.didRepair {
-            var committedStore = store
-            committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        if store.schemaVersion < ProfileStore.currentSchemaVersion {
             do {
-                try save(committedStore, to: url)
-                return ProfileStoreLoadResult(
-                    store: committedStore,
-                    status: .repairedReferences(repairSummary)
-                )
+                let backupURL = uniqueBackupURL(
+                    migrationBackupURL(for: url, fromSchemaVersion: store.schemaVersion, timestamp: timestamp))
+                try FileManager.default.copyItem(at: url, to: backupURL)
             } catch {
-                return ProfileStoreLoadResult(
-                    store: store,
-                    status: .repairedReferences(repairSummary)
-                )
+                return ProfileStoreLoadResult(store: store, status: .migrationBackupFailed)
             }
         }
-
-        if store.schemaVersion < ProfileStore.currentSchemaVersion {
-            var migratedStore = store
-            migratedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        if repairSummary.didRepair || store.schemaVersion < ProfileStore.currentSchemaVersion {
+            var committedStore = store
+            committedStore.upgradeSchema()
             do {
-                try save(migratedStore, to: url)
-                return ProfileStoreLoadResult(store: migratedStore, status: .loaded)
+                try save(committedStore, to: url)
+                store = committedStore
             } catch {
-                return ProfileStoreLoadResult(store: store, status: .loaded)
+                // Leave the original file intact; a later save may retry the commit.
             }
+            return ProfileStoreLoadResult(
+                store: store, status: repairSummary.didRepair ? .repairedReferences(repairSummary) : .loaded)
         }
 
         return ProfileStoreLoadResult(store: store, status: .loaded)
     }
 
-    public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {
-        let baseName = storeURL.deletingPathExtension().lastPathComponent
-        let pathExtension = storeURL.pathExtension
-        let backupName =
-            if pathExtension.isEmpty {
-                "\(baseName).invalid-\(timestampString(from: timestamp))"
-            } else {
-                "\(baseName).invalid-\(timestampString(from: timestamp)).\(pathExtension)"
-            }
+    public static func migrationBackupURL(
+        for storeURL: URL,
+        fromSchemaVersion schemaVersion: Int,
+        timestamp: Date = Date()
+    ) -> URL {
+        backupURL(for: storeURL, reason: "schema-\(schemaVersion)", timestamp: timestamp)
+    }
 
-        return storeURL.deletingLastPathComponent().appendingPathComponent(backupName)
+    public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {
+        backupURL(for: storeURL, reason: "invalid", timestamp: timestamp)
+    }
+
+    private static func backupURL(for storeURL: URL, reason: String, timestamp: Date) -> URL {
+        let baseName = storeURL.deletingPathExtension().lastPathComponent
+        let suffix = storeURL.pathExtension.isEmpty ? "" : ".\(storeURL.pathExtension)"
+        return storeURL.deletingLastPathComponent().appendingPathComponent(
+            "\(baseName).\(reason)-\(timestampString(from: timestamp))\(suffix)")
     }
 
     public static func resetUnsupportedStore(
@@ -360,7 +361,7 @@ public enum ProfilePersistence {
         timestamp: Date = Date()
     ) throws -> (store: ProfileStore, backupURL: URL) {
         let store = defaultStore()
-        let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
+        let backupURL = uniqueBackupURL(invalidStoreBackupURL(for: url, timestamp: timestamp))
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: url, to: backupURL)
         do {
@@ -389,12 +390,12 @@ public enum ProfilePersistence {
         }
     }
 
-    private static func readStoreData(from url: URL) throws -> Data {
+    static func readStoreData(from url: URL, maxBytes: Int = maxStoreBytes) throws -> Data {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var data = Data()
-        while data.count <= maxStoreBytes {
-            let remaining = maxStoreBytes + 1 - data.count
+        while data.count <= maxBytes {
+            let remaining = maxBytes + 1 - data.count
             guard let chunk = try handle.read(upToCount: remaining),
                 !chunk.isEmpty
             else {
@@ -402,14 +403,16 @@ public enum ProfilePersistence {
             }
             data.append(chunk)
         }
-        try validateStoreSize(byteCount: data.count)
+        guard data.count <= maxBytes else {
+            throw ProfileStoreValidationError.inputTooLarge(byteCount: data.count, maximum: maxBytes)
+        }
         return data
     }
 
     private static func encodeForCommit(_ store: ProfileStore) throws -> Data {
         try validate(store)
         var committedStore = store
-        committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        committedStore.upgradeSchema()
         let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
         return data
@@ -767,7 +770,7 @@ public enum ProfilePersistence {
     ) -> ProfileStoreLoadResult {
         var store = decodedStore
         var summary = initialRepairSummary
-        let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
+        let backupURL = uniqueBackupURL(invalidStoreBackupURL(for: url, timestamp: timestamp))
 
         do {
             try FileManager.default.copyItem(at: url, to: backupURL)
@@ -816,7 +819,7 @@ public enum ProfilePersistence {
         if store.schemaVersion >= ProfileStore.initialSchemaVersion,
             store.schemaVersion < ProfileStore.currentSchemaVersion
         {
-            store.schemaVersion = ProfileStore.currentSchemaVersion
+            store.upgradeSchema()
         }
 
         do {
@@ -836,7 +839,7 @@ public enum ProfilePersistence {
 
     private static func recoverInvalidStore(at url: URL, timestamp: Date) -> ProfileStoreLoadResult {
         let store = defaultStore()
-        let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
+        let backupURL = uniqueBackupURL(invalidStoreBackupURL(for: url, timestamp: timestamp))
 
         do {
             try FileManager.default.createDirectory(
@@ -857,8 +860,7 @@ public enum ProfilePersistence {
         )
     }
 
-    private static func uniqueInvalidStoreBackupURL(for storeURL: URL, timestamp: Date) -> URL {
-        let first = invalidStoreBackupURL(for: storeURL, timestamp: timestamp)
+    private static func uniqueBackupURL(_ first: URL) -> URL {
         guard FileManager.default.fileExists(atPath: first.path) else {
             return first
         }

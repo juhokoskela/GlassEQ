@@ -5,11 +5,14 @@ import GlassEQCore
 import GlassEQLicensing
 import GlassEQSettingsIPC
 import GlassEQSettingsUI
+import ServiceManagement
 import SwiftUI
 
 private enum GlassEQWindowID {
     static let inProcessSettings = "in-process-settings"
     static let onboarding = "onboarding"
+    static let about = "about"
+    static let supportReport = "support-report"
 }
 
 @main
@@ -21,7 +24,8 @@ struct GlassEQApp: App {
     // system audio capture prompt appears after GlassEQ has explained it.
     @State private var model = GlassEQAppModel(
         autoStart: OnboardingState.isComplete,
-        licensing: LicensingBootstrap.makeSource()
+        licensing: LicensingBootstrap.makeSource(),
+        lifecycleLog: LifecycleLog(streamsToStandardError: LifecycleLog.isDebugLaunch())
     )
 
     var body: some Scene {
@@ -44,9 +48,52 @@ struct GlassEQApp: App {
                         generation: model.onboardingPresentationGeneration,
                         windowID: GlassEQWindowID.onboarding
                     )
+                    WindowPresenter(
+                        generation: model.aboutPresentationGeneration,
+                        windowID: GlassEQWindowID.about
+                    )
+                    WindowPresenter(
+                        generation: model.supportReportPresentationGeneration,
+                        windowID: GlassEQWindowID.supportReport
+                    )
                 }
         }
         .menuBarExtraStyle(.window)
+
+        Window(localized("Support Report"), id: GlassEQWindowID.supportReport) {
+            SupportReportView(model: model)
+                .onAppear {
+                    model.foregroundWindowDidAppear()
+                }
+                .onDisappear {
+                    model.foregroundWindowDidDisappear()
+                }
+        }
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
+        Window(localized("About GlassEQ"), id: GlassEQWindowID.about) {
+            AboutView(model: model)
+                .onAppear {
+                    model.foregroundWindowDidAppear()
+                }
+                .onDisappear {
+                    model.foregroundWindowDidDisappear()
+                }
+        }
+        .windowResizability(.contentSize)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+        // The app menu only exists while a window keeps GlassEQ regular, and its About item
+        // should open the same window as the menu bar popover.
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(localized("About GlassEQ")) {
+                    model.requestAboutPresentation()
+                }
+            }
+        }
 
         Window(localized("Welcome to GlassEQ"), id: GlassEQWindowID.onboarding) {
             OnboardingView(model: model)
@@ -129,6 +176,7 @@ final class GlassEQAppDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
                 return
             }
+            model.lifecycleLog.record("Termination requested by macOS")
             await model.stopAcceptingSettingsCommandsAndWait()
             let shouldTerminate = await model.flushStoreBeforeQuit()
             if shouldTerminate {
@@ -167,20 +215,6 @@ private extension Notification.Name {
     static let glassEQMetricsDidChange = Notification.Name("com.glasseq.metricsDidChange")
 }
 
-private enum AppBuildInfo {
-    static var displayVersion: String {
-        let bundle = Bundle.main
-        if let releaseLabel = bundle.object(forInfoDictionaryKey: "GlassEQReleaseLabel") as? String,
-            !releaseLabel.isEmpty
-        {
-            return releaseLabel
-        }
-        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.3"
-        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "15"
-        return "v\(version) (\(build))"
-    }
-}
-
 private enum WakeReconnectPolicy {
     static let maximumAttempts = 12
     static let retryDelay: Duration = .seconds(1)
@@ -202,7 +236,7 @@ private enum PendingOutputTransitionAction {
     case stopped
 }
 
-private let appResourcesBundle: Bundle = {
+let appResourcesBundle: Bundle = {
     let resourceBundleName = "GlassEQ_GlassEQApp.bundle"
     let candidates = [
         Bundle.main.resourceURL?.appendingPathComponent(resourceBundleName),
@@ -530,13 +564,15 @@ extension SettingsAudioMetricsDTO {
 
 private actor ProfileStoreWriter {
     private let url: URL
+    private let write: @Sendable (ProfileStore, URL) throws -> Void
 
-    init(url: URL) {
+    init(url: URL, write: @escaping @Sendable (ProfileStore, URL) throws -> Void) {
         self.url = url
+        self.write = write
     }
 
     func save(_ store: ProfileStore) throws {
-        try ProfilePersistence.save(store, to: url)
+        try write(store, url)
     }
 
     func saveAndSynchronize(_ store: ProfileStore) throws {
@@ -584,7 +620,13 @@ final class GlassEQAppModel {
     var currentOutputSampleRate = 0.0
     var currentOutputChannelCount = 0
     var currentOutputBufferFrameSize: UInt32 = 0
-    var statusMessage = localized("Stopped")
+    var statusMessage = localized("Stopped") {
+        didSet {
+            if statusMessage != oldValue {
+                lifecycleLog.record("Status: \(statusMessage)")
+            }
+        }
+    }
     var isRunning = false
     var activeProfile: EQProfile {
         didSet {
@@ -603,7 +645,13 @@ final class GlassEQAppModel {
     var draftProfile: EQProfile
     var engineMetrics = AudioEngineMetrics()
     var programmeComparison = EQProgrammeComparisonSnapshot()
-    private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped
+    private(set) var lifecycleState: GlassEQAppLifecycleState = .stopped {
+        didSet {
+            if lifecycleState != oldValue {
+                lifecycleLog.record("Lifecycle: \(lifecycleState)")
+            }
+        }
+    }
 
     private let engine: any AudioEngineControlling
     private let defaultOutputLookup: any DefaultOutputLookingUp
@@ -682,6 +730,20 @@ final class GlassEQAppModel {
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0
     var onboardingPresentationGeneration = 0
+    /// The step the guide opens on for the current `onboardingPresentationGeneration`.
+    private(set) var onboardingRequestedStep = OnboardingStep.welcome
+    var aboutPresentationGeneration = 0
+    var supportReportPresentationGeneration = 0
+    let lifecycleLog: LifecycleLog
+    private let launchRecordsDirectory: URL
+    private let storeURL: URL
+    private(set) var pendingLibraryImport: PendingLibraryImport?
+    let installLocationIssue: InstallLocationIssue?
+    private(set) var isInstallLocationNoticeDismissed = false
+    /// The previous run's record when it crashed or was killed. Dismissing the notice hides it
+    /// without forgetting it, so the support report still says so.
+    private(set) var previousRunEndedUncleanly: LaunchRecord?
+    private(set) var isUncleanTerminationNoticeDismissed = false
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
     /// The user's current processing intent. Unlike `hasStartedAudio`, an explicit stop clears it,
@@ -712,6 +774,7 @@ final class GlassEQAppModel {
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
+        case migrationBackupFailed
         case unsupportedSchema(version: Int, maximumSupported: Int)
         case oversizedStore(byteCount: Int, maximum: Int)
 
@@ -719,7 +782,7 @@ final class GlassEQAppModel {
             switch self {
             case .normal:
                 return false
-            case .unsupportedSchema, .oversizedStore:
+            case .unsupportedSchema, .oversizedStore, .migrationBackupFailed:
                 return true
             }
         }
@@ -744,10 +807,16 @@ final class GlassEQAppModel {
     }
 
     private struct ProfileRollback: Sendable {
+        enum Scope: Sendable {
+            case profile
+            case library(bufferPolicyImport: AggregateBufferPolicyStore.ImportChange?)
+        }
+
         var profileStore: ProfileStore
         var activeProfile: EQProfile
         var selectedProfileID: UUID
         var draftProfile: EQProfile
+        var scope: Scope
     }
 
     private struct PendingAggregateBufferIncrease: Sendable {
@@ -779,6 +848,19 @@ final class GlassEQAppModel {
     }
 
     private struct FailedEngineProfileAttempt: Sendable {
+        struct LibraryChange: Sendable {
+            var previous: ProfileStore
+            var attempted: ProfileStore
+            var bufferPolicyImport: AggregateBufferPolicyStore.ImportChange?
+        }
+
+        struct ProfileChange: Sendable {
+            var profileID: UUID
+            var previous: EQProfile?
+            var previousIndex: Int?
+            var attempted: EQProfile?
+        }
+
         struct MappingChange: Sendable {
             var outputUID: String
             var previous: OutputDeviceProfileMapping?
@@ -787,10 +869,8 @@ final class GlassEQAppModel {
         }
 
         var id = UUID()
-        var profileID: UUID
-        var previousProfile: EQProfile?
-        var previousProfileIndex: Int?
-        var attemptedProfile: EQProfile?
+        var profileChanges: [ProfileChange]
+        var libraryChange: LibraryChange?
         var previousSelectedProfileID: UUID
         var attemptedSelectedProfileID: UUID
         var previousDraftProfile: EQProfile
@@ -798,21 +878,41 @@ final class GlassEQAppModel {
         var mappingChanges: [MappingChange]
 
         init(profileID: UUID, previous: ProfileRollback?, attempted: ProfileRollback) {
-            self.profileID = profileID
-            attemptedProfile = attempted.profileStore.profiles.first { $0.id == profileID }
             attemptedSelectedProfileID = attempted.selectedProfileID
             attemptedDraftProfile = attempted.draftProfile
 
             guard let previous else {
-                previousProfile = attemptedProfile
-                previousProfileIndex = attempted.profileStore.profiles.firstIndex { $0.id == profileID }
+                profileChanges = []
                 previousSelectedProfileID = attempted.selectedProfileID
                 previousDraftProfile = attempted.draftProfile
                 mappingChanges = []
                 return
             }
-            previousProfile = previous.profileStore.profiles.first { $0.id == profileID }
-            previousProfileIndex = previous.profileStore.profiles.firstIndex { $0.id == profileID }
+            let profileIDs: [UUID]
+            switch previous.scope {
+            case .profile:
+                profileIDs = [profileID]
+            case .library(let bufferPolicyImport):
+                let previousIDs = Set(previous.profileStore.profiles.map(\.id))
+                profileIDs =
+                    previous.profileStore.profiles.map(\.id)
+                    + attempted.profileStore.profiles.map(\.id).filter { !previousIDs.contains($0) }
+                libraryChange = LibraryChange(
+                    previous: previous.profileStore, attempted: attempted.profileStore,
+                    bufferPolicyImport: bufferPolicyImport)
+            }
+            let previousProfiles = Dictionary(
+                uniqueKeysWithValues: previous.profileStore.profiles.enumerated().map { ($0.element.id, $0) })
+            let attemptedProfiles = Dictionary(
+                uniqueKeysWithValues: attempted.profileStore.profiles.map { ($0.id, $0) })
+            profileChanges = profileIDs.map { id in
+                ProfileChange(
+                    profileID: id,
+                    previous: previousProfiles[id]?.element,
+                    previousIndex: previousProfiles[id]?.offset,
+                    attempted: attemptedProfiles[id]
+                )
+            }
             previousSelectedProfileID = previous.selectedProfileID
             previousDraftProfile = previous.draftProfile
             let outputUIDs = Set(previous.profileStore.outputMappings.map(\.outputDeviceUID))
@@ -985,6 +1085,7 @@ final class GlassEQAppModel {
         workspaceOpener: any WorkspaceOpening = NSWorkspace.shared,
         profileImportOperation: (@Sendable (ImportFormat, String, String) async -> Result<EQProfile, any Error>)? = nil,
         saveDebounceDelay: Duration = .milliseconds(250),
+        writeProfileStore: @escaping @Sendable (ProfileStore, URL) throws -> Void = ProfilePersistence.save,
         outputChangeSettlingDelayOverride: Duration? = nil,
         outputChangeSleep: @escaping @MainActor @Sendable (Duration) async throws -> Void = {
             try await Task.sleep(for: $0)
@@ -1001,7 +1102,10 @@ final class GlassEQAppModel {
         aggregateBufferNotifier: (any AggregateBufferChangeNotifying)? = nil,
         licensing: LicensingSource = .disabled,
         licenseStopTransitionTimeout: Duration = .milliseconds(500),
-        licenseOperationCancellationGrace: Duration = .seconds(3)
+        licenseOperationCancellationGrace: Duration = .seconds(3),
+        lifecycleLog: LifecycleLog = LifecycleLog(),
+        launchRecordsDirectory: URL? = nil,
+        installLocationIssue: InstallLocationIssue? = InstallLocation.issue()
     ) {
         let loadResult: ProfileStoreLoadResult?
         let loadedStore: ProfileStore
@@ -1018,6 +1122,8 @@ final class GlassEQAppModel {
             persistenceMode = .unsupportedSchema(version: version, maximumSupported: maximumSupported)
         } else if case let .oversizedStore(byteCount, maximum) = loadResult?.status {
             persistenceMode = .oversizedStore(byteCount: byteCount, maximum: maximum)
+        } else if loadResult?.status == .migrationBackupFailed {
+            persistenceMode = .migrationBackupFailed
         } else {
             persistenceMode = .normal
         }
@@ -1049,7 +1155,7 @@ final class GlassEQAppModel {
         self.outputChangeSettlingDelayOverride = outputChangeSettlingDelayOverride
         self.outputChangeSleep = outputChangeSleep
         self.wakeReconnectDelayOverride = wakeReconnectDelayOverride
-        self.storeWriter = ProfileStoreWriter(url: storeURL)
+        self.storeWriter = ProfileStoreWriter(url: storeURL, write: writeProfileStore)
         self.aggregateBufferPolicyStore = AggregateBufferPolicyStore(
             url: aggregateBufferPolicyURL ?? AggregateBufferPolicyStore.defaultURL()
         )
@@ -1071,6 +1177,34 @@ final class GlassEQAppModel {
                 ? AggregateBufferNotifier.shared
                 : NoopAggregateBufferNotifier())
         self.profilePersistenceMode = persistenceMode
+        self.lifecycleLog = lifecycleLog
+        self.storeURL = storeURL
+        self.installLocationIssue = installLocationIssue
+        self.launchRecordsDirectory =
+            launchRecordsDirectory ?? LaunchRecordStore.defaultDirectory(besideStoreAt: storeURL)
+        let licensingKind =
+            switch licensing {
+            case .disabled: "none"
+            case .provider: "provider"
+            case .invalidConfiguration: "invalid configuration"
+            }
+        lifecycleLog.record(
+            "Launch: \(AppBuildInfo.current.versionLine), setup guide \(OnboardingState.isComplete ? "completed" : "pending"), auto-start \(autoStart ? "on" : "off"), licensing \(licensingKind)"
+        )
+        if let loadResult, let repairMessage = Self.profileStoreLoadStatusMessage(loadResult.status) {
+            lifecycleLog.record("Profile store: \(repairMessage)")
+        }
+        previousRunEndedUncleanly = LaunchRecordStore.beginRun(
+            in: self.launchRecordsDirectory,
+            version: AppBuildInfo.current.displayVersion
+        )
+        if let previousRun = previousRunEndedUncleanly {
+            lifecycleLog.record(
+                "Previous run did not quit cleanly; it started \(previousRun.startedAt.formatted(.iso8601))")
+        }
+        if let installLocationIssue {
+            lifecycleLog.record("Install location: \(installLocationIssue.reportDescription)")
+        }
         engine.setPlaybackBufferRenegotiationHandler { [weak self] renegotiation in
             Task { @MainActor [weak self] in
                 self?.processPlaybackBufferRenegotiation(renegotiation)
@@ -1404,6 +1538,13 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return .unprotected
+        case .migrationBackupFailed:
+            return SettingsProfileStoreProtectionDTO(
+                isProtected: true,
+                message: localized(
+                    "Profiles are read-only because the older library could not be backed up. Relaunch to retry."),
+                resetButtonTitle: localized("Back up and reset profiles")
+            )
         case let .unsupportedSchema(version, maximumSupported):
             return SettingsProfileStoreProtectionDTO(
                 isProtected: true,
@@ -1433,6 +1574,9 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return ""
+        case .migrationBackupFailed:
+            return localized(
+                "The older profile library could not be backed up. Relaunch to retry before editing profiles.")
         case .unsupportedSchema, .oversizedStore:
             return localized("Profile store is protected; reset profiles before editing it.")
         }
@@ -1446,6 +1590,7 @@ final class GlassEQAppModel {
         }
         hasStartedAudio = true
         processingRequested = true
+        lifecycleLog.record("Audio start requested")
         guard processingIsLicensed else {
             blockProcessingForLicense()
             return
@@ -1499,6 +1644,7 @@ final class GlassEQAppModel {
         let wasLicensed = processingIsLicensed
         licenseSnapshot = snapshot
         lastAppliedLicenseSequence = snapshot.sequence
+        lifecycleLog.record("License: \(snapshot.content.state)")
         if snapshot.content.permitsProcessing {
             if !wasLicensed,
                 processingRequested,
@@ -1641,6 +1787,22 @@ final class GlassEQAppModel {
         case .storageUnavailable:
             localized("The license could not be read from Keychain.")
         }
+    }
+
+    /// One line for the About window. Nil in source builds, which have no license.
+    var licenseSummaryMessage: String? {
+        switch licensing {
+        case .disabled:
+            return nil
+        case .invalidConfiguration:
+            return localized("This build's license configuration is invalid")
+        case .provider:
+            break
+        }
+        guard let content = licenseSnapshot?.content else {
+            return localized("Checking license...")
+        }
+        return licenseSummary(for: content)
     }
 
     /// A secondary line for states that still process but need the user's attention. Stopped
@@ -1807,8 +1969,99 @@ final class GlassEQAppModel {
         grace.cancel()
     }
 
-    func requestOnboardingPresentation() {
+    func requestOnboardingPresentation(step: OnboardingStep = .welcome) {
+        onboardingRequestedStep = step
         onboardingPresentationGeneration &+= 1
+        lifecycleLog.record("Window requested: setup guide at \(step)")
+    }
+
+    func requestAboutPresentation() {
+        aboutPresentationGeneration &+= 1
+        lifecycleLog.record("Window requested: about")
+    }
+
+    func requestSupportReportPresentation() {
+        supportReportPresentationGeneration &+= 1
+        lifecycleLog.record("Window requested: support report")
+    }
+
+    var showsUncleanTerminationNotice: Bool {
+        !isUncleanTerminationNoticeDismissed && previousRunEndedUncleanly != nil
+    }
+
+    func dismissUncleanTerminationNotice() {
+        isUncleanTerminationNoticeDismissed = true
+    }
+
+    var visibleInstallLocationIssue: InstallLocationIssue? {
+        isInstallLocationNoticeDismissed ? nil : installLocationIssue
+    }
+
+    func dismissInstallLocationNotice() {
+        isInstallLocationNoticeDismissed = true
+    }
+
+    func supportReportInputs(generatedAt: Date = Date()) -> SupportReportInputs {
+        let snapshot = settingsSnapshot()
+        return SupportReportInputs(
+            generatedAt: generatedAt,
+            build: AppBuildInfo.current,
+            operatingSystemVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            architecture: SupportReport.architecture,
+            modelIdentifier: SupportReport.modelIdentifier,
+            launchedWithDebugFlag: lifecycleLog.streamsToStandardError,
+            installLocation: installLocationIssue,
+            lifecycleState: "\(lifecycleState)",
+            statusMessage: statusMessage,
+            isRunning: isRunning,
+            onboardingIsComplete: OnboardingState.isComplete,
+            audioCaptureState: Self.describe(onboardingAudioCaptureState),
+            launchAtLoginStatus: Self.describe(SMAppService.mainApp.status),
+            licenseSummary: licenseSummaryMessage,
+            previousRun: previousRunEndedUncleanly,
+            profileCount: profileStore.profiles.count,
+            activeProfileName: activeProfile.name,
+            activeProfileMode: activeProfile.mode.rawValue,
+            activeProfileIsBypassed: activeProfile.isBypassed,
+            currentOutputIsMapped: snapshot.currentOutputMappedProfileID != nil,
+            fallbackProfileName: profileStore.profiles.first { $0.id == profileStore.fallbackProfileID }?.name
+                ?? "none",
+            audioDiagnostics: OutputDiagnosticsReport(snapshot: snapshot)
+                .supportText,
+            recentEvents: lifecycleLog.text
+        )
+    }
+
+    private static func describe(_ state: OnboardingAudioCaptureState) -> String {
+        switch state {
+        case .idle:
+            "not requested"
+        case .pending:
+            "starting"
+        case .running(let outputName):
+            "running on \(outputName)"
+        case .permissionDenied:
+            "permission denied"
+        case .failed(let message):
+            "failed: \(message)"
+        case .bypassed:
+            "disabled by profile"
+        }
+    }
+
+    private static func describe(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .enabled:
+            "enabled"
+        case .requiresApproval:
+            "waiting for approval in System Settings"
+        case .notRegistered:
+            "off"
+        case .notFound:
+            "not found"
+        @unknown default:
+            "unknown"
+        }
     }
 
     // GlassEQ runs as an accessory and only shows a Dock icon while a regular window is open.
@@ -1818,6 +2071,7 @@ final class GlassEQAppModel {
         visibleForegroundWindowCount += 1
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        lifecycleLog.record("Window appeared; \(visibleForegroundWindowCount) open, Dock icon shown")
     }
 
     func foregroundWindowDidDisappear() {
@@ -1825,6 +2079,9 @@ final class GlassEQAppModel {
         if visibleForegroundWindowCount == 0 {
             NSApplication.shared.setActivationPolicy(.accessory)
         }
+        lifecycleLog.record(
+            "Window closed; \(visibleForegroundWindowCount) open\(visibleForegroundWindowCount == 0 ? ", back to menu bar only" : "")"
+        )
     }
 
     // Onboarding's permission step. The first call starts audio for the first time, which is
@@ -2456,12 +2713,13 @@ final class GlassEQAppModel {
         )
     }
 
-    private func profileRollback() -> ProfileRollback {
+    private func profileRollback(scope: ProfileRollback.Scope = .profile) -> ProfileRollback {
         ProfileRollback(
             profileStore: profileStore,
             activeProfile: activeProfile,
             selectedProfileID: selectedProfileID,
-            draftProfile: draftProfile
+            draftProfile: draftProfile,
+            scope: scope
         )
     }
 
@@ -2674,6 +2932,8 @@ final class GlassEQAppModel {
         let rollback = profileRollback()
         switch result {
         case .success(let output):
+            lifecycleLog.record(
+                "Output: \(output.name), \(Int(output.nominalSampleRate)) Hz, \(output.outputChannelCount) channels")
             diagnosticsObservedDeviceSampleRate = output.nominalSampleRate
             lastHandledDefaultOutputConfiguration = DefaultOutputConfiguration(output)
             refreshCurrentOutputMetadata(from: output)
@@ -2700,6 +2960,7 @@ final class GlassEQAppModel {
                 scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
             }
         case .failure(let error):
+            lifecycleLog.record("Output lookup failed: \(error.localizedDescription)")
             diagnosticsObservedDeviceSampleRate = 0
             diagnosticsTransportType = nil
             diagnosticsLatencyMetadata = nil
@@ -2857,7 +3118,9 @@ final class GlassEQAppModel {
         }
     }
 
-    private func synchronizeActiveProfileProcessing(rollback: ProfileRollback? = nil) {
+    private func synchronizeActiveProfileProcessing(
+        rollback: ProfileRollback? = nil, rebuildRoute: Bool = false
+    ) {
         // A new active profile replaces whatever the comparison was returning to.
         clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         guard lifecycleState != .terminating,
@@ -2895,6 +3158,11 @@ final class GlassEQAppModel {
             )
             statusMessage = message
             return
+        }
+
+        if rebuildRoute {
+            let rebuilt = rebuildRouteWithSelectedBuffer(rollback: rollback)
+            if rebuilt { return }
         }
 
         if hasPendingProfileReplacingEngineWork {
@@ -3211,11 +3479,14 @@ final class GlassEQAppModel {
             activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
             clearFixedBufferRecoveryIfRouteChanged()
             if let reconciliation {
-                restoreEngineProfileReconciliation(reconciliation, persist: true)
+                let bufferPreferencesRestored = restoreEngineProfileReconciliation(reconciliation)
                 confirmedEngineProfileState.acknowledge(reconciliation)
                 statusMessage = localized(
                     "Profile change was not applied; audio is still running with \(reconciliation.confirmation.activeProfile.name)."
                 )
+                if !bufferPreferencesRestored {
+                    statusMessage += " " + localized("The previous buffer preferences could not be saved.")
+                }
             } else {
                 statusMessage = localized(
                     "Profile change was not applied; audio is still running with \(activeProfile.name).")
@@ -3889,42 +4160,58 @@ final class GlassEQAppModel {
     }
 
     private func restoreEngineProfileReconciliation(
-        _ reconciliation: EngineProfileReconciliation,
-        persist: Bool
-    ) {
+        _ reconciliation: EngineProfileReconciliation
+    ) -> Bool {
+        var restoredStore = profileStore
+        var bufferPreferencesRestored = true
         for failedAttempt in reconciliation.failedAttempts.reversed() {
-            if failedAttempt.previousProfile != failedAttempt.attemptedProfile,
-                profileStore.profiles.first(where: { $0.id == failedAttempt.profileID })
-                    == failedAttempt.attemptedProfile
-            {
-                profileStore.profiles.removeAll { $0.id == failedAttempt.profileID }
-                if let previousProfile = failedAttempt.previousProfile {
-                    let insertionIndex = min(
-                        failedAttempt.previousProfileIndex ?? profileStore.profiles.endIndex,
-                        profileStore.profiles.endIndex
-                    )
-                    profileStore.profiles.insert(
-                        previousProfile,
-                        at: insertionIndex
+            if let bufferPolicyImport = failedAttempt.libraryChange?.bufferPolicyImport {
+                do {
+                    try aggregateBufferPolicyStore.restoreImport(bufferPolicyImport)
+                } catch {
+                    bufferPreferencesRestored = false
+                    lifecycleLog.record("Library rollback: buffer preferences could not be saved")
+                }
+            }
+            if let libraryChange = failedAttempt.libraryChange, restoredStore == libraryChange.attempted {
+                restoredStore = libraryChange.previous
+            }
+            let profileChanges = failedAttempt.profileChanges.filter { change in
+                change.previous != change.attempted
+                    && restoredStore.profiles.first(where: { $0.id == change.profileID }) == change.attempted
+            }
+            let changedIDs = Set(profileChanges.map(\.profileID))
+            restoredStore.profiles.removeAll { changedIDs.contains($0.id) }
+            for change in profileChanges {
+                if let previous = change.previous {
+                    restoredStore.profiles.insert(
+                        previous,
+                        at: min(
+                            change.previousIndex ?? restoredStore.profiles.endIndex, restoredStore.profiles.endIndex)
                     )
                 }
             }
+            if let libraryChange = failedAttempt.libraryChange,
+                restoredStore.fallbackProfileID == libraryChange.attempted.fallbackProfileID
+            {
+                restoredStore.fallbackProfileID = libraryChange.previous.fallbackProfileID
+            }
             for mappingChange in failedAttempt.mappingChanges.reversed() {
-                let currentMapping = profileStore.outputMappings.first {
+                let currentMapping = restoredStore.outputMappings.first {
                     $0.outputDeviceUID == mappingChange.outputUID
                 }
                 guard currentMapping == mappingChange.attempted else {
                     continue
                 }
-                profileStore.outputMappings.removeAll {
+                restoredStore.outputMappings.removeAll {
                     $0.outputDeviceUID == mappingChange.outputUID
                 }
                 if let previousMapping = mappingChange.previous {
-                    profileStore.outputMappings.insert(
+                    restoredStore.outputMappings.insert(
                         previousMapping,
                         at: min(
-                            mappingChange.previousIndex ?? profileStore.outputMappings.endIndex,
-                            profileStore.outputMappings.endIndex
+                            mappingChange.previousIndex ?? restoredStore.outputMappings.endIndex,
+                            restoredStore.outputMappings.endIndex
                         )
                     )
                 }
@@ -3937,27 +4224,27 @@ final class GlassEQAppModel {
             }
         }
         let confirmation = reconciliation.confirmation
-        let profileIDs = Set(profileStore.profiles.map(\.id))
+        let profileIDs = Set(restoredStore.profiles.map(\.id))
         let storedConfirmation =
-            profileStore.profiles.first {
+            restoredStore.profiles.first {
                 $0.id == confirmation.activeProfile.id
-            } ?? profileStore.profiles[0]
-        profileStore.outputMappings.removeAll { !profileIDs.contains($0.profileID) }
-        if !profileIDs.contains(profileStore.fallbackProfileID) {
-            profileStore.fallbackProfileID = storedConfirmation.id
+            } ?? restoredStore.profiles[0]
+        restoredStore.outputMappings.removeAll { !profileIDs.contains($0.profileID) }
+        if !profileIDs.contains(restoredStore.fallbackProfileID) {
+            restoredStore.fallbackProfileID = storedConfirmation.id
         }
+        profileStore = restoredStore
         activeProfile = confirmation.activeProfile
-        if !profileStore.profiles.contains(where: { $0.id == selectedProfileID }) {
+        if !restoredStore.profiles.contains(where: { $0.id == selectedProfileID }) {
             selectedProfileID = storedConfirmation.id
         }
-        if !profileStore.profiles.contains(where: { $0.id == draftProfile.id }) {
+        if !restoredStore.profiles.contains(where: { $0.id == draftProfile.id }) {
             draftProfile =
-                profileStore.profiles.first(where: { $0.id == selectedProfileID })
+                restoredStore.profiles.first(where: { $0.id == selectedProfileID })
                 ?? storedConfirmation
         }
-        if persist {
-            saveStore()
-        }
+        saveStore()
+        return bufferPreferencesRestored
     }
 
     private func reschedulePendingEngineStartWithActiveProfile(rollback: ProfileRollback? = nil) {
@@ -4034,15 +4321,28 @@ final class GlassEQAppModel {
         }
     }
 
-    func flushStoreBeforeQuit() async -> Bool {
-        pendingSaveTask?.cancel()
-        await pendingSaveTask?.value
-        pendingSaveTask = nil
-        guard !profilePersistenceMode.isProtected else {
-            return true
+    private func drainPendingSave() async {
+        while let task = pendingSaveTask {
+            pendingSaveTask = nil
+            task.cancel()
+            await task.value
         }
+    }
+
+    private func synchronizeStore() async throws {
+        while true {
+            await drainPendingSave()
+            let current = profileStore
+            try await storeWriter.saveAndSynchronize(current)
+            if profileStore == current { return }
+        }
+    }
+
+    func flushStoreBeforeQuit() async -> Bool {
+        await drainPendingSave()
+        guard !profilePersistenceMode.isProtected else { return true }
         do {
-            try await storeWriter.saveAndSynchronize(profileStore)
+            try await synchronizeStore()
             return true
         } catch {
             statusMessage = localized("Quit canceled: failed to save profiles: \(error.localizedDescription)")
@@ -4111,7 +4411,172 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
+    // MARK: Library backup
+
+    /// The whole library as one document. A protected store cannot be exported, because the
+    /// in-memory defaults are not the user's library.
+    func makeLibraryBackup(createdAt: Date = Date()) throws -> ProfileLibraryBackup {
+        try ensureProfileStoreWritable()
+        return ProfileLibraryBackup(
+            createdAt: createdAt,
+            appVersion: AppBuildInfo.current.displayVersion,
+            profileStore: profileStore,
+            bufferPreferences: try aggregateBufferPolicyStore.exportDocument()
+        )
+    }
+
+    func stageLibraryImport(_ backup: ProfileLibraryBackup, filename: String) -> SettingsLibraryImportPreviewDTO {
+        let pending = PendingLibraryImport(backup: backup, filename: filename)
+        pendingLibraryImport = pending
+        let summary = ProfileLibraryMerge.preview(current: profileStore, incoming: backup.profileStore)
+        lifecycleLog.record("Library import staged from \(filename)")
+        return SettingsLibraryImportPreviewDTO(
+            filename: filename, createdAt: backup.createdAt, appVersion: backup.appVersion,
+            profileCount: backup.profileStore.profiles.count,
+            outputMappingCount: backup.profileStore.outputMappings.count,
+            hasBufferPreferences: backup.bufferPreferences != nil, merge: summary)
+    }
+
+    func cancelLibraryImport() {
+        pendingLibraryImport = nil
+    }
+
+    /// Applies the staged library. Replacing writes an automatic backup of the current library
+    /// first, so the step is reversible by importing that file.
+    func applyLibraryImport(mode: SettingsLibraryImportMode) async throws -> String {
+        guard let pending = pendingLibraryImport else {
+            throw SettingsCommandFailure(message: localized("Choose a library file before importing."))
+        }
+        pendingLibraryImport = nil
+        try ensureProfileStoreWritable()
+        await drainPendingSave()
+        var automaticBackupURL: URL?
+        do {
+            try Task.checkCancellation()
+            let libraryBeforeSave = profileStore
+            let incoming = pending.backup.profileStore
+            let nextStore: ProfileStore
+            let message: String
+            switch mode {
+            case .merge:
+                let result = try ProfileLibraryMerge.merge(current: profileStore, incoming: incoming)
+                nextStore = result.store
+                message = Self.mergeMessage(result.summary, filename: pending.filename)
+            case .replace:
+                let backupURL = try await writeAutomaticLibraryBackup()
+                automaticBackupURL = backupURL
+                nextStore = incoming
+                message = localized(
+                    "Replaced the library with \(incoming.profiles.count) profiles from \(pending.filename). The previous library was saved as \(backupURL.lastPathComponent)."
+                )
+            }
+            // Persist before publishing. If an edit or cancellation wins during the write, restore
+            // the current library before returning; a debounced save would leave the refused import on disk.
+            try await storeWriter.saveAndSynchronize(nextStore)
+            if profileStore != libraryBeforeSave || pendingSaveTask != nil || Task.isCancelled {
+                try await synchronizeStore()
+                try Task.checkCancellation()
+                throw SettingsCommandFailure(
+                    message: localized("The library changed while the import was being saved. Try again."))
+            }
+            var rollback = profileRollback(scope: .library(bufferPolicyImport: nil))
+            let previousActive = activeProfile
+            let previousBufferSelections = aggregateBufferPolicyStore.selectionSnapshot()
+            let previousBufferSelection = activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
+            profileStore = nextStore
+            var outcome = message
+            if let preferences = pending.backup.bufferPreferences {
+                do {
+                    let change = try aggregateBufferPolicyStore.importDocument(
+                        preferences, replacingExisting: mode == .replace)
+                    rollback.scope = .library(bufferPolicyImport: change)
+                } catch {
+                    lifecycleLog.record("Library import: buffer preferences could not be saved")
+                    outcome += " " + localized("The buffer preferences in the library could not be saved.")
+                }
+            }
+
+            let nextActive = nextStore.profile(forOutputUID: currentOutputUID.isEmpty ? nil : currentOutputUID)
+            activeProfile = nextActive
+            selectedProfileID = nextActive.id
+            draftProfile = nextActive
+            clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
+            let bufferChanged =
+                activeAggregateRoute.map { aggregateBufferSelection(for: $0) } != previousBufferSelection
+                || (hasPendingProfileReplacingEngineWork
+                    && aggregateBufferPolicyStore.selectionSnapshot() != previousBufferSelections)
+            if nextActive != previousActive || bufferChanged {
+                synchronizeActiveProfileProcessing(rollback: rollback, rebuildRoute: bufferChanged)
+            }
+            lifecycleLog.record("Library import applied (\(mode.rawValue)): \(nextStore.profiles.count) profiles")
+            notifyModelDidChange()
+            if let automaticBackupURL {
+                LibraryBackupFile.pruneAutomaticBackups(in: automaticBackupURL.deletingLastPathComponent())
+            }
+            return outcome
+        } catch {
+            if let automaticBackupURL { try? FileManager.default.removeItem(at: automaticBackupURL) }
+            saveStore()
+            throw error
+        }
+    }
+
+    /// Called only after checking the active profile's bypass and compatibility state.
+    private func rebuildRouteWithSelectedBuffer(rollback: ProfileRollback?) -> Bool {
+        guard let activeAggregateRoute,
+            lifecycleState == .running,
+            isRunning,
+            engineStartTask == nil,
+            case .running(let output) = engine.state
+        else {
+            return false
+        }
+        let selection = aggregateBufferSelection(for: activeAggregateRoute)
+        fixedBufferRecovery = nil
+        pendingAggregateBufferIncrease = nil
+        statusMessage = localized("Rebuilding \(output.name) with \(selection.frameSize)-frame buffers...")
+        scheduleEngineStart(
+            output: output,
+            profile: activeProfile,
+            rollback: rollback,
+            aggregateBufferFrameSize: selection.frameSize
+        )
+        return true
+    }
+
+    private static func mergeMessage(_ summary: ProfileLibraryMergeSummary, filename: String) -> String {
+        var parts: [String] = []
+        if summary.addedProfiles > 0 {
+            parts.append(localized("added \(summary.addedProfiles) profiles"))
+        }
+        if summary.copiedProfiles > 0 {
+            parts.append(localized("added \(summary.copiedProfiles) as copies"))
+        }
+        if summary.unchangedProfiles > 0 {
+            parts.append(localized("skipped \(summary.unchangedProfiles) already here"))
+        }
+        if summary.addedMappings > 0 {
+            parts.append(localized("assigned \(summary.addedMappings) outputs"))
+        }
+        guard !parts.isEmpty else {
+            return localized("Nothing to add from \(filename); every profile is already in the library.")
+        }
+        return localized("Imported from \(filename): \(parts.joined(separator: ", ")).")
+    }
+
+    private func writeAutomaticLibraryBackup() async throws -> URL {
+        let backup = try makeLibraryBackup()
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: storeURL)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt, identifier: UUID())
+        let url = directory.appending(path: name)
+        let data = try await LibraryBackupIO.encode(backup)
+        try await LibraryBackupIO.write(data, to: url)
+        return url
+    }
+
     func requestQuit() {
+        lifecycleLog.record("Quit requested")
         Task { @MainActor [weak self] in
             guard let self else {
                 NSApplication.shared.terminate(nil)
@@ -4175,26 +4640,15 @@ final class GlassEQAppModel {
             lifecycleState == .running,
             isRunning,
             engineStartTask == nil,
-            case .running(let output) = engine.state
+            case .running = engine.state
         else {
             throw SettingsCommandFailure(
                 message: localized("Automatic buffer tuning is unavailable on this output route.")
             )
         }
-        fixedBufferRecovery = nil
         try aggregateBufferPolicyStore.setMode(mode, for: activeAggregateRoute)
-        let selection = aggregateBufferSelection(for: activeAggregateRoute)
-        pendingAggregateBufferIncrease = nil
-        statusMessage = localized(
-            "Rebuilding \(output.name) with \(selection.frameSize)-frame buffers..."
-        )
+        synchronizeActiveProfileProcessing(rebuildRoute: true)
         notifyModelDidChange()
-        scheduleEngineStart(
-            output: output,
-            profile: activeProfile,
-            rollback: nil,
-            aggregateBufferFrameSize: selection.frameSize
-        )
     }
 
     func retryAutomaticAggregateBuffer() throws {
@@ -4603,18 +5057,21 @@ final class GlassEQAppModel {
         startObserver(sendInitialValue: true)
     }
 
-    func cleanupForTermination() {
-        guard prepareForTermination(shutdownSettings: true) else {
-            return
-        }
-        scheduleEngineStop(updateMetrics: false)
-    }
+    @ObservationIgnored private var terminationTask: Task<Void, Never>?
 
     func cleanupForTerminationAndWait() async {
-        await stopAcceptingSettingsCommandsAndWait()
-        guard prepareForTermination(shutdownSettings: false) else {
+        if let terminationTask {
+            await terminationTask.value
             return
         }
+        let task = Task { await self.performTerminationCleanup() }
+        terminationTask = task
+        await task.value
+    }
+
+    private func performTerminationCleanup() async {
+        await stopAcceptingSettingsCommandsAndWait()
+        prepareForTermination()
         await settingsCoordinator.shutdownAndWait()
         // The engine stop is queued before the Keychain checkpoint so a slow Security call can
         // never delay the return to dry playback.
@@ -4627,12 +5084,11 @@ final class GlassEQAppModel {
         if case let .provider(provider) = licensing {
             await provider.shutdown()
         }
+        LaunchRecordStore.endRun(in: launchRecordsDirectory)
+        lifecycleLog.record("Shutdown complete")
     }
 
-    private func prepareForTermination(shutdownSettings: Bool) -> Bool {
-        guard lifecycleState != .terminating else {
-            return false
-        }
+    private func prepareForTermination() {
         lifecycleState = .terminating
         engine.setPlaybackBufferRenegotiationHandler(nil)
         acceptsSettingsCommands = false
@@ -4645,11 +5101,7 @@ final class GlassEQAppModel {
         clearProgrammeComparisonSession()
         isRunning = false
         onboardingAudioCaptureState = .idle
-        if shutdownSettings {
-            settingsCoordinator.shutdown()
-        }
         notifyModelDidChange()
-        return true
     }
 
     private func audioEngineFailureCategory(_ error: Error) -> AudioEngineFailure.Category? {
@@ -4736,6 +5188,9 @@ final class GlassEQAppModel {
             return localized("Profile store was invalid; backed it up and repaired valid profiles")
         case .recoveredDefaults:
             return localized("Profile store was invalid; backed it up and restored defaults")
+        case .migrationBackupFailed:
+            return localized(
+                "The older profile library could not be backed up; profiles are read-only until a backup succeeds.")
         case .backupFailed:
             return localized("Profile store was invalid; using defaults, but backup failed")
         case let .unsupportedSchemaVersion(version, maximumSupported):
@@ -4859,6 +5314,27 @@ private struct MenuBarView: View {
                     .accessibilityLabel(Text(localized("License")))
                     .accessibilityValue(Text(licenseStatusMessage))
             }
+
+            if let issue = model.visibleInstallLocationIssue {
+                PopoverNotice(
+                    symbol: "arrow.down.app", title: localized("GlassEQ is not installed in Applications"),
+                    message: issue.message, dismiss: model.dismissInstallLocationNotice)
+            }
+
+            if model.showsUncleanTerminationNotice {
+                PopoverNotice(
+                    symbol: "exclamationmark.triangle",
+                    title: localized("Previous run did not quit normally"),
+                    message: localized(
+                        "GlassEQ did not quit normally last time. If your output still sounds wrong, retry the audio engine in Settings. If it keeps happening, send a support report."
+                    ),
+                    dismiss: model.dismissUncleanTerminationNotice,
+                    showSupportReport: {
+                        dismiss()
+                        model.requestSupportReportPresentation()
+                    }
+                )
+            }
         }
         .padding()
         .background { PopoverGlassConfigurator() }
@@ -4869,11 +5345,24 @@ private struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(localized("GlassEQ"))
                     .font(.title3.weight(.semibold))
-                Text(AppBuildInfo.displayVersion)
+                Text(AppBuildInfo.current.displayVersion)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                dismiss()
+                model.requestAboutPresentation()
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.body)
+                    .frame(width: 24, height: 24)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.borderless)
+            .help(localized("About GlassEQ"))
+            .accessibilityLabel(Text(localized("About GlassEQ")))
+            .accessibilityHint(Text(localized("Shows the version, license, privacy notes, and credits")))
             Text(statusBadgeTitle)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(statusBadgeColor)

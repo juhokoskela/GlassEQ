@@ -100,8 +100,8 @@ public final class GlassEQSettingsViewModel {
 
     @discardableResult
     public func perform(_ command: SettingsCommand) async -> SettingsCommandResponse? {
-        if case .chooseImportFiles(let mode) = command {
-            return await chooseImportFiles(mode: mode)
+        if command.presentsFilePanel {
+            return await performPanelCommand(command)
         }
         guard let client else {
             return reportDisconnected(for: command)
@@ -111,17 +111,17 @@ public final class GlassEQSettingsViewModel {
         }
     }
 
-    // The picker blocks in the main app until the user dismisses it, so it is tracked separately
-    // to let shutdown cancel it. Only one picker can be outstanding at a time.
-    public func chooseImportFiles(mode: SettingsFileImportMode) async -> SettingsCommandResponse? {
+    // A panel blocks in the main app until the user dismisses it, so its command is tracked
+    // separately to let shutdown cancel it. Only one panel can be outstanding at a time.
+    private func performPanelCommand(_ command: SettingsCommand) async -> SettingsCommandResponse? {
         guard let client else {
-            return reportDisconnected(for: .chooseImportFiles(mode: mode))
+            return reportDisconnected(for: command)
         }
         guard fileImportTask == nil else {
             return nil
         }
         let task = Task { @MainActor in
-            try await client.perform(.chooseImportFiles(mode: mode))
+            try await client.perform(command)
         }
         fileImportTask = task
         defer {

@@ -15,7 +15,7 @@ This checklist tracks the work required to move GlassEQ from the technical alpha
 - [x] Reserve the GlassEQ name and logo for the official distribution.
 - [x] Change the source license from MIT to `GPL-3.0-or-later` and update the repository license notice and README.
 - [x] Publish a trademark policy. Third-party builds must use a different name and logo and must not imply that Juho Koskela signed, published, or supports them.
-- [ ] Add the GPL and trademark notices to the About window and release documentation.
+- [x] Add the GPL and trademark notices to the About window and release documentation.
 - [ ] Have the licensing, subscription, privacy, refund, and trademark terms reviewed before taking payments.
 
 The GPL permits redistribution of official binaries, so the paid product cannot rely on download scarcity. The value of the commercial offering is the trusted signed build, notarization, automatic updates, and support. Server-controlled downloads and updates are enforceable service boundaries. A secret embedded in the open-source client is not.
@@ -82,15 +82,15 @@ License verification must run outside the realtime path. It must not make Core A
 ## First-time onboarding
 
 - [x] Present a normal foreground window on first launch. Keep a Dock presence until onboarding finishes so the app cannot appear to launch invisibly.
-- [ ] Explain that GlassEQ lives in the menu bar and show where to find it.
-- [ ] Explain system audio capture before asking macOS for permission.
-- [ ] Handle permission granted, denied, dismissed, and later revoked.
+- [x] Explain that GlassEQ lives in the menu bar and show where to find it.
+- [x] Explain system audio capture before asking macOS for permission.
+- [x] Handle permission granted, denied, dismissed, and later revoked.
 - [x] Activate or restore a license.
-- [ ] Offer Launch at Login through `SMAppService.mainApp`.
-- [ ] Confirm the current output and active profile.
-- [ ] Show a clear success state after GlassEQ starts processing.
-- [ ] Let the user reopen onboarding or permission help later.
-- [ ] Verify onboarding with keyboard navigation and VoiceOver.
+- [x] Offer Launch at Login through `SMAppService.mainApp`.
+- [x] Confirm the current output and active profile.
+- [x] Show a clear success state after GlassEQ starts processing.
+- [x] Let the user reopen onboarding or permission help later, from About GlassEQ and Settings → Output.
+- [ ] Verify onboarding with keyboard navigation and VoiceOver on a packaged build.
 
 ## Automatic updates
 
@@ -118,47 +118,50 @@ License verification must run outside the realtime path. It must not make Core A
 
 ## Production distribution
 
-- [ ] Create a DMG containing `GlassEQ.app` and an Applications shortcut.
-- [ ] Sign the app and all nested code with Developer ID and Hardened Runtime.
-- [ ] Notarize the shipped DMG or the exact supported delivery artifact and staple its ticket.
-- [ ] Verify nested signatures, exact entitlements, Gatekeeper assessment, and stapling after packaging.
-- [ ] Publish a SHA-256 checksum for the shipped artifact.
-- [ ] Keep the notarization submission ID, artifact hash, signing identity, build number, source revision, and toolchain version in the release evidence.
+- [x] Create a DMG containing `GlassEQ.app` and an Applications shortcut. The release script builds it for every channel, with the license, trademark policy, source notice, and Corresponding Source beside the app.
+- [x] Sign the app and all nested code with Developer ID and Hardened Runtime.
+- [x] Notarize the shipped DMG or the exact supported delivery artifact and staple its ticket. Production notarizes and staples the app, then signs, notarizes, and staples the disk image.
+- [x] Verify nested signatures, exact entitlements, Gatekeeper assessment, and stapling after packaging. The mounted disk image is checked as well.
+- [x] Publish a SHA-256 checksum for the shipped artifact. The zip, the disk image, and the dSYM archive each get one.
+- [x] Keep the notarization submission ID, artifact hash, signing identity, build number, source revision, and toolchain version in the release evidence. The script writes them to a release-evidence file in `.build/dist`.
 - [ ] Install the browser-downloaded artifact on a clean account without development certificates.
-- [ ] Detect or explain launches from a read-only DMG, Downloads, or another location where updates cannot be installed reliably.
-- [ ] Update `Docs/Distribution.md`, README installation instructions, and the release notes for the production channel.
-- [ ] Embed the entitlement public keys in the official build's Info.plist under `GlassEQEntitlementPublicKeys`. A build without the key dictionary runs unrestricted by design.
-- [ ] Add a "licensing required" marker to the release checks so a build that is missing the key dictionary fails the release instead of shipping unrestricted.
+- [x] Detect or explain launches from a read-only DMG or another location where updates cannot be installed reliably. The popover shows a notice, and the support report names the location.
+- [x] Update `Docs/Distribution.md` for the production channel. Update the README installation instructions and release notes when the first production build ships.
+- [x] Embed the entitlement public keys in the official build's Info.plist under `GlassEQEntitlementPublicKeys`. The release script embeds the keys from `ENTITLEMENT_PUBLIC_KEYS_FILE`; a build without the key dictionary runs unrestricted by design.
+- [x] Require licensing keys for production builds. Validate the dictionary before building and fail if inserting it into the packaged Info.plist fails.
 
 ## Diagnostics and support
 
-- [ ] Add Copy Diagnostics and Export Support Report actions.
-- [ ] Include the app version and build, macOS version, Mac architecture, route metadata, current failure, recovery history, and bounded audio counters.
-- [ ] Let the user preview the report before copying, saving, or submitting it.
-- [ ] Exclude profile contents, imported impulse responses, license credentials, and other unnecessary personal data.
-- [ ] Detect an unclean previous termination and offer local recovery guidance on the next launch.
-- [ ] Retain release dSYMs and document the crash-symbolication process.
-- [ ] Choose a support route that paying users can access. GitHub issue creation is currently restricted, so an email address or support form is still needed.
-- [ ] Update the issue template for v1 builds and exported support reports.
+- [x] Add Copy Diagnostics and Export Support Report actions.
+- [x] Include the app version and build, macOS version, Mac architecture, route metadata, current failure, recovery history, and bounded audio counters.
+- [x] Let the user preview the report before copying, saving, or submitting it.
+- [x] Exclude profile contents, imported impulse responses, license credentials, and other unnecessary personal data.
+- [x] Detect an unclean previous termination and offer local recovery guidance on the next launch.
+- [x] Retain release dSYMs and document the crash-symbolication process.
+- [x] Choose a support route that paying users can access: contact@juhokoskela.fi, published in the About window, the support report, the README, and the issue template. A support form can replace it later without changing the app.
+- [x] Update the issue template for v1 builds and exported support reports.
+- [x] Add a `--debug` launch flag that streams lifecycle events to stderr for a Terminal launch.
 
 Automatic crash uploading is not required for v1. Local diagnostics and an explicit user-controlled report path preserve GlassEQ's no-telemetry policy.
 
 ## Profiles and user data
 
-- [ ] Export the complete profile library, including impulse responses, output mappings, the fallback profile, and relevant calibration records.
-- [ ] Import a complete library without silently replacing existing data.
-- [ ] Version and bound the backup format, validate it as untrusted input, and write restored data atomically.
-- [ ] Test round trips, merge or replacement behavior, corrupt backups, future schema versions, duplicate identifiers, oversized payloads, and interrupted writes.
-- [ ] Keep automatic backups before destructive migration or library replacement.
+- [x] Export the complete profile library, including impulse responses, output mappings, the fallback profile, and relevant calibration records. Buffer preferences travel with the library.
+- [x] Import a complete library without silently replacing existing data. Add is the default and never changes an existing profile or mapping; Replace is a separate, labelled choice.
+- [x] Version and bound the backup format, validate it as untrusted input, and write restored data atomically.
+- [x] Test round trips, merge or replacement behavior, corrupt backups, future schema versions, duplicate identifiers, oversized payloads, and interrupted writes. Writes are atomic renames, so an interrupted write leaves the previous file; the protected-store and read-only-directory tests cover the failure path.
+- [x] Keep automatic backups before destructive migration or library replacement. A schema migration copies the old file beside the store, and Replace writes the outgoing library to the Backups folder, keeping the newest ten.
 
 ## Product and legal UI
 
-- [ ] Add About GlassEQ with the version, build, copyright, source link, and official website.
-- [ ] Add License, Privacy, Credits, Check for Updates, Manage License, Renew, and Export Support Report actions.
-- [ ] Explain what the license and update services receive, how long the service retains it, and how the user can request deletion where applicable.
-- [ ] Preserve the promise that audio, profiles, device details, and diagnostics remain local unless the user explicitly exports a report.
-- [ ] Attribute AutoEq and include its MIT notice.
-- [ ] Add the GPL notice and third-party notices to the app and distribution.
+- [x] Add About GlassEQ with the version, build, copyright, source link, and official website.
+- [x] Add License, Privacy, Credits, and Manage License actions. The About window reaches them from the menu bar popover, the app menu, and Settings.
+- [ ] Add Check for Updates, Renew, and Export Support Report actions once the update feed, the billing portal, and the support report exist.
+- [x] Explain what the license service receives and how to ask for deletion. Describe update checks once Sparkle is integrated.
+- [ ] Decide the license service's retention period and state it in the About window's Privacy section.
+- [x] Preserve the promise that audio, profiles, device details, and diagnostics remain local unless the user explicitly exports a report.
+- [x] Attribute AutoEq and include its MIT notice.
+- [x] Add the GPL notice and third-party notices to the app and distribution.
 - [ ] Complete keyboard, VoiceOver, contrast, reduced-motion, window-resizing, and menu-bar discoverability checks.
 
 ## Release acceptance matrix

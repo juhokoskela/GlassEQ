@@ -306,6 +306,141 @@ struct AggregateBufferPolicyTests {
         #expect(AggregateBufferPolicyStore(url: url).selection(for: route).frameSize == 16)
     }
 
+    @Test(arguments: [true, false])
+    func unreadableImportsPreservePreferences(replacing: Bool) throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = AggregateBufferPolicyStore(url: url)
+        let route = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        try store.setMode(.frames128, for: route)
+        let original = try store.exportDocument()
+        for data in [
+            Data("bad JSON".utf8), Data(#"{"schemaVersion":999,"records":[]}"#.utf8),
+            Data(repeating: 0, count: AggregateBufferPolicyStore.maximumStoreBytes + 1),
+        ] {
+            #expect(throws: (any Error).self) { try store.importDocument(data, replacingExisting: replacing) }
+            #expect(try store.exportDocument() == original)
+            #expect(try Data(contentsOf: url) == original)
+        }
+    }
+
+    @Test(arguments: [true, false])
+    func importedRoutesAreUniqueAndExistingMergePreferencesWin(replacing: Bool) throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let route = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames128, for: route)
+        let data = Data(
+            #"{"schemaVersion":2,"records":[{"route":{"outputDeviceUID":"saved","nativeOutputStreamIndex":0,"nominalSampleRate":48000},"mode":"frames32","automaticFrameSize":16},{"route":{"outputDeviceUID":"new","nativeOutputStreamIndex":0,"nominalSampleRate":48000},"mode":"frames64","automaticFrameSize":16},{"route":{"outputDeviceUID":"new","nativeOutputStreamIndex":0,"nominalSampleRate":48000},"mode":"frames128","automaticFrameSize":16}]}"#
+                .utf8)
+        try store.importDocument(data, replacingExisting: replacing)
+        #expect(store.selection(for: route).mode == (replacing ? .frames32 : .frames128))
+        let newRoute = fingerprint(uid: "new", stream: 0, sampleRate: 48_000)
+        #expect(store.selection(for: newRoute).mode == .frames64)
+        let document = try #require(JSONSerialization.jsonObject(with: store.exportDocument()) as? [String: Any])
+        #expect((document["records"] as? [Any])?.count == 2)
+        try store.importDocument(Data(#"{"schemaVersion":2,"records":[]}"#.utf8), replacingExisting: true)
+        #expect(store.selectionSnapshot().isEmpty)
+    }
+
+    @Test(arguments: [true, false])
+    func corruptPersistedRecordDoesNotDiscardValidPreferences(invalidRoute: Bool) throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let route = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames128, for: route)
+        let original = try store.exportDocument()
+        var document = try #require(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        var records = try #require(document["records"] as? [[String: Any]])
+        records.append([
+            "route": [
+                "outputDeviceUID": invalidRoute ? "" : "corrupt", "nativeOutputStreamIndex": 0,
+                "nominalSampleRate": 48000,
+            ],
+            "mode": "frames32", "automaticFrameSize": invalidRoute ? 16 : 17,
+        ])
+        document["records"] = records
+        let corrupt = try JSONSerialization.data(withJSONObject: document)
+        try corrupt.write(to: url)
+
+        let reloaded = AggregateBufferPolicyStore(url: url)
+        #expect(reloaded.selection(for: route).mode == .frames128)
+        #expect(reloaded.selectionSnapshot().count == 1)
+        #expect(try Data(contentsOf: url) == corrupt)
+        try reloaded.setMode(.frames64, for: fingerprint(uid: "another", stream: 0, sampleRate: 48_000))
+        #expect(AggregateBufferPolicyStore(url: url).selection(for: route).mode == .frames128)
+        for replacing in [true, false] {
+            #expect(throws: (any Error).self) { try store.importDocument(corrupt, replacingExisting: replacing) }
+            #expect(try store.exportDocument() == original)
+        }
+    }
+
+    @Test(arguments: [true, false], [true, false])
+    func importRollbackRestoresPreferencesAndPreservesLaterChoices(replacing: Bool, laterChoice: Bool) throws {
+        let url = temporaryPolicyURL()
+        let incomingURL = temporaryPolicyURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: incomingURL)
+        }
+        let saved = fingerprint(uid: "saved", stream: 0, sampleRate: 48_000)
+        let removed = fingerprint(uid: "removed", stream: 0, sampleRate: 48_000)
+        let added = fingerprint(uid: "added", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames32, for: saved)
+        try store.setMode(.frames64, for: removed)
+        let original = try store.exportDocument()
+        let incoming = AggregateBufferPolicyStore(url: incomingURL)
+        try incoming.setMode(.frames128, for: saved)
+        try incoming.setMode(.frames64, for: added)
+        let change = try store.importDocument(incoming.exportDocument(), replacingExisting: replacing)
+        if laterChoice { try store.setMode(.frames16, for: added) }
+
+        try store.restoreImport(change)
+
+        #expect(store.selection(for: saved).mode == .frames32)
+        #expect(store.selection(for: removed).mode == .frames64)
+        #expect(store.selection(for: added).mode == (laterChoice ? .frames16 : .automatic))
+        #expect(try AggregateBufferPolicyStore(url: url).exportDocument() == store.exportDocument())
+        if !laterChoice { #expect(try store.exportDocument() == original) }
+    }
+
+    @Test
+    func learnedCountersDoNotPreventImportRollback() throws {
+        let url = temporaryPolicyURL()
+        let importedURL = temporaryPolicyURL()
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: importedURL)
+        }
+        let route = fingerprint(uid: "output", stream: 0, sampleRate: 48_000)
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames32, for: route)
+        let imported = AggregateBufferPolicyStore(url: importedURL)
+        try imported.setMode(.automatic, for: route)
+        let change = try store.importDocument(imported.exportDocument(), replacingExisting: true)
+        _ = try store.recordAutomaticFailure(for: route)
+        try store.restoreImport(change)
+        #expect(store.selection(for: route).mode == .frames32)
+    }
+
+    @Test
+    func failedImportRollbackDoesNotPublishUnsavedPreferences() throws {
+        let url = temporaryPolicyURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = AggregateBufferPolicyStore(url: url)
+        try store.setMode(.frames32, for: fingerprint(uid: "saved", stream: 0, sampleRate: 48_000))
+        let change = try store.importDocument(Data(#"{"schemaVersion":2,"records":[]}"#.utf8), replacingExisting: true)
+        let imported = try store.exportDocument()
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+
+        #expect(throws: (any Error).self) { try store.restoreImport(change) }
+        #expect(try store.exportDocument() == imported)
+    }
+
     private func fingerprint(
         uid: String,
         stream: Int,

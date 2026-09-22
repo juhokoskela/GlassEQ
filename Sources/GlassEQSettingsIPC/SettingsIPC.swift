@@ -1076,6 +1076,35 @@ public enum SettingsFileImportSelectionDTO: Codable, Equatable, Sendable {
     case stereoText(profile: EQProfile, leftFilename: String, rightFilename: String)
 }
 
+public enum SettingsLibraryImportMode: String, Codable, Equatable, Sendable {
+    case merge
+    case replace
+}
+
+/// What importing a saved library would do, shown before the user chooses merge or replace.
+public struct SettingsLibraryImportPreviewDTO: Codable, Equatable, Sendable {
+    public var filename: String
+    public var createdAt: Date
+    public var appVersion: String?
+    public var profileCount: Int
+    public var outputMappingCount: Int
+    public var hasBufferPreferences: Bool
+    public var merge: ProfileLibraryMergeSummary
+
+    public init(
+        filename: String, createdAt: Date, appVersion: String?, profileCount: Int,
+        outputMappingCount: Int, hasBufferPreferences: Bool, merge: ProfileLibraryMergeSummary
+    ) {
+        self.filename = filename
+        self.createdAt = createdAt
+        self.appVersion = appVersion
+        self.profileCount = profileCount
+        self.outputMappingCount = outputMappingCount
+        self.hasBufferPreferences = hasBufferPreferences
+        self.merge = merge
+    }
+}
+
 public enum SettingsCommand: Codable, Equatable, Sendable {
     case createProfile(SettingsProfileKind)
     case duplicateProfile(UUID)
@@ -1098,21 +1127,44 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case stopMetricsPolling
     case resetUnsupportedProfileStore
     case showSetupGuide
+    case showAbout
+    case showSupportReport
+    case exportLibrary
+    case chooseLibraryBackup
+    case applyLibraryImport(SettingsLibraryImportMode)
+    case cancelLibraryImport
+
+    /// Commands that block in the main app on an open or save panel until the user dismisses it.
+    public var presentsFilePanel: Bool {
+        switch self {
+        case .chooseImportFiles, .exportLibrary, .chooseLibraryBackup:
+            true
+        default:
+            false
+        }
+    }
 }
 
 public struct SettingsCommandResponse: Codable, Equatable, Sendable {
     public var snapshot: SettingsSnapshotDTO?
     public var importSucceeded: Bool?
     public var fileImportSelection: SettingsFileImportSelectionDTO?
+    public var libraryImportPreview: SettingsLibraryImportPreviewDTO?
+    /// The outcome of a library export or import in words, for the Settings window to show.
+    public var libraryMessage: String?
 
     public init(
         snapshot: SettingsSnapshotDTO? = nil,
         importSucceeded: Bool? = nil,
-        fileImportSelection: SettingsFileImportSelectionDTO? = nil
+        fileImportSelection: SettingsFileImportSelectionDTO? = nil,
+        libraryImportPreview: SettingsLibraryImportPreviewDTO? = nil,
+        libraryMessage: String? = nil
     ) {
         self.snapshot = snapshot
         self.importSucceeded = importSucceeded
         self.fileImportSelection = fileImportSelection
+        self.libraryImportPreview = libraryImportPreview
+        self.libraryMessage = libraryMessage
     }
 }
 

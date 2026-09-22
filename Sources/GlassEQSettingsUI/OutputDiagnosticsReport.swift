@@ -29,7 +29,7 @@ func outputAddedLatencyLabel(_ snapshot: SettingsSnapshot) -> String {
     )
 }
 
-struct OutputDiagnosticsReport {
+public struct OutputDiagnosticsReport {
     enum SectionID: Hashable {
         case observation
         case timing
@@ -57,29 +57,38 @@ struct OutputDiagnosticsReport {
     let snapshot: SettingsSnapshot
     private(set) var sections: [Section] = []
 
-    init(snapshot: SettingsSnapshot) {
+    /// The row that names the output by its Core Audio UID. A support report leaves it out because
+    /// USB device UIDs can embed serial numbers.
+    private static let outputUIDRowID = "outputUID"
+
+    public init(snapshot: SettingsSnapshotDTO) {
         self.snapshot = snapshot
         sections = makeSections()
     }
 
     var text: String {
-        var lines = [
+        [
             localized("GlassEQ audio diagnostics"),
             localized("Output: \(snapshot.currentOutputName)"),
             localized("Active profile: \(snapshot.activeProfileName)"),
             localized("Status: \(snapshot.statusMessage)"),
-        ]
-        for section in sections {
-            lines.append("")
-            lines.append("## \(section.title)")
-            for row in section.rows {
+            sectionText(excludingRows: []),
+        ].joined(separator: "\n")
+    }
+
+    public var supportText: String {
+        sectionText(excludingRows: [Self.outputUIDRowID])
+    }
+
+    private func sectionText(excludingRows: Set<String>) -> String {
+        sections.map { section in
+            var lines = ["## \(section.title)"]
+            for row in section.rows where !excludingRows.contains(row.id) {
                 lines.append("\(row.title): \(row.value)")
             }
-            if let note = section.note {
-                lines.append(note)
-            }
-        }
-        return lines.joined(separator: "\n")
+            if let note = section.note { lines.append(note) }
+            return lines.joined(separator: "\n")
+        }.joined(separator: "\n\n")
     }
 
     private func makeSections() -> [Section] {
@@ -166,7 +175,7 @@ struct OutputDiagnosticsReport {
                 symbol: "point.3.connected.trianglepath.dotted",
                 rows: [
                     Row(
-                        id: "outputUID", title: localized("Output UID"),
+                        id: Self.outputUIDRowID, title: localized("Output UID"),
                         value: snapshot.currentOutputUID.isEmpty ? localized("Unavailable") : snapshot.currentOutputUID),
                     Row(id: "transport", title: localized("Transport"), value: diagnostics.route.transport),
                     Row(

@@ -1,5 +1,5 @@
 import Foundation
-import GlassEQCore
+@testable import GlassEQCore
 import Testing
 
 @Suite
@@ -154,7 +154,7 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         var expectedStore = store
-        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        expectedStore.upgradeSchema()
         #expect(result.status == .loaded)
         #expect(result.store == expectedStore)
         #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)
@@ -183,7 +183,7 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         var expectedStore = store
-        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        expectedStore.upgradeSchema()
         #expect(ProfileStore.currentSchemaVersion == 3)
         #expect(result.status == .loaded)
         #expect(result.store == expectedStore)
@@ -214,7 +214,7 @@ struct ProfilePersistenceTests {
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
         var expectedStore = store
-        expectedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        expectedStore.upgradeSchema()
         #expect(result.status == .loaded)
         #expect(result.store == expectedStore)
         #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == expectedStore)
@@ -222,7 +222,7 @@ struct ProfilePersistenceTests {
     }
 
     @Test
-    func loadLeavesSchemaOneStoreUntouchedWhenMigrationWriteFails() throws {
+    func loadProtectsSchemaOneStoreWhenMigrationBackupFails() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let profile = EQProfile(name: "Schema One", mode: .parametric, filters: [])
@@ -248,7 +248,7 @@ struct ProfilePersistenceTests {
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
-        #expect(result.status == .loaded)
+        #expect(result.status == .migrationBackupFailed)
         #expect(result.store == store)
         #expect(try Data(contentsOf: url) == schemaOneData)
         #expect(
@@ -495,14 +495,15 @@ struct ProfilePersistenceTests {
         #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == result.store)
     }
 
-    @Test
-    func loadRepairsReferencesAndSavesRepairedStore() throws {
+    @Test(arguments: [1, 2, ProfileStore.currentSchemaVersion])
+    func loadRepairsReferencesAndSavesRepairedStore(schemaVersion: Int) throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
         let second = EQProfile(name: "Second", mode: .parametric, filters: [])
         let missingProfileID = UUID()
         let store = ProfileStore(
+            schemaVersion: schemaVersion,
             profiles: [first, second],
             outputMappings: [
                 OutputDeviceProfileMapping(outputDeviceUID: "", profileID: first.id),
@@ -512,7 +513,8 @@ struct ProfilePersistenceTests {
             ],
             fallbackProfileID: missingProfileID
         )
-        try ProfilePersistence.encoder.encode(store).write(to: url)
+        let originalData = try ProfilePersistence.encoder.encode(store)
+        try originalData.write(to: url)
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
@@ -530,6 +532,48 @@ struct ProfilePersistenceTests {
 
         let savedStore = try ProfilePersistence.decode(Data(contentsOf: url))
         #expect(savedStore == result.store)
+        #expect(savedStore.schemaVersion == ProfileStore.currentSchemaVersion)
+        let backupURL = ProfilePersistence.migrationBackupURL(
+            for: url, fromSchemaVersion: schemaVersion, timestamp: timestamp
+        )
+        if schemaVersion < ProfileStore.currentSchemaVersion {
+            #expect(try Data(contentsOf: backupURL) == originalData)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: backupURL.path))
+        }
+    }
+
+    @Test(arguments: [1, 2])
+    func loadUsesUniqueBackupWhenReferenceRepairBackupAlreadyExists(schemaVersion: Int) throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let profile = EQProfile(name: "Legacy", mode: .parametric, filters: [])
+        let store = ProfileStore(
+            schemaVersion: schemaVersion,
+            profiles: [profile],
+            outputMappings: [OutputDeviceProfileMapping(outputDeviceUID: "dac", profileID: UUID())],
+            fallbackProfileID: UUID()
+        )
+        let originalData = try ProfilePersistence.encoder.encode(store)
+        try originalData.write(to: url)
+        let backupURL = ProfilePersistence.migrationBackupURL(
+            for: url, fromSchemaVersion: schemaVersion, timestamp: timestamp
+        )
+        let existingBackup = Data("existing backup".utf8)
+        try existingBackup.write(to: backupURL)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        var repairedStore = store
+        let summary = repairedStore.repairReferences()
+        #expect(result.status == .repairedReferences(summary))
+        repairedStore.upgradeSchema()
+        #expect(result.store == repairedStore)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)) == repairedStore)
+        #expect(try Data(contentsOf: backupURL) == existingBackup)
+        let secondBackup = backupURL.deletingLastPathComponent().appendingPathComponent(
+            backupURL.deletingPathExtension().lastPathComponent + "-2.json")
+        #expect(try Data(contentsOf: secondBackup) == originalData)
     }
 
     @Test
@@ -925,5 +969,30 @@ struct ProfilePersistenceTests {
             "fallbackProfileID": fallbackProfileID.uuidString,
         ]
         return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+    }
+}
+
+@Suite
+struct ProfilePersistenceMigrationBackupTests {
+    @Test
+    func migrationKeepsTheOriginalFileBesideTheStore() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQCoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("Profiles.json")
+        let timestamp = Date(timeIntervalSince1970: 1_704_067_200)
+        let profile = EQProfile(name: "Schema One", mode: .parametric, filters: [])
+        let store = ProfileStore(schemaVersion: 1, profiles: [profile], fallbackProfileID: profile.id)
+        let schemaOneData = try ProfilePersistence.encoder.encode(store)
+        try schemaOneData.write(to: url)
+
+        let result = ProfilePersistence.load(from: url, timestamp: timestamp)
+
+        #expect(result.status == .loaded)
+        #expect(result.store.schemaVersion == ProfileStore.currentSchemaVersion)
+        let backupURL = ProfilePersistence.migrationBackupURL(for: url, fromSchemaVersion: 1, timestamp: timestamp)
+        #expect(try Data(contentsOf: backupURL) == schemaOneData)
+        #expect(try Data(contentsOf: url) != schemaOneData)
     }
 }

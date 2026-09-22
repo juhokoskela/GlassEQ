@@ -314,14 +314,7 @@ final class SettingsCoordinator: NSObject {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(
-            for: command,
-            model: model,
-            picker: fileImportPicker
-        ) {
-            return response
-        }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, picker: fileImportPicker)
     }
 
     private func focusSettings() {
@@ -479,12 +472,7 @@ final class SettingsCoordinator: NSObject {
             return
         }
         let commandToken = UUID()
-        let isFileImportPicker: Bool
-        if case .chooseImportFiles = command {
-            isFileImportPicker = true
-        } else {
-            isFileImportPicker = false
-        }
+        let isFileImportPicker = command.presentsFilePanel
         let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
@@ -500,12 +488,7 @@ final class SettingsCoordinator: NSObject {
                     commandTasks[requestID] = nil
                 }
             }
-            let shouldSuppressModelChanges: Bool
-            if case .chooseImportFiles = command {
-                shouldSuppressModelChanges = false
-            } else {
-                shouldSuppressModelChanges = true
-            }
+            let shouldSuppressModelChanges = !command.presentsFilePanel
             do {
                 if shouldSuppressModelChanges {
                     suppressedModelChangeDepth += 1
@@ -730,6 +713,7 @@ final class SettingsCoordinator: NSObject {
 
     @discardableResult
     private func cleanupSession(terminateHelper: Bool) -> Task<Void, Never>? {
+        model?.cancelLibraryImport()
         if settingsConnected {
             model?.stopMetricsPolling()
         }
@@ -1169,7 +1153,14 @@ extension GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func performSettingsCommand(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+    func performSettingsCommand(
+        _ command: SettingsCommand,
+        picker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
+            try await SettingsFileImportPicker.choose(mode: mode)
+        },
+        chooseExportDestination: @MainActor (String) async throws -> URL? = LibraryBackupPanels.chooseExportDestination,
+        chooseBackupToImport: @MainActor () async throws -> URL? = LibraryBackupPanels.chooseBackupToImport
+    ) async throws -> SettingsCommandResponse {
         try beginSettingsCommand()
         defer {
             finishSettingsCommand()
@@ -1211,9 +1202,41 @@ extension GlassEQAppModel {
             let imported = try importParsedProfile(profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
 
-        case .chooseImportFiles:
-            throw SettingsCommandFailure(
-                message: localized("File selection is unavailable from this settings connection."))
+        case .chooseImportFiles(let mode):
+            return SettingsCommandResponse(fileImportSelection: try await picker(mode))
+        case .exportLibrary:
+            let backup = try makeLibraryBackup()
+            let data = try await LibraryBackupIO.encode(backup)
+            guard
+                let url = try await chooseExportDestination(
+                    LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
+            else {
+                return SettingsCommandResponse()
+            }
+            try await LibraryBackupIO.write(data, to: url)
+            lifecycleLog.record("Library exported: \(backup.profileStore.profiles.count) profiles")
+            return SettingsCommandResponse(
+                libraryMessage: localized(
+                    "Saved \(backup.profileStore.profiles.count) profiles to \(url.lastPathComponent)."))
+
+        case .chooseLibraryBackup:
+            try ensureProfileStoreWritable()
+            guard let url = try await chooseBackupToImport() else {
+                return SettingsCommandResponse()
+            }
+            try Task.checkCancellation()
+            let backup = try await LibraryBackupIO.read(from: url)
+            try Task.checkCancellation()
+            let preview = stageLibraryImport(backup, filename: url.lastPathComponent)
+            return SettingsCommandResponse(libraryImportPreview: preview)
+
+        case .applyLibraryImport(let mode):
+            let message = try await applyLibraryImport(mode: mode)
+            return SettingsCommandResponse(snapshot: settingsSnapshot(), libraryMessage: message)
+
+        case .cancelLibraryImport:
+            cancelLibraryImport()
+            return SettingsCommandResponse()
 
         case .startProgrammeComparison(let profile):
             try validateIncomingProfile(profile)
@@ -1263,6 +1286,14 @@ extension GlassEQAppModel {
         case .showSetupGuide:
             requestOnboardingPresentation()
             return SettingsCommandResponse()
+
+        case .showAbout:
+            requestAboutPresentation()
+            return SettingsCommandResponse()
+
+        case .showSupportReport:
+            requestSupportReportPresentation()
+            return SettingsCommandResponse()
         }
     }
 
@@ -1290,27 +1321,6 @@ private final class InProcessSettingsClient: SettingsCommanding {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(for: command, model: model) {
-            return response
-        }
         return try await model.performSettingsCommand(command)
     }
-}
-
-@MainActor
-func fileImportPickerResponse(
-    for command: SettingsCommand,
-    model: GlassEQAppModel,
-    picker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
-        try await SettingsFileImportPicker.choose(mode: mode)
-    }
-) async throws -> SettingsCommandResponse? {
-    guard case let .chooseImportFiles(mode) = command else {
-        return nil
-    }
-    try model.beginSettingsCommand()
-    defer {
-        model.finishSettingsCommand()
-    }
-    return SettingsCommandResponse(fileImportSelection: try await picker(mode))
 }

@@ -33,6 +33,8 @@ Download `GlassEQ-beta-0.9.3-macos26-arm64.zip` from the [beta-0.9.3 release](ht
 2. Move `GlassEQ.app` to `/Applications`.
 3. Open it from Finder.
 
+New builds from the release script also include a disk image (`.dmg`), which is the supported format for future downloads. Open it, drag GlassEQ to the Applications shortcut, then open GlassEQ from Applications and eject the image. The published beta linked above is still a ZIP.
+
 The beta is ad hoc-signed and not yet notarized ([you can help change that](#support-the-project)), so macOS asks you to confirm the first launch: open **System Settings → Privacy & Security**, find the GlassEQ notice, and click **Open Anyway**. It opens normally after that.
 
 On first run GlassEQ asks for **system audio capture permission** — that's what lets it read and equalize the system mix. Grant it and you're set.
@@ -64,6 +66,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
 - **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.
+- **Library export and import.** Save every profile, impulse response, output assignment, and buffer preference as one file, then add it to another Mac's library or restore it in place.
 
 ![GlassEQ Editor tab with a convolution response graph and collapsed response points](Docs/Screenshots/beta-0.9.3-editor.png)
 
@@ -73,7 +76,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ### Security & privacy
 
-- Sandboxed: audio capture is the only privacy permission GlassEQ requests. A file chosen through the import panel is readable only through that user action.
+- Sandboxed: audio capture is the only privacy permission GlassEQ requests. The only files GlassEQ can read or write outside its container are the ones you pick in an open or save panel.
 - The settings helper must be inside the app bundle and pass code-signature integrity plus signing-identifier checks before launch and again after launch. Developer ID builds also require the same signing team; ad hoc builds rely on bundle containment, identifier checks, and the private token-authenticated pipe. AutoEq downloads normally run in the helper; if GlassEQ falls back to an in-process settings window, the main app performs them instead. The helper has no shared profile storage.
 - No telemetry, no analytics, no cloud sync. Diagnostics run locally and print device details only to your terminal.
 
@@ -88,6 +91,16 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 <a id="supported-target"></a>
 **Supported target:** macOS 26.0 or newer, Apple Silicon / arm64 only.
+
+## Getting help
+
+Open **About GlassEQ** (the info button in the menu bar popover, or Settings → Output → About GlassEQ) and click **Support Report…**. The report lists the app and macOS versions, the audio route, the engine state, and the last app events, including profile and output names. Recent events may contain filenames or error details. It excludes EQ settings, impulse responses, and license keys. Read it, then send it to contact@juhokoskela.fi or attach it to a [GitHub issue](https://github.com/juhokoskela/GlassEQ/issues).
+
+If GlassEQ launches and nothing appears, start it from Terminal to watch what it does:
+
+```sh
+/Applications/GlassEQ.app/Contents/MacOS/GlassEQ --debug
+```
 
 ## Support the project
 
@@ -152,7 +165,7 @@ codesign -d --entitlements :- .build/release-app/GlassEQ.app
 spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 ```
 
-The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`.
+The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-write`, and `com.apple.security.network.client`, all set to `true`.
 
 ## Architecture
 
