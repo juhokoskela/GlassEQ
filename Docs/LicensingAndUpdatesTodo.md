@@ -2,7 +2,7 @@
 
 Bookkeeping snapshot: September 22, 2026. The implementation progress section records subsequent work in the isolated branches.
 
-The app's offline licensing and activation lifecycle are implemented. GlassEQServer implements activation, management, recovery requests, Payment Link fulfillment, and direct SES dispatch. The remaining work includes missed-payment reconciliation, customer management, download access, Sparkle, and verification of the signed production release path.
+The app's offline licensing and activation lifecycle are implemented. GlassEQServer implements activation, management, recovery requests, Payment Link fulfillment, direct SES dispatch, and a daily Payment Link scan. The remaining work includes billing retention and alerting, customer management, download access, Sparkle, and verification of the signed production release path.
 
 ## Scope and evidence
 
@@ -49,7 +49,7 @@ Server references below are relative to the [GlassEQServer repository](https://g
 ## Documentation discrepancies to resolve first
 
 - [x] **D1: Reconcile prices and currency.** Base prices are EUR 29.99 and EUR 2.99 per month plus tax. Stripe Managed Payments supplies local-currency payment through Adaptive Pricing. The catalog and both Payment Links are checked before production use; sandbox purchases for both plans remain acceptance work.
-- [x] **D2: Reconcile Stripe ingestion.** Use the signed Stripe webhook, with daily Payment Link reconciliation planned for missed events. The server no longer needs EventBridge, SQS, or a public Checkout creation endpoint.
+- [x] **D2: Reconcile Stripe ingestion.** Use the signed Stripe webhook and daily Payment Link scan for missed purchases and monthly state. The server no longer needs EventBridge, SQS, or a public Checkout creation endpoint.
 - [x] **D3: Refresh implementation status.** The protocol and readiness checklist distinguish existing Checkout, entitlement issuance, onboarding, and signing code from production verification. Security-update eligibility is parsed; feed selection remains pending.
 - [x] **D4: Remove obsolete schema instructions.** Server migration `00004_checkout_billing.sql` already adds nullable Checkout session IDs, request/payment references, and the license-delivery outbox. The billing document now records that baseline.
 
@@ -59,7 +59,7 @@ Server references below are relative to the [GlassEQServer repository](https://g
 
 - [x] **L1: Process signed billing webhooks.** Checkout, Invoice, Subscription, Refund, and Dispute events are implemented. The handler verifies the Stripe signature, body size, API version, environment, and accepted event type; it hydrates current Stripe objects outside transactions and returns success after commit. Order revisions and adjustment records protect concurrent state changes. Live delivery remains V2.
 - [x] **L2: Implement paid-order fulfillment.** Both plans validate the Payment Link, purchased item, payment, terms consent, and Checkout email before creating one license, key, and delivery record atomically. Monthly purchases also create the subscription projection. Failures receive a retryable webhook response; live delivery remains V2.
-- [ ] **L3: Complete subscription and terminal-state reconciliation.** Paid renewals, payment recovery, cancellation, refunds, disputes, and eligible dispute restoration are implemented. Manual revocation and perpetual offline rights are preserved. Daily reconciliation must list Sessions from both Payment Links to recover missed purchases; billing-specific retention and failure alerting remain. Existing cleanup covers activation/recovery and expired delivery data.
+- [ ] **L3: Complete subscription and terminal-state reconciliation.** Paid renewals, payment recovery, cancellation, refunds, disputes, and eligible dispute restoration are implemented. A daily scan of both Payment Links recovers missed paid purchases and refreshes monthly state; it does not discover missed refund or dispute events. Manual revocation and perpetual offline rights are preserved. Billing-specific retention, failure alerting, operator repair for missed terminal events, and live reconciliation acceptance remain. Existing cleanup covers activation/recovery and expired delivery data.
 - [x] **L4: Implement direct email delivery.** Background workers send license keys and recovery tokens through SES from encrypted outboxes, retry failed sends, and clear accepted or expired delivery material. A crash after SES accepts a message can send the same credential twice. Verify actual SES delivery, recovery links, and sender access in V2.
 
 ### 2. Finish customer-facing licensing (app, server, and website)
@@ -99,11 +99,13 @@ The earlier perpetual fulfillment slice merged in [GlassEQServer PR #14](https:/
 
 The merged monthly slice, [GlassEQServer PR #15](https://github.com/juhokoskela/GlassEQServer/pull/15), adds monthly fulfillment and event-driven subscription reconciliation. Initial paid purchases issue one monthly key and projection. Renewals advance only from paid invoice lines; failed renewal does not grant the next unpaid period. Customer cancellation removes the fourteen-day recovery window, removing a pending cancellation restores it when eligible, and renewal events cannot restore refunded, charged-back, or revoked licenses. An order revision makes concurrent stale Stripe reads retry.
 
-The terminal billing slice, [GlassEQServer PR #16](https://github.com/juhokoskela/GlassEQServer/pull/16), now follows Payment Link ownership. It adds full-refund and formal-dispute restrictions, durable monthly cancellation, and eligible dispute restoration. Separate adjustment records preserve other restrictions; pending intents have a background retry worker. A refund after monthly access has lapsed cannot start another grace period. Canceled subscriptions retain only eligible paid access after restoration; recurring billing is not restarted. A dispute that blocks initial fulfillment can later release the withheld license and delivery record. Daily reconciliation and billing retention remain L3.
+The terminal billing slice, [GlassEQServer PR #16](https://github.com/juhokoskela/GlassEQServer/pull/16), now follows Payment Link ownership. It adds full-refund and formal-dispute restrictions, durable monthly cancellation, and eligible dispute restoration. Separate adjustment records preserve other restrictions; pending intents have a background retry worker. A refund after monthly access has lapsed cannot start another grace period. Canceled subscriptions retain only eligible paid access after restoration; recurring billing is not restarted. A dispute that blocks initial fulfillment can later release the withheld license and delivery record.
 
-Local verification of the merged Payment Links and adjustment branch used PostgreSQL 18 with migrations 1 through 8 on a fresh database. The full race-enabled Go suite and `go vet ./...` passed. Regression coverage includes early refund/dispute events, cancellation response loss, retry of a pending intent without webhook redelivery, lapsed monthly refunds, duplicate adjustments, and Stripe request parameters through a fake HTTP transport. Earlier build, vulnerability, fuzz, and migration reversal checks were run on the pre-merge adjustment branch and do not establish the final branch's behavior.
+[GlassEQServer PR #19](https://github.com/juhokoskela/GlassEQServer/pull/19) adds the daily scan of both Payment Links. It recovers missed paid Sessions and refreshes monthly subscriptions from current Stripe state. A paid customer who cancels before initial fulfillment now receives a license limited to the paid period. Billing retention, alerting, and live provider checks remain open.
 
-These checks establish local protocol and database behavior. Live Stripe/KMS/SES, Link, and packaged-app acceptance remain unverified. Daily reconciliation, retention, update authorization, and production enablement remain open.
+Local verification of the merged Payment Links and adjustment branch used PostgreSQL 18 with migrations 1 through 8 on a fresh database. The full race-enabled Go suite and `go vet ./...` passed. Regression coverage includes early refund/dispute events, cancellation response loss, retry of a pending intent without webhook redelivery, lapsed monthly refunds, duplicate adjustments, and Stripe request parameters through a fake HTTP transport. The same local race suite and vet passed for PR #19, including missed purchase, monthly refresh, and early paid cancellation cases. Earlier build, vulnerability, fuzz, and migration reversal checks were run on the pre-merge adjustment branch and do not establish the final branch's behavior.
+
+These checks establish local protocol and database behavior. Live Stripe/KMS/SES, Link, and packaged-app acceptance remain unverified. Billing retention, failure alerting, update authorization, and production enablement remain open.
 
 ## Acceptance still required
 
@@ -119,7 +121,7 @@ These checks must use the implemented flows and intended artifacts. Existing uni
 ## Suggested order for the next implementation pass
 
 1. D1-D4 are aligned. Link is selected for billing management; finish the first-install and license-management paths (U3, L6-L7).
-2. Complete daily missed-payment reconciliation and billing retention (L3), then prove the sandbox purchase-to-activation and email path.
+2. Complete billing retention and failure alerting (L3), then prove the sandbox purchase-to-activation, reconciliation, and email path.
 3. Finish app/customer licensing UI and official key configuration (L5-L9).
 4. Build release authorization and Sparkle together against the same contract (U1-U8).
 5. Complete production packaging/operations and run V1-V6 on the intended artifacts.

@@ -28,6 +28,7 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 
 - [x] Receive Stripe purchase, subscription, refund, and dispute events through a signed webhook. Live delivery remains unverified.
 - [x] Validate the Stripe signature, body size, environment, and pinned API version; process supported Checkout, Invoice, Subscription, Refund, and Dispute events idempotently against current Stripe state.
+- [x] Scan both Payment Links daily to recover missed paid Sessions and refresh monthly subscription state. Live reconciliation remains unverified.
 - [x] Issue a GlassEQ license key after a successful perpetual purchase or subscription start. Both plans create a durable delivery record for direct SES dispatch; live email delivery remains unverified.
 - [x] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
 - [ ] Use the same entitlement service to authorize Sparkle archive downloads.
