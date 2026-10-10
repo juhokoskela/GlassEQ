@@ -2,7 +2,7 @@
 
 This document defines the v1 protocol for licensing the official GlassEQ distribution. It covers server data, application credentials, signed offline entitlements, Stripe event processing, activation management, and update authorization.
 
-This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Checkout is implemented in the companion server. The server now fulfills both plans and reconciles monthly renewals, recovery, cancellation, refunds, and disputes through EventBridge/SQS. Daily reconciliation, billing retention, email delivery, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
+This is the cross-project design contract. The `GlassEQLicensing` client module implements compact-JWS verification, entitlement evaluation, the activation-lifecycle HTTP calls against the fixed origin, Keychain persistence, trusted-time handling, refresh scheduling, and actor-owned activation state. The main app gates audio processing on the published license state, fades to identity before stopping on expiry, and activates a license key from its first-launch guide, but only in builds that embed entitlement public keys; production keys have not been provisioned. The companion server implements entitlement issuance, activation, refresh, deactivation, management, and recovery. Stripe Payment Links own Checkout. The server fulfills both plans and reconciles monthly renewals, recovery, cancellation, refunds, and disputes from a signed Stripe webhook. Daily reconciliation, billing retention, live email acceptance, the Settings license UI, Sparkle integration, and release-service enforcement remain pending. Code and tests are authoritative for implemented behavior.
 
 ## Product invariants
 
@@ -175,7 +175,7 @@ The app derives local behavior as follows:
 
 If the latest signed `billing_state` is `recovering`, the recovery message asks the customer to update payment details. If the app is merely offline after `billing_period_end`, it says renewal could not be verified. It must not claim a payment failed without an authenticated server response.
 
-A voluntary cancellation at period end sets `recovery_until` to `billing_period_end`. A monthly refund or chargeback sets `recovery_until` to the event's effective time. For those two states, the client ignores the later `billing_period_end` and enters grace at `recovery_until`. A higher-revision entitlement can shorten an earlier conservative window after the app reconnects. An offline app may keep the longer cached window.
+A voluntary cancellation at period end sets `recovery_until` to `billing_period_end`. A monthly refund or chargeback sets the signed `recovery_until` to the earlier of the adjustment's effective time and the stored recovery deadline. For those two states, the client ignores the later `billing_period_end` and enters grace at `recovery_until`. A higher-revision entitlement can shorten an earlier conservative window after the app reconnects. An offline app may keep the longer cached window.
 
 `refresh_after` is the only normal refresh schedule. The server sets it to the earlier of seven days after issuance and `exp`. At launch, the app starts a background refresh only when the timestamp has passed. A running app schedules the next check from the same timestamp. Failed checks use bounded exponential backoff with per-process jitter without changing `exp`.
 
@@ -197,18 +197,18 @@ The following logical relational schema is authoritative. Concrete SQL types may
 
 | Field | Constraint |
 | --- | --- |
-| `id` | Primary key and Stripe `client_reference_id` |
+| `id` | Primary key, set to the Stripe Checkout Session ID |
 | `plan` | `perpetual_v1` or `monthly` |
-| `policy_version` | Server-selected version shown at Checkout |
+| `policy_version` | Server policy version stored when the Session is accepted |
 | `stripe_price_id` | Server-selected price |
 | `stripe_checkout_session_id` | Unique Stripe reference |
 | `state` | `pending`, `paid`, `failed`, or `fulfilled` |
 | `license_id` | Unique and nullable until fulfillment |
 | `created_at` | Creation time |
 | `fulfilled_at` | Nullable fulfillment time |
-| `billing_revision` | Incremented on every monthly reconciliation to reject concurrent stale Stripe reads |
+| `billing_revision` | Incremented on billing reconciliation to reject concurrent stale Stripe reads |
 
-Checkout fulfillment locks this row and creates at most one license. The browser never supplies a Stripe Price ID, policy version, success URL, or cancellation URL. Stripe owns any local-currency presentation through Managed Payments Adaptive Pricing.
+The first accepted Payment Link Session creates this row; expired link visits do not. Checkout fulfillment locks it and creates at most one license. The browser never supplies a Stripe Price ID to the server. Stripe owns any local-currency presentation through Managed Payments Adaptive Pricing. The server currently records its policy constant at fulfillment; recording the terms version accepted for each purchase remains a release task.
 
 ### `licenses`
 
@@ -217,7 +217,7 @@ Checkout fulfillment locks this row and creates at most one license. The browser
 | `id` | Primary key |
 | `plan` | `perpetual_v1` or `monthly` |
 | `state` | `active`, `refunded`, `charged_back`, or `revoked` |
-| `policy_version` | Version accepted at Checkout |
+| `policy_version` | Server policy version copied from the purchase record |
 | `recovery_email_ciphertext` | Authenticated encryption under a server-managed key |
 | `recovery_email_lookup` | HMAC of the normalized email under a separate lookup key |
 | `stripe_customer_id` | Nullable Stripe reference |
@@ -330,7 +330,7 @@ Management tokens expire after 15 minutes. Recovery tokens expire after 30 minut
 
 ## HTTP protocol
 
-The licensing API origin is `https://license.glasseq.app`. Requests and responses use UTF-8 JSON with `Content-Type: application/json`. The default maximum body size is 16 KiB. Stripe events arrive through the server's bounded EventBridge/SQS consumer rather than a public webhook.
+The licensing API origin is `https://license.glasseq.app`. Requests and responses use UTF-8 JSON with `Content-Type: application/json`. The default maximum body size is 16 KiB. Stripe delivers signed events to `POST /v1/stripe/webhook`; its raw request body is limited to 256 KiB.
 
 Bearer credentials use the `Authorization` header. License keys appear only in activation or management-session JSON bodies. No credential appears in a query string.
 
@@ -363,26 +363,9 @@ Rate-limited responses use status 429 and a bounded `Retry-After` header. A 503 
 
 ## Purchase and activation API
 
-### Create a Checkout Session
+### Purchase through Payment Links
 
-```http
-POST /v1/checkout-sessions
-Content-Type: application/json
-```
-
-```json
-{
-  "plan": "monthly"
-}
-```
-
-```json
-{
-  "checkout_url": "https://checkout.stripe.com/c/pay/..."
-}
-```
-
-The only accepted plans are `perpetual_v1` and `monthly`. The server creates the pending order, chooses every Stripe and policy parameter, enables Managed Payments, and then returns Stripe's hosted Checkout URL. It rate-limits creation per IP address.
+The public site links to the configured perpetual and monthly Stripe Payment Links. Stripe creates the Checkout Session. The server creates an order only after accepting a Session from one of those links; it has no public Checkout creation endpoint. Price, quantity, terms consent, customer creation, promotion codes, EUR base price, and Managed Payments are configured on the links and checked by `glasseqserver check-stripe-catalog` before purchases are enabled. The public terms and privacy URLs still need a Dashboard and sandbox purchase check.
 
 ### Create or restore an activation
 
@@ -561,16 +544,15 @@ The new key is shown once. Rotation invalidates every saved copy of the previous
 
 The Stripe adapter uses one pinned API version and maps Stripe objects into the internal model. No Stripe status or identifier appears in an app entitlement. Managed Payments currently requires a preview API version, so production work must verify the current version and event contract again before launch.
 
-Stripe sends partner events to EventBridge, which routes them through SQS Standard to GlassEQServer. There is no public Stripe webhook endpoint or webhook signing secret. The queue accepts messages only from the configured EventBridge rule. The worker validates the exact partner source, AWS account/region, Stripe environment, API version, and supported event type before processing.
+Stripe sends events directly to the server's public webhook. The handler verifies the raw body with the configured Stripe signing secret and five-minute tolerance, enforces a 256 KiB limit, and checks the pinned API version, test or live mode, and supported event type before processing. It returns success only after the database commit. Stripe retries failed deliveries; a daily scan of Sessions from both Payment Links is still needed to recover a paid purchase missed beyond that retry window.
 
-The worker retrieves current Stripe objects outside database transactions. Event IDs and domain-record locks prevent duplicate fulfillment. Monthly reconciliation also checks an order revision captured before Stripe hydration, so a competing commit invalidates the snapshot. An SQS message is acknowledged only after its database transaction commits. Duplicates and out-of-order events must not create another license or move a subscription period backwards. Retries and dead-letter handling follow the server's `Docs/Billing.md` contract.
+The processor retrieves current Stripe objects outside database transactions. Event IDs and order locks prevent duplicate fulfillment. Billing reconciliation also checks an order revision captured before Stripe hydration, so a competing commit invalidates the snapshot. Duplicates and out-of-order events must not create another license or move a subscription period backwards. Persisted adjustment intents have a background retry worker. Delivery failures and recovery procedures follow the server's `Docs/Billing.md` contract.
 
 Listen only for required events from the pinned Stripe version:
 
 - `checkout.session.completed`
 - `checkout.session.async_payment_succeeded`
 - `checkout.session.async_payment_failed`
-- `checkout.session.expired`
 - `invoice.paid`
 - `invoice.payment_failed`
 - `invoice.updated`
@@ -580,17 +562,19 @@ Listen only for required events from the pinned Stripe version:
 - `refund.updated`
 - `refund.failed`
 - `charge.dispute.created`
+- `charge.dispute.updated`
+- `charge.dispute.funds_withdrawn`
 - `charge.dispute.closed`
 
 ### Purchase fulfillment
 
-Checkout creation chooses the Stripe Price ID, quantity, Managed Payments setting, policy version, success URL, and cancellation URL on the server. The browser cannot supply a price or arbitrary return URL. Checkout requires acceptance of the versioned terms. Managed Payments may present the purchase in a supported local currency.
+The two Payment Links hold the configured Stripe Price, fixed quantity, Managed Payments setting, and terms consent. The server preflight validates those link settings and the catalog. Managed Payments may present the purchase in a supported local currency. The webhook accepts only Sessions from the configured links and validates their current Stripe objects before fulfillment.
 
 A perpetual purchase is fulfilled once only after the retrieved Checkout Session has the expected Price ID, product, quantity, mode, Managed Payments setting, consent, and successful payment state. Delayed methods wait for `checkout.session.async_payment_succeeded`.
 
 A monthly purchase is fulfilled only after the initial invoice is paid and the retrieved subscription is active. `incomplete`, `incomplete_expired`, `paused`, and unpaid initial states never receive a license.
 
-Fulfillment creates the license and first license key in one transaction. It stores a temporary encrypted delivery copy for the email worker and deletes that copy after successful delivery or its seven-day limit. The success page may show a pending state while queued fulfillment completes. Email recovery remains available if delivery fails.
+Fulfillment creates the license and first license key in one transaction. It stores a temporary encrypted delivery copy for direct Amazon SES dispatch and deletes that copy after SES accepts delivery or its seven-day limit. The success page may show a pending state while fulfillment completes. Email recovery remains available if delivery fails.
 
 ### Customer billing management
 
@@ -607,7 +591,7 @@ Use Stripe Link for subscription cancellation and payment-method updates. The ap
 - A perpetual refund or chargeback blocks new activations, downloads, updates, and support without changing cached offline entitlements.
 - A won or withdrawn dispute restores service only after the current Stripe objects confirm that the purchase remains paid.
 
-A monthly refund or formal dispute first persists cancellation intent and confirms Stripe has stopped recurring billing before committing the terminal entitlement. This intent survives retries and dispute resolution during cancellation. The effective time is the Refund or Dispute object's Stripe creation time; later delivery does not restart grace. Separate adjustment records prevent one won dispute from removing another dispute, a refund, or manual revocation.
+A monthly refund or formal dispute first persists cancellation intent and confirms Stripe has stopped recurring billing before committing the terminal entitlement. This intent survives retries and dispute resolution during cancellation. The effective time is the Refund or Dispute object's Stripe creation time, capped at the existing recovery deadline; later delivery does not restart grace. Separate adjustment records prevent one won dispute from removing another dispute, a refund, or manual revocation.
 
 A won or withdrawn dispute can restore only eligible paid access. A canceled monthly subscription remains canceled and uses `lapsed` with `recovery_until` equal to its paid period end. This grants no new fourteen-day recovery window and does not restart billing. Expired paid access is not restored. Inquiries do not restrict access; withdrawal is recognized when Stripe reports a resolved dispute status.
 
@@ -746,7 +730,7 @@ Logs record opaque request IDs, result codes, and bounded timing. They never rec
 
 - [Stripe Smart Retries](https://docs.stripe.com/billing/revenue-recovery/smart-retries)
 - [Stripe subscription states](https://docs.stripe.com/billing/subscriptions/overview)
-- [Stripe EventBridge delivery](https://docs.stripe.com/event-destinations/eventbridge)
+- [Stripe webhook delivery](https://docs.stripe.com/webhooks)
 - [Stripe Checkout fulfillment](https://docs.stripe.com/checkout/fulfillment)
 - [Stripe Checkout consent](https://docs.stripe.com/api/checkout/sessions/create)
 - [Stripe refund events](https://docs.stripe.com/refunds)

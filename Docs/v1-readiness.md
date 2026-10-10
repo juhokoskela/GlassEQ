@@ -26,18 +26,18 @@ The GPL permits redistribution of official binaries, so the paid product cannot 
 
 Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks, and international consumer tax handling through Managed Payments. GlassEQ owns license issuance and product access.
 
-- [x] Receive Stripe purchase, subscription, refund, and chargeback events through EventBridge and SQS Standard. The worker supports the complete accepted event set; live delivery and redrive remain unverified.
-- [x] Validate the configured EventBridge source, AWS account, environment, and API version; process supported Checkout, Invoice, Subscription, Refund, and Dispute events idempotently and reconcile current Stripe state.
-- [x] Issue a GlassEQ license key after a successful perpetual purchase or subscription start. Both plans create a durable delivery record; email dispatch remains pending.
+- [x] Receive Stripe purchase, subscription, refund, and dispute events through a signed webhook. Live delivery remains unverified.
+- [x] Validate the Stripe signature, body size, environment, and pinned API version; process supported Checkout, Invoice, Subscription, Refund, and Dispute events idempotently against current Stripe state.
+- [x] Issue a GlassEQ license key after a successful perpetual purchase or subscription start. Both plans create a durable delivery record for direct SES dispatch; live email delivery remains unverified.
 - [x] Let the app exchange its license key and installation identifier for a server-signed entitlement. Monthly entitlements expire; perpetual entitlements do not.
 - [ ] Use the same entitlement service to authorize Sparkle archive downloads.
-- [ ] Keep Stripe API secrets on the server. The app must never contain or receive them; EventBridge ingestion does not use a public webhook secret.
+- [x] Keep Stripe API and webhook signing secrets on the server. The app does not contain or receive them; production secret provisioning remains unverified.
 - [ ] Store only the billing identifiers and entitlement state needed to operate licensing, updates, refunds, and account recovery.
 - [ ] Document the customer data exchanged with Stripe and the GlassEQ entitlement service.
 - [x] License one purchaser for two concurrently activated Macs under either payment plan.
 - [x] Generate a random installation identifier and store it in Keychain. Do not derive it from hardware identifiers.
 - [ ] Let the purchaser deactivate an old Mac and transfer an activation without support intervention.
-- [x] Record the policy version accepted at checkout with the purchase.
+- [ ] Record the policy version accepted at Checkout with each purchase. The current Payment Link path stores the server's policy constant when it first accepts the Session.
 - [x] Apply material entitlement restrictions prospectively. Do not silently reduce the rights attached to an existing purchase.
 
 ### Perpetual licenses
@@ -48,7 +48,7 @@ Stripe owns checkout, recurring billing, payment recovery, refunds, chargebacks,
 - [x] Keep an installed version working without recurring license checks.
 - [x] Include every official v1.x update, including security and compatibility fixes published for v1. A perpetual v1 license does not include v2.
 - [x] Offer a voluntary 14-day refund window while honoring later refunds required by Stripe or applicable law.
-- [x] After a refund or chargeback, block new activations, official downloads, updates, and support. Do not disable an already activated offline installation.
+- [ ] After a refund or chargeback, block new activations, official downloads, updates, and support. Entitlement restrictions are implemented; download/update authorization remains open. Do not disable an already activated offline installation.
 - [x] Apply perpetual refund and chargeback restrictions in the entitlement service while preserving cached offline installations.
 - [ ] Apply those restrictions in the update service; download authorization remains unimplemented.
 
