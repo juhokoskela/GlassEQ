@@ -338,7 +338,7 @@ public struct ProfileStore: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 3
     public static let defaultProfiles: [EQProfile] = [.flatGraphic31, .flatGraphic10, .flatParametric]
 
-    public var schemaVersion: Int
+    public private(set) var schemaVersion: Int
     public var profiles: [EQProfile]
     public var outputMappings: [OutputDeviceProfileMapping]
     public var fallbackProfileID: UUID
@@ -411,6 +411,10 @@ public struct ProfileStore: Codable, Equatable, Sendable {
         outputMappings = dedupedReversed.reversed()
 
         return summary
+    }
+
+    mutating func upgradeSchema() {
+        schemaVersion = Self.currentSchemaVersion
     }
 
     public func profile(forOutputUID uid: String?) -> EQProfile {

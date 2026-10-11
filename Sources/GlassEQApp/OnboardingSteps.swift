@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-private enum OnboardingAppIcon {
+enum AppIcon {
     static let image: NSImage =
         Bundle.main.url(forResource: "GlassEQ", withExtension: "icns")
         .flatMap { NSImage(contentsOf: $0) } ?? NSApplication.shared.applicationIconImage
@@ -11,7 +11,7 @@ private enum OnboardingAppIcon {
 struct OnboardingWelcomeStep: View {
     var body: some View {
         VStack(spacing: 20) {
-            Image(nsImage: OnboardingAppIcon.image)
+            Image(nsImage: AppIcon.image)
                 .resizable()
                 .frame(width: 96, height: 96)
                 .accessibilityHidden(true)
@@ -540,7 +540,7 @@ struct OnboardingDoneStep: View {
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
-            Text(localized("You can reopen this guide from the Output tab in Settings."))
+            Text(localized("You can reopen this guide from About GlassEQ or the Output tab in Settings."))
                 .font(.callout)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

@@ -15,10 +15,16 @@ final class AggregateBufferPolicyStore {
 
     private enum PersistenceError: Error {
         case storeTooLarge
+        case unreadableDocument
         case tooManyRecords
     }
 
-    private struct Record: Codable, Equatable {
+    struct ImportChange: Sendable {
+        fileprivate var previous: [Record]
+        fileprivate var imported: [Record]
+    }
+
+    fileprivate struct Record: Codable, Equatable, Sendable {
         var route: AggregateAudioRouteFingerprint
         var mode: SettingsAggregateBufferMode
         var automaticFrameSize: UInt32
@@ -292,6 +298,69 @@ final class AggregateBufferPolicyStore {
     }
 
     private func write() throws {
+        let data = try encodeDocument()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+    }
+
+    /// The current records as the same document the store writes to disk, for a library backup.
+    func exportDocument() throws -> Data {
+        try encodeDocument()
+    }
+
+    /// Adopts records from a backup's document. Merging keeps every route this Mac already knows
+    /// and adds the rest. An unreadable document leaves the current records unchanged.
+    @discardableResult
+    func importDocument(_ data: Data, replacingExisting: Bool) throws -> ImportChange {
+        guard let imported = Self.parse(data) else {
+            throw PersistenceError.unreadableDocument
+        }
+        let previous = records
+        if replacingExisting {
+            records = imported
+        } else {
+            var known = Set(records.map(\.route))
+            for record in imported where records.count < Self.maximumRecordCount && known.insert(record.route).inserted
+            {
+                records.append(record)
+            }
+        }
+        let change = ImportChange(previous: previous, imported: records)
+        guard records != previous else {
+            return change
+        }
+        do {
+            try write()
+        } catch {
+            records = previous
+            throw error
+        }
+        return change
+    }
+
+    func restoreImport(_ change: ImportChange) throws {
+        let current = records
+        let routes = Set(change.previous.map(\.route)).union(change.imported.map(\.route))
+        for route in routes {
+            let previous = change.previous.first { $0.route == route }
+            let imported = change.imported.first { $0.route == route }
+            guard previous != imported, record(for: route)?.mode == imported?.mode else { continue }
+            records.removeAll { $0.route == route }
+            if let previous { records.append(previous) }
+        }
+        guard records != current else { return }
+        do {
+            try write()
+        } catch {
+            records = current
+            throw error
+        }
+    }
+
+    private func encodeDocument() throws -> Data {
         guard records.count <= Self.maximumRecordCount else {
             throw PersistenceError.tooManyRecords
         }
@@ -313,27 +382,32 @@ final class AggregateBufferPolicyStore {
         guard data.count <= Self.maximumStoreBytes else {
             throw PersistenceError.storeTooLarge
         }
-        try FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: url, options: .atomic)
+        return data
     }
 
     private static func load(from url: URL) -> [Record] {
-        guard let data = try? readBoundedData(from: url),
+        guard let data = try? BoundedFile.read(from: url, maximumBytes: maximumStoreBytes) else {
+            return []
+        }
+        return parse(data, discardingInvalidRecords: true) ?? []
+    }
+
+    private static func parse(_ data: Data, discardingInvalidRecords: Bool = false) -> [Record]? {
+        guard data.count <= maximumStoreBytes,
             let document = try? JSONDecoder().decode(Document.self, from: data),
             [1, Document.schemaVersion].contains(document.schemaVersion),
             document.records.count <= maximumRecordCount
         else {
-            return []
+            return nil
         }
-        return document.records.compactMap { record in
-            guard record.route.isValid,
-                [16, 32, 64, 128].contains(record.automaticFrameSize)
-            else {
-                return nil
-            }
+        let validRecords = document.records.filter {
+            $0.route.isValid && [16, 32, 64, 128].contains($0.automaticFrameSize)
+        }
+        guard discardingInvalidRecords || validRecords.count == document.records.count else {
+            return nil
+        }
+        var seen: Set<AggregateAudioRouteFingerprint> = []
+        return validRecords.filter { seen.insert($0.route).inserted }.map { record in
             var record = record
             if document.schemaVersion == 1 {
                 // Schema 1 raised a route after one event, so its learned rung cannot satisfy
@@ -347,23 +421,6 @@ final class AggregateBufferPolicyStore {
             )
             return record
         }
-    }
-
-    private static func readBoundedData(from url: URL) throws -> Data {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var data = Data()
-        while data.count <= maximumStoreBytes {
-            let remaining = maximumStoreBytes + 1 - data.count
-            guard let chunk = try handle.read(upToCount: remaining), !chunk.isEmpty else {
-                break
-            }
-            data.append(chunk)
-        }
-        guard data.count <= maximumStoreBytes else {
-            throw PersistenceError.storeTooLarge
-        }
-        return data
     }
 
     nonisolated static func defaultFrameSize(isBluetooth: Bool) -> UInt32 {

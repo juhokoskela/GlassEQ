@@ -74,7 +74,13 @@ From the project checkout, run:
 swift run GlassEQDiagnostics 2
 ```
 
-For installed-app testing, report the app status text and any visible callback metrics from the GlassEQ UI. If you can reproduce with the checkout diagnostic, include its full output in the bug report.
+For installed-app testing, open About GlassEQ and click Support Report…. Read it, then paste it into the bug report or attach the saved file. It carries the app and macOS versions, the audio route, the engine state, and the last app events, including profile and output names. Recent events may contain filenames or error details. It excludes EQ settings, impulse responses, and license keys. If you can reproduce with the checkout diagnostic, include its full output as well.
+
+If the app launches and shows nothing, run it from Terminal and include the output:
+
+```sh
+/Applications/GlassEQ.app/Contents/MacOS/GlassEQ --debug
+```
 
 For a CPU-contention torture test, reset metrics immediately before each run and use the same route, sample rate, buffer size, programme material, and external workload. Run one biquad profile and one Response Curve for long enough to collect well over 10,000 callbacks. Compare Callback Start Late first. If that distribution stays the same but FIR Head, FIR Tail, Total Render, or Completion Late grows, the convolution path is less tolerant of the poisoned deadline. If Callback Start Late itself grows under FIR, the extra DSP or cache footprint is affecting system scheduling. Tail Completion Slack and its miss count distinguish slow execution from an internal tail-scheduling failure.
 
@@ -84,7 +90,6 @@ For a CPU-contention torture test, reset metrics immediately before each run and
 - Permission behavior may be rough on clean machines because the app is not Developer ID signed or notarized.
 - macOS 26 and Apple Silicon are the only supported beta target.
 - Hardware/device-format coverage is incomplete even though common outputs have been tested.
-- App icon and About-window polish are early.
 - There is no automatic update mechanism.
 - There is no crash reporter or telemetry.
 

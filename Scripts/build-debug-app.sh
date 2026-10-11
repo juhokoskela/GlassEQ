@@ -71,6 +71,7 @@ cp "$SETTINGS_EXECUTABLE_SOURCE" "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
 cp "$ROOT_DIR/Sources/GlassEQApp/Info.plist" "$INFO_PLIST"
 cp "$ROOT_DIR/Sources/GlassEQSettings/Info.plist" "$SETTINGS_INFO_PLIST"
 cp "$MIGRATION_PLIST" "$RESOURCES_DIR/container-migration.plist"
+cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/LICENSE"
 if [[ -f "$ICON_FILE" ]]; then
     cp "$ICON_FILE" "$RESOURCES_DIR/GlassEQ.icns"
     cp "$ICON_FILE" "$SETTINGS_RESOURCES_DIR/GlassEQ.icns"

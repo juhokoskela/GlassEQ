@@ -143,6 +143,43 @@ struct OutputTab: View {
 
             Section {
                 LabeledContent {
+                    Button(localized("Export…")) {
+                        controller.exportLibrary()
+                    }
+                    .disabled(controller.isProfileStoreProtected || controller.isLibraryTransferInProgress)
+                    .accessibilityHint(Text(localized("Saves the whole profile library as a file you choose")))
+                } label: {
+                    Text(localized("Export Library"))
+                    Text(
+                        localized(
+                            "Every profile with its impulse response, the output assignments, the fallback, and buffer preferences, in one JSON file."
+                        ))
+                }
+
+                LabeledContent {
+                    Button(localized("Import…")) {
+                        controller.chooseLibraryBackup()
+                    }
+                    .disabled(controller.isEditingLocked || controller.isLibraryTransferInProgress)
+                    .accessibilityHint(
+                        Text(localized("Chooses an exported library, then asks whether to add it or replace yours")))
+                } label: {
+                    Text(localized("Import Library"))
+                    Text(
+                        localized(
+                            "Adds the profiles from an exported library, or replaces yours after saving a copy of it."
+                        ))
+                }
+            } header: {
+                Text(localized("Library"))
+            } footer: {
+                if let message = controller.libraryMessage {
+                    Text(message)
+                }
+            }
+
+            Section {
+                LabeledContent {
                     Button(localized("Open Setup Guide")) {
                         controller.showSetupGuide()
                     }
@@ -167,6 +204,29 @@ struct OutputTab: View {
                             "Render timing percentiles, reliability counters, recovery history, and the Core Audio route behind this output."
                         ))
                 }
+
+                LabeledContent {
+                    Button(localized("Show Report")) {
+                        controller.showSupportReport()
+                    }
+                    .accessibilityHint(Text(localized("Opens a support report you can review, copy, or save")))
+                } label: {
+                    Text(localized("Support Report"))
+                    Text(
+                        localized(
+                            "App and macOS versions, profile and output names, engine state, and recent events. Review before sharing. No EQ settings, impulse responses, or license keys."
+                        ))
+                }
+
+                LabeledContent {
+                    Button(localized("Show About")) {
+                        controller.showAbout()
+                    }
+                    .accessibilityHint(Text(localized("Opens the About window in GlassEQ")))
+                } label: {
+                    Text(localized("About GlassEQ"))
+                    Text(localized("Version, license, privacy notes, and credits."))
+                }
             }
         }
         .formStyle(.grouped)
@@ -175,6 +235,25 @@ struct OutputTab: View {
                 report: OutputDiagnosticsReport(snapshot: snapshot),
                 onReset: controller.resetDiagnostics
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { controller.libraryImportPreview != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        controller.cancelLibraryImport()
+                    }
+                }
+            )
+        ) {
+            if let preview = controller.libraryImportPreview {
+                LibraryImportSheet(
+                    preview: preview,
+                    onMerge: { controller.applyLibraryImport(.merge) },
+                    onReplace: { controller.applyLibraryImport(.replace) },
+                    onCancel: controller.cancelLibraryImport
+                )
+            }
         }
     }
 
