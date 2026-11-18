@@ -144,7 +144,7 @@ validate_inputs() {
 }
 
 derive_paths() {
-    DIST_DIR="$ROOT_DIR/.build/dist"
+    DIST_DIR="$1"
     APP_DIR="$BUILD_DIR/$APP_NAME.app"
     CONTENTS_DIR="$APP_DIR/Contents"
     MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -166,8 +166,6 @@ derive_paths() {
     CHECKSUM_PATH="$ZIP_PATH.sha256"
     DSYM_DIR="$BUILD_DIR/dSYMs"
     DSYM_ZIP_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-dSYMs.zip"
-    DMG_STAGING_DIR="$BUILD_DIR/dmg"
-    DMG_MOUNT_DIR="$BUILD_DIR/dmg-mount"
     DMG_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH.dmg"
     EVIDENCE_PATH="$DIST_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-release-evidence.md"
 }
@@ -230,11 +228,31 @@ create_source_archive() {
     } > "$SOURCE_NOTICE_PATH"
 }
 
-verify_disk_image() (
-    local mounted_app="$DMG_MOUNT_DIR/$APP_NAME.app"
+notarize() (
+    local artifact="$1" output id status
+    output="$(xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --output-format json)" ||
+        fail "notarization submission failed for $(basename "$artifact")"
+    id="$(plutil -extract id raw -o - - <<< "$output")" || fail "notarization submission ID missing"
+    echo "Notarization submission for $(basename "$artifact"): $id" >&2
+    output="$(xcrun notarytool wait "$id" --keychain-profile "$NOTARY_PROFILE" --output-format json)" ||
+        fail "notarization wait failed for submission $id: $output"
+    status="$(plutil -extract status raw -o - - <<< "$output")" || fail "notarization status missing for $id"
+    [[ "$status" == "Accepted" ]] || fail "notarization ended with status '$status' (submission $id)"
+    echo "$id"
+)
+
+write_checksum() (
+    cd "$DIST_DIR"
+    local name
+    name="$(basename "$1")"
+    shasum -a 256 "$name" > "$name.sha256"
+)
+
+verify_disk_image() {
     hdiutil verify -quiet "$DMG_PATH" || fail "disk image failed its integrity check"
-    mkdir -p "$DMG_MOUNT_DIR"
-    trap 'hdiutil detach -quiet "$DMG_MOUNT_DIR" || hdiutil detach -force -quiet "$DMG_MOUNT_DIR" || exit 1; rmdir "$DMG_MOUNT_DIR"' EXIT
+    DMG_MOUNT_DIR="$(mktemp -d "$BUILD_DIR/mount.XXXXXXXX")"
+    local mounted_app="$DMG_MOUNT_DIR/$APP_NAME.app"
+    trap 'hdiutil detach -quiet "$DMG_MOUNT_DIR" 2>/dev/null || hdiutil detach -force -quiet "$DMG_MOUNT_DIR" 2>/dev/null || true; rmdir "$DMG_MOUNT_DIR"; cleanup_stage' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     hdiutil attach -readonly -nobrowse -noautoopen -quiet -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH"
@@ -244,6 +262,7 @@ verify_disk_image() (
     [[ -f "$DMG_MOUNT_DIR/TRADEMARKS.md" ]] || fail "disk image is missing TRADEMARKS.md"
     [[ -f "$DMG_MOUNT_DIR/SOURCE.md" ]] || fail "disk image is missing SOURCE.md"
     [[ -f "$DMG_MOUNT_DIR/$SOURCE_ARCHIVE_NAME" ]] || fail "disk image is missing Corresponding Source"
+    codesign --verify --strict --verbose=2 "$mounted_app/Contents/Helpers/$SETTINGS_APP_NAME.app"
     codesign --verify --strict --verbose=2 "$mounted_app" >/dev/null || fail "the app inside the disk image fails signature verification"
     if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
         /usr/bin/python3 - "$mounted_app/Contents/Info.plist" "$ENTITLEMENT_PUBLIC_KEYS_JSON" <<'PYTHON'
@@ -256,7 +275,10 @@ PYTHON
     if [[ "$RELEASE_CHANNEL" == "production" ]]; then
         xcrun stapler validate "$mounted_app" >/dev/null || fail "the app inside the disk image is not stapled"
     fi
-)
+    hdiutil detach -quiet "$DMG_MOUNT_DIR" || hdiutil detach -force -quiet "$DMG_MOUNT_DIR"
+    rmdir "$DMG_MOUNT_DIR"
+    trap cleanup_stage EXIT
+}
 
 write_release_evidence() {
     {
@@ -333,10 +355,16 @@ validate_entitlement_public_keys_file() {
     ENTITLEMENT_PUBLIC_KEYS_JSON="$(/usr/bin/python3 - "$file" <<'PYTHON'
 import base64, json, sys
 
+def unique_keys(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("duplicate key identifier")
+    return result
+
 source = sys.argv[1]
 try:
     with open(source, "rb") as handle:
-        keys = json.load(handle)
+        keys = json.load(handle, object_pairs_hook=unique_keys)
 except Exception as error:
     sys.exit(f"error: ENTITLEMENT_PUBLIC_KEYS_FILE is not valid JSON: {error}")
 if not isinstance(keys, dict) or not keys:
@@ -377,6 +405,8 @@ verify_dsym_matches() {
     local dsym_uuid
     binary_uuid="$(dwarfdump --uuid "$binary" | awk '{print $2}')"
     dsym_uuid="$(dwarfdump --uuid "$dsym" | awk '{print $2}')"
+    dwarfdump --debug-info "$dsym" | awk '/DW_TAG_compile_unit/ { found=1 } END {exit !found}' ||
+        fail "missing compile units in $(basename "$dsym")"
     [[ -n "$binary_uuid" && "$binary_uuid" == "$dsym_uuid" ]] ||
         fail "dSYM UUID for $(basename "$binary") ($dsym_uuid) does not match the packaged binary ($binary_uuid)"
 }
@@ -413,6 +443,7 @@ verify_no_unresolved_plist_tokens() {
     done
 }
 
+[[ -z "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]] || ENTITLEMENT_PUBLIC_KEYS_FILE="$(normalize_path "$ENTITLEMENT_PUBLIC_KEYS_FILE")"
 cd "$ROOT_DIR"
 RELEASE_LABEL="${RELEASE_LABEL:-$(default_release_label)}"
 BUILD_DIR="$(normalize_build_dir "$BUILD_DIR")"
@@ -420,7 +451,8 @@ validate_inputs
 if [[ -n "$ENTITLEMENT_PUBLIC_KEYS_FILE" ]]; then
     validate_entitlement_public_keys_file "$ENTITLEMENT_PUBLIC_KEYS_FILE"
 fi
-derive_paths
+FINAL_DIR="$ROOT_DIR/.build/dist"
+derive_paths "$FINAL_DIR"
 
 if is_dry_run; then
     echo "Dry run passed."
@@ -437,6 +469,11 @@ if is_dry_run; then
 fi
 
 capture_source_revision
+mkdir -p "$FINAL_DIR" "$BUILD_DIR"
+stage_dir="$(mktemp -d "$FINAL_DIR/.release.XXXXXXXX")"
+cleanup_stage() { rm -rf "$stage_dir"; }
+trap cleanup_stage EXIT
+derive_paths "$stage_dir"
 
 if [[ ! -f "$ICON_FILE" ]]; then
     swift "$ROOT_DIR/Scripts/generate-app-icon.swift" >/dev/null
@@ -452,8 +489,8 @@ SETTINGS_EXECUTABLE_SOURCE="$BUILD_BIN_DIR/$SETTINGS_APP_NAME"
 # from a shipped build can only be symbolicated with the dSYMs made from this exact link.
 rm -rf "$DSYM_DIR"
 mkdir -p "$DSYM_DIR"
-dsymutil "$EXECUTABLE_SOURCE" -o "$DSYM_DIR/$APP_NAME.dSYM"
-dsymutil "$SETTINGS_EXECUTABLE_SOURCE" -o "$DSYM_DIR/$SETTINGS_APP_NAME.dSYM"
+ditto "$EXECUTABLE_SOURCE.dSYM" "$DSYM_DIR/$APP_NAME.dSYM"
+ditto "$SETTINGS_EXECUTABLE_SOURCE.dSYM" "$DSYM_DIR/$SETTINGS_APP_NAME.dSYM"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$HELPERS_DIR" "$SETTINGS_MACOS_DIR" "$SETTINGS_RESOURCES_DIR" "$DIST_DIR"
@@ -546,25 +583,6 @@ verify_signed_entitlement_keys \
 
 APP_NOTARIZATION_ID="not notarized"
 DMG_NOTARIZATION_ID="not notarized"
-notarize() (
-    local artifact="$1"
-    local submission_status=0 id status
-    result="$(mktemp)"
-    trap 'rm -f "$result"' EXIT
-    xcrun notarytool submit "$artifact" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$result" || submission_status=$?
-    id="$(plutil -extract id raw -o - "$result" 2>/dev/null)" || id="unavailable"
-    status="$(plutil -extract status raw -o - "$result" 2>/dev/null)" || status="unavailable"
-    echo "Notarization submission for $(basename "$artifact"): $id" >&2
-    [[ "$submission_status" == 0 && "$status" == "Accepted" ]] ||
-        fail "notarization of $(basename "$artifact") ended with status '$status' (submission $id)"
-    echo "$id"
-)
-
-write_checksum() (
-    cd "$DIST_DIR"
-    shasum -a 256 "$(basename "$1")" > "$(basename "$1").sha256"
-)
-
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     NOTARY_ZIP="$BUILD_DIR/$APP_NAME-$RELEASE_LABEL-macos26-$ARCH-notary-submit.zip"
     rm -f "$NOTARY_ZIP"
@@ -600,10 +618,8 @@ write_checksum "$DSYM_ZIP_PATH"
 
 # The disk image is the supported delivery artifact: the app, an Applications link for the drag
 # install, and the same license and Corresponding Source access as the zip.
-rm -rf "$DMG_STAGING_DIR"
-ditto "$PACKAGE_DIR" "$DMG_STAGING_DIR"
-ln -s /Applications "$DMG_STAGING_DIR/Applications"
-hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO -quiet "$DMG_PATH"
+ln -s /Applications "$PACKAGE_DIR/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$PACKAGE_DIR" -ov -format UDZO -quiet "$DMG_PATH"
 if [[ "$RELEASE_CHANNEL" == "production" ]]; then
     codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG_PATH"
     DMG_NOTARIZATION_ID="$(notarize "$DMG_PATH")"
@@ -614,6 +630,11 @@ fi
 verify_disk_image
 write_checksum "$DMG_PATH"
 write_release_evidence
+# Evidence describes one complete set. Publish it last, after all verified files.
+rm -f "$FINAL_DIR/$(basename "$EVIDENCE_PATH")"
+mv "$ZIP_PATH" "$CHECKSUM_PATH" "$DSYM_ZIP_PATH" "$DSYM_ZIP_PATH.sha256" "$DMG_PATH" "$DMG_PATH.sha256" "$FINAL_DIR/"
+mv "$EVIDENCE_PATH" "$FINAL_DIR/"
+derive_paths "$FINAL_DIR"
 
 echo "App: $APP_DIR"
 echo "Zip: $ZIP_PATH"

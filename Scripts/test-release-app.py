@@ -154,7 +154,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 result_path = Path(directory) / "notarization.json"
                 script = self.functions("fail", "notarize") + f'''
-xcrun() {{ echo '{{"status":"Invalid","id":"submission-id"}}'; return {status}; }}
+xcrun() {{ if [[ "$2" = submit ]]; then echo '{{"id":"submission-id"}}'; return 0; fi; echo '{{"status":"Invalid","id":"submission-id"}}'; return {status}; }}
 NOTARY_PROFILE=fixture
 TEMP_RESULT="$1"
 mktemp() {{ echo "$TEMP_RESULT"; }}
@@ -171,7 +171,8 @@ submission="$(notarize artifact.dmg)"
     def test_disk_image_detaches_when_verification_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             script = self.functions("fail", "verify_disk_image") + r'''
-DMG_MOUNT_DIR="$1/mount"
+BUILD_DIR="$1"
+cleanup_stage() { :; }
 DMG_PATH="$1/test.dmg"
 APP_NAME=GlassEQ
 # The mount lacks the app, so validation fails immediately after attachment.
@@ -187,7 +188,8 @@ verify_disk_image
     def test_disk_image_detaches_on_termination_during_attach(self):
         with tempfile.TemporaryDirectory() as directory:
             script = self.functions("fail", "verify_disk_image") + r'''
-DMG_MOUNT_DIR="$1/mount"
+BUILD_DIR="$1"
+cleanup_stage() { :; }
 DMG_PATH="$1/test.dmg"
 APP_NAME=GlassEQ
 LOG="$1/operations"

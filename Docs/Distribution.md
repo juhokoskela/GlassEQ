@@ -55,7 +55,7 @@ The order of operations is: sign the helper and the app, notarize the app and st
 
 Every channel produces, under `.build/dist`:
 
-- `GlassEQ-<label>-macos26-arm64.zip` and its `.sha256`, as before.
+- `GlassEQ-<label>-macos26-arm64.zip` and its `.sha256`.
 - `GlassEQ-<label>-macos26-arm64.dmg` and its `.sha256`: the supported download. It contains `GlassEQ.app`, an `Applications` link for the drag install, `LICENSE`, `TRADEMARKS.md`, `SOURCE.md`, and the Corresponding Source archive.
 - `GlassEQ-<label>-macos26-arm64-dSYMs.zip` and its `.sha256`, described below.
 - `GlassEQ-<label>-macos26-arm64-release-evidence.md`: the release label, version and build, channel, source revision, signing identity, notarization submission identifiers for the app and the disk image, licensing status, Xcode and Swift versions, binary UUIDs, and the SHA-256 of every artifact. Keep it with the release.
