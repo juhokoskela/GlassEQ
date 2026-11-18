@@ -1535,12 +1535,18 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
+        let reads = engine.snapshotMetricsCallCount
+        _ = model.supportSnapshot()
+        #expect(engine.snapshotMetricsCallCount > reads)
+        #expect(model.supportPlaybackDescription == "Processing")
+
         lookup.result = .success(scarlett)
         observer.emit(.success(scarlett))
 
         await waitUntil {
             engine.muteOutputCallCount == 1
         }
+        #expect(model.supportPlaybackDescription == "Switching outputs")
         #expect(engine.muteOutputCallCount == 1)
 
         await waitUntil {
@@ -6635,6 +6641,7 @@ struct LicenseEnforcementTests {
         model.start()
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.retryPlayback == .muted })
+        #expect(model.supportPlaybackDescription == "Output muted by GlassEQ")
         let failure = model.statusMessage
         if sleepBeforeExpiry { model.handleWillSleep() }
         source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
@@ -6644,6 +6651,7 @@ struct LicenseEnforcementTests {
         try #require(await waitUntil { model.licenseSnapshot?.sequence == 3 })
         if sleepBeforeExpiry { model.handleDidWake() }
         try #require(await waitUntil { model.retryPlayback == .handedBack })
+        #expect(model.supportPlaybackDescription == "Playback with macOS")
         let observer = try #require(observers.observers.last)
         observer.emit(.success(output), reason: .initial)
         await settleAsyncWork()

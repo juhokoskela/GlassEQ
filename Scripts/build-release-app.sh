@@ -572,13 +572,13 @@ verify_dsym_matches "$MACOS_DIR/$APP_NAME" "$DSYM_DIR/$APP_NAME.dSYM"
 verify_dsym_matches "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME" "$DSYM_DIR/$SETTINGS_APP_NAME.dSYM"
 verify_signed_entitlement "$APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$APP_DIR" com.apple.security.device.audio-input
-verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-only
+verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-write
 verify_signed_entitlement "$APP_DIR" com.apple.security.network.client
 verify_signed_entitlement_keys \
     "$APP_DIR" \
     com.apple.security.app-sandbox \
     com.apple.security.device.audio-input \
-    com.apple.security.files.user-selected.read-only \
+    com.apple.security.files.user-selected.read-write \
     com.apple.security.network.client
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.inherit

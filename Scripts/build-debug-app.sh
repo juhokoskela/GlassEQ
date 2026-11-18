@@ -74,6 +74,7 @@ cp "$ROOT_DIR/Sources/GlassEQSettings/Info.plist" "$SETTINGS_INFO_PLIST"
 plutil -replace CFBundleIdentifier -string "$DEBUG_BUNDLE_ID" "$INFO_PLIST"
 plutil -replace CFBundleDisplayName -string "GlassEQ Debug" "$INFO_PLIST"
 plutil -replace CFBundleIdentifier -string "$DEBUG_BUNDLE_ID.settings" "$SETTINGS_INFO_PLIST"
+cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/LICENSE"
 if [[ -f "$ICON_FILE" ]]; then
     cp "$ICON_FILE" "$RESOURCES_DIR/GlassEQ.icns"
     cp "$ICON_FILE" "$SETTINGS_RESOURCES_DIR/GlassEQ.icns"

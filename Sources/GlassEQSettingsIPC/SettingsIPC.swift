@@ -1010,6 +1010,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case startMetricsPolling
     case stopMetricsPolling
     case resetUnsupportedProfileStore
+    case showAbout
     case showSetupGuide
 }
 
