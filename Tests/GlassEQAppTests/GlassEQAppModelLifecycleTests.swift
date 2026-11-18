@@ -3015,6 +3015,48 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.profileStore.profiles.count == ProfileStore.defaultProfiles.count + 1)
     }
 
+    @Test(arguments: [false, true])
+    func failedRecoveryBackupPreservesOriginalUntilExplicitReset(partiallyRecoverable: Bool) async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let original: Data
+        if partiallyRecoverable {
+            let good = makeProfile(name: "Surviving profile")
+            let invalid = makeProfile(name: "")
+            original = try ProfilePersistence.encoder.encode(
+                ProfileStore(profiles: [good, invalid], fallbackProfileID: good.id))
+        } else {
+            original = Data("invalid JSON".utf8)
+        }
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try original.write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        let model = GlassEQAppModel(
+            storeURL: url, engine: FakeAudioEngine(),
+            defaultOutputLookup: FakeDefaultOutputLookup(.success(makeOutput())),
+            observerFactory: FakeDefaultOutputObserverFactory(), autoStart: false,
+            installLifecycleObservers: false, registerAppDelegate: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+
+        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        #expect(await model.flushStoreBeforeQuit())
+        try #require(Data(contentsOf: url) == original)
+        #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
+
+        try await model.resetUnsupportedProfileStore()
+        #expect(!model.settingsSnapshot().profileStoreProtection.isProtected)
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+        )
+        .filter { $0.lastPathComponent.hasPrefix("Profiles.invalid-") }
+        #expect(backups.count == 1)
+        let backup = try #require(backups.first)
+        #expect(try Data(contentsOf: backup) == original)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)).profiles == ProfileStore.defaultProfiles)
+        await model.cleanupForTerminationAndWait()
+    }
+
     @Test
     func oversizedStoreIsProtectedFromImplicitWrites() async throws {
         let storeURL = temporaryAppStoreURL()

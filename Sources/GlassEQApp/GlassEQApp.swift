@@ -663,6 +663,7 @@ final class GlassEQAppModel {
 
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
+        case recoveryBackupFailed
         case unsupportedSchema(version: Int, maximumSupported: Int)
         case oversizedStore(byteCount: Int, maximum: Int)
 
@@ -670,7 +671,7 @@ final class GlassEQAppModel {
             switch self {
             case .normal:
                 return false
-            case .unsupportedSchema, .oversizedStore:
+            case .unsupportedSchema, .oversizedStore, .recoveryBackupFailed:
                 return true
             }
         }
@@ -948,11 +949,14 @@ final class GlassEQAppModel {
             loadedStore = result.store
         }
         let persistenceMode: ProfilePersistenceMode
-        if case let .unsupportedSchemaVersion(version, maximumSupported) = loadResult?.status {
+        switch loadResult?.status {
+        case let .unsupportedSchemaVersion(version, maximumSupported):
             persistenceMode = .unsupportedSchema(version: version, maximumSupported: maximumSupported)
-        } else if case let .oversizedStore(byteCount, maximum) = loadResult?.status {
+        case let .oversizedStore(byteCount, maximum):
             persistenceMode = .oversizedStore(byteCount: byteCount, maximum: maximum)
-        } else {
+        case .backupFailed:
+            persistenceMode = .recoveryBackupFailed
+        case nil, .missingStore, .loaded, .repairedReferences, .repairedInvalidStore, .recoveredDefaults:
             persistenceMode = .normal
         }
         let initialProfile = loadedStore.profile(forOutputUID: nil)
@@ -1279,6 +1283,12 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return .unprotected
+        case .recoveryBackupFailed:
+            return SettingsProfileStoreProtectionDTO(
+                isProtected: true,
+                message: Self.profileRecoveryFailureMessage,
+                resetButtonTitle: localized("Back up and reset profiles")
+            )
         case let .unsupportedSchema(version, maximumSupported):
             return SettingsProfileStoreProtectionDTO(
                 isProtected: true,
@@ -1308,6 +1318,8 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return ""
+        case .recoveryBackupFailed:
+            return Self.profileRecoveryFailureMessage
         case .unsupportedSchema, .oversizedStore:
             return localized("Profile store is protected; reset profiles before editing it.")
         }
@@ -4344,6 +4356,11 @@ final class GlassEQAppModel {
         }
     }
 
+    private static var profileRecoveryFailureMessage: String {
+        localized(
+            "Your profile library is read-only because its backup or repair failed. Relaunch GlassEQ to try again.")
+    }
+
     private static func profileStoreLoadStatusMessage(_ status: ProfileStoreLoadStatus) -> String? {
         switch status {
         case .loaded, .missingStore:
@@ -4355,7 +4372,7 @@ final class GlassEQAppModel {
         case .recoveredDefaults:
             return localized("Profile store was invalid; backed it up and restored defaults")
         case .backupFailed:
-            return localized("Profile store was invalid; using defaults, but backup failed")
+            return profileRecoveryFailureMessage
         case let .unsupportedSchemaVersion(version, maximumSupported):
             return localized(
                 "Profile store was written by a newer GlassEQ version (schema \(version)); using defaults without modifying it. This build supports schema \(maximumSupported)."
