@@ -931,3 +931,17 @@ Juho reported that all three manual hardware checks passed with the sandboxed Ap
 This sign-off qualifies the three sequences on Juho’s setup. The packaged run supplied a pass result for each check. The numerical timing and level traces above came from the earlier instrumented prototype.
 
 Following that qualification, GlassEQ retired the separate-clock backend. The clock, bridge, and ring measurements above describe the earlier implementation.
+
+### Offline DSP timing under load, 18 November 2026
+
+The benchmark at `e6b877b` ran 20,000 renders per workload after 1,000 warm-up renders. A temporary arm64 executable linked the release GlassEQCore object and the diagnostic benchmark source with Swift 6.4.2 and `-O -whole-module-optimization`. Its SHA-256 was `375394a350b08ddad6cf2c994be8211fd75bed25c626dab906fc9d08c6dfb373`. It used an ordinary thread, synthetic stereo input and no audio device. Other build and VM activity was present on the Mac17,9 running macOS 27.2.1 (26B131).
+
+| Workload | Rate | Frames | Mean µs | p99.99 µs | Maximum µs | Renders over period |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 128 biquads/channel | 192 kHz | 16 | 31.03 | 7,602.00 | 15,732.25 | 284 |
+| Same bank, repeated live preamp edits | 192 kHz | 16 | 53.20 | 4,521.50 | 17,327.38 | 514 |
+| 16,384-tap FIR | 48 kHz | 17/255/1/257/480 | 30.33 | 2,444.83 | 4,846.75 | 2 |
+| Same FIR, repeated live preamp edits | 48 kHz | 17/255/1/257/480 | 55.75 | 1,524.79 | 4,018.17 | 2 |
+| Same FIR, Filters Off comparison | 48 kHz | 17/255/1/257/480 | 32.10 | 777.75 | 1,090.08 | 3 |
+
+The 128-section edit exceeded the optional 50% mean budget, using 63.84% of the 83.33 µs period. All FIR cases completed every scheduled tail job by its due frame. Wall-clock render duration includes any descheduling between the two reads of the clock. To qualify 128-section edits on hardware, use a packaged build on a 192 kHz stereo route that actually grants 16 frames. Repeat the edits and read callback-start lateness, total render time, completion lateness and deadline misses separately.
