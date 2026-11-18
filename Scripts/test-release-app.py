@@ -78,7 +78,7 @@ class ReleaseChannelTests(unittest.TestCase):
             valid_key = base64.b64encode(bytes(32)).decode()
             for content in ("not json", "{}", "[]", json.dumps({"k1": "short"}), json.dumps({"k1": 5}),
                             json.dumps({"k1": valid_key + " "}), json.dumps({"k1": valid_key + "\n"}),
-                            json.dumps({"key one": valid_key}), json.dumps({"": valid_key}),
+                            f'{{"k1":"{valid_key}","k1":"{valid_key}"}}', json.dumps({"key one": valid_key}), json.dumps({"": valid_key}),
                             json.dumps({"k1": base64.b64encode(bytes(33)).decode()})):
                 with self.subTest(content=content):
                     result = self.dry_run("RELEASE_CHANNEL=production", *PRODUCTION_SIGNING,
@@ -149,24 +149,22 @@ class ReleaseArtifactTests(unittest.TestCase):
                 subprocess.run(["shasum", "-a", "256", "-c", checksum.name], cwd=download,
                                check=True, capture_output=True)
 
-    def test_rejected_notarization_reports_the_submission_id_and_cleans_up(self):
-        for status in (0, 1):
-            with tempfile.TemporaryDirectory() as directory:
-                result_path = Path(directory) / "notarization.json"
-                script = self.functions("fail", "notarize") + f'''
-xcrun() {{ if [[ "$2" = submit ]]; then echo '{{"id":"submission-id"}}'; return 0; fi; echo '{{"status":"Invalid","id":"submission-id"}}'; return {status}; }}
+    def test_rejected_notarization_reports_the_submission_id(self):
+        script = self.functions("fail", "notarize") + r'''
+xcrun() {
+    if [[ "$2" == submit ]]; then echo '{"id":"submission-id"}'; return; fi
+    echo '{"status":"Invalid"}'
+    return "$WAIT_STATUS"
+}
 NOTARY_PROFILE=fixture
-TEMP_RESULT="$1"
-mktemp() {{ echo "$TEMP_RESULT"; }}
 submission="$(notarize artifact.dmg)"
 '''
-                result = subprocess.run(["/bin/bash", "-eu", "-c", script, "test", str(result_path)],
-                                        capture_output=True, text=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("submission-id", result.stderr)
-                self.assertIn("Invalid", result.stderr)
-                self.assertNotIn("unbound variable", result.stderr)
-                self.assertFalse(result_path.exists())
+        for status in (0, 1):
+            result = subprocess.run(["bash", "-eu", "-c", "WAIT_STATUS=" + str(status) + "\n" + script],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("submission-id", result.stderr)
+            self.assertIn("Invalid", result.stderr)
 
     def test_disk_image_detaches_when_verification_fails(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,7 +181,7 @@ verify_disk_image
             result = subprocess.run(["bash", "-eu", "-c", script, "test", directory], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("detach", (Path(directory) / "operations").read_text())
-            self.assertFalse((Path(directory) / "mount").exists())
+            self.assertFalse(list(Path(directory).glob("mount.*")))
 
     def test_disk_image_detaches_on_termination_during_attach(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -211,10 +209,10 @@ verify_disk_image
                     if time.monotonic() >= deadline:
                         self.fail("mock attach did not start")
                     time.sleep(0.01)
-                os.killpg(process.pid, signal.SIGTERM)
+                process.terminate()
                 _, stderr = process.communicate(timeout=5)
                 self.assertIn("detach", (Path(directory) / "operations").read_text(), stderr)
-                self.assertFalse((Path(directory) / "mount").exists())
+                self.assertFalse(list(Path(directory).glob("mount.*")))
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)

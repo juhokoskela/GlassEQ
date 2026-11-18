@@ -255,7 +255,13 @@ verify_disk_image() {
     trap 'hdiutil detach -quiet "$DMG_MOUNT_DIR" 2>/dev/null || hdiutil detach -force -quiet "$DMG_MOUNT_DIR" 2>/dev/null || true; rmdir "$DMG_MOUNT_DIR"; cleanup_stage' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    hdiutil attach -readonly -nobrowse -noautoopen -quiet -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH"
+    hdiutil attach -readonly -nobrowse -noautoopen -quiet -mountpoint "$DMG_MOUNT_DIR" "$DMG_PATH" &
+    local attach_pid=$!
+    trap 'kill "$attach_pid" 2>/dev/null || true; wait "$attach_pid" || true; exit 130' INT
+    trap 'kill "$attach_pid" 2>/dev/null || true; wait "$attach_pid" || true; exit 143' TERM
+    wait "$attach_pid"
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     [[ -d "$mounted_app" ]] || fail "disk image is missing $APP_NAME.app"
     [[ "$(readlink "$DMG_MOUNT_DIR/Applications")" == /Applications ]] || fail "disk image is missing the Applications link"
     cmp -s "$DMG_MOUNT_DIR/LICENSE" "$LICENSE_FILE" || fail "disk image contains the wrong license"
