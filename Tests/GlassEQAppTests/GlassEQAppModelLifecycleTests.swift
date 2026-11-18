@@ -3335,11 +3335,15 @@ struct GlassEQAppModelLifecycleTests {
         let store = ProfileStore(profiles: [running], fallbackProfileID: running.id)
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let model = makeModel(
             store: store,
+            storeURL: storeURL,
             engine: engine,
             lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
+            saveDelay: .seconds(60),
             outputDelay: .zero
         )
 
@@ -3366,6 +3370,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.profileStore.profiles == [laterSaved])
         #expect(model.profileStore.fallbackProfileID == laterSaved.id)
         #expect(engine.state == .running(output: output))
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try ProfilePersistence.decode(Data(contentsOf: storeURL)) == model.profileStore)
     }
 
     @Test
@@ -3376,11 +3382,15 @@ struct GlassEQAppModelLifecycleTests {
         let store = ProfileStore(profiles: [running], fallbackProfileID: running.id)
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let model = makeModel(
             store: store,
+            storeURL: storeURL,
             engine: engine,
             lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
+            saveDelay: .seconds(60),
             outputDelay: .zero
         )
 
@@ -3404,6 +3414,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.activeProfile == running)
         #expect(model.profileStore == store)
         #expect(engine.state == .running(output: output))
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try ProfilePersistence.decode(Data(contentsOf: storeURL)) == model.profileStore)
     }
 
     @Test
@@ -3774,6 +3786,28 @@ struct GlassEQAppModelLifecycleTests {
         #expect(loaded.profiles.contains { $0.name == "New Parametric" })
         #expect(loaded.profiles.contains { $0.name == "New 10-Band" })
         #expect(loaded.profiles.contains { $0.name == "New Convolution" })
+    }
+
+    @Test
+    func quitReusesSavedApplyAndRestoresAMissingFile() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let model = makeModel(storeURL: storeURL, saveDelay: .zero)
+        var profile = model.activeProfile
+        profile.preampDB = -7
+        _ = try await model.performSettingsCommand(.applyProfile(profile))
+        try #require(await waitUntil { FileManager.default.fileExists(atPath: storeURL.path) })
+        let original = storeURL.deletingLastPathComponent().appendingPathComponent("before-quit.json")
+        try FileManager.default.linkItem(at: storeURL, to: original)
+
+        #expect(await model.flushStoreBeforeQuit())
+        let manager = FileManager.default
+        let originalAttributes = try manager.attributesOfItem(atPath: original.path)
+        let flushedAttributes = try manager.attributesOfItem(atPath: storeURL.path)
+        #expect(originalAttributes[.systemFileNumber] as? NSNumber == flushedAttributes[.systemFileNumber] as? NSNumber)
+        try manager.removeItem(at: storeURL)
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try Data(contentsOf: original) == Data(contentsOf: storeURL))
     }
 
     @Test

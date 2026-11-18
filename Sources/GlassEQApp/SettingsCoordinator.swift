@@ -1189,17 +1189,14 @@ extension GlassEQAppModel {
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .applyProfile(let profile):
-            try validateIncomingProfile(profile)
             try apply(profile: profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .useProfileForCurrentOutput(let profile):
-            try validateIncomingProfile(profile)
             try useForCurrentOutput(profile: profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .setFallback(let profile):
-            try validateIncomingProfile(profile)
             try setFallback(profile: profile)
             return SettingsCommandResponse(snapshot: settingsSnapshot())
 

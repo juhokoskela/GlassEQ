@@ -496,17 +496,29 @@ extension SettingsAudioMetricsDTO {
 
 private actor ProfileStoreWriter {
     private let url: URL
+    private var savedGeneration: Int?
 
     init(url: URL) {
         self.url = url
     }
 
-    func save(_ store: ProfileStore) throws {
-        try ProfilePersistence.save(store, to: url)
+    func save(_ store: ProfileStore, prepared: ProfilePersistence.PreparedSave?, generation: Int) throws {
+        if let savedGeneration,
+            generation < savedGeneration
+                || (generation == savedGeneration && FileManager.default.fileExists(atPath: url.path))
+        {
+            return
+        }
+        if let prepared {
+            try prepared.write(to: url)
+        } else {
+            try ProfilePersistence.save(store, to: url)
+        }
+        savedGeneration = generation
     }
 
-    func saveAndSynchronize(_ store: ProfileStore) throws {
-        try save(store)
+    func saveAndSynchronize(_ store: ProfileStore, prepared: ProfilePersistence.PreparedSave?, generation: Int) throws {
+        try save(store, prepared: prepared, generation: generation)
         let handle = try FileHandle(forReadingFrom: url)
         defer {
             try? handle.close()
@@ -564,7 +576,7 @@ final class GlassEQAppModel {
         get { activeProfile.id }
         set { activateProfile(newValue) }
     }
-    var profileStore: ProfileStore
+    private(set) var profileStore: ProfileStore
     var selectedProfileID: UUID
     var draftProfile: EQProfile
     var engineMetrics = AudioEngineMetrics()
@@ -594,6 +606,8 @@ final class GlassEQAppModel {
     private var acceptsSettingsCommands = true
     private var settingsCommandDrainWaiters: [CheckedContinuation<Void, Never>] = []
     private var pendingSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var saveGeneration = 0
+    @ObservationIgnored private var pendingPreparedSave: ProfilePersistence.PreparedSave?
     private var lifecycleObserverTokens: [NSObjectProtocol] = []
     private var lastHandledDefaultOutputConfiguration: DefaultOutputConfiguration?
     private var wasRunningBeforeSleep = false
@@ -1863,13 +1877,10 @@ final class GlassEQAppModel {
         let rollback = profileRollback()
         var store = profileStore
         upsertProfile(profile, in: &store)
-        try ProfilePersistence.validateForCommit(store)
-
-        profileStore = store
+        try commitProfileStore(store)
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
-        saveStore()
         synchronizeActiveProfileProcessing(rollback: rollback)
         notifyModelDidChange()
     }
@@ -1877,24 +1888,22 @@ final class GlassEQAppModel {
     func useForCurrentOutput(profile: EQProfile) throws {
         try ensureProfileStoreWritable()
         try ensureCompatibleWithCurrentOutput(profile)
-        let rollback = profileRollback()
+        var store = profileStore
+        upsertProfile(profile, in: &store)
         guard !currentOutputUID.isEmpty else {
+            try ProfilePersistence.validateForCommit(store)
             return
         }
 
-        var store = profileStore
-        upsertProfile(profile, in: &store)
+        let rollback = profileRollback()
         store.outputMappings.removeAll { $0.outputDeviceUID == currentOutputUID }
         store.outputMappings.append(
             OutputDeviceProfileMapping(outputDeviceUID: currentOutputUID, profileID: profile.id)
         )
-        try ProfilePersistence.validateForCommit(store)
-
-        profileStore = store
+        try commitProfileStore(store)
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
-        saveStore()
         synchronizeActiveProfileProcessing(rollback: rollback)
         notifyModelDidChange()
     }
@@ -1915,13 +1924,11 @@ final class GlassEQAppModel {
         var store = profileStore
         upsertProfile(profile, in: &store)
         do {
-            try ProfilePersistence.validateForCommit(store)
-            profileStore = store
+            try commitProfileStore(store)
             activeProfile = profile
             if draftProfile.id == profile.id {
                 draftProfile = profile
             }
-            saveStore()
             synchronizeActiveProfileProcessing(rollback: rollback)
             notifyModelDidChange()
         } catch {
@@ -1966,12 +1973,9 @@ final class GlassEQAppModel {
         var store = profileStore
         upsertProfile(profile, in: &store)
         store.fallbackProfileID = profile.id
-        try ProfilePersistence.validateForCommit(store)
-
-        profileStore = store
+        try commitProfileStore(store)
         selectedProfileID = profile.id
         draftProfile = profile
-        saveStore()
         statusMessage = localized("Fallback profile set to \(profile.name)")
         notifyModelDidChange()
     }
@@ -2151,12 +2155,9 @@ final class GlassEQAppModel {
         profile.name = uniqueProfileName(name)
         var store = profileStore
         store.profiles.append(profile)
-        try ProfilePersistence.validateForCommit(store)
-
-        profileStore = store
+        try commitProfileStore(store)
         selectedProfileID = profile.id
         draftProfile = profile
-        saveStore()
         if let status {
             statusMessage = status
         }
@@ -2229,11 +2230,9 @@ final class GlassEQAppModel {
             nextDraft = draftProfile
         }
 
-        try ProfilePersistence.validateForCommit(store)
-        profileStore = store
+        try commitProfileStore(store)
         selectedProfileID = nextSelectionID
         draftProfile = nextDraft
-        saveStore()
         statusMessage = localized("Deleted profile")
         notifyModelDidChange()
     }
@@ -3668,12 +3667,21 @@ final class GlassEQAppModel {
         }
     }
 
-    private func saveStore() {
+    private func commitProfileStore(_ store: ProfileStore) throws {
+        let prepared = try ProfilePersistence.PreparedSave(store)
+        profileStore = store
+        saveStore(prepared: prepared)
+    }
+
+    private func saveStore(prepared: ProfilePersistence.PreparedSave? = nil) {
         guard !profilePersistenceMode.isProtected else {
             pendingSaveTask?.cancel()
             pendingSaveTask = nil
             return
         }
+        saveGeneration += 1
+        let generation = saveGeneration
+        pendingPreparedSave = prepared
         let store = profileStore
         let storeWriter = storeWriter
         let saveDebounceDelay = saveDebounceDelay
@@ -3683,27 +3691,38 @@ final class GlassEQAppModel {
             do {
                 try await Task.sleep(for: saveDebounceDelay)
                 try Task.checkCancellation()
-                try await storeWriter.save(store)
+                try await storeWriter.save(store, prepared: prepared, generation: generation)
+                if self?.saveGeneration == generation {
+                    self?.pendingPreparedSave = nil
+                }
             } catch is CancellationError {
             } catch {
-                await MainActor.run {
-                    self?.statusMessage = localized("Save failed: \(error.localizedDescription)")
-                    self?.notifyModelDidChange()
+                guard let self, self.saveGeneration == generation, !Task.isCancelled else {
+                    return
                 }
+                self.statusMessage = localized("Save failed: \(error.localizedDescription)")
+                self.notifyModelDidChange()
             }
         }
     }
 
     func flushStoreBeforeQuit() async -> Bool {
-        pendingSaveTask?.cancel()
-        await pendingSaveTask?.value
-        pendingSaveTask = nil
         guard !profilePersistenceMode.isProtected else {
             return true
         }
         do {
-            try await storeWriter.saveAndSynchronize(profileStore)
-            return true
+            while true {
+                let generation = saveGeneration
+                pendingSaveTask?.cancel()
+                try await storeWriter.saveAndSynchronize(
+                    profileStore, prepared: pendingPreparedSave, generation: generation
+                )
+                if generation == saveGeneration {
+                    pendingSaveTask = nil
+                    pendingPreparedSave = nil
+                    return true
+                }
+            }
         } catch {
             statusMessage = localized("Quit canceled: failed to save profiles: \(error.localizedDescription)")
             notifyModelDidChange()
