@@ -282,7 +282,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async {
+    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async throws {
         let output = makeOutput(uid: "adaptive-aggregate", name: "Adaptive Aggregate")
         let engine = FakeAudioEngine()
         engine.reflectPreferredAggregateBufferFrameSize = true
@@ -290,61 +290,38 @@ struct GlassEQAppModelLifecycleTests {
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
             engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
             outputDelay: .zero,
+            renderWatchdogPollInterval: .seconds(30),
             aggregateBufferNotifier: notifier
         )
+        defer { model.stop() }
 
         model.start()
         observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running
-                && engine.startCalls.count == 1
-                && engine.startCalls[0].aggregateBufferFrameSize == 16
+        try #require(await waitUntil { model.isRunning })
+        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [16])
+
+        for (index, frameSize) in [UInt32(32), 64, 128].enumerated() {
+            // Each replacement monitor takes a fresh baseline after start completion.
+            // With Settings closed and the watchdog parked, only that monitor polls.
+            let readsAtStart = engine.snapshotMetricsCallCount
+            try #require(await waitUntil { engine.snapshotMetricsCallCount > readsAtStart })
+            if frameSize == 128 {
+                engine.metrics.qualifyingPairedTimestampDiscontinuities += 2
+            } else {
+                let readsBeforeFirstInterruption = engine.snapshotMetricsCallCount
+                engine.metrics.qualifyingPairedTimestampDiscontinuities += 1
+                try #require(await waitUntil { engine.snapshotMetricsCallCount > readsBeforeFirstInterruption })
+                #expect(engine.startCalls.count == index + 1)
+                engine.metrics.qualifyingPairedTimestampDiscontinuities += 1
+            }
+
+            try #require(await waitUntil { notifier.calls.count == index + 1 })
+            #expect(engine.startCalls.last?.aggregateBufferFrameSize == frameSize)
+            #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == frameSize)
         }
-        try? await Task.sleep(for: .milliseconds(30))
-
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 1
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.startCalls.count == 1)
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 2
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.startCalls[1].aggregateBufferFrameSize == 32
-                && notifier.calls.count == 1
-        }
-        try? await Task.sleep(for: .milliseconds(30))
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 3
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.startCalls.count == 2)
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 4
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 3
-                && engine.startCalls[2].aggregateBufferFrameSize == 64
-                && notifier.calls.count == 2
-        }
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 6
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-
-        await waitUntil {
-            engine.startCalls.count == 4 && engine.startCalls.last?.aggregateBufferFrameSize == 128
-        }
-        #expect(notifier.calls.count == 3)
-        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 128)
     }
 
     @Test
