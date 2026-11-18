@@ -6226,7 +6226,14 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
+    private var _handbackGate: FakeStartBlocker?
+    var handbackGate: FakeStartBlocker? {
+        get { withLock { _handbackGate } }
+        set { withLock { _handbackGate = newValue } }
+    }
+
     func stop() {
+        handbackGate?.waitUntilUnblocked()
         tearDownRenderer(keepingMute: false)
     }
 
@@ -6614,30 +6621,126 @@ struct LicenseEnforcementTests {
         #expect(model.lifecycleState == .stopped)
     }
 
-    @Test
-    func licenseRenewalAfterATerminalStallRestoresTheMuteUntilRetry() async throws {
-        let output = makeOutput(uid: "licensed-stall", name: "Licensed stall")
+    @Test(arguments: [false, true])
+    func renewalAfterAProtectedStartupFailureLeavesDirectPlaybackUntilRetry(sleepBeforeExpiry: Bool) async throws {
+        let output = makeOutput(uid: "failed-start", name: "Failed startup")
         let engine = FakeAudioEngine()
-        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        engine.startError = TestAudioError.startFailed
         let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
         let model = makeModel(
-            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers, outputDelay: .zero, renderWatchdogStallThreshold: .milliseconds(20),
-            renderWatchdogPollInterval: .milliseconds(5), licensing: .provider(source))
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers,
+            outputDelay: .zero, licensing: .provider(source))
         try #require(await waitUntil { model.licenseSnapshot != nil })
         model.start()
         observers.observers[0].emit(.success(output))
-        try #require(await waitUntil { model.canRetryMutedOutput })
-        let terminalReason = model.statusMessage
+        try #require(await waitUntil { model.retryPlayback == .muted })
+        let failure = model.statusMessage
+        if sleepBeforeExpiry { model.handleWillSleep() }
         source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
-        try #require(await waitUntil { !engine.holdsProcessingMute && model.statusMessage == expiredText() })
+        try #require(await waitUntil { engine.handbackCount == 1 })
+        engine.startError = nil
         source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
-        try #require(await waitUntil { engine.holdsProcessingMute && model.canRetryMutedOutput })
-        #expect(model.statusMessage == terminalReason)
+        try #require(await waitUntil { model.licenseSnapshot?.sequence == 3 })
+        if sleepBeforeExpiry { model.handleDidWake() }
+        try #require(await waitUntil { model.retryPlayback == .handedBack })
+        let observer = try #require(observers.observers.last)
+        observer.emit(.success(output), reason: .initial)
+        await settleAsyncWork()
+        #expect(model.statusMessage == failure)
+        #expect(engine.startCalls.count == 1)
+        #expect(!engine.holdsProcessingMute)
+        model.retryAudioEngine()
+        observer.emit(.success(output), reason: .initial)
+        try #require(await waitUntil { model.isRunning && engine.holdsProcessingMute })
         #expect(engine.startCalls.count == 2)
-        model.toggleMenuProcessing()
-        try #require(await waitUntil { !engine.holdsProcessingMute })
-        #expect(model.processingWasStopped)
+        model.stop()
+    }
+
+    enum TerminalExpiry: CaseIterable { case stopPending, asleep, guardAlreadyGone }
+
+    @Test(arguments: TerminalExpiry.allCases)
+    func renewalPreservesTerminalHandbackUntilRetryOrDisable(_ expiry: TerminalExpiry) async throws {
+        let output = makeOutput(uid: "licensed-stall", name: "Licensed stall")
+        let destination = makeOutput(uid: "returned-output", name: "Returned output")
+        let edited = makeProfile(name: "Returned output EQ")
+        let fallback = makeProfile(name: "Fallback")
+        let store = ProfileStore(
+            profiles: [fallback, edited],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: destination.uid, profileID: edited.id)
+            ], fallbackProfileID: fallback.id)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store, engine: engine, lookup: lookup, observers: observers, outputDelay: .zero,
+            renderWatchdogStallThreshold: .milliseconds(20), renderWatchdogPollInterval: .milliseconds(5),
+            licensing: .provider(source))
+        try #require(await waitUntil { model.licenseSnapshot != nil })
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.retryPlayback == .muted && engine.state == .stopped })
+        let terminalReason = model.statusMessage
+        let gate = FakeStartBlocker()
+        defer { gate.unblock() }
+        switch expiry {
+        case .stopPending:
+            engine.handbackGate = gate
+        case .asleep:
+            model.handleWillSleep()
+            #expect(engine.holdsProcessingMute)
+        case .guardAlreadyGone:
+            engine.stop()
+        }
+        source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        if expiry == .stopPending {
+            try #require(await waitUntil { gate.waitUntilEntered(timeout: .now()) })
+        } else {
+            try #require(
+                await waitUntil {
+                    model.licenseSnapshot?.sequence == 2 && !engine.holdsProcessingMute
+                })
+        }
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        try #require(await waitUntil { model.licenseSnapshot?.sequence == 3 })
+        if expiry == .stopPending {
+            engine.handbackGate = nil
+            gate.unblock()
+        } else if expiry == .asleep {
+            model.handleDidWake()
+        }
+        try #require(await waitUntil { model.retryPlayback == .handedBack && !model.engineIsHoldingMute })
+        #expect(model.statusMessage == terminalReason)
+        let suspensionsAfterHandback = engine.stopCallCount - engine.handbackCount
+        model.handleWillSleep()
+        lookup.result = .success(destination)
+        model.handleDidWake()
+        model.handleDidWake()
+        let observer = try #require(observers.observers.last)
+        observer.emit(.success(destination))
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 4))
+        try #require(
+            await waitUntil { model.currentOutputUID == destination.uid && model.licenseSnapshot?.sequence == 4 })
+        #expect(model.retryPlayback == .handedBack)
+        #expect(!engine.holdsProcessingMute)
+        #expect(engine.stopCallCount - engine.handbackCount == suspensionsAfterHandback)
+        #expect(engine.startCalls.count == 2)
+        #expect(engine.updateDSPCalls.isEmpty)
+        if expiry == .stopPending {
+            model.retryAudioEngine()
+            observer.emit(.success(destination), reason: .initial)
+            try #require(await waitUntil { model.isRunning && engine.holdsProcessingMute })
+            #expect(engine.startCalls.last?.profile == edited)
+            #expect(engine.startCalls.last?.output == destination)
+            model.stop()
+        } else {
+            model.toggleMenuProcessing()
+            #expect(model.processingWasStopped)
+            #expect(model.retryPlayback == nil)
+            #expect(!engine.holdsProcessingMute)
+        }
     }
 
     @Test

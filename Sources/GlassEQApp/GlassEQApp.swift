@@ -632,10 +632,19 @@ final class GlassEQAppModel {
     @ObservationIgnored private var visibleForegroundWindowCount = 0
     private var hasStartedAudio = false
     private var pendingRendererSuspensions = 0
+    enum RetryPlayback { case muted, handedBack }
+
     private enum ProcessingIntent: Equatable {
         case stopped
         case requested
-        case awaitingRetry(String)
+        case awaitingRetry(String, RetryPlayback)
+
+        var needsProtection: Bool {
+            switch self {
+            case .requested, .awaitingRetry(_, .muted): true
+            case .stopped, .awaitingRetry(_, .handedBack): false
+            }
+        }
 
         var awaitsRetry: Bool {
             if case .awaitingRetry = self { return true }
@@ -1370,6 +1379,7 @@ final class GlassEQAppModel {
             return
         }
         let wasLicensed = processingIsLicensed
+        if !snapshot.content.permitsProcessing { preserveFailedStartForRetry() }
         licenseSnapshot = snapshot
         lastAppliedLicenseSequence = snapshot.sequence
         if snapshot.content.permitsProcessing {
@@ -1377,6 +1387,10 @@ final class GlassEQAppModel {
                 resumeProcessingIfLicenseAllows()
             }
             notifyModelDidChange()
+        } else if processingIntent.awaitsRetry, lifecycleState != .terminating {
+            stopObserver()
+            scheduleEngineStop(updateMetrics: true)
+            blockProcessingForLicense()
         } else if lifecycleState == .sleeping {
             if engine.holdsProcessingMute || pendingRendererSuspensions > 0 {
                 scheduleEngineStop(updateMetrics: false)
@@ -1410,8 +1424,8 @@ final class GlassEQAppModel {
         switch processingIntent {
         case .requested:
             start()
-        case .awaitingRetry(let reason):
-            restoreRetryAfterInterruption(reason)
+        case .awaitingRetry(let reason, let playback):
+            restoreRetryAfterInterruption(reason, playback: playback)
         case .stopped:
             break
         }
@@ -1442,15 +1456,17 @@ final class GlassEQAppModel {
         statusMessage = localized("Subscription ended. Restoring unprocessed playback...")
         notifyModelDidChange()
 
-        var identityProfile = activeProfile
-        identityProfile.isBypassed = true
-        let identity = identityProfile
-        let engine = engine
-        let fadeTask = engineWorkExecutor.enqueue(priority: .userInitiated) { () -> DSPTransitionProgress.Target? in
-            engine.updateDSP(profile: identity)
-        }
-        if let target = await fadeTask.value {
-            await waitForDSPTransition(reaching: target)
+        if processingIntent == .requested {
+            var identityProfile = activeProfile
+            identityProfile.isBypassed = true
+            let identity = identityProfile
+            let engine = engine
+            let fadeTask = engineWorkExecutor.enqueue(priority: .userInitiated) { () -> DSPTransitionProgress.Target? in
+                engine.updateDSP(profile: identity)
+            }
+            if let target = await fadeTask.value {
+                await waitForDSPTransition(reaching: target)
+            }
         }
 
         guard lifecycleState != .terminating,
@@ -2741,8 +2757,8 @@ final class GlassEQAppModel {
 
         guard !processingWasStopped else { return }
         if processingIntent.awaitsRetry {
-            guard activeProfile.isBypassed else { return }
-            processingIntent = .requested
+            if activeProfile.isBypassed { stop() }
+            return
         }
 
         guard pendingOutputTransitionAction != .stopped else {
@@ -2825,11 +2841,13 @@ final class GlassEQAppModel {
     }
 
     private(set) var engineIsHoldingMute = false
-    var canRetryMutedOutput: Bool {
-        guard engineIsHoldingMute, lifecycleState == .stopped else { return false }
+    var retryPlayback: RetryPlayback? {
+        guard lifecycleState == .stopped, processingIsLicensed, licenseStopTask == nil else { return nil }
+        if case .awaitingRetry(_, .handedBack) = processingIntent { return .handedBack }
+        guard engineIsHoldingMute else { return nil }
         switch onboardingAudioCaptureState {
-        case .failed, .permissionDenied: return true
-        default: return false
+        case .failed, .permissionDenied: return .muted
+        default: return nil
         }
     }
     var processingWasStopped: Bool { hasStartedAudio && processingIntent == .stopped }
@@ -2879,6 +2897,16 @@ final class GlassEQAppModel {
     }
 
     private func scheduleEngineStop(updateMetrics: Bool) {
+        // Once queued, handback runs even if the license renews before HAL finishes stopping.
+        switch processingIntent {
+        case .awaitingRetry(let reason, .muted):
+            processingIntent = .awaitingRetry(reason, .handedBack)
+            guard pendingRendererSuspensions > 0 || engineStateNeedsStop else { return }
+        case .awaitingRetry(_, .handedBack):
+            return
+        default:
+            break
+        }
         recordDiagnosticsRuntimeStop()
         let stopTask = enqueueEngineStop()
         Task { @MainActor [weak self] in
@@ -3093,7 +3121,8 @@ final class GlassEQAppModel {
         else {
             return
         }
-        if lifecycleState == .stopped, processingIntent != .stopped, !activeProfile.isBypassed, processingIsLicensed {
+        if lifecycleState == .stopped, processingIntent.needsProtection, !activeProfile.isBypassed, processingIsLicensed
+        {
             scheduleRendererSuspension()
         } else {
             scheduleEngineStop(updateMetrics: lifecycleState == .stopped)
@@ -3807,7 +3836,7 @@ final class GlassEQAppModel {
             blockProcessingForLicense()
             return
         }
-        if processingIntent.awaitsRetry || canRetryMutedOutput {
+        if processingIntent.awaitsRetry || retryPlayback != nil {
             renderWatchdog.reset()
             start()
             return
@@ -4055,14 +4084,24 @@ final class GlassEQAppModel {
         }
     }
 
-    private func restoreRetryAfterInterruption(_ reason: String) {
-        // Handback after expiry may still be queued. Reassert the guard in executor order.
-        suspendUntilRetry(reason)
+    private func preserveFailedStartForRetry() {
+        if processingIntent == .requested, retryPlayback == .muted {
+            processingIntent = .awaitingRetry(statusMessage, .muted)
+        }
+    }
+
+    private func restoreRetryAfterInterruption(_ reason: String, playback: RetryPlayback) {
+        if playback == .muted, !engine.holdsProcessingMute, pendingRendererSuspensions == 0 {
+            scheduleRendererSuspension()
+        }
+        statusMessage = reason
+        onboardingAudioCaptureState = .failed(message: reason)
         startObserver(sendInitialValue: true)
+        notifyModelDidChange()
     }
 
     private func suspendUntilRetry(_ message: String) {
-        processingIntent = .awaitingRetry(message)
+        processingIntent = .awaitingRetry(message, .muted)
         clearProgrammeComparisonSession()
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
@@ -4164,7 +4203,8 @@ final class GlassEQAppModel {
             return
         }
 
-        let keepMute = processingIntent != .stopped && processingIsLicensed && !activeProfile.isBypassed
+        preserveFailedStartForRetry()
+        let keepMute = processingIntent.needsProtection && processingIsLicensed && !activeProfile.isBypassed
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
         stopObserver()
@@ -4194,8 +4234,8 @@ final class GlassEQAppModel {
         }
         guard processingIntent == .requested else {
             lifecycleState = .stopped
-            if case .awaitingRetry(let reason) = processingIntent {
-                restoreRetryAfterInterruption(reason)
+            if case .awaitingRetry(let reason, let playback) = processingIntent {
+                restoreRetryAfterInterruption(reason, playback: playback)
                 return
             } else {
                 statusMessage = localized("Stopped")
@@ -4465,10 +4505,12 @@ private struct MenuBarView: View {
                 .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
             #endif
 
-            if model.canRetryMutedOutput {
+            if let playback = model.retryPlayback {
                 Button(localized("Retry audio engine")) { model.retryAudioEngine() }
-                Text(localized("Output is muted. Retry or choose Disable to restore normal playback."))
-                    .font(.caption)
+                if playback == .muted {
+                    Text(localized("Output is muted. Retry or choose Disable to restore normal playback."))
+                        .font(.caption)
+                }
             }
 
             Text(model.statusMessage)
