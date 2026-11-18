@@ -414,7 +414,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
         continuation.resume(throwing: error)
     }
 
-    private func handlePipeMessages(_ messages: [SettingsPipeMessage]) {
+    func handlePipeMessages(_ messages: [SettingsPipeMessage]) {
         do {
             for message in messages {
                 try handlePipeMessage(message)

@@ -310,14 +310,6 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
                 return
             }
 
-            if Self.shouldSuppressSelfInducedOutputChange(
-                selector: selector,
-                deviceID: outputID,
-                selfChangeGuard: CoreAudioSelfChangeGuard.shared
-            ) {
-                return
-            }
-
             let reason = Self.changeReason(for: selector)
             if Self.shouldRefreshImmediately(selector: selector) {
                 self.refreshObservedOutput(
@@ -339,17 +331,6 @@ public final class DefaultOutputDeviceObserver: @unchecked Sendable {
             operation: operation
         )
         outputListeners.append(ListenerToken(objectID: outputID, address: address, listener: listener))
-    }
-
-    static func shouldSuppressSelfInducedOutputChange(
-        selector: AudioObjectPropertySelector,
-        deviceID: AudioObjectID,
-        selfChangeGuard: CoreAudioSelfChangeGuard
-    ) -> Bool {
-        // Ignore changes we caused ourselves (our own buffer-size / sample-rate writes during
-        // a rebuild) so we don't loop reacting to our own device reconfiguration. Device-alive
-        // changes are never suppressed — a real disconnect must always be handled.
-        selector != kAudioDevicePropertyDeviceIsAlive && selfChangeGuard.isSelfChange(deviceID: deviceID)
     }
 
     static func shouldRefreshImmediately(selector: AudioObjectPropertySelector) -> Bool {

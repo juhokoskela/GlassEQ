@@ -135,35 +135,63 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func repeatedRenderStallKeepsOutputMutedAndRetryAvailable() async {
+    func repeatedRenderStallKeepsOutputMutedAndRetryAvailable() async throws {
         let output = makeOutput(uid: "watchdog-stop", name: "Watchdog Stop")
         let engine = FakeAudioEngine()
+        engine.playingOnStartNumber = 2
+        let observers = FakeDefaultOutputObserverFactory()
+        let lookup = FakeDefaultOutputLookup(.success(output))
         let model = makeModel(
             engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            renderWatchdogStallThreshold: .milliseconds(20),
-            renderWatchdogRepeatedFailureWindow: .seconds(1),
+            lookup: lookup, observers: observers, outputDelay: .zero,
+            renderWatchdogStallThreshold: .milliseconds(50),
             renderWatchdogPollInterval: .milliseconds(5)
         )
 
         model.retryAudioEngine()
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.stopCallCount == 2
-                && model.lifecycleState == .stopped
-        }
+        try #require(
+            await waitUntil {
+                engine.startCalls.count == 2 && model.settingsSnapshot().aggregateBuffer.isAvailable
+            })
+        try model.startProgrammeComparison(profile: makeProfile(name: "Unsaved audition"))
+        try #require(model.programmeComparison.isActive)
+        engine.playingOnStartNumber = nil
+        try #require(
+            await waitUntil {
+                engine.startCalls.count == 2 && engine.stopCallCount == 2 && model.lifecycleState == .stopped
+            })
 
         #expect(!model.isRunning)
+        #expect(!model.settingsSnapshot().programmeComparison.isActive)
+        let pollsAtStop = engine.snapshotProgrammeComparisonCallCount
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(engine.snapshotProgrammeComparisonCallCount == pollsAtStop)
+        #expect(engine.updateDSPCalls.isEmpty)
         #expect(model.statusMessage.contains("stalled again"))
         #expect(engine.holdsProcessingMute)
         #expect(engine.handbackCount == 0)
+        let destination = makeOutput(uid: "after-stall", name: "Changed output")
         model.handleWillSleep()
+        lookup.result = .success(destination)
         model.handleDidWake()
-        await settleAsyncWork()
+        try #require(await waitUntil { observers.observers.first?.startCalls == [true] })
+        let observer = observers.observers[0]
+        observer.emit(.success(destination), reason: .initial)
+        await waitUntil { model.currentOutputUID == destination.uid }
         #expect(engine.holdsProcessingMute)
         #expect(model.lifecycleState == .stopped)
-        #expect(engine.startCalls.count == 2)
         #expect(model.statusMessage.contains("stalled again"))
+        let mapped = makeProfile(name: "Profile for waking output")
+        try model.useForCurrentOutput(profile: mapped)
+        #expect(model.profileStore.profile(forOutputUID: destination.uid) == mapped)
+        #expect(model.profileStore.profile(forOutputUID: output.uid) != mapped)
+        #expect(engine.startCalls.count == 2)
+        #expect(engine.holdsProcessingMute)
+        model.retryAudioEngine()
+        observer.emit(.success(destination))
+        await waitUntil { model.isRunning && engine.startCalls.last?.output == destination }
+        #expect(engine.startCalls.last?.profile == mapped)
+        model.stop()
     }
 
     @Test(arguments: [SettingsAggregateBufferMode.automatic, .frames16, .frames128])
@@ -257,7 +285,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async {
+    func automaticAggregateBufferClimbsToOneTwentyEightAfterQualifyingInterruptions() async throws {
         let output = makeOutput(uid: "adaptive-aggregate", name: "Adaptive Aggregate")
         let engine = FakeAudioEngine()
         engine.reflectPreferredAggregateBufferFrameSize = true
@@ -265,61 +293,38 @@ struct GlassEQAppModelLifecycleTests {
         let observers = FakeDefaultOutputObserverFactory()
         let model = makeModel(
             engine: engine,
+            lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
             outputDelay: .zero,
+            renderWatchdogPollInterval: .seconds(30),
             aggregateBufferNotifier: notifier
         )
+        defer { model.stop() }
 
         model.start()
         observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running
-                && engine.startCalls.count == 1
-                && engine.startCalls[0].aggregateBufferFrameSize == 16
+        try #require(await waitUntil { model.isRunning })
+        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [16])
+
+        for (index, frameSize) in [UInt32(32), 64, 128].enumerated() {
+            // Each replacement monitor takes a fresh baseline after start completion.
+            // With Settings closed and the watchdog parked, only that monitor polls.
+            let readsAtStart = engine.snapshotMetricsCallCount
+            try #require(await waitUntil { engine.snapshotMetricsCallCount > readsAtStart })
+            if frameSize == 128 {
+                engine.metrics.qualifyingPairedTimestampDiscontinuities += 2
+            } else {
+                let readsBeforeFirstInterruption = engine.snapshotMetricsCallCount
+                engine.metrics.qualifyingPairedTimestampDiscontinuities += 1
+                try #require(await waitUntil { engine.snapshotMetricsCallCount > readsBeforeFirstInterruption })
+                #expect(engine.startCalls.count == index + 1)
+                engine.metrics.qualifyingPairedTimestampDiscontinuities += 1
+            }
+
+            try #require(await waitUntil { notifier.calls.count == index + 1 })
+            #expect(engine.startCalls.last?.aggregateBufferFrameSize == frameSize)
+            #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == frameSize)
         }
-        try? await Task.sleep(for: .milliseconds(30))
-
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 1
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.startCalls.count == 1)
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 2
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.startCalls[1].aggregateBufferFrameSize == 32
-                && notifier.calls.count == 1
-        }
-        try? await Task.sleep(for: .milliseconds(30))
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 3
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-        #expect(engine.startCalls.count == 2)
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 4
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 3
-                && engine.startCalls[2].aggregateBufferFrameSize == 64
-                && notifier.calls.count == 2
-        }
-
-        metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 6
-        engine.metrics = metrics
-        try? await Task.sleep(for: .milliseconds(350))
-
-        await waitUntil {
-            engine.startCalls.count == 4 && engine.startCalls.last?.aggregateBufferFrameSize == 128
-        }
-        #expect(notifier.calls.count == 3)
-        #expect(model.settingsSnapshot().aggregateBuffer.automaticFrameSize == 128)
     }
 
     @Test
@@ -429,6 +434,7 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         model.retryAudioEngine()
+        observers.observers[0].emit(.success(output))
         await waitUntil {
             model.lifecycleState == .running && engine.startCalls.count == 7
         }
@@ -902,7 +908,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func routeStartFailureRestoresTheProfileRunningOnThePreviousOutput() async {
+    func routeStartFailureSuspendsThePreviousRendererAndRetryUsesTheCurrentMapping() async {
         let firstOutput = makeOutput(uid: "route-rollback-first", name: "Route Rollback First", id: 200)
         let secondOutput = makeOutput(uid: "route-rollback-second", name: "Route Rollback Second", id: 300)
         let firstProfile = makeProfile(name: "First Output Profile")
@@ -941,17 +947,20 @@ struct GlassEQAppModelLifecycleTests {
         lookup.result = .success(secondOutput)
         observer.emit(.success(secondOutput))
 
-        await waitUntil {
-            engine.startCalls.count == 2
-                && model.lifecycleState == .running
-                && model.statusMessage.contains("not applied")
-        }
+        await waitUntil { engine.startCalls.count == 2 && model.lifecycleState == .stopped }
+        #expect(engine.state == .stopped)
+        #expect(engine.holdsProcessingMute)
+        #expect(engine.handbackCount == 0)
+        #expect(model.currentOutputUID == secondOutput.uid)
+        #expect(model.activeProfile == secondProfile)
+        #expect(model.profileStore == store)
 
-        #expect(engine.state == .running(output: firstOutput))
-        #expect(model.currentOutputUID == firstOutput.uid)
-        #expect(model.activeProfile == firstProfile)
-        #expect(model.selectedProfileID == firstProfile.id)
-        #expect(model.draftProfile == firstProfile)
+        lookup.result = .success(firstOutput)
+        model.retryAudioEngine()
+        observer.emit(.success(firstOutput), reason: .initial)
+        await waitUntil { model.lifecycleState == .running && engine.startCalls.count == 3 }
+        #expect(engine.startCalls.last?.output == firstOutput)
+        #expect(engine.startCalls.last?.profile == firstProfile)
         #expect(model.profileStore == store)
     }
 
@@ -1226,7 +1235,8 @@ struct GlassEQAppModelLifecycleTests {
         let response = try await model.performSettingsCommand(.retryAudioEngine)
         await settleAsyncWork()
 
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(snapshot.statusMessage == localized("Audio processing disabled"))
         #expect(snapshot.activeProfileID == disabled.id)
         #expect(engine.startCalls.isEmpty)
@@ -1265,7 +1275,6 @@ struct GlassEQAppModelLifecycleTests {
         try model.startProgrammeComparison(profile: draft)
 
         #expect(engine.programmeComparisonCalls == [draft])
-        #expect(engine.programmeComparisonReferences == [draft.filtersOffReference])
         #expect(engine.programmeComparisonSelections == [.equalized])
         #expect(model.activeProfile == active)
         #expect(model.settingsSnapshot().programmeComparison.isActive)
@@ -1273,7 +1282,8 @@ struct GlassEQAppModelLifecycleTests {
         model.selectProgrammeComparison(.reference)
         #expect(engine.programmeComparisonSelections == [.equalized, .reference])
         #expect(model.settingsSnapshot().programmeComparison.selection == .reference)
-        let settingsModel = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidAppear()
+        let settingsModel = try #require(model.fallbackEditor)
 
         engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
             isActive: true,
@@ -1590,6 +1600,73 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
         #expect(engine.events == ["start:\(initialOutput.uid)", "stop", "start:\(changedOutput.uid)"])
+    }
+
+    @Test
+    func bypassDuringUIDSettlementKeepsTheDestinationProtected() async throws {
+        let first = makeOutput(uid: "first", name: "First")
+        let second = makeOutput(uid: "second", name: "Second", id: 301)
+        let profile = makeProfile(name: "Original")
+        let mapped = makeProfile(name: "Destination")
+        let store = ProfileStore(
+            profiles: [profile, mapped],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: second.uid, profileID: mapped.id)
+            ], fallbackProfileID: profile.id)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(first))
+        let observers = FakeDefaultOutputObserverFactory()
+        let settlement = OutputSettlementGate()
+        defer { settlement.release() }
+        let model = makeModel(
+            store: store, engine: engine, lookup: lookup, observers: observers,
+            outputSleep: { await settlement.sleep(for: $0) })
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(first))
+        try #require(await waitUntil { model.isRunning })
+        settlement.hold()
+        lookup.result = .success(second)
+        observer.emit(.success(second))
+        try #require(await waitUntil { settlement.waitCount == 1 && engine.muteOutputCallCount == 1 })
+        model.setBypass(true)
+        settlement.release()
+        try #require(await waitUntil { model.isRunning && model.currentOutputUID == second.uid })
+        #expect(engine.startCalls.last?.profile == mapped)
+        #expect(engine.handbackCount == 0)
+        #expect(model.profileStore.profile(forOutputUID: first.uid).isBypassed)
+        model.stop()
+    }
+
+    @Test
+    func wakingFromABypassedOutputObservesTheNewMapping() async throws {
+        let old = makeOutput(uid: "bypassed", name: "Bypassed")
+        let new = makeOutput(uid: "enabled", name: "Enabled")
+        var bypassed = makeProfile(name: "Bypassed")
+        bypassed.isBypassed = true
+        let enabled = makeProfile(name: "Enabled")
+        let lookup = FakeDefaultOutputLookup(.success(old))
+        let observers = FakeDefaultOutputObserverFactory()
+        let engine = FakeAudioEngine()
+        let store = ProfileStore(
+            profiles: [bypassed, enabled],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: old.uid, profileID: bypassed.id)
+            ], fallbackProfileID: enabled.id)
+        let model = makeModel(
+            store: store, engine: engine, lookup: lookup, observers: observers,
+            outputDelay: .zero, wakeDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(old))
+        try #require(await waitUntil { model.onboardingAudioCaptureState == .bypassed })
+        model.handleWillSleep()
+        lookup.result = .success(new)
+        model.handleDidWake()
+        try #require(await waitUntil { observers.observers.count == 2 })
+        observers.observers[1].emit(.success(new))
+        try #require(await waitUntil { model.isRunning })
+        #expect(engine.startCalls.map(\.profile) == [enabled])
+        model.stop()
     }
 
     @Test(arguments: [false, true])
@@ -2385,6 +2462,42 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func exhaustedWakeReconnectRequiresAnExplicitRetry() async throws {
+        let output = makeOutput(uid: "exhausted", name: "Exhausted")
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: lookup, observers: observers,
+            outputDelay: .zero, wakeDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        model.handleWillSleep()
+        model.handleDidWake()
+        try #require(await waitUntil { observers.observers.count == 2 })
+        let wakeObserver = observers.observers[1]
+        lookup.result = .failure(TestAudioError.defaultOutputUnavailable)
+        for attempt in 1...12 {
+            try #require(await waitUntil { wakeObserver.startCalls.count == attempt })
+            wakeObserver.emit(.failure(TestAudioError.defaultOutputUnavailable))
+        }
+        try #require(await waitUntil { model.lifecycleState == .stopped && engine.holdsProcessingMute })
+        let next = makeOutput(uid: "reconnected", name: "Reconnected")
+        lookup.result = .success(next)
+        model.handleDidWake()
+        wakeObserver.emit(.success(next))
+        try #require(await waitUntil { model.currentOutputUID == next.uid })
+        #expect(engine.startCalls.count == 1)
+        #expect(wakeObserver.startCalls.count == 12)
+        model.retryAudioEngine()
+        wakeObserver.emit(.success(next))
+        try #require(await waitUntil { model.isRunning })
+        #expect(engine.startCalls.map(\.output) == [output, next])
+        model.stop()
+    }
+
+    @Test
     func wakeReconnectRetriesAfterTransientOutputFailure() async {
         let output = makeOutput(uid: "wake-retry-output", name: "Wake Retry Output")
         let engine = FakeAudioEngine()
@@ -2427,44 +2540,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func sessionActivationRecoversSleepingStateWhenDidWakeIsMissed() async {
-        let output = makeOutput(uid: "missed-wake-output", name: "Missed Wake Output")
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero,
-            wakeDelay: .zero
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        model.handleWillSleep()
-        #expect(model.lifecycleState == .sleeping)
-
-        model.handleSessionDidBecomeActive()
-        await waitUntil {
-            observers.observers.count == 2 && observers.observers[1].startCalls == [true]
-        }
-
-        observers.observers[1].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 2
-        }
-
-        #expect(model.isRunning)
-        #expect(model.statusMessage == localized("Processing \(output.name) with \(model.activeProfile.name)"))
-    }
-
-    @Test
-    func sessionActivationDuringPendingSleepReconnectDoesNotResetRetryBudget() async {
+    func repeatedWakeNotificationKeepsThePendingReconnectBudget() async {
         let output = makeOutput(uid: "late-session-wake-output", name: "Late Session Wake Output")
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(output))
@@ -2489,7 +2565,7 @@ struct GlassEQAppModelLifecycleTests {
             observers.observers.count == 2 && observers.observers[1].startCalls == [true]
         }
 
-        model.handleSessionDidBecomeActive()
+        model.handleDidWake()
         await settleAsyncWork()
         #expect(observers.observers[1].startCalls == [true])
 
@@ -2609,7 +2685,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func sessionActivationDoesNotRebuildRunningOutputWithoutSleepIntent() async {
+    func wakeNotificationDoesNotRebuildAnAlreadyRunningOutput() async {
         let output = makeOutput(uid: "unlock-output", name: "Unlock Output")
         let engine = FakeAudioEngine()
         let lookup = FakeDefaultOutputLookup(.success(output))
@@ -2630,7 +2706,7 @@ struct GlassEQAppModelLifecycleTests {
         }
         let lookupCallsBeforeActivation = lookup.defaultOutputCalls
 
-        model.handleSessionDidBecomeActive()
+        model.handleDidWake()
         await settleAsyncWork()
 
         #expect(engine.muteOutputCallCount == 0)
@@ -2794,13 +2870,14 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func settingsCreateProfileCommandReturnsUpdatedSnapshot() async throws {
+    func settingsCreateProfileCommandUpdatesTheLibrary() async throws {
         let model = makeModel()
         let initialCount = model.profileStore.profiles.count
 
         let response = try await model.performSettingsCommand(.createProfile(.parametric))
 
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(snapshot.profiles.count == initialCount + 1)
         #expect(snapshot.draftProfile.mode == .parametric)
         #expect(snapshot.selectedProfileID == snapshot.draftProfile.id)
@@ -2862,6 +2939,38 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func applyingSavedFallbackEditChangesTheBankWithoutResavingTheLibrary() async throws {
+        let active = makeProfile(name: "Profile")
+        let engine = FakeAudioEngine()
+        let output = makeOutput()
+        let observers = FakeDefaultOutputObserverFactory()
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id), storeURL: storeURL,
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers,
+            saveDelay: .seconds(60), outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        #expect(await waitUntil { model.isRunning })
+        var saved = active
+        saved.preampDB = -9
+        try model.setFallback(profile: saved)
+        #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
+        #expect(await model.flushStoreBeforeQuit())
+        let timestamp = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: storeURL.path)
+        _ = try await model.performSettingsCommand(.applyProfile(saved))
+        #expect(engine.updateDSPCalls.last == saved)
+        #expect(model.settingsSnapshot().activeProfileMatchesLibrary)
+        #expect(await model.flushStoreBeforeQuit())
+        let attributes = try FileManager.default.attributesOfItem(atPath: storeURL.path)
+        #expect(attributes[.modificationDate] as? Date == timestamp)
+        model.stop()
+    }
+
+    @Test
     func settingsDuplicateUsesExplicitProfileID() async throws {
         let first = makeProfile(name: "First")
         let second = makeProfile(name: "Second")
@@ -2871,7 +2980,8 @@ struct GlassEQAppModelLifecycleTests {
 
         let response = try await model.performSettingsCommand(.duplicateProfile(second.id))
 
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(snapshot.profiles.count == 3)
         #expect(snapshot.draftProfile.name == "Second Copy")
         #expect(snapshot.draftProfile.id != second.id)
@@ -2997,7 +3107,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(try Data(contentsOf: storeURL) == futureData)
 
         let response = try await model.performSettingsCommand(.resetUnsupportedProfileStore)
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(!snapshot.profileStoreProtection.isProtected)
         #expect(try ProfilePersistence.decode(Data(contentsOf: storeURL)).profiles == ProfileStore.defaultProfiles)
 
@@ -3013,6 +3124,60 @@ struct GlassEQAppModelLifecycleTests {
 
         _ = try await model.performSettingsCommand(.createProfile(.parametric))
         #expect(model.profileStore.profiles.count == ProfileStore.defaultProfiles.count + 1)
+    }
+
+    @Test(arguments: [false, true])
+    func failedRecoveryBackupPreservesOriginalUntilExplicitReset(partiallyRecoverable: Bool) async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let original: Data
+        if partiallyRecoverable {
+            let good = makeProfile(name: "Surviving profile")
+            let invalid = makeProfile(name: "")
+            original = try ProfilePersistence.encoder.encode(
+                ProfileStore(profiles: [good, invalid], fallbackProfileID: good.id))
+        } else {
+            original = Data("invalid JSON".utf8)
+        }
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try original.write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let output = makeOutput()
+        let model = GlassEQAppModel(
+            storeURL: url, engine: engine,
+            defaultOutputLookup: FakeDefaultOutputLookup(.success(output)),
+            observerFactory: observers, autoStart: false,
+            installLifecycleObservers: false, registerAppDelegate: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+
+        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        model.toggleMenuProcessing()
+        try #require(await waitUntil { model.processingWasStopped && engine.handbackCount > 0 })
+        #expect(!engine.holdsProcessingMute)
+        model.toggleMenuProcessing()
+        observers.observers.last?.emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        #expect(await model.flushStoreBeforeQuit())
+        try #require(Data(contentsOf: url) == original)
+        #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
+
+        try await model.resetUnsupportedProfileStore()
+        #expect(!model.settingsSnapshot().profileStoreProtection.isProtected)
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+        )
+        .filter { $0.lastPathComponent.hasPrefix("Profiles.invalid-") }
+        #expect(backups.count == 1)
+        let backup = try #require(backups.first)
+        #expect(try Data(contentsOf: backup) == original)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)).profiles == ProfileStore.defaultProfiles)
+        await model.cleanupForTerminationAndWait()
     }
 
     @Test
@@ -3289,16 +3454,20 @@ struct GlassEQAppModelLifecycleTests {
         var attempted = running
         attempted.name = "Attempted Apply"
         var laterSaved = running
-        laterSaved.name = "Saved While Apply Was Pending"
+        laterSaved.preampDB = -7
         let output = makeOutput(uid: "later-edit-output", name: "Later Edit Output")
         let store = ProfileStore(profiles: [running], fallbackProfileID: running.id)
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let model = makeModel(
             store: store,
+            storeURL: storeURL,
             engine: engine,
             lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
+            saveDelay: .seconds(60),
             outputDelay: .zero
         )
 
@@ -3322,9 +3491,12 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil { model.statusMessage.contains("not applied") }
 
         #expect(model.activeProfile == running)
+        #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
         #expect(model.profileStore.profiles == [laterSaved])
         #expect(model.profileStore.fallbackProfileID == laterSaved.id)
         #expect(engine.state == .running(output: output))
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try ProfilePersistence.decode(Data(contentsOf: storeURL)) == model.profileStore)
     }
 
     @Test
@@ -3335,11 +3507,15 @@ struct GlassEQAppModelLifecycleTests {
         let store = ProfileStore(profiles: [running], fallbackProfileID: running.id)
         let engine = FakeAudioEngine()
         let observers = FakeDefaultOutputObserverFactory()
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
         let model = makeModel(
             store: store,
+            storeURL: storeURL,
             engine: engine,
             lookup: FakeDefaultOutputLookup(.success(output)),
             observers: observers,
+            saveDelay: .seconds(60),
             outputDelay: .zero
         )
 
@@ -3363,6 +3539,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.activeProfile == running)
         #expect(model.profileStore == store)
         #expect(engine.state == .running(output: output))
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try ProfilePersistence.decode(Data(contentsOf: storeURL)) == model.profileStore)
     }
 
     @Test
@@ -3475,6 +3653,57 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.programmeComparisonCalls.isEmpty)
         #expect(applyFailure?.message.contains("48") == true)
         #expect(applyFailure?.message.contains("44") == true)
+    }
+
+    @Test(arguments: [false, true])
+    func restoredDeviceRateSettlesAndRechecksTheMappedImpulseResponse(switchAgain: Bool) async throws {
+        let original = makeOutput(uid: "restored-rate", name: "Restored DAC", nominalSampleRate: 48_000)
+        var restored = original
+        restored.nominalSampleRate = 44_100
+        let other = makeOutput(uid: "other-dac", name: "Other DAC", id: 301)
+        let impulse = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
+        let fallback = makeProfile(name: "Fallback")
+        let store = ProfileStore(
+            profiles: [fallback, impulse],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: original.uid, profileID: impulse.id)
+            ], fallbackProfileID: fallback.id)
+        let engine = FakeAudioEngine()
+        engine.startError = AudioDeviceAvailabilityError.defaultOutputChanged(restored)
+        engine.blockStart(for: original.uid)
+        defer { engine.unblockStart(for: original.uid) }
+        let lookup = FakeDefaultOutputLookup(.success(original))
+        let observers = FakeDefaultOutputObserverFactory()
+        let settlement = OutputSettlementGate()
+        defer { settlement.release() }
+        let model = makeModel(
+            store: store, engine: engine, lookup: lookup, observers: observers,
+            outputSleep: { await settlement.sleep(for: $0) })
+        model.start()
+        observers.observers[0].emit(.success(original))
+        try #require(await waitUntil { engine.startCalls.count == 1 })
+        settlement.hold()
+        lookup.result = .success(restored)
+        engine.unblockStart(for: original.uid)
+        try #require(await waitUntil { settlement.waitCount == 1 })
+        #expect(engine.holdsProcessingMute)
+        #expect(engine.startCalls.map(\.profile) == [impulse])
+        engine.startError = nil
+        lookup.result = .success(switchAgain ? other : restored)
+        settlement.release()
+        if switchAgain {
+            try #require(await waitUntil { model.isRunning && model.currentOutputUID == other.uid })
+            #expect(engine.startCalls.map(\.profile) == [impulse, fallback])
+        } else {
+            try #require(
+                await waitUntil { model.currentOutputSampleRate == 44_100 && model.lifecycleState == .stopped })
+            #expect(model.statusMessage.contains(impulse.name))
+            #expect(engine.startCalls.count == 1)
+            #expect(engine.updateDSPCalls.isEmpty)
+            #expect(engine.holdsProcessingMute)
+        }
+        #expect(model.profileStore == store)
+        model.stop()
     }
 
     @Test
@@ -3666,6 +3895,7 @@ struct GlassEQAppModelLifecycleTests {
         engine.startError = nil
         model.startAudioForOnboarding()
         #expect(model.onboardingAudioCaptureState == .pending)
+        observers.observers[0].emit(.success(output), reason: .initial)
         await waitUntil {
             model.onboardingAudioCaptureState == .running(outputName: output.name)
         }
@@ -3736,6 +3966,28 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func quitReusesSavedApplyAndRestoresAMissingFile() async throws {
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let model = makeModel(storeURL: storeURL, saveDelay: .zero)
+        var profile = model.activeProfile
+        profile.preampDB = -7
+        _ = try await model.performSettingsCommand(.applyProfile(profile))
+        try #require(await waitUntil { FileManager.default.fileExists(atPath: storeURL.path) })
+        let original = storeURL.deletingLastPathComponent().appendingPathComponent("before-quit.json")
+        try FileManager.default.linkItem(at: storeURL, to: original)
+
+        #expect(await model.flushStoreBeforeQuit())
+        let manager = FileManager.default
+        let originalAttributes = try manager.attributesOfItem(atPath: original.path)
+        let flushedAttributes = try manager.attributesOfItem(atPath: storeURL.path)
+        #expect(originalAttributes[.systemFileNumber] as? NSNumber == flushedAttributes[.systemFileNumber] as? NSNumber)
+        try manager.removeItem(at: storeURL)
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try Data(contentsOf: original) == Data(contentsOf: storeURL))
+    }
+
+    @Test
     func quitWaitsForInFlightImportBeforeFlushingProfiles() async throws {
         let storeURL = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: storeURL) }
@@ -3783,9 +4035,8 @@ struct GlassEQAppModelLifecycleTests {
         var pickerCallCount = 0
 
         await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single),
-                model: model,
+            _ = try await model.performSettingsCommand(
+                .chooseImportFiles(mode: .single),
                 picker: { _ in
                     pickerCallCount += 1
                     return nil
@@ -3803,9 +4054,8 @@ struct GlassEQAppModelLifecycleTests {
         let picker = BlockingSettingsFileImportPicker()
 
         let pickerTask = Task { @MainActor in
-            try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single),
-                model: model,
+            try await model.performSettingsCommand(
+                .chooseImportFiles(mode: .single),
                 picker: picker.choose(mode:)
             )
         }
@@ -3942,7 +4192,7 @@ struct GlassEQAppModelLifecycleTests {
             picker: picker
         )
         let settingsModel = GlassEQSettingsViewModel(client: client)
-        model.inProcessSettingsViewModelStorage = settingsModel
+        model.fallbackEditor = settingsModel
         let pickerTask = Task { @MainActor in
             await settingsModel.perform(.chooseImportFiles(mode: .single))
         }
@@ -3956,6 +4206,26 @@ struct GlassEQAppModelLifecycleTests {
         #expect(await pickerTask.value == nil)
         #expect(settingsModel.commandErrorMessage == nil)
         model.resumeSettingsCommandsAfterCancelledQuit()
+    }
+
+    @Test
+    func closingFallbackCancelsItsPickerAndLetsTheNextWindowOpen() async {
+        let model = makeModel()
+        let picker = CancellableSettingsFileImportPicker()
+        let previous = GlassEQSettingsViewModel(
+            client: CancellableInProcessSettingsClient(model: model, picker: picker))
+        model.fallbackEditor = previous
+        let selection = Task { await previous.chooseImportFiles(mode: .stereoPair) }
+        #expect(await waitUntil { picker.hasEntered })
+
+        model.inProcessSettingsDidDisappear()
+        model.inProcessSettingsDidAppear()
+
+        #expect(await selection.value == nil)
+        #expect(picker.wasCancelled)
+        #expect(model.fallbackEditor !== previous)
+        #expect(model.fallbackEditor?.isConnected == true)
+        model.inProcessSettingsDidDisappear()
     }
 
     @Test
@@ -3998,6 +4268,66 @@ struct GlassEQAppModelLifecycleTests {
         #expect(!coordinator.hasActiveSessionResourcesForTesting)
         await model.stopAcceptingSettingsCommandsAndWait()
         model.resumeSettingsCommandsAfterCancelledQuit()
+    }
+
+    @Test
+    func settingsPipeClosureEndsAuditionAndRestoresTheSavedProfile() async throws {
+        let engine = FakeAudioEngine()
+        let output = makeOutput(uid: "comparison", name: "Output")
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers, outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        #expect(await waitUntil { model.lifecycleState == .running })
+        let active = model.activeProfile
+        var draft = active
+        draft.preampDB = -7
+        let launcher = ControllableSettingsHelperLauncher()
+        let coordinator = SettingsCoordinator(
+            model: model, helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
+        )
+        model.settingsCoordinator = coordinator
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
+        try launcher.writeHelperMessage(
+            .request(sessionToken: token, id: "compare", kind: .command, command: .startProgrammeComparison(draft)))
+        #expect(await waitUntil { model.programmeComparison.isActive })
+        try launcher.writeHelperMessage(
+            .request(sessionToken: token, id: "off", kind: .command, command: .selectProgrammeComparison(.reference)))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    guard case let .response(_, "off", response, nil) = $0 else { return false }
+                    return response != nil && response?.snapshot == nil
+                }
+            })
+        #expect(model.programmeComparison.selection == .reference)
+        try launcher.closeHelperOutput()
+        #expect(await waitUntil { !model.programmeComparison.isActive })
+        #expect(engine.updateDSPCalls.last == active)
+        #expect(model.activeProfile == active)
+        model.stop()
+    }
+
+    @Test
+    func closingFallbackRejectsQueuedCompareAfterReopen() async throws {
+        let model = makeModel()
+        model.inProcessSettingsDidAppear()
+        let closed = try #require(model.fallbackEditor)
+        model.inProcessSettingsDidDisappear()
+        #expect(model.fallbackEditor == nil)
+        #expect(!closed.isConnected)
+        model.inProcessSettingsDidAppear()
+        let reopened = try #require(model.fallbackEditor)
+        #expect(reopened !== closed)
+        await #expect(throws: CancellationError.self) {
+            _ = try await model.performSettingsCommand(.startProgrammeComparison(model.activeProfile), from: closed)
+        }
+        #expect(!model.programmeComparison.isActive)
     }
 
     @Test
@@ -4236,24 +4566,92 @@ struct GlassEQAppModelLifecycleTests {
         model.engineMetrics = AudioEngineMetrics(capturedFrames: 42)
         coordinator.modelDidChange()
         coordinator.metricsDidChange()
+        try launcher.writeHelperOutput(
+            SettingsPipeCodec.encodeLine(.request(sessionToken: token, id: "ready", kind: .ready, command: nil))
+                + SettingsPipeCodec.encodeLine(
+                    .request(sessionToken: token, id: "reset", kind: .command, command: .resetDiagnostics)))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    if case .response(_, "reset", _, _) = $0 { true } else { false }
+                }
+            })
+        let messages = launcher.receivedAppMessages
+        let ready = try #require(
+            messages.firstIndex { if case .response(_, "ready", _, _) = $0 { true } else { false } })
+        let patch = try #require(
+            messages.firstIndex { message in
+                guard case .event(_, .snapshotPatched(let patch)) = message else { return false }
+                return patch.statusMessage == "Changed before ready"
+            })
+        let captured = try #require(
+            messages.firstIndex { message in
+                guard case .event(_, .metricsChanged(let metrics)) = message else { return false }
+                return metrics.capturedFrames == 42
+            })
+        let reset = try #require(
+            messages.firstIndex { if case .response(_, "reset", _, _) = $0 { true } else { false } })
+        #expect(ready < patch)
+        #expect(patch < captured)
+        #expect(captured < reset)
+        #expect(!messages.contains { if case .event(_, .snapshotChanged) = $0 { true } else { false } })
+        #expect(coordinator.isHelperReadyForTesting)
+        coordinator.shutdown()
+    }
+
+    @Test
+    func overlappingSettingsCommandsPublishLibraryChangesBeforeAcknowledging() async throws {
+        let importer = BlockingProfileImportOperation()
+        let model = makeModel(profileImportOperation: importer.run(format:name:text:))
+        let launcher = ControllableSettingsHelperLauncher()
+        let coordinator = SettingsCoordinator(
+            model: model, helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
+        )
+        model.settingsCoordinator = coordinator
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
+        let imported = makeProfile(name: "Slow import")
         try launcher.writeHelperMessage(
             .request(
-                sessionToken: token,
-                id: "ready",
-                kind: .ready,
-                command: nil
+                sessionToken: token, id: "import", kind: .command,
+                command: .importProfile(format: .autoEQ, name: imported.name, text: "1 0")
             ))
-
-        await waitUntil {
-            launcher.receivedAppMessages.contains { message in
-                guard case .event(_, .snapshotChanged(let snapshot)) = message else {
-                    return false
+        #expect(await waitUntil { importer.hasEntered })
+        model.statusMessage = "Changed during import"
+        model.notifyModelDidChange()
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token, id: "create", kind: .command, command: .createProfile(.parametric)))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    if case .response(_, "create", _, _) = $0 { true } else { false }
                 }
-                return snapshot.statusMessage == "Changed before ready"
-                    && snapshot.metrics.capturedFrames == 42
+            })
+        importer.complete(with: .success(imported))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    if case .response(_, "import", _, _) = $0 { true } else { false }
+                }
+            })
+        var order: [String] = []
+        for message in launcher.receivedAppMessages {
+            switch message {
+            case .event(_, .snapshotPatched(let patch)) where patch.statusMessage == "Changed during import":
+                order.append("intervening patch")
+            case .event(_, .snapshotChanged(let snapshot)):
+                order.append("library \(snapshot.profiles.count)")
+            case .response(_, let id, let response?, nil) where id == "create" || id == "import":
+                #expect(response.snapshot == nil)
+                order.append(id)
+            default:
+                break
             }
         }
-        #expect(coordinator.isHelperReadyForTesting)
+        #expect(order == ["intervening patch", "library 2", "create", "library 3", "import"])
+        #expect(model.selectedProfileID == model.profileStore.profiles.last?.id)
         coordinator.shutdown()
     }
 
@@ -4357,29 +4755,40 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func aggregateBufferNotificationOpensSettingsInTheMainProcess() {
+    func aggregateBufferNotificationOpensOutputInTheHelper() async throws {
         let model = makeModel()
-
+        let launcher = ControllableSettingsHelperLauncher()
+        let coordinator = SettingsCoordinator(
+            model: model, helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
+        )
+        model.settingsCoordinator = coordinator
         model.openAggregateBufferSettings()
-
-        #expect(model.inProcessSettingsPresentationIsPending)
-        #expect(model.inProcessSettingsPresentationGeneration == 1)
-        #expect(!model.settingsCoordinator.hasActiveSessionResourcesForTesting)
+        #expect(coordinator.hasActiveSessionResourcesForTesting)
+        #expect(!model.inProcessSettingsPresentationIsPending)
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher, open: false)
+        let expected = SettingsPipeMessage.event(sessionToken: token, event: .sectionRequested(.output))
+        #expect(await waitUntil { launcher.receivedAppMessages.contains(expected) })
+        coordinator.shutdown()
     }
 
     @Test
     func inProcessSettingsFallbackPerformsCommandsAndTracksModelChanges() async throws {
         let model = makeModel()
-        let settingsModel = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidAppear()
+        let settingsModel = try #require(model.fallbackEditor)
         let profileSnapshotRevision = settingsModel.profileSnapshotRevision
 
         #expect(settingsModel.isConnected)
         #expect(settingsModel.snapshot == model.settingsSnapshot())
-        #expect(model.inProcessSettingsViewModel() === settingsModel)
+        model.inProcessSettingsDidAppear()
+        #expect(model.fallbackEditor === settingsModel)
         #expect(settingsModel.profileSnapshotRevision == profileSnapshotRevision)
 
         let response = await settingsModel.perform(.createProfile(.parametric))
-        #expect(response?.snapshot?.profiles.count == 2)
+        #expect(response != nil && response?.snapshot == nil)
+        #expect(settingsModel.snapshot.profiles.count == 2)
         #expect(settingsModel.snapshot == model.settingsSnapshot())
     }
 
@@ -4901,14 +5310,7 @@ private final class CancellableInProcessSettingsClient: SettingsCommanding {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(
-            for: command,
-            model: model,
-            picker: picker.choose(mode:)
-        ) {
-            return response
-        }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, picker: picker.choose(mode:))
     }
 }
 
@@ -5012,9 +5414,12 @@ private func settleAsyncWork() async {
 @MainActor
 private func connectSettingsHelper(
     coordinator: SettingsCoordinator,
-    launcher: ControllableSettingsHelperLauncher
+    launcher: ControllableSettingsHelperLauncher,
+    open: Bool = true
 ) async throws -> String {
-    #expect(coordinator.openSettings() == .helper)
+    if open {
+        #expect(coordinator.openSettings() == .helper)
+    }
     await waitUntil {
         launcher.receivedAppMessages.contains { message in
             if case .bootstrap = message {
@@ -5444,7 +5849,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
     private var _programmeComparisonCalls: [EQProfile] = []
-    private var _programmeComparisonReferences: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _snapshotProgrammeComparisonCallCount = 0
@@ -5455,6 +5859,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _muteOutputCallCount = 0
     private var _resumeOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
+    private var _playingOnStartNumber: Int?
     private var _snapshotMetricsCallCount = 0
     private var _events: [String] = []
     private var _preferredAggregateBufferFrameSize: UInt32 = 16
@@ -5523,11 +5928,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _programmeComparisonCalls = newValue } }
     }
 
-    private(set) var programmeComparisonReferences: [EQProfile] {
-        get { withLock { _programmeComparisonReferences } }
-        set { withLock { _programmeComparisonReferences = newValue } }
-    }
-
     private(set) var programmeComparisonSelections: [EQProgrammeComparisonSelection] {
         get { withLock { _programmeComparisonSelections } }
         set { withLock { _programmeComparisonSelections = newValue } }
@@ -5555,6 +5955,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var resumeOutputCallCount: Int {
         get { withLock { _resumeOutputCallCount } }
         set { withLock { _resumeOutputCallCount = newValue } }
+    }
+
+    var playingOnStartNumber: Int? {
+        get { withLock { _playingOnStartNumber } }
+        set { withLock { _playingOnStartNumber = newValue } }
     }
 
     var metrics: AudioEngineMetrics {
@@ -5780,10 +6185,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
+    func beginProgrammeComparison(profile: EQProfile) -> Bool {
         withLock {
             _programmeComparisonCalls.append(profile)
-            _programmeComparisonReferences.append(reference)
             _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
                 isActive: true,
                 selection: .equalized
@@ -5822,7 +6226,14 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
+    private var _handbackGate: FakeStartBlocker?
+    var handbackGate: FakeStartBlocker? {
+        get { withLock { _handbackGate } }
+        set { withLock { _handbackGate = newValue } }
+    }
+
     func stop() {
+        handbackGate?.waitUntilUnblocked()
         tearDownRenderer(keepingMute: false)
     }
 
@@ -5839,6 +6250,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     func snapshotMetrics() -> AudioEngineMetrics {
         withLock {
             _snapshotMetricsCallCount += 1
+            if _playingOnStartNumber == _startCalls.count {
+                _metrics.playedFrames += 1
+            }
             return _metrics
         }
     }
@@ -6207,6 +6621,182 @@ struct LicenseEnforcementTests {
         #expect(model.lifecycleState == .stopped)
     }
 
+    @Test(arguments: [false, true])
+    func renewalAfterAProtectedStartupFailureLeavesDirectPlaybackUntilRetry(sleepBeforeExpiry: Bool) async throws {
+        let output = makeOutput(uid: "failed-start", name: "Failed startup")
+        let engine = FakeAudioEngine()
+        engine.startError = TestAudioError.startFailed
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers,
+            outputDelay: .zero, licensing: .provider(source))
+        try #require(await waitUntil { model.licenseSnapshot != nil })
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.retryPlayback == .muted })
+        let failure = model.statusMessage
+        if sleepBeforeExpiry { model.handleWillSleep() }
+        source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        try #require(await waitUntil { engine.handbackCount == 1 })
+        engine.startError = nil
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        try #require(await waitUntil { model.licenseSnapshot?.sequence == 3 })
+        if sleepBeforeExpiry { model.handleDidWake() }
+        try #require(await waitUntil { model.retryPlayback == .handedBack })
+        let observer = try #require(observers.observers.last)
+        observer.emit(.success(output), reason: .initial)
+        await settleAsyncWork()
+        #expect(model.statusMessage == failure)
+        #expect(engine.startCalls.count == 1)
+        #expect(!engine.holdsProcessingMute)
+        model.retryAudioEngine()
+        observer.emit(.success(output), reason: .initial)
+        try #require(await waitUntil { model.isRunning && engine.holdsProcessingMute })
+        #expect(engine.startCalls.count == 2)
+        model.stop()
+    }
+
+    enum TerminalExpiry: CaseIterable { case stopPending, asleep, guardAlreadyGone }
+
+    @Test(arguments: TerminalExpiry.allCases)
+    func renewalPreservesTerminalHandbackUntilRetryOrDisable(_ expiry: TerminalExpiry) async throws {
+        let output = makeOutput(uid: "licensed-stall", name: "Licensed stall")
+        let destination = makeOutput(uid: "returned-output", name: "Returned output")
+        let edited = makeProfile(name: "Returned output EQ")
+        let fallback = makeProfile(name: "Fallback")
+        let store = ProfileStore(
+            profiles: [fallback, edited],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: destination.uid, profileID: edited.id)
+            ], fallbackProfileID: fallback.id)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store, engine: engine, lookup: lookup, observers: observers, outputDelay: .zero,
+            renderWatchdogStallThreshold: .milliseconds(20), renderWatchdogPollInterval: .milliseconds(5),
+            licensing: .provider(source))
+        try #require(await waitUntil { model.licenseSnapshot != nil })
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.retryPlayback == .muted && engine.state == .stopped })
+        let terminalReason = model.statusMessage
+        let gate = FakeStartBlocker()
+        defer { gate.unblock() }
+        switch expiry {
+        case .stopPending:
+            engine.handbackGate = gate
+        case .asleep:
+            model.handleWillSleep()
+            #expect(engine.holdsProcessingMute)
+        case .guardAlreadyGone:
+            engine.stop()
+        }
+        source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        if expiry == .stopPending {
+            try #require(await waitUntil { gate.waitUntilEntered(timeout: .now()) })
+        } else {
+            try #require(
+                await waitUntil {
+                    model.licenseSnapshot?.sequence == 2 && !engine.holdsProcessingMute
+                })
+        }
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        try #require(await waitUntil { model.licenseSnapshot?.sequence == 3 })
+        if expiry == .stopPending {
+            engine.handbackGate = nil
+            gate.unblock()
+        } else if expiry == .asleep {
+            model.handleDidWake()
+        }
+        try #require(await waitUntil { model.retryPlayback == .handedBack && !model.engineIsHoldingMute })
+        #expect(model.statusMessage == terminalReason)
+        let suspensionsAfterHandback = engine.stopCallCount - engine.handbackCount
+        model.handleWillSleep()
+        lookup.result = .success(destination)
+        model.handleDidWake()
+        model.handleDidWake()
+        let observer = try #require(observers.observers.last)
+        observer.emit(.success(destination))
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 4))
+        try #require(
+            await waitUntil { model.currentOutputUID == destination.uid && model.licenseSnapshot?.sequence == 4 })
+        #expect(model.retryPlayback == .handedBack)
+        #expect(!engine.holdsProcessingMute)
+        #expect(engine.stopCallCount - engine.handbackCount == suspensionsAfterHandback)
+        #expect(engine.startCalls.count == 2)
+        #expect(engine.updateDSPCalls.isEmpty)
+        if expiry == .stopPending {
+            model.retryAudioEngine()
+            observer.emit(.success(destination), reason: .initial)
+            try #require(await waitUntil { model.isRunning && engine.holdsProcessingMute })
+            #expect(engine.startCalls.last?.profile == edited)
+            #expect(engine.startCalls.last?.output == destination)
+            model.stop()
+        } else {
+            model.toggleMenuProcessing()
+            #expect(model.processingWasStopped)
+            #expect(model.retryPlayback == nil)
+            #expect(!engine.holdsProcessingMute)
+        }
+    }
+
+    @Test
+    func routeStartAndEditsAcrossLicenseFadeResumeTheSavedDestinationProfile() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let first = makeOutput(uid: "licensed-first", name: "First")
+        let second = makeOutput(uid: "licensed-second", name: "Second", id: 301)
+        let fallback = makeProfile(name: "Fallback")
+        var destination = makeProfile(name: "Destination")
+        let store = ProfileStore(
+            profiles: [fallback, destination],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: second.uid, profileID: destination.id)
+            ], fallbackProfileID: fallback.id)
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(first))
+        let observers = FakeDefaultOutputObserverFactory()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        let model = makeModel(
+            store: store, storeURL: url, engine: engine, lookup: lookup,
+            observers: observers, outputDelay: .zero, licensing: .provider(source),
+            licenseStopTransitionTimeout: .seconds(5))
+        try #require(await waitUntil { model.licenseSnapshot != nil })
+        model.start()
+        let observer = observers.observers[0]
+        observer.emit(.success(first))
+        try #require(await waitUntil { model.isRunning })
+        engine.blockStart(for: second.uid)
+        defer { engine.unblockStart(for: second.uid) }
+        lookup.result = .success(second)
+        observer.emit(.success(second))
+        try #require(await waitUntil { engine.startCalls.count == 2 })
+        source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        try #require(await waitUntil { observer.stopCallCount == 1 })
+        destination.name = "Edited during expiry"
+        try model.apply(profile: destination)
+        engine.deferDSPTransitionCompletion = true
+        engine.unblockStart(for: second.uid)
+        try #require(await waitUntil { engine.updateDSPCalls.last?.isBypassed == true })
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        try #require(await waitUntil { model.licenseSnapshot?.sequence == 3 })
+        destination.name = "Edited during renewal"
+        try model.apply(profile: destination)
+        #expect(engine.updateDSPCalls.map(\.isBypassed) == [true])
+        #expect(engine.handbackCount == 0)
+        engine.completeDSPTransition()
+        try #require(await waitUntil { observers.observers.count == 2 })
+        observers.observers[1].emit(.success(second))
+        try #require(await waitUntil { model.isRunning && engine.startCalls.last?.profile == destination })
+        #expect(engine.handbackCount == 1)
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(ProfilePersistence.load(from: url).store.profile(forOutputUID: second.uid) == destination)
+        model.stop()
+    }
+
     @Test
     func expiryDuringAMutedOutputChangeDoesNotResumeOrRestart() async {
         let running = await makeRunningModel(outputDelay: .milliseconds(400))
@@ -6316,7 +6906,7 @@ struct LicenseEnforcementTests {
         model.setBypass(true)
         model.setBypass(false)
         model.startAudioForOnboarding()
-        model.handleSessionDidBecomeActive()
+        model.handleDidWake()
         await settleAsyncWork()
 
         #expect(engine.startCalls.isEmpty)
@@ -6962,6 +7552,7 @@ struct LicenseActivationOnboardingTests {
 
         model.startAudioForOnboarding()
         #expect(model.onboardingAudioCaptureState == .pending)
+        observers.observers[0].emit(.success(output), reason: .initial)
         await waitUntil { observers.observers.count == 1 }
     }
 

@@ -217,10 +217,22 @@ public enum ProfilePersistence {
     }
 
     public static func save(_ store: ProfileStore, to url: URL) throws {
-        let data = try encodeForCommit(store)
-        let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+        try PreparedSave(store).write(to: url)
+    }
+
+    package struct PreparedSave: Sendable {
+        private let data: Data
+
+        package init(_ store: ProfileStore) throws {
+            data = try encodeForCommit(store)
+        }
+
+        package func write(to url: URL) throws {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+        }
     }
 
     public static func load(from url: URL, timestamp: Date = Date()) -> ProfileStoreLoadResult {

@@ -71,7 +71,7 @@ struct ApplyBar: View {
                     controller.applyDraft()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(isReadOnly || !hasUnsavedDraft)
+                .disabled(!controller.canApplyDraft)
                 .buttonStyle(.borderedProminent)
             }
             .disabled(controller.isStartingProgrammeComparison)

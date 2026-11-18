@@ -11,7 +11,7 @@ struct PersistedAudioDeviceRestorationRecord: Codable, Equatable, Sendable {
     }
 }
 
-enum PersistedAudioDeviceRestorationStore {
+struct PersistedAudioDeviceRestorationStore {
     static let maximumStoreBytes = 262_144
     static let maximumRecordCount = 128
     static let maximumUIDUTF8Bytes = 512
@@ -71,7 +71,11 @@ enum PersistedAudioDeviceRestorationStore {
             throw PersistenceError.invalidRecord
         }
         guard !records.isEmpty else {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch CocoaError.fileNoSuchFile {
+                // Another recovery may already have cleared the last record.
+            }
             return
         }
 
@@ -125,7 +129,7 @@ enum PersistedAudioDeviceRestorationStore {
 
     static func restoreSampleRate(
         uid: String, to originalSampleRate: Double,
-        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.restorationOutputDevice(uid:),
         setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
     ) -> Bool {
         do {
@@ -147,7 +151,7 @@ enum PersistedAudioDeviceRestorationStore {
 
     static func restoreBufferFrameSize(
         uid: String, to originalFrameSize: UInt32,
-        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.restorationOutputDevice(uid:),
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
     ) -> Bool {
@@ -168,42 +172,137 @@ enum PersistedAudioDeviceRestorationStore {
         }
     }
 
-    static func restorePersistedDeviceSettings(
-        at url: URL,
-        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+    private let url: URL
+    private var records: [String: PersistedAudioDeviceRestorationRecord]
+    private struct Attempt {
+        let deviceID: AudioObjectID
+        let startedAt: ContinuousClock.Instant
+    }
+
+    private var lastAttempts: [String: Attempt] = [:]
+    private var needsSave = false
+
+    init(url: URL) {
+        self.url = url
+        self.records = Self.load(from: url)
+    }
+
+    var hasPendingSettings: Bool { !records.isEmpty || needsSave }
+
+    func needsAttempt(for output: AudioOutputDevice) -> Bool {
+        records[output.uid] != nil && lastAttempts[output.uid]?.deviceID != output.id
+    }
+
+    mutating func observeDeviceInventory(_ devices: Set<AudioObjectID>, capturedAt: ContinuousClock.Instant) {
+        // A queued removal can precede a more recent write to the reattached device.
+        lastAttempts = lastAttempts.filter { _, attempt in
+            attempt.startedAt >= capturedAt || devices.contains(attempt.deviceID)
+        }
+    }
+
+    /// Returns true when a new write still needs a later readback.
+    @discardableResult
+    mutating func restoreAvailableDevices(
+        verifyOnly: Bool = false,
+        excluding activeUID: String? = nil,
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.restorationOutputDevice(uid:),
         setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:),
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
-    ) {
-        let original = load(from: url)
-        var records = original
-        guard !records.isEmpty else {
-            return
-        }
+    ) -> Bool {
+        let original = records
+        var needsReadback = false
+        for (uid, record) in original {
+            let output: AudioOutputDevice
+            do {
+                guard let available = try outputForUID(uid) else {
+                    if !verifyOnly { lastAttempts[uid] = nil }
+                    continue
+                }
+                output = available
+            } catch {
+                // A property read failure does not establish a new physical attachment.
+                continue
+            }
 
-        for (uid, record) in records {
             var updated = record
+            guard !verifyOnly, uid != activeUID, needsAttempt(for: output) else {
+                if let rate = updated.originalSampleRate, abs(output.nominalSampleRate - rate) < 1 {
+                    updated.originalSampleRate = nil
+                }
+                if updated.originalBufferFrameSize == output.bufferFrameSize {
+                    updated.originalBufferFrameSize = nil
+                }
+                records[uid] = updated.isEmpty ? nil : updated
+                continue
+            }
+            // HAL can reuse object IDs. Retry writes only after a confirmed absence or a new ID.
+            lastAttempts[uid] = Attempt(deviceID: output.id, startedAt: .now)
+            func attachedOutput(_ uid: String) throws -> AudioOutputDevice? {
+                let current = try outputForUID(uid)
+                return current?.id == output.id ? current : nil
+            }
             if let originalSampleRate = record.originalSampleRate,
-                restoreSampleRate(
+                Self.restoreSampleRate(
                     uid: uid, to: originalSampleRate,
-                    outputForUID: outputForUID,
+                    outputForUID: attachedOutput,
                     setSampleRate: setSampleRate
                 )
             {
                 updated.originalSampleRate = nil
             }
             if let originalBufferFrameSize = record.originalBufferFrameSize,
-                restoreBufferFrameSize(
+                Self.restoreBufferFrameSize(
                     uid: uid, to: originalBufferFrameSize,
-                    outputForUID: outputForUID,
+                    outputForUID: attachedOutput,
                     setBufferFrameSize: setBufferFrameSize
                 )
             {
                 updated.originalBufferFrameSize = nil
             }
+            needsReadback = needsReadback || !updated.isEmpty
             records[uid] = updated.isEmpty ? nil : updated
         }
 
-        if records != original { try? save(records, to: url) }
+        guard needsSave || records != original else { return needsReadback }
+        do {
+            try Self.save(records, to: url)
+            needsSave = false
+        } catch {
+            needsSave = true
+        }
+        return needsReadback
+    }
+}
+
+/// Installed only while device settings from an earlier GlassEQ release still need restoration.
+final class RestorationDeviceListListener {
+    private let notificationQueue = DispatchQueue(label: "com.glasseq.device-restoration.notifications")
+    private let listener: AudioObjectPropertyListenerBlock
+    private var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    init?(onChange: @escaping @Sendable (Set<AudioObjectID>?, ContinuousClock.Instant) -> Void) {
+        let recoveryQueue = DispatchQueue(label: "com.glasseq.device-restoration")
+        listener = { _, _ in
+            // Sample on the notification queue. Graph teardown can outlast a disconnect and reconnect.
+            let capturedAt = ContinuousClock.now
+            let devices = try? Set(CoreAudioDeviceQuery.audioDeviceIDs())
+            recoveryQueue.async { onChange(devices, capturedAt) }
+        }
+        guard
+            AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, notificationQueue, listener
+            ) == noErr
+        else { return nil }
+    }
+
+    deinit {
+        _ = AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, notificationQueue, listener
+        )
     }
 }

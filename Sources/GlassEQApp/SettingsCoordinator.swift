@@ -96,11 +96,13 @@ final class SettingsCoordinator: NSObject {
     private var pipeReadPump: SettingsPipeReadPump?
     private var pipeReadDelivery: SettingsPipeOrderedMainActorDelivery?
     private var pipeWritePump: SettingsPipeWritePump?
-    private var settingsConnected = false
-    private var readyAcknowledgmentPending = false
+    private enum ConnectionPhase {
+        case waitingForReady, acknowledgingReady, ready
+    }
+
+    private var connectionPhase = ConnectionPhase.waitingForReady
     private var pendingFocusRequest = false
     private var pendingSectionRequest: SettingsSection?
-    private var suppressedModelChangeDepth = 0
     private var lastSentSnapshot: SettingsSnapshot?
     private var commandTasks: [String: ActiveCommand] = [:]
 
@@ -125,7 +127,7 @@ final class SettingsCoordinator: NSObject {
     @discardableResult
     func openSettings(section: SettingsSection? = nil) -> SettingsOpenDisposition {
         if let helperProcess, helperProcess.isRunning {
-            if settingsConnected {
+            if connectionPhase == .ready {
                 if let section {
                     send(.sectionRequested(section))
                 } else {
@@ -139,6 +141,9 @@ final class SettingsCoordinator: NSObject {
             return .helper
         }
 
+        if helperProcess != nil {
+            cleanupSession(terminateHelper: false)
+        }
         do {
             let token = try prepareSession()
             pendingFocusRequest = true
@@ -152,10 +157,6 @@ final class SettingsCoordinator: NSObject {
             cleanupSession(terminateHelper: true)
             return .inProcessFallback(reason: reason)
         }
-    }
-
-    var hasRunningSettingsHelper: Bool {
-        helperProcess?.isRunning == true
     }
 
     func shutdown() {
@@ -184,7 +185,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     func modelDidChange() {
-        guard suppressedModelChangeDepth == 0,
+        guard connectionPhase != .waitingForReady,
             let model
         else {
             return
@@ -193,7 +194,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     func metricsDidChange() {
-        guard settingsConnected,
+        guard connectionPhase != .waitingForReady,
             let model
         else {
             return
@@ -212,11 +213,9 @@ final class SettingsCoordinator: NSObject {
     private func prepareSession() throws -> String {
         let token = try Self.makeSessionToken()
         launchToken = token
-        settingsConnected = false
-        readyAcknowledgmentPending = false
+        connectionPhase = .waitingForReady
         pendingFocusRequest = false
         pendingSectionRequest = nil
-        suppressedModelChangeDepth = 0
         lastSentSnapshot = nil
         return token
     }
@@ -306,7 +305,7 @@ final class SettingsCoordinator: NSObject {
         }
 
         var isHelperReadyForTesting: Bool {
-            settingsConnected
+            connectionPhase == .ready
         }
     #endif
 
@@ -314,14 +313,7 @@ final class SettingsCoordinator: NSObject {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(
-            for: command,
-            model: model,
-            picker: fileImportPicker
-        ) {
-            return response
-        }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, picker: fileImportPicker)
     }
 
     private func focusSettings() {
@@ -329,7 +321,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func send(_ event: SettingsEvent) {
-        guard settingsConnected else {
+        guard connectionPhase != .waitingForReady else {
             return
         }
         guard let launchToken else {
@@ -380,13 +372,15 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func handleHelperExitBeforeConnectionIfNeeded() {
-        let shouldUseFallback = !settingsConnected
+        let shouldUseFallback = connectionPhase != .ready
+        let section = pendingSectionRequest
         cleanupSession(terminateHelper: false)
         guard shouldUseFallback else {
             return
         }
         model?.requestInProcessSettingsPresentation(
-            statusMessage: localized("Settings helper exited before connecting. Opened Settings in GlassEQ instead.")
+            statusMessage: localized("Settings helper exited before connecting. Opened Settings in GlassEQ instead."),
+            section: section
         )
     }
 
@@ -439,25 +433,15 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func handleReady(requestID: String) {
-        guard !settingsConnected,
-            !readyAcknowledgmentPending
-        else {
+        guard connectionPhase == .waitingForReady else {
             return
         }
-        readyAcknowledgmentPending = true
+        connectionPhase = .acknowledgingReady
         sendResponse(SettingsCommandResponse(), requestID: requestID) { [weak self] in
-            guard let self,
-                readyAcknowledgmentPending
-            else {
+            guard let self, connectionPhase == .acknowledgingReady else {
                 return
             }
-            readyAcknowledgmentPending = false
-            settingsConnected = true
-            if let model {
-                let snapshot = model.settingsSnapshot()
-                lastSentSnapshot = snapshot
-                send(.snapshotChanged(snapshot))
-            }
+            connectionPhase = .ready
             if pendingFocusRequest {
                 pendingFocusRequest = false
                 if let pendingSectionRequest {
@@ -467,6 +451,10 @@ final class SettingsCoordinator: NSObject {
                     send(.focusRequested)
                 }
             }
+        }
+        // The writer preserves enqueue order. Catch up before another command can enqueue its reply.
+        if let model {
+            sendSnapshotUpdate(model.settingsSnapshot())
         }
     }
 
@@ -500,39 +488,12 @@ final class SettingsCoordinator: NSObject {
                     commandTasks[requestID] = nil
                 }
             }
-            let shouldSuppressModelChanges: Bool
-            if case .chooseImportFiles = command {
-                shouldSuppressModelChanges = false
-            } else {
-                shouldSuppressModelChanges = true
-            }
             do {
-                if shouldSuppressModelChanges {
-                    suppressedModelChangeDepth += 1
-                }
                 let response = try await perform(command)
                 try Task.checkCancellation()
-                if shouldSuppressModelChanges,
-                    launchToken == commandSessionToken
-                {
-                    suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
-                }
-                guard launchToken == commandSessionToken else {
-                    return
-                }
-                if let snapshot = response.snapshot {
-                    lastSentSnapshot = snapshot
-                }
+                guard launchToken == commandSessionToken else { return }
                 sendResponse(response, requestID: requestID)
             } catch {
-                if shouldSuppressModelChanges,
-                    launchToken == commandSessionToken
-                {
-                    suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
-                    if suppressedModelChangeDepth == 0, let model {
-                        sendSnapshotUpdate(model.settingsSnapshot())
-                    }
-                }
                 guard !Task.isCancelled,
                     !(error is CancellationError)
                 else {
@@ -553,23 +514,16 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func sendSnapshotUpdate(_ snapshot: SettingsSnapshot) {
-        guard settingsConnected else {
+        guard connectionPhase != .waitingForReady else {
             return
         }
 
-        guard let previous = lastSentSnapshot else {
-            lastSentSnapshot = snapshot
+        let previous = lastSentSnapshot
+        lastSentSnapshot = snapshot
+        guard let previous, previous.profiles == snapshot.profiles else {
             send(.snapshotChanged(snapshot))
             return
         }
-
-        if previous.profiles != snapshot.profiles {
-            lastSentSnapshot = snapshot
-            send(.snapshotChanged(snapshot))
-            return
-        }
-
-        let metricsChanged = previous.metrics != snapshot.metrics
 
         var patch = SettingsSnapshotPatchDTO()
         var didPatch = false
@@ -596,6 +550,10 @@ final class SettingsCoordinator: NSObject {
         }
         if previous.activeProfileID != snapshot.activeProfileID {
             patch.activeProfileID = snapshot.activeProfileID
+            didPatch = true
+        }
+        if previous.activeProfileMatchesLibrary != snapshot.activeProfileMatchesLibrary {
+            patch.activeProfileMatchesLibrary = snapshot.activeProfileMatchesLibrary
             didPatch = true
         }
         if previous.activeProfileName != snapshot.activeProfileName {
@@ -642,17 +600,10 @@ final class SettingsCoordinator: NSObject {
             didPatch = true
         }
 
-        guard didPatch else {
-            lastSentSnapshot = snapshot
-            if metricsChanged {
-                send(.metricsChanged(snapshot.metrics))
-            }
-            return
+        if didPatch {
+            send(.snapshotPatched(patch))
         }
-
-        lastSentSnapshot = snapshot
-        send(.snapshotPatched(patch))
-        if metricsChanged {
+        if previous.metrics != snapshot.metrics {
             send(.metricsChanged(snapshot.metrics))
         }
     }
@@ -710,13 +661,15 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func failPipeSession(_ error: Error) {
-        let shouldUseFallback = launchToken != nil && !settingsConnected
+        let shouldUseFallback = launchToken != nil && connectionPhase != .ready
+        let section = pendingSectionRequest
         cleanupSession(terminateHelper: true)
         if shouldUseFallback {
             model?.requestInProcessSettingsPresentation(
                 statusMessage: localized(
                     "Settings IPC failed before connecting: \(error.localizedDescription). Opened Settings in GlassEQ instead."
-                )
+                ),
+                section: section
             )
         } else {
             statusMessageForIPCFailure(error)
@@ -725,14 +678,12 @@ final class SettingsCoordinator: NSObject {
 
     private func statusMessageForIPCFailure(_ error: Error) {
         model?.statusMessage = localized("Settings IPC failed: \(error.localizedDescription)")
-        model?.notifyModelDidChangeFromCoordinator()
+        model?.notifyModelDidChange()
     }
 
     @discardableResult
     private func cleanupSession(terminateHelper: Bool) -> Task<Void, Never>? {
-        if settingsConnected {
-            model?.stopMetricsPolling()
-        }
+        let hadSession = launchToken != nil
         let processToTerminate = terminateHelper ? helperProcess : nil
         let writePumpToDrain = pipeWritePump
         let writerToCloseDirectly = writePumpToDrain == nil ? pipeWriter : nil
@@ -756,12 +707,14 @@ final class SettingsCoordinator: NSObject {
         launchToken = nil
         pendingFocusRequest = false
         pendingSectionRequest = nil
-        suppressedModelChangeDepth = 0
         lastSentSnapshot = nil
         runningApplication = nil
         helperProcess = nil
-        settingsConnected = false
-        readyAcknowledgmentPending = false
+        connectionPhase = .waitingForReady
+        if hadSession {
+            model?.stopMetricsPolling()
+            model?.stopProgrammeComparison()
+        }
         if writePumpToDrain != nil || processToTerminate != nil || !commandTasksToCancel.isEmpty {
             return Task {
                 for task in commandTasksToCancel {
@@ -1093,12 +1046,7 @@ struct SecuritySettingsCodeSigningValidator: SettingsCodeSigningValidating {
 
 extension GlassEQAppModel {
     func openAggregateBufferSettings() {
-        if settingsCoordinator.hasRunningSettingsHelper {
-            openSettings(section: .output)
-            return
-        }
-        SettingsWindowFocus.request(section: .output)
-        requestInProcessSettingsPresentation()
+        openSettings(section: .output)
     }
 
     @discardableResult
@@ -1106,25 +1054,23 @@ extension GlassEQAppModel {
         guard !inProcessSettingsIsPresented,
             !inProcessSettingsPresentationIsPending
         else {
-            if let section {
-                SettingsWindowFocus.request(section: section)
-            }
-            requestInProcessSettingsPresentation()
+            requestInProcessSettingsPresentation(section: section)
             return .activeInProcessFallback
         }
         let disposition = settingsCoordinator.openSettings(section: section)
         if case .inProcessFallback(let reason) = disposition {
-            if let section {
-                SettingsWindowFocus.request(section: section)
-            }
             requestInProcessSettingsPresentation(
-                statusMessage: localized("Settings helper unavailable: \(reason). Opened Settings in GlassEQ instead.")
+                statusMessage: localized("Settings helper unavailable: \(reason). Opened Settings in GlassEQ instead."),
+                section: section
             )
         }
         return disposition
     }
 
-    func requestInProcessSettingsPresentation(statusMessage: String? = nil) {
+    func requestInProcessSettingsPresentation(statusMessage: String? = nil, section: SettingsSection? = nil) {
+        if let section {
+            SettingsWindowFocus.request(section: section)
+        }
         if let statusMessage {
             self.statusMessage = statusMessage
             notifyModelDidChange()
@@ -1136,40 +1082,30 @@ extension GlassEQAppModel {
     func inProcessSettingsDidAppear() {
         inProcessSettingsPresentationIsPending = false
         inProcessSettingsIsPresented = true
+        guard fallbackEditor == nil else { return }
+        let editor = GlassEQSettingsViewModel()
+        editor.attach(client: InProcessSettingsClient(model: self, editor: editor), snapshot: settingsSnapshot())
+        fallbackEditor = editor
     }
 
     func inProcessSettingsDidDisappear() {
         inProcessSettingsPresentationIsPending = false
         inProcessSettingsIsPresented = false
+        fallbackEditor?.disconnect()
+        fallbackEditor = nil
+        stopMetricsPolling()
+        stopProgrammeComparison()
     }
 
-    func inProcessSettingsViewModel() -> GlassEQSettingsViewModel {
-        if let inProcessSettingsViewModelStorage {
-            return inProcessSettingsViewModelStorage
+    func performSettingsCommand(
+        _ command: SettingsCommand, from editor: GlassEQSettingsViewModel? = nil,
+        picker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? =
+            SettingsFileImportPicker.choose(mode:)
+    ) async throws -> SettingsCommandResponse {
+        try Task.checkCancellation()
+        if let editor, editor !== fallbackEditor {
+            throw CancellationError()
         }
-
-        let settingsModel = GlassEQSettingsViewModel()
-        settingsModel.attach(
-            client: InProcessSettingsClient(model: self),
-            snapshot: settingsSnapshot()
-        )
-        inProcessSettingsViewModelStorage = settingsModel
-        return settingsModel
-    }
-
-    func refreshInProcessSettingsSnapshot() {
-        inProcessSettingsViewModelStorage?.accept(snapshot: settingsSnapshot())
-    }
-
-    func refreshInProcessSettingsMetrics() {
-        inProcessSettingsViewModelStorage?.accept(metrics: settingsMetricsSnapshot())
-    }
-
-    func notifyModelDidChangeFromCoordinator() {
-        notifyModelDidChange()
-    }
-
-    func performSettingsCommand(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
         try beginSettingsCommand()
         defer {
             finishSettingsCommand()
@@ -1178,92 +1114,71 @@ extension GlassEQAppModel {
         switch command {
         case .createProfile(let kind):
             try createProfile(kind: kind)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .duplicateProfile(let id):
             try duplicateProfile(id: id)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .deleteProfile(let id):
             try deleteProfile(id: id)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .applyProfile(let profile):
-            try validateIncomingProfile(profile)
             try apply(profile: profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .useProfileForCurrentOutput(let profile):
-            try validateIncomingProfile(profile)
             try useForCurrentOutput(profile: profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .setFallback(let profile):
-            try validateIncomingProfile(profile)
             try setFallback(profile: profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case let .importProfile(format, name, text):
             let imported = try await importProfile(format: format, name: name, text: text)
-            return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
+            return SettingsCommandResponse(importSucceeded: imported)
 
         case .importParsedProfile(let profile):
             let imported = try importParsedProfile(profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot(), importSucceeded: imported)
+            return SettingsCommandResponse(importSucceeded: imported)
 
-        case .chooseImportFiles:
-            throw SettingsCommandFailure(
-                message: localized("File selection is unavailable from this settings connection."))
+        case .chooseImportFiles(let mode):
+            return SettingsCommandResponse(fileImportSelection: try await picker(mode))
 
         case .startProgrammeComparison(let profile):
             try validateIncomingProfile(profile)
             try startProgrammeComparison(profile: profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .selectProgrammeComparison(let selection):
             selectProgrammeComparison(selection)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .stopProgrammeComparison:
             stopProgrammeComparison()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .resetDiagnostics:
             resetDiagnostics()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .setAggregateBufferMode(let mode):
             try setAggregateBufferMode(mode)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .retryAutomaticAggregateBuffer:
             try retryAutomaticAggregateBuffer()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .retryAudioEngine:
             retryAudioEngine()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .openPrivacySettings:
             try openPrivacySettings()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .startMetricsPolling:
             startMetricsPolling()
-            return SettingsCommandResponse()
 
         case .stopMetricsPolling:
             stopMetricsPolling()
-            return SettingsCommandResponse()
 
         case .resetUnsupportedProfileStore:
             try await resetUnsupportedProfileStore()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
 
         case .showSetupGuide:
             requestOnboardingPresentation()
-            return SettingsCommandResponse()
         }
+        return SettingsCommandResponse()
     }
 
     private func validateIncomingProfile(_ profile: EQProfile) throws {
@@ -1282,35 +1197,20 @@ extension GlassEQAppModel {
 private final class InProcessSettingsClient: SettingsCommanding {
     private weak var model: GlassEQAppModel?
 
-    init(model: GlassEQAppModel) {
+    private weak var editor: GlassEQSettingsViewModel?
+
+    init(model: GlassEQAppModel, editor: GlassEQSettingsViewModel) {
         self.model = model
+        self.editor = editor
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(for: command, model: model) {
-            return response
+        guard let editor else {
+            throw CancellationError()
         }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, from: editor)
     }
-}
-
-@MainActor
-func fileImportPickerResponse(
-    for command: SettingsCommand,
-    model: GlassEQAppModel,
-    picker: @MainActor (SettingsFileImportMode) async throws -> SettingsFileImportSelectionDTO? = { mode in
-        try await SettingsFileImportPicker.choose(mode: mode)
-    }
-) async throws -> SettingsCommandResponse? {
-    guard case let .chooseImportFiles(mode) = command else {
-        return nil
-    }
-    try model.beginSettingsCommand()
-    defer {
-        model.finishSettingsCommand()
-    }
-    return SettingsCommandResponse(fileImportSelection: try await picker(mode))
 }

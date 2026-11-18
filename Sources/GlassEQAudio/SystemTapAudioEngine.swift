@@ -307,6 +307,17 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     }
 }
 
+// Each detached renderer publishes into its own slot after HAL has retired its IOProc.
+final class TimestampProbeSnapshot: Sendable {
+    private let storage = Mutex<[AudioTimestampProbeRecord]>([])
+
+    var records: [AudioTimestampProbeRecord] { storage.withLock { $0 } }
+
+    func publish(_ records: [AudioTimestampProbeRecord]) {
+        storage.withLock { $0 = records }
+    }
+}
+
 public struct AudioTimestampProbeRecord: Equatable, Sendable {
     public var sequence: UInt64
     public var inputJumpDetected: Bool
@@ -1048,7 +1059,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
-        var lastTimestampProbeRecords: [AudioTimestampProbeRecord] = []
+        var lastTimestampProbe: TimestampProbeSnapshot?
         var activeOutput: AudioOutputDevice?
         var activeProfile: EQProfile?
         var preferredAggregateBufferFrameSize = SystemTapAudioEngine.preferredAggregateBufferFrameSize
@@ -1073,6 +1084,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var deviceID: AudioObjectID
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
+        var timestampProbe: TimestampProbeSnapshot?
     }
 
     private struct PreparedCombinedAggregate {
@@ -1094,37 +1106,22 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private final class PreparedDSPConfigBox: @unchecked Sendable {
         let transitionID: UInt64
         var processor: EQProcessor?
-        var comparisonReferenceProcessor: EQProcessor?
+        let startsComparison: Bool
         let systemSoundPreampGains: (left: Float, right: Float)
         var retiredProcessor: EQProcessor?
-        var secondRetiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
-        init(config: EQRenderConfiguration, transitionID: UInt64) {
+        init(config: EQRenderConfiguration, transitionID: UInt64, startsComparison: Bool) {
+            self.startsComparison = startsComparison
             self.transitionID = transitionID
             self.processor = EQProcessor(renderConfiguration: config)
             self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: config
             )
         }
-
-        init(
-            equalizedConfig: EQRenderConfiguration,
-            referenceConfig: EQRenderConfiguration,
-            transitionID: UInt64
-        ) {
-            self.transitionID = transitionID
-            self.processor = EQProcessor(renderConfiguration: equalizedConfig)
-            self.comparisonReferenceProcessor = EQProcessor(
-                renderConfiguration: referenceConfig
-            )
-            self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
-                for: equalizedConfig
-            )
-        }
     }
 
-    private final class AudioRuntime: @unchecked Sendable {
+    final class AudioRuntime: @unchecked Sendable {
         private struct TimestampContinuityState {
             var expectedSampleTime: Float64?
             var previousHostTime: UInt64?
@@ -1293,12 +1290,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 UnsafeMutablePointer(mutating: inputData)
             )
             guard
-                let mainInputFrameCount = frameCount(
+                let inputFrameCount = frameCount(
                     inputBuffers,
                     channelOffset: inputChannelOffset,
                     channelCount: channelCount
                 ),
-                let rawSystemSoundFrameCount = frameCount(
+                let systemSoundFrameCount = frameCount(
                     inputBuffers,
                     channelOffset: systemSoundInputChannelOffset,
                     channelCount: channelCount
@@ -1307,11 +1304,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             else {
                 return
             }
-            let systemSoundFrameCount =
-                rawSystemSoundFrameCount == 0
-                ? mainInputFrameCount
-                : rawSystemSoundFrameCount
-            let inputFrameCount = min(mainInputFrameCount, systemSoundFrameCount)
 
             let renderStartNanoseconds = AudioConvertHostTimeToNanos(callbackHostTime)
             _ = firstRenderCallbackHostTimeNanoseconds.compareExchange(
@@ -1442,8 +1434,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 outputFrameCount: outputFrameCount
             )
             startupCallbackValidation = callbackFrameExpectation.validateCallback(
-                mainInputFrameCount: mainInputFrameCount,
-                systemSoundInputFrameCount: rawSystemSoundFrameCount,
+                mainInputFrameCount: inputFrameCount,
+                systemSoundInputFrameCount: systemSoundFrameCount,
                 outputFrameCount: outputFrameCount,
                 timestampsAreStable: timestampsAreStable
             )
@@ -1846,24 +1838,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
 
         @discardableResult
-        func publishPendingDSPConfig(_ config: EQRenderConfiguration) -> DSPTransitionProgress.Target {
-            let target = nextDSPTransitionTarget()
-            let box = PreparedDSPConfigBox(config: config, transitionID: target.id)
-            publishPendingDSPConfigBox(box)
-            return target
-        }
-
-        @discardableResult
-        func publishPendingProgrammeComparison(
-            equalizedConfig: EQRenderConfiguration,
-            referenceConfig: EQRenderConfiguration
+        func publishPendingDSPConfig(
+            _ config: EQRenderConfiguration, startsComparison: Bool = false
         ) -> DSPTransitionProgress.Target {
             let target = nextDSPTransitionTarget()
-            let box = PreparedDSPConfigBox(
-                equalizedConfig: equalizedConfig,
-                referenceConfig: referenceConfig,
-                transitionID: target.id
-            )
+            let box = PreparedDSPConfigBox(config: config, transitionID: target.id, startsComparison: startsComparison)
             publishPendingDSPConfigBox(box)
             return target
         }
@@ -1953,11 +1932,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 return
             }
             let didBegin: Bool
-            if box.comparisonReferenceProcessor != nil {
-                didBegin = dspTransition.beginProgrammeComparison(
-                    equalizedProcessor: &box.processor,
-                    referenceProcessor: &box.comparisonReferenceProcessor
-                )
+            if box.startsComparison {
+                didBegin = dspTransition.beginProgrammeComparison(equalizedProcessor: &box.processor)
             } else {
                 didBegin = dspTransition.beginTransition(to: &box.processor)
             }
@@ -1970,7 +1946,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         private func finishDSPTransition(_ result: inout EQTransitionRenderResult) {
             guard result.completedTransition else { return }
-            // Every adopted bank retains its publication box until its retired processors return.
+            // Every adopted bank retains its publication box until the retired processor returns.
             precondition(activeDSPConfigPointer != 0)
             let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer)!
             let rawPointer = activeDSPConfigPointer
@@ -1980,7 +1956,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 .takeUnretainedValue()
             let transitionID = box.transitionID
             box.retiredProcessor = result.retiredProcessor.take()
-            box.secondRetiredProcessor = result.secondRetiredProcessor.take()
             activeSystemSoundPreampGains = box.systemSoundPreampGains
             pushRetiredDSPConfigBox(rawPointer)
             completedDSPTransitions.store(transitionID, ordering: .releasing)
@@ -2534,10 +2509,51 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public var state: AudioEngineState { control.withLock { $0.state } }
     public var status: AudioEngineStatus { control.withLock { $0.status } }
 
+    // Serialized with graph creation so reconnect recovery cannot change a running renderer's format.
+    private var deviceRestorations: PersistedAudioDeviceRestorationStore
+    private var restorationListener: RestorationDeviceListListener?
+    private var restorationReadback: Task<Void, Never>?
+
     public init(restorationStoreURL: URL? = nil) {
-        PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
-            at: restorationStoreURL ?? PersistedAudioDeviceRestorationStore.defaultURL()
+        deviceRestorations = PersistedAudioDeviceRestorationStore(
+            url: restorationStoreURL ?? PersistedAudioDeviceRestorationStore.defaultURL()
         )
+        guard deviceRestorations.hasPendingSettings else { return }
+        topologyOperation.withLock { _ in
+            restorationListener = RestorationDeviceListListener { [weak self] devices, capturedAt in
+                guard let self else { return }
+                self.topologyOperation.withLock { _ in
+                    if let devices { self.deviceRestorations.observeDeviceInventory(devices, capturedAt: capturedAt) }
+                    self.restoreAvailableDeviceSettings()
+                }
+            }
+            restoreAvailableDeviceSettings()
+        }
+    }
+
+    private func restoreAvailableDeviceSettings(verifyOnly: Bool = false) {
+        guard deviceRestorations.hasPendingSettings else { return }
+        let needsReadback = deviceRestorations.restoreAvailableDevices(
+            verifyOnly: verifyOnly, excluding: control.withLock { $0.activeOutput?.uid }
+        )
+        if !deviceRestorations.hasPendingSettings {
+            restorationListener = nil
+            restorationReadback?.cancel()
+            restorationReadback = nil
+        } else if needsReadback {
+            restorationReadback?.cancel()
+            restorationReadback = Task { [weak self] in
+                // Some drivers accept the write before their property reflects its value.
+                // Give them a bounded verification window without repeating the write.
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self else { return }
+                self.topologyOperation.withLock { _ in
+                    guard !Task.isCancelled else { return }
+                    self.restorationReadback = nil
+                    self.restoreAvailableDeviceSettings(verifyOnly: true)
+                }
+            }
+        }
     }
 
     @_spi(GlassEQDiagnostics)
@@ -2575,6 +2591,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     deinit {
+        restorationReadback?.cancel()
         stop()
     }
 
@@ -2622,11 +2639,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     private func startProtectedAggregate(output: AudioOutputDevice, profile: EQProfile) throws {
         try Task.checkCancellation()
-        let coldStart = control.withLock { $0.runtime == nil }
         do {
             try acquireProcessingMute()
+            if deviceRestorations.needsAttempt(for: output), control.withLock({ $0.activeOutput?.uid == output.uid }) {
+                stopCombinedResourcesSerialized()
+            }
             try requireCompletedCoreAudioCleanup(operation: "rebuild the protected output")
+            restoreAvailableDeviceSettings()
             try Self.validateDefaultOutput(output)
+            let coldStart = control.withLock { $0.runtime == nil }
             let headset = output.requiresHeadsetClockQualification
             if headset {
                 stopCombinedResourcesSerialized()
@@ -2668,11 +2689,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     ) throws {
         try Task.checkCancellation()
         let current = try lookup()
-        guard current.id == expected.id, current.uid == expected.uid,
-            current.nominalSampleRate == expected.nominalSampleRate,
-            current.outputChannelCount == expected.outputChannelCount
-        else {
-            throw AudioEngineInternalError(message: "The default output changed during startup.")
+        guard current.matchesRenderRoute(expected) else {
+            throw AudioDeviceAvailabilityError.defaultOutputChanged(current)
         }
     }
 
@@ -2823,9 +2841,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             var staleTaps: CombinedTapSet?
 
             control.withLock { state in
+                state.lastTimestampProbe = nil
                 detachedAggregate = detachCombinedAggregateLocked(&state)
                 state.state = .stopped
-                state.lastTimestampProbeRecords.removeAll(keepingCapacity: true)
 
                 if Self.combinedTapMatchesRoute(
                     existingOutputUID: state.tapOutputUID,
@@ -2852,10 +2870,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
 
             if let detachedAggregate {
-                let records = disposeDetachedCombinedAggregate(detachedAggregate)
-                control.withLock { state in
-                    state.lastTimestampProbeRecords = records
-                }
+                disposeDetachedCombinedAggregate(detachedAggregate)
             }
             if let staleTaps {
                 destroyTapSet(staleTaps)
@@ -2953,7 +2968,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 installedTaps?.main == taps?.main
                 && installedTaps?.systemSounds == taps?.systemSounds
             if let preparedAggregate {
-                _ = disposeDetachedCombinedAggregate(
+                disposeDetachedCombinedAggregate(
                     DetachedCombinedAggregate(
                         deviceID: preparedAggregate.deviceID,
                         ioProcID: preparedAggregate.ioProcID,
@@ -2965,10 +2980,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 failedStateAggregate?.deviceID
                 == preparedAggregate?.deviceID
             if let failedStateAggregate, !failedStateMatchesPrepared {
-                let records = disposeDetachedCombinedAggregate(failedStateAggregate)
-                control.withLock { state in
-                    state.lastTimestampProbeRecords = records
-                }
+                disposeDetachedCombinedAggregate(failedStateAggregate)
             }
             if let installedTaps {
                 destroyTapSet(installedTaps)
@@ -3209,7 +3221,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: false
             )
         } catch {
-            _ = disposeDetachedCombinedAggregate(
+            disposeDetachedCombinedAggregate(
                 DetachedCombinedAggregate(
                     deviceID: aggregateDeviceID,
                     ioProcID: ioProcID,
@@ -3412,7 +3424,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: true
             )
         } catch {
-            _ = disposeDetachedCombinedAggregate(
+            disposeDetachedCombinedAggregate(
                 DetachedCombinedAggregate(
                     deviceID: aggregateDeviceID,
                     ioProcID: ioProcID,
@@ -3493,7 +3505,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     @discardableResult
-    public func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
+    public func beginProgrammeComparison(profile: EQProfile) -> Bool {
         guard !profile.isBypassed else {
             return false
         }
@@ -3519,12 +3531,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 sampleRate: runtime.sampleRate,
                 channelCount: runtime.channelCount,
                 maximumUsableFrequency: maximumUsableFrequency
-            ),
-            let referenceConfig = try? EQRenderConfiguration.prepare(
-                profile: reference,
-                sampleRate: runtime.sampleRate,
-                channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
             )
         else {
             return false
@@ -3537,10 +3543,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             runtime.setProgrammeComparisonSelection(.equalized)
             runtime.drainDSPConfigBoxes()
-            runtime.publishPendingProgrammeComparison(
-                equalizedConfig: equalizedConfig,
-                referenceConfig: referenceConfig
-            )
+            runtime.publishPendingDSPConfig(equalizedConfig, startsComparison: true)
             return true
         }
     }
@@ -3600,7 +3603,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     public func snapshotTimestampProbeRecords() -> [AudioTimestampProbeRecord] {
-        control.withLock { $0.lastTimestampProbeRecords }
+        control.withLock { $0.lastTimestampProbe }?.records ?? []
     }
 
     public func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? {
@@ -3646,13 +3649,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         // Explicit handback skips the fade and destroys the taps immediately after the aggregate;
         // rebuild teardown retains the fade before replacing the graph.
         if let detachedAggregate {
-            let records = disposeDetachedCombinedAggregate(
+            disposeDetachedCombinedAggregate(
                 detachedAggregate,
                 fadeOut: !restoringDirectPlayback
             )
-            control.withLock { state in
-                state.lastTimestampProbeRecords = records
-            }
         }
         if let detachedTaps {
             destroyTapSet(detachedTaps)
@@ -3662,38 +3662,41 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private func detachCombinedAggregateLocked(
         _ state: inout ControlState
     ) -> DetachedCombinedAggregate? {
+        guard
+            state.aggregateDeviceID != kAudioObjectUnknown || state.ioProcID != nil || state.runtime != nil
+        else {
+            return nil
+        }
+        let snapshot = TimestampProbeSnapshot()
+        state.lastTimestampProbe = snapshot
         let detached = DetachedCombinedAggregate(
             deviceID: state.aggregateDeviceID,
             ioProcID: state.ioProcID,
-            runtime: state.runtime
+            runtime: state.runtime,
+            timestampProbe: snapshot
         )
         state.aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         state.ioProcID = nil
         state.runtime = nil
         state.activeOutput = nil
-        guard
-            detached.deviceID != kAudioObjectUnknown
-                || detached.ioProcID != nil
-                || detached.runtime != nil
-        else {
-            return nil
-        }
         return detached
     }
 
     private func disposeDetachedCombinedAggregate(
         _ detached: DetachedCombinedAggregate,
         fadeOut: Bool = true
-    ) -> [AudioTimestampProbeRecord] {
+    ) {
         if fadeOut {
             detached.runtime?.fadeOutForStop()
         }
         detached.runtime?.markStopping()
-        let records = detached.runtime?.snapshotTimestampProbeRecords() ?? []
         let runtime = detached.runtime
         var resources = CoreAudioResourceCleanupLedger.PendingResources(
             operation: "dispose combined aggregate",
-            completion: {
+            completion: { [snapshot = detached.timestampProbe] in
+                if let snapshot, let runtime {
+                    snapshot.publish(runtime.snapshotTimestampProbeRecords())
+                }
                 runtime?.drainDSPConfigBoxes()
             }
         )
@@ -3709,19 +3712,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         if detached.deviceID != kAudioObjectUnknown {
             resources.aggregateDeviceIDs.append(detached.deviceID)
         }
-        guard
-            resources.ioProcs.isEmpty == false
-                || resources.aggregateDeviceIDs.isEmpty == false
-        else {
-            runtime?.drainDSPConfigBoxes()
-            return records
-        }
         if !cleanupLedger.dispose(resources) {
             traceDiagnostic {
                 "Core Audio cleanup deferred operation=dispose combined aggregate pending=\(cleanupLedger.pendingCount)"
             }
         }
-        return records
     }
 
     private func detachTapSetLocked(_ state: inout ControlState) -> CombinedTapSet? {
@@ -4949,14 +4944,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
         }
 
-        for frame in 0..<frameCount {
-            let sampleBase = frame * channelCount
-            for channel in 0..<channelCount {
-                samples[sampleBase + channel] = inputSample(
-                    from: buffers,
-                    frame: frame,
-                    channel: sourceChannelOffset + channel
-                )
+        for channel in 0..<channelCount {
+            let source = inputChannel(in: buffers, channel: sourceChannelOffset + channel)
+            let available = min(frameCount, source?.frameCount ?? 0)
+            if let source {
+                for frame in 0..<available {
+                    samples[frame * channelCount + channel] = source.data[frame * source.stride]
+                }
+            }
+            for frame in available..<frameCount {
+                samples[frame * channelCount + channel] = 0
             }
         }
     }
@@ -4982,32 +4979,24 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         var saturatedSamples: UInt64 = 0
         let targetPreampGains = incomingPreampGains ?? preampGains
-        for frame in 0..<frameCount {
-            let sampleBase = frame * channelCount
-            let incomingWeight =
-                incomingPreampGains == nil
-                ? 0
-                : transition.incomingBlendWeight(frameOffset: frame)
-            let leftGain =
-                preampGains.left
-                + (targetPreampGains.left - preampGains.left) * incomingWeight
-            let rightGain =
-                preampGains.right
-                + (targetPreampGains.right - preampGains.right) * incomingWeight
-            for channel in 0..<channelCount {
-                let gain = channel == 1 ? rightGain : leftGain
-                let additionalSample =
-                    inputSample(
-                        from: buffers,
-                        frame: frame,
-                        channel: sourceChannelOffset + channel
-                    ) * gain
+        for channel in 0..<channelCount {
+            guard let source = inputChannel(in: buffers, channel: sourceChannelOffset + channel) else {
+                continue
+            }
+            let gain = channel == 1 ? preampGains.right : preampGains.left
+            let targetGain = channel == 1 ? targetPreampGains.right : targetPreampGains.left
+            for frame in 0..<min(frameCount, source.frameCount) {
+                let weight =
+                    incomingPreampGains == nil
+                    ? 0
+                    : transition.incomingBlendWeight(frameOffset: frame)
+                let additionalSample = source.data[frame * source.stride] * (gain + (targetGain - gain) * weight)
                 guard additionalSample != 0 else {
                     continue
                 }
-                let mixed = samples[sampleBase + channel] + additionalSample
-                let output = saturateOutputSample(mixed)
-                samples[sampleBase + channel] = output.sample
+                let index = frame * channelCount + channel
+                let output = saturateOutputSample(samples[index] + additionalSample)
+                samples[index] = output.sample
                 if output.saturated {
                     saturatedSamples += 1
                 }
@@ -5038,33 +5027,24 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return (value, false)
     }
 
-    private static func inputSample(
-        from buffers: UnsafeMutableAudioBufferListPointer,
-        frame: Int,
+    private static func inputChannel(
+        in buffers: UnsafeMutableAudioBufferListPointer,
         channel: Int
-    ) -> Float {
-        var remainingChannel = channel
+    ) -> (data: UnsafePointer<Float>, stride: Int, frameCount: Int)? {
+        var offset = channel
         for buffer in buffers {
             let channels = Int(buffer.mNumberChannels)
-            guard channels > 0 else {
+            guard offset < channels else {
+                offset -= channels
                 continue
             }
-            guard remainingChannel < channels else {
-                remainingChannel -= channels
-                continue
+            let samples = Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride
+            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self), offset < samples else {
+                return nil
             }
-            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else {
-                return 0
-            }
-            let index = frame * channels + remainingChannel
-            guard index >= 0,
-                index < Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride
-            else {
-                return 0
-            }
-            return data[index]
+            return (UnsafePointer(data + offset), channels, 1 + (samples - 1 - offset) / channels)
         }
-        return 0
+        return nil
     }
 
     static func monoDownmix(

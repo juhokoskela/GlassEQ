@@ -1,9 +1,8 @@
-/// Owns retired processors. Move them into off-thread reclamation before leaving the callback.
+/// Move the retired processor into off-thread reclamation before leaving the callback.
 public struct EQTransitionRenderResult: ~Copyable, Sendable {
     public var saturatedSamples: UInt64
     public var completedTransition: Bool
     public var retiredProcessor: EQProcessor?
-    public var secondRetiredProcessor: EQProcessor?
     public var blendStartFrame: Int?
     public var blendFrameCount: Int
     public var programmeComparison: EQProgrammeComparisonSnapshot
@@ -13,7 +12,6 @@ public struct EQTransitionRenderResult: ~Copyable, Sendable {
         saturatedSamples: UInt64 = 0,
         completedTransition: Bool = false,
         retiredProcessor: consuming EQProcessor? = nil,
-        secondRetiredProcessor: consuming EQProcessor? = nil,
         blendStartFrame: Int? = nil,
         blendFrameCount: Int = 0,
         programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
@@ -22,7 +20,6 @@ public struct EQTransitionRenderResult: ~Copyable, Sendable {
         self.saturatedSamples = saturatedSamples
         self.completedTransition = completedTransition
         self.retiredProcessor = retiredProcessor
-        self.secondRetiredProcessor = secondRetiredProcessor
         self.blendStartFrame = blendStartFrame
         self.blendFrameCount = blendFrameCount
         self.programmeComparison = programmeComparison
@@ -60,21 +57,21 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
 
     private var activeProcessor: EQProcessor
     private var incomingProcessor: EQProcessor?
-    private var pendingComparisonReferenceProcessor: EQProcessor?
-    private var comparisonReferenceProcessor: EQProcessor?
-    private var retiredComparisonProcessor: EQProcessor?
+    private enum ComparisonPhase {
+        case inactive, entering, active
+    }
+
+    private var comparisonPhase = ComparisonPhase.inactive
     private var alternateSamples: [Float]
     private let channelCount: Int
     private let warmupFrameCount: Int
     private let blendFrameCount: Int
     private var warmupFramesRemaining = 0
     private var blendedFrames = 0
-    private var comparisonWarmupFramesRemaining = 0
     private var comparisonSelection = EQProgrammeComparisonSelection.equalized
     private var comparisonSelectionStartWeight: Float = 0
     private var comparisonSelectionWeight: Float = 0
     private var comparisonSelectionBlendedFrames = 0
-    private var comparisonExitRequested = false
     private var comparisonExitGainStart: Float?
     private var comparisonExitGainBlendedFrames = 0
     private var programmeLoudnessMatcher: RealtimeProgrammeLoudnessMatcher
@@ -111,11 +108,11 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
     }
 
     public var isTransitioning: Bool {
-        incomingProcessor != nil || pendingComparisonReferenceProcessor != nil
+        incomingProcessor != nil
     }
 
     public var isProgrammeComparisonActive: Bool {
-        pendingComparisonReferenceProcessor != nil || comparisonReferenceProcessor != nil
+        comparisonPhase != .inactive
     }
 
     /// Takes the prepared processor only on success. A rejected candidate remains with the
@@ -129,8 +126,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             return false
         }
         swap(&incomingProcessor, &processor)
-        if comparisonReferenceProcessor != nil {
-            comparisonExitRequested = true
+        if comparisonPhase == .active {
             setProgrammeComparisonSelection(.equalized)
         } else {
             beginStandardTransition()
@@ -138,25 +134,16 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
         return true
     }
 
-    /// Takes both prepared processors only on success; rejection preserves both caller slots.
+    /// Compares the draft with filters off at the same per-channel preamp.
     @discardableResult
-    public mutating func beginProgrammeComparison(
-        equalizedProcessor: inout EQProcessor?,
-        referenceProcessor: inout EQProcessor?
-    ) -> Bool {
-        guard incomingProcessor == nil,
-            comparisonReferenceProcessor == nil,
-            pendingComparisonReferenceProcessor == nil,
-            equalizedProcessor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
-            referenceProcessor?.configuration.sampleRate == activeProcessor.configuration.sampleRate,
-            equalizedProcessor?.configuration.channelCount == activeProcessor.configuration.channelCount,
-            referenceProcessor?.configuration.channelCount == activeProcessor.configuration.channelCount
+    public mutating func beginProgrammeComparison(equalizedProcessor: inout EQProcessor?) -> Bool {
+        guard comparisonPhase == .inactive,
+            equalizedProcessor?.configuration.isBypassed == false,
+            beginTransition(to: &equalizedProcessor)
         else {
             return false
         }
-        swap(&incomingProcessor, &equalizedProcessor)
-        swap(&pendingComparisonReferenceProcessor, &referenceProcessor)
-        beginStandardTransition()
+        comparisonPhase = .entering
         return true
     }
 
@@ -177,8 +164,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
         }
         return EQProgrammeComparisonSnapshot(
             isActive: isProgrammeComparisonActive,
-            isReady: comparisonReferenceProcessor != nil
-                && comparisonWarmupFramesRemaining == 0
+            isReady: comparisonPhase == .active
                 && programmeLoudnessMatcher.isReady,
             selection: comparisonSelection
         )
@@ -204,7 +190,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             )
         }
 
-        if comparisonReferenceProcessor != nil {
+        if comparisonPhase == .active {
             return processProgrammeComparison(
                 samples,
                 frameCount: availableFrames,
@@ -288,15 +274,26 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             var workTiming = activeDiagnostics.workTiming
             workTiming.merge(incomingDiagnostics.workTiming)
 
+            let activeIsDry = activeProcessor.configuration.isBypassed
+            let incomingIsDry = incomingProcessor?.configuration.isBypassed == true
+            var saturated = activeDiagnostics.nonFiniteSamples &+ incomingDiagnostics.nonFiniteSamples
             if warmupFramesRemaining > 0 {
                 warmupFramesRemaining = max(warmupFramesRemaining - frameCount, 0)
+                if !activeIsDry {
+                    saturated &+= Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+                }
                 result = EQTransitionRenderResult(
-                    saturatedSamples: activeDiagnostics.nonFiniteSamples
-                        &+ incomingDiagnostics.nonFiniteSamples
-                        &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
+                    saturatedSamples: saturated,
                     workTiming: workTiming
                 )
                 return
+            }
+
+            // A bypass fade mixes transparent dry samples with the protected wet output.
+            if incomingIsDry && !activeIsDry {
+                saturated &+= Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+            } else if activeIsDry && !incomingIsDry {
+                saturated &+= Self.protect(alternate, frameCount: frameCount, channelCount: channelCount)
             }
 
             let renderedBlendStartFrame = blendedFrames
@@ -307,19 +304,23 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             var sampleIndex = 0
             for frame in 0..<frameCount {
                 let incomingWeight = blendWindow.incomingBlendWeight(frameOffset: frame)
-                for channel in 0..<channelCount {
-                    let oldSample = samples[sampleIndex + channel]
-                    samples[sampleIndex + channel] =
-                        oldSample
-                        + (alternate[sampleIndex + channel] - oldSample) * incomingWeight
+                if incomingWeight == 1 {
+                    for channel in 0..<channelCount {
+                        samples[sampleIndex + channel] = alternate[sampleIndex + channel]
+                    }
+                } else if incomingWeight > 0 {
+                    for channel in 0..<channelCount {
+                        let oldSample = samples[sampleIndex + channel]
+                        samples[sampleIndex + channel] =
+                            oldSample + (alternate[sampleIndex + channel] - oldSample) * incomingWeight
+                    }
                 }
                 sampleIndex += channelCount
             }
             blendedFrames += frameCount
-            let saturated =
-                activeDiagnostics.nonFiniteSamples
-                &+ incomingDiagnostics.nonFiniteSamples
-                &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+            if !activeIsDry && !incomingIsDry {
+                saturated &+= Self.protect(samples, frameCount: frameCount, channelCount: channelCount)
+            }
 
             guard blendedFrames >= blendFrameCount,
                 incomingProcessor != nil
@@ -336,26 +337,20 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             var retiredProcessor = incomingProcessor.take()!
             swap(&activeProcessor, &retiredProcessor)
             blendedFrames = 0
-            if pendingComparisonReferenceProcessor != nil {
-                comparisonWarmupFramesRemaining = max(
-                    warmupFrameCount, (pendingComparisonReferenceProcessor?.requiredWarmupFrames)!
-                )
-                comparisonReferenceProcessor = pendingComparisonReferenceProcessor.take()
+            if comparisonPhase == .entering {
+                comparisonPhase = .active
                 comparisonSelection = .equalized
                 comparisonSelectionStartWeight = 0
                 comparisonSelectionWeight = 0
                 comparisonSelectionBlendedFrames = blendFrameCount
-                comparisonExitRequested = false
                 comparisonExitGainStart = nil
                 comparisonExitGainBlendedFrames = 0
                 programmeLoudnessMatcher.reset()
             }
-            let secondRetiredProcessor = retiredComparisonProcessor.take()
             result = EQTransitionRenderResult(
                 saturatedSamples: saturated,
                 completedTransition: true,
                 retiredProcessor: retiredProcessor,
-                secondRetiredProcessor: secondRetiredProcessor,
                 blendStartFrame: renderedBlendStartFrame,
                 blendFrameCount: blendFrameCount,
                 workTiming: workTiming
@@ -387,38 +382,14 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 start: alternateStorage.baseAddress,
                 count: sampleCount
             )
-            Self.copy(samples, into: alternate, sampleCount: sampleCount)
+            let referenceNonFinite = activeProcessor.writeFiltersOffReference(
+                from: UnsafeBufferPointer(samples), into: alternate, frameCount: frameCount, channelCount: channelCount
+            )
             let equalizedDiagnostics = activeProcessor.processInterleavedLinearlyWithDiagnostics(
                 samples,
                 frameCount: frameCount,
                 channelCount: channelCount
             )
-            let referenceDiagnostics = comparisonReferenceProcessor!
-                .processInterleavedLinearlyWithDiagnostics(
-                    alternate,
-                    frameCount: frameCount,
-                    channelCount: channelCount
-                )
-            var workTiming = equalizedDiagnostics.workTiming
-            workTiming.merge(referenceDiagnostics.workTiming)
-
-            if comparisonWarmupFramesRemaining > 0 {
-                comparisonWarmupFramesRemaining = max(
-                    comparisonWarmupFramesRemaining - frameCount,
-                    0
-                )
-                if comparisonExitRequested {
-                    shouldFinishComparison = true
-                }
-                result = EQTransitionRenderResult(
-                    saturatedSamples: equalizedDiagnostics.nonFiniteSamples
-                        &+ referenceDiagnostics.nonFiniteSamples
-                        &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
-                    workTiming: workTiming
-                )
-                return
-            }
-
             let equalized = UnsafeBufferPointer(samples)
             let reference = UnsafeBufferPointer(alternate)
             var sampleIndex = 0
@@ -461,7 +432,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 sampleIndex += channelCount
             }
 
-            if comparisonExitRequested,
+            if incomingProcessor != nil,
                 comparisonSelection == .equalized,
                 comparisonSelectionBlendedFrames >= blendFrameCount
             {
@@ -475,9 +446,9 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
             }
             result = EQTransitionRenderResult(
                 saturatedSamples: equalizedDiagnostics.nonFiniteSamples
-                    &+ referenceDiagnostics.nonFiniteSamples
+                    &+ referenceNonFinite
                     &+ Self.protect(samples, frameCount: frameCount, channelCount: channelCount),
-                workTiming: workTiming
+                workTiming: equalizedDiagnostics.workTiming
             )
         }
         if shouldFinishComparison {
@@ -529,9 +500,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
     }
 
     private mutating func finishProgrammeComparison() {
-        retiredComparisonProcessor = comparisonReferenceProcessor.take()
-        comparisonWarmupFramesRemaining = 0
-        comparisonExitRequested = false
+        comparisonPhase = .inactive
         comparisonExitGainStart = nil
         comparisonExitGainBlendedFrames = 0
         comparisonSelection = .equalized

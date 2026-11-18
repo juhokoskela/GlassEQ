@@ -493,7 +493,9 @@ private final class RealFloatDFTSetup: @unchecked Sendable {
 
 // The noncopyable convolver exclusively owns this allocation. Region views stay within its
 // mutating render methods; neither the pointers nor their storage are shared with another bank.
-private struct ConvolutionScratch: ~Copyable, @unchecked Sendable {
+// Optimized clients reference this metadata when destroying the convolver.
+@usableFromInline
+struct ConvolutionScratch: ~Copyable, @unchecked Sendable {
     private let storage: UnsafeMutableBufferPointer<Float>
     let fftInputEven: UnsafeMutableBufferPointer<Float>
     let fftInputOdd: UnsafeMutableBufferPointer<Float>

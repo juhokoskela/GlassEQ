@@ -761,6 +761,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var selectedProfileID: UUID?
     public var draftProfile: EQProfile?
     public var activeProfileID: UUID?
+    public var activeProfileMatchesLibrary: Bool?
     public var activeProfileName: String?
     public var fallbackProfileID: UUID?
     public var currentOutput: SettingsOutputDTO?
@@ -776,6 +777,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         selectedProfileID: UUID? = nil,
         draftProfile: EQProfile? = nil,
         activeProfileID: UUID? = nil,
+        activeProfileMatchesLibrary: Bool? = nil,
         activeProfileName: String? = nil,
         fallbackProfileID: UUID? = nil,
         currentOutput: SettingsOutputDTO? = nil,
@@ -790,6 +792,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile
         self.activeProfileID = activeProfileID
+        self.activeProfileMatchesLibrary = activeProfileMatchesLibrary
         self.activeProfileName = activeProfileName
         self.fallbackProfileID = fallbackProfileID
         self.currentOutput = currentOutput
@@ -805,6 +808,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var selectedProfileID: UUID
     public var draftProfile: EQProfile
     public var activeProfileID: UUID
+    public var activeProfileMatchesLibrary: Bool
     public var activeProfileName: String
     public var currentOutputName: String
     public var currentOutputUID: String
@@ -826,6 +830,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case selectedProfileID
         case draftProfile
         case activeProfileID
+        case activeProfileMatchesLibrary
         case activeProfileName
         case currentOutputName
         case currentOutputUID
@@ -848,6 +853,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         selectedProfileID: UUID,
         draftProfile: EQProfile,
         activeProfileID: UUID,
+        activeProfileMatchesLibrary: Bool = true,
         activeProfileName: String,
         currentOutputName: String,
         currentOutputUID: String,
@@ -868,6 +874,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile
         self.activeProfileID = activeProfileID
+        self.activeProfileMatchesLibrary = activeProfileMatchesLibrary
         self.activeProfileName = activeProfileName
         self.currentOutputName = currentOutputName
         self.currentOutputUID = currentOutputUID
@@ -896,6 +903,8 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             selectedProfileID: try container.decode(UUID.self, forKey: .selectedProfileID),
             draftProfile: try container.decode(EQProfile.self, forKey: .draftProfile),
             activeProfileID: try container.decode(UUID.self, forKey: .activeProfileID),
+            activeProfileMatchesLibrary: try container.decodeIfPresent(Bool.self, forKey: .activeProfileMatchesLibrary)
+                ?? true,
             activeProfileName: try container.decode(String.self, forKey: .activeProfileName),
             currentOutputName: try container.decode(String.self, forKey: .currentOutputName),
             currentOutputUID: try container.decode(String.self, forKey: .currentOutputUID),

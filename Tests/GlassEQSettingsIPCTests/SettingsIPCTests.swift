@@ -304,6 +304,32 @@ struct SettingsIPCTests {
         #expect(!controller.hasUnsavedDraft)
     }
 
+    @Test
+    @MainActor
+    func cleanImportedProfileCanBeAppliedDuringAudition() async {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let imported = EQProfile(name: "Imported", mode: .parametric, filters: [])
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [active, imported]
+        snapshot.selectedProfileID = imported.id
+        snapshot.draftProfile = imported
+        snapshot.activeProfileID = active.id
+        snapshot.programmeComparison.isActive = true
+        let model = GlassEQSettingsViewModel(snapshot: snapshot)
+        let controller = SettingsController(model: model)
+        #expect(!controller.hasUnsavedDraft)
+        #expect(controller.canApplyDraft)
+        snapshot.activeProfileID = imported.id
+        model.accept(snapshot: snapshot)
+        #expect(!controller.canApplyDraft)
+        model.accept(patch: SettingsSnapshotPatchDTO(activeProfileMatchesLibrary: false))
+        #expect(controller.canApplyDraft)
+        var protection = snapshot.profileStoreProtection
+        protection.isProtected = true
+        model.accept(patch: SettingsSnapshotPatchDTO(profileStoreProtection: protection))
+        #expect(!controller.canApplyDraft)
+    }
+
     @Test(arguments: [false, true])
     @MainActor
     func compareLocksTheCurrentDraftBeforeDispatching(comparisonStarted: Bool) async {
@@ -315,8 +341,8 @@ struct SettingsIPCTests {
         snapshot.draftProfile = first
         var reply = snapshot
         reply.programmeComparison = EQProgrammeComparisonSnapshot(isActive: comparisonStarted)
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: reply))
-        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
+        let client = ScriptedSettingsCommandClient(publishing: reply)
+        let model = client.makeModel(snapshot: snapshot)
         let controller = SettingsController(model: model)
         controller.draftProfile.preampDB = -4.5
         let draft = controller.draftProfile
@@ -360,8 +386,8 @@ struct SettingsIPCTests {
     @MainActor
     func failedComparisonStartUnlocksEditingAndAllowsRetry(cancelled: Bool) async {
         let snapshot = SettingsSnapshotDTO.disconnected
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse())
-        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
+        let client = ScriptedSettingsCommandClient()
+        let model = client.makeModel(snapshot: snapshot)
         let controller = SettingsController(model: model)
         controller.draftProfile.preampDB = -4.5
         let draft = controller.draftProfile
@@ -381,7 +407,7 @@ struct SettingsIPCTests {
         let retriedDraft = controller.draftProfile
         var reply = snapshot
         reply.programmeComparison.isActive = true
-        client.response = SettingsCommandResponse(snapshot: reply)
+        client.nextSnapshot = reply
         client.onPerform = {}
 
         controller.startProgrammeComparison()
@@ -402,8 +428,8 @@ struct SettingsIPCTests {
         snapshot.profiles = [first, second]
         snapshot.selectedProfileID = first.id
         snapshot.draftProfile = first
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: snapshot))
-        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
+        let client = ScriptedSettingsCommandClient(publishing: snapshot)
+        let model = client.makeModel(snapshot: snapshot)
         let controller = SettingsController(model: model)
         controller.selectProfile(second.id)
         controller.draftProfile.preampDB = -4.5
@@ -426,7 +452,7 @@ struct SettingsIPCTests {
 
         for (command, comparison) in zip(commands, comparisonStates) {
             snapshot.programmeComparison = comparison
-            client.response = SettingsCommandResponse(snapshot: snapshot)
+            client.nextSnapshot = snapshot
 
             await controller.dispatch(command)
             controller.reconcileWithSnapshot()
@@ -441,7 +467,7 @@ struct SettingsIPCTests {
         snapshot.selectedProfileID = draft.id
         snapshot.draftProfile = draft
         snapshot.programmeComparison = EQProgrammeComparisonSnapshot()
-        client.response = SettingsCommandResponse(snapshot: snapshot)
+        client.nextSnapshot = snapshot
 
         await controller.dispatch(.applyProfile(controller.draftProfile))
 
@@ -461,8 +487,8 @@ struct SettingsIPCTests {
     @MainActor
     func transientCommandSnapshotPreservesUnsavedDraft(command: SettingsCommand) async {
         let snapshot = SettingsSnapshotDTO.disconnected
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: snapshot))
-        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: client)
+        let client = ScriptedSettingsCommandClient(publishing: snapshot)
+        let model = client.makeModel(snapshot: snapshot)
         let controller = SettingsController(model: model)
         controller.draftProfile.preampDB = -4.5
 
@@ -485,8 +511,8 @@ struct SettingsIPCTests {
         latest.profiles = [original, duplicate]
         latest.selectedProfileID = duplicate.id
         latest.draftProfile = duplicate
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: latest))
-        let model = GlassEQSettingsViewModel(snapshot: dispatched, client: client)
+        let client = ScriptedSettingsCommandClient(publishing: latest)
+        let model = client.makeModel(snapshot: dispatched)
         let controller = SettingsController(model: model)
 
         await controller.dispatch(.duplicateProfile(original.id))
@@ -507,8 +533,8 @@ struct SettingsIPCTests {
         dispatched.draftProfile = first
         var latest = dispatched
         latest.statusMessage = "Command completed"
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse(snapshot: latest))
-        let model = GlassEQSettingsViewModel(snapshot: dispatched, client: client)
+        let client = ScriptedSettingsCommandClient(publishing: latest)
+        let model = client.makeModel(snapshot: dispatched)
         let controller = SettingsController(model: model)
         client.onPerform = {
             controller.selectProfile(second.id)
@@ -529,8 +555,8 @@ struct SettingsIPCTests {
         initial.profiles = [profile]
         initial.selectedProfileID = profile.id
         initial.draftProfile = profile
-        let client = ScriptedSettingsCommandClient(response: SettingsCommandResponse())
-        let model = GlassEQSettingsViewModel(snapshot: initial, client: client)
+        let client = ScriptedSettingsCommandClient()
+        let model = client.makeModel(snapshot: initial)
         let controller = SettingsController(model: model)
         controller.draftProfile.preampDB = -4.5
 
@@ -690,6 +716,53 @@ struct SettingsIPCTests {
             try await task.value
         }
         #expect(panel.cancelCallCount == 1)
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func coalescedCommandReplyCannotUndoALaterComparisonPatch(picker: Bool) async throws {
+        let pipe = Pipe()
+        let recorder = SettingsPipePumpRecorder(expectedMessageCount: 1)
+        let pump = SettingsPipeReadPump(
+            label: "com.glasseq.tests.reply-order", onMessages: recorder.record, onEndOfFile: recorder.recordEndOfFile)
+        pump.install(on: pipe.fileHandleForReading)
+        let model = GlassEQSettingsViewModel()
+        let client = SettingsPipeClient(testingToken: "token", model: model, output: pipe.fileHandleForWriting)
+        let initial = SettingsSnapshotDTO.disconnected
+        model.attach(client: client, snapshot: initial)
+        let command = picker ? SettingsCommand.chooseImportFiles(mode: .single) : .applyProfile(initial.draftProfile)
+        let pending = Task { await model.perform(command) }
+        defer {
+            pending.cancel()
+            client.disconnect()
+            pump.invalidate(handle: pipe.fileHandleForReading)
+        }
+        let received = await Task.detached { recorder.waitForMessages(timeout: .now() + 5) }.value
+        try #require(received)
+        let message = try #require(recorder.snapshot().messages.first)
+        guard case let .request(_, id, .command, _) = message else {
+            Issue.record("Expected a Settings command")
+            return
+        }
+        let selection: SettingsFileImportSelectionDTO? =
+            picker ? .text(suggestedName: "EQ", filename: "EQ.txt", text: "") : nil
+        let comparison = EQProgrammeComparisonSnapshot(isActive: true, selection: .reference)
+        var saved = initial
+        saved.profiles[0].preampDB = -9
+        // A command continuation has no authority to replace a newer event, even if its reply includes a snapshot.
+        client.handlePipeMessages([
+            .event(sessionToken: "token", event: .snapshotChanged(saved)),
+            .response(
+                sessionToken: "token", id: id,
+                response: SettingsCommandResponse(snapshot: picker ? nil : initial, fileImportSelection: selection),
+                error: nil),
+            .event(
+                sessionToken: "token",
+                event: .snapshotPatched(SettingsSnapshotPatchDTO(programmeComparison: comparison))),
+        ])
+        let response = try #require(await pending.value)
+        #expect(response.fileImportSelection == selection)
+        #expect(model.snapshot.profiles == saved.profiles)
+        #expect(model.snapshot.programmeComparison == comparison)
     }
 
     @Test @MainActor
@@ -1774,18 +1847,28 @@ private final class ReentrantCancellingSettingsCommandClient: SettingsCommanding
 
 @MainActor
 private final class ScriptedSettingsCommandClient: SettingsCommanding {
-    var response: SettingsCommandResponse
+    var nextSnapshot: SettingsSnapshotDTO?
     var onPerform: () async throws -> Void = {}
     private(set) var commands: [SettingsCommand] = []
+    private weak var model: GlassEQSettingsViewModel?
 
-    init(response: SettingsCommandResponse) {
-        self.response = response
+    init(publishing snapshot: SettingsSnapshotDTO? = nil) {
+        nextSnapshot = snapshot
+    }
+
+    func makeModel(snapshot: SettingsSnapshotDTO) -> GlassEQSettingsViewModel {
+        let model = GlassEQSettingsViewModel(snapshot: snapshot, client: self)
+        self.model = model
+        return model
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
         commands.append(command)
         try await onPerform()
-        return response
+        if let nextSnapshot {
+            model?.accept(snapshot: nextSnapshot)
+        }
+        return SettingsCommandResponse()
     }
 }
 

@@ -948,26 +948,19 @@ struct EQCoreTests {
             maximumFrameCount: 4, channelCount: 2, sampleRate: 48_000,
             warmupSeconds: 0, blendSeconds: 4.0 / 48_000
         )
-        var equalized: EQProcessor? = EQProcessor(renderConfiguration: prepared)
-        var reference: EQProcessor? = EQProcessor(renderConfiguration: mismatched)
-        let acceptedMismatch = transition.beginProgrammeComparison(
-            equalizedProcessor: &equalized, referenceProcessor: &reference
-        )
+        var wrongRate: EQProcessor? = EQProcessor(renderConfiguration: mismatched)
+        let acceptedMismatch = transition.beginProgrammeComparison(equalizedProcessor: &wrongRate)
         #expect(!acceptedMismatch)
-        let keptBothCandidates = equalized != nil && reference != nil
-        #expect(keptBothCandidates)
-        let acceptedWrongRate = transition.beginTransition(to: &reference)
+        let acceptedWrongRate = transition.beginTransition(to: &wrongRate)
         #expect(!acceptedWrongRate)
-        let keptWrongRate = reference != nil
+        let keptWrongRate = wrongRate != nil
         #expect(keptWrongRate)
 
-        reference = EQProcessor(renderConfiguration: prepared)
-        let accepted = transition.beginProgrammeComparison(
-            equalizedProcessor: &equalized, referenceProcessor: &reference
-        )
+        var equalized: EQProcessor? = EQProcessor(renderConfiguration: prepared)
+        let accepted = transition.beginProgrammeComparison(equalizedProcessor: &equalized)
         #expect(accepted)
-        let transferredBothCandidates = equalized == nil && reference == nil
-        #expect(transferredBothCandidates)
+        let transferredDraft = equalized == nil
+        #expect(transferredDraft)
         var next: EQProcessor? = EQProcessor(renderConfiguration: prepared)
         let acceptedWhileBusy = transition.beginTransition(to: &next)
         #expect(!acceptedWhileBusy)
@@ -1262,6 +1255,86 @@ struct EQCoreTests {
         #expect(steadyStateResult.completedTransition == false)
     }
 
+    @Test(arguments: [false, true], [4, 5])
+    func fullScaleBypassFadeMatchesBothSteadyEndpoints(convolution: Bool, finalBlockFrames: Int) throws {
+        let rate = 48_000.0
+        var wet = EQProfile(name: "Wet", mode: .parametric, preampDB: -0.05, filters: [])
+        if convolution {
+            wet.mode = .convolution
+            wet.convolution = .impulseResponse(ImpulseResponseSource(sampleRate: rate, samples: [1]))
+        }
+        var dry = wet
+        dry.isBypassed = true
+        let wetConfig = try EQRenderConfiguration.prepare(profile: wet, sampleRate: rate, channelCount: 2)
+        let dryConfig = try EQRenderConfiguration.prepare(profile: dry, sampleRate: rate, channelCount: 2)
+        var steady = EQProcessor(renderConfiguration: wetConfig)
+        let dryFrame: [Float] = [1, -1]
+        var wetFrame = dryFrame
+        steady.processInterleaved(&wetFrame, channelCount: 2)
+        #expect(wetFrame[0] < 1)
+
+        for startsDry in [false, true] {
+            var transition = RealtimeEQTransition(
+                activeProcessor: EQProcessor(renderConfiguration: startsDry ? dryConfig : wetConfig),
+                maximumFrameCount: 257, channelCount: 2, sampleRate: rate,
+                warmupSeconds: 1 / rate, blendSeconds: 6 / rate
+            )
+            var candidate: EQProcessor? = EQProcessor(renderConfiguration: startsDry ? wetConfig : dryConfig)
+            var warmup = max(1, candidate?.requiredWarmupFrames ?? 0)
+            let began = transition.beginTransition(to: &candidate)
+            #expect(began)
+            func render(_ frames: Int) -> [Float] {
+                var samples = (0..<(frames * 2)).map { dryFrame[$0 % 2] }
+                samples.withUnsafeMutableBufferPointer {
+                    _ = transition.processInterleavedWithDiagnostics($0, frameCount: frames, channelCount: 2)
+                }
+                return samples
+            }
+            let oldFrame = startsDry ? dryFrame : wetFrame
+            let newFrame = startsDry ? wetFrame : dryFrame
+            while warmup > 0 {
+                let count = min(warmup, 257)
+                let block = render(count)
+                #expect(Array(block.prefix(2)) == oldFrame)
+                warmup -= count
+            }
+            let start = render(2)
+            #expect(Array(start.prefix(2)) == oldFrame)
+            let end = render(finalBlockFrames)
+            #expect((6..<end.count).allSatisfy { end[$0] == newFrame[$0 % 2] })
+            #expect(render(1) == newFrame)
+        }
+    }
+
+    @Test
+    func bypassFadeRepairsNonFiniteInputWhileWetBankIsPresent() {
+        var dry = EQProfile.flatParametric
+        dry.isBypassed = true
+        let rate = 48_000.0
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: dry, sampleRate: rate, channelCount: 1
+                )),
+            maximumFrameCount: 4, channelCount: 1, sampleRate: rate,
+            warmupSeconds: 0, blendSeconds: 4 / rate
+        )
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(profile: .flatParametric, sampleRate: rate, channelCount: 1)
+        )
+        let began = transition.beginTransition(to: &candidate)
+        #expect(began)
+        var samples: [Float] = [1, .nan, .infinity, -1]
+        samples.withUnsafeMutableBufferPointer {
+            let result = transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 1)
+            #expect(result.saturatedSamples >= 2)
+        }
+        #expect(samples[0] == 1)
+        #expect(samples[1] == 0)
+        #expect(samples[2] == 0)
+        #expect(samples[3].isFinite)
+    }
+
     @Test
     func bypassedConvolutionLeavesNearFullScaleSamplesUntouched() {
         var profile = EQProfile.flatConvolution
@@ -1291,56 +1364,6 @@ struct EQCoreTests {
 
         #expect(samples == [1, -1, 0.99, -0.99])
         #expect(result.saturatedSamples == 0)
-    }
-
-    @Test
-    func filtersOffReferenceKeepsPreampAndDisablesOnlyFilters() {
-        let profile = EQProfile(
-            name: "Stereo",
-            mode: .parametric,
-            channelMode: .stereo,
-            preampDB: -7,
-            filters: [
-                EQFilter(kind: .peak, frequency: 1_000, gainDB: 4, q: 1)
-            ],
-            leftPreampDB: -5,
-            leftFilters: [
-                EQFilter(kind: .lowShelf, frequency: 100, gainDB: 3, q: 0.7)
-            ],
-            rightPreampDB: -9,
-            rightFilters: [
-                EQFilter(kind: .highShelf, frequency: 8_000, gainDB: -2, q: 0.7)
-            ]
-        )
-        var bypassed = profile
-        bypassed.isBypassed = true
-
-        let reference = bypassed.filtersOffReference
-
-        #expect(reference.preampDB == -7)
-        #expect(reference.leftPreampDB == -5)
-        #expect(reference.rightPreampDB == -9)
-        #expect(reference.channelMode == .stereo)
-        #expect(reference.filters.isEmpty)
-        #expect(reference.leftFilters.isEmpty)
-        #expect(reference.rightFilters.isEmpty)
-        #expect(!reference.isBypassed)
-    }
-
-    @Test
-    func filtersOffReferenceKeepsConvolutionPreampAndDisablesCurve() {
-        var profile = EQProfile.flatConvolution
-        profile.preampDB = -8
-        profile.isBypassed = true
-
-        let reference = profile.filtersOffReference
-
-        #expect(reference.preampDB == -8)
-        #expect(reference.mode == .parametric)
-        #expect(reference.convolution == nil)
-        #expect(reference.leftConvolution == nil)
-        #expect(reference.rightConvolution == nil)
-        #expect(!reference.isBypassed)
     }
 
     @Test
@@ -1405,7 +1428,6 @@ struct EQCoreTests {
             preampDB: 6.020_599_913,
             filters: []
         )
-        let reference = EQProfile(name: "Filters off", mode: .parametric, filters: [])
         var transition = RealtimeEQTransition(
             activeProcessor: EQProcessor(
                 configuration: EQConfiguration(
@@ -1426,15 +1448,8 @@ struct EQCoreTests {
                 sampleRate: 48_000,
                 channelCount: 1
             ))
-        var referenceCandidate: EQProcessor? = EQProcessor(
-            configuration: EQConfiguration(
-                profile: reference,
-                sampleRate: 48_000,
-                channelCount: 1
-            ))
         let didBeginComparison = transition.beginProgrammeComparison(
-            equalizedProcessor: &equalizedCandidate,
-            referenceProcessor: &referenceCandidate
+            equalizedProcessor: &equalizedCandidate
         )
         #expect(didBeginComparison)
         var entry = [Float](repeating: 0.25, count: 4)
@@ -1463,7 +1478,7 @@ struct EQCoreTests {
         }
         #expect(comparisonResult.programmeComparison.isActive)
         #expect(abs(comparison[0] - 0.5) < 0.000_001)
-        #expect(abs(comparison[3] - 0.25) < 0.000_001)
+        #expect(abs(comparison[3] - 0.5) < 0.000_001)
 
         var candidate: EQProcessor? = EQProcessor(
             configuration: EQConfiguration(
@@ -1493,76 +1508,82 @@ struct EQCoreTests {
         #expect(exitResult.completedTransition == true)
         let exitResultRetiredProcessorReturned = exitResult.retiredProcessor != nil
         #expect(exitResultRetiredProcessorReturned)
-        let exitResultSecondRetiredProcessorReturned = exitResult.secondRetiredProcessor != nil
-        #expect(exitResultSecondRetiredProcessorReturned)
         #expect(!exitResult.programmeComparison.isActive)
         #expect(abs(exitProfile[0] - 0.5) < 0.000_001)
         #expect(abs(exitProfile[3] - 0.25) < 0.000_001)
     }
 
     @Test
-    func programmeComparisonWarmsConvolutionReferenceBeforeSelectingIt() throws {
-        let draft = EQProfile(name: "Draft", mode: .parametric, filters: [])
-        var impulse = [Float](repeating: 0, count: PreparedConvolutionKernel.tapCount)
-        impulse[impulse.count - 1] = 0.5
-        let reference = EQProfile(
-            name: "Delayed reference",
-            mode: .convolution,
-            filters: [],
-            convolution: .impulseResponse(ImpulseResponseSource(sampleRate: 48_000, samples: impulse))
-        )
-        let draftConfiguration = EQConfiguration(profile: draft, sampleRate: 48_000, channelCount: 1)
-        var referenceProcessor: EQProcessor? = EQProcessor(
-            renderConfiguration: try EQRenderConfiguration.prepare(
-                profile: reference,
-                sampleRate: 48_000,
-                channelCount: 1
-            ))
-        let requiredWarmupFrames = (referenceProcessor?.requiredWarmupFrames)!
+    func filtersOffPassesThroughChannelsBeyondThePreparedBank() {
+        let rate = 48_000.0
+        var profile = EQProfile.flatParametric
+        profile.preampDB = -6.020_599_913
+        let mono = EQConfiguration(profile: profile, sampleRate: rate, channelCount: 1)
         var transition = RealtimeEQTransition(
-            activeProcessor: EQProcessor(configuration: draftConfiguration),
-            maximumFrameCount: 480,
-            channelCount: 1,
-            sampleRate: 48_000,
-            blendSeconds: 4.0 / 48_000
+            activeProcessor: EQProcessor(configuration: mono), maximumFrameCount: 1, channelCount: 2,
+            sampleRate: rate, warmupSeconds: 0, blendSeconds: 1 / rate
         )
-        var equalizedCandidate: EQProcessor? = EQProcessor(configuration: draftConfiguration)
-        let didBeginComparison = transition.beginProgrammeComparison(
-            equalizedProcessor: &equalizedCandidate,
-            referenceProcessor: &referenceProcessor
-        )
-        #expect(didBeginComparison)
-        for frameCount in [480, 480, 4] {
-            var samples = [Float](repeating: 0.25, count: frameCount)
-            samples.withUnsafeMutableBufferPointer {
-                _ = transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
-            }
+        var candidate: EQProcessor? = EQProcessor(configuration: mono)
+        let began = transition.beginProgrammeComparison(equalizedProcessor: &candidate)
+        #expect(began)
+        var samples: [Float] = [0, 0]
+        samples.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics($0, frameCount: 1, channelCount: 2)
         }
-        #expect(transition.isTransitioning == false)
         transition.setProgrammeComparisonSelection(.reference)
+        samples = [0.25, 0.375]
+        samples.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics($0, frameCount: 1, channelCount: 2)
+        }
+        #expect(samples == [0.125, 0.375])
+    }
 
-        let chunkSizes = [1, 63, 127, 480]
-        var renderedFrames = 0
-        var chunkIndex = 0
-        var stayedAudible = true
-        while renderedFrames < requiredWarmupFrames {
-            let frameCount = min(chunkSizes[chunkIndex % chunkSizes.count], requiredWarmupFrames - renderedFrames)
-            var samples = [Float](repeating: 0.25, count: frameCount)
+    @Test
+    func filtersOffKeepsStereoPreampsWhileTheDraftFIRAdvances() throws {
+        let rate = 48_000.0
+        var impulse = [Float](repeating: 0, count: 257)
+        impulse[0] = 0.5
+        impulse[256] = 0.25
+        let source = EQConvolutionSource.impulseResponse(ImpulseResponseSource(sampleRate: rate, samples: impulse))
+        let draft = EQProfile(
+            name: "Stereo FIR", mode: .convolution, channelMode: .stereo, filters: [],
+            leftPreampDB: -6.020_599_913, rightPreampDB: -12.041_199_826,
+            leftConvolution: source, rightConvolution: source
+        )
+        let config = try EQRenderConfiguration.prepare(profile: draft, sampleRate: rate, channelCount: 2)
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: .flatParametric, sampleRate: rate, channelCount: 2
+                )), maximumFrameCount: 257, channelCount: 2, sampleRate: rate,
+            warmupSeconds: 0, blendSeconds: 4 / rate
+        )
+        var candidate: EQProcessor? = EQProcessor(renderConfiguration: config)
+        let began = transition.beginProgrammeComparison(equalizedProcessor: &candidate)
+        #expect(began)
+        func render(_ frameCount: Int, input: Float = 0) -> [Float] {
+            var samples = [Float](repeating: input, count: frameCount * 2)
             samples.withUnsafeMutableBufferPointer {
-                _ = transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 1)
+                _ = transition.processInterleavedWithDiagnostics($0, frameCount: frameCount, channelCount: 2)
             }
-            stayedAudible = stayedAudible && samples.allSatisfy { abs($0 - 0.25) < 0.000_001 }
-            renderedFrames += frameCount
-            chunkIndex += 1
+            return samples
         }
-        #expect(stayedAudible)
-
-        var blend = [Float](repeating: 0.25, count: 4)
-        blend.withUnsafeMutableBufferPointer {
-            _ = transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 1)
+        var warmup = PreparedConvolutionKernel.tapCount - 1
+        while warmup > 0 {
+            let frames = min(warmup, 257)
+            _ = render(frames)
+            warmup -= frames
         }
-        #expect(abs(blend[0] - 0.25) < 0.000_001)
-        #expect(abs(blend[3] - 0.125) < 0.000_001)
+        _ = render(4)
+        transition.setProgrammeComparisonSelection(.reference)
+        _ = render(4)
+        #expect(render(1, input: 0.25) == [0.125, 0.0625])
+        _ = render(251)
+        transition.setProgrammeComparisonSelection(.equalized)
+        _ = render(4)
+        let tail = render(1)
+        #expect(abs(tail[0] - 0.03125) < 0.000_001)
+        #expect(abs(tail[1] - 0.015625) < 0.000_001)
     }
 
     @Test
@@ -1573,10 +1594,8 @@ struct EQCoreTests {
         let equalized = EQProfile(
             name: "Equalized",
             mode: .parametric,
-            preampDB: 6.020_599_913,
-            filters: []
+            filters: [EQFilter(kind: .peak, frequency: 1_000, gainDB: 6, q: 1)]
         )
-        let reference = EQProfile(name: "Filters off", mode: .parametric, filters: [])
         var transition = RealtimeEQTransition(
             activeProcessor: EQProcessor(
                 configuration: EQConfiguration(
@@ -1596,15 +1615,8 @@ struct EQCoreTests {
                 sampleRate: sampleRate,
                 channelCount: 1
             ))
-        var referenceCandidate: EQProcessor? = EQProcessor(
-            configuration: EQConfiguration(
-                profile: reference,
-                sampleRate: sampleRate,
-                channelCount: 1
-            ))
         let didBegin = transition.beginProgrammeComparison(
-            equalizedProcessor: &equalizedCandidate,
-            referenceProcessor: &referenceCandidate
+            equalizedProcessor: &equalizedCandidate
         )
         #expect(didBegin)
 
