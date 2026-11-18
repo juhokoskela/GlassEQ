@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The identity of the running build, read once from Info.plist. A source build run without a
 /// bundle has none of these keys and says so instead of inventing a version.
-struct AppBuildInfo: Equatable {
+struct AppBuildInfo {
     let version: String?
     let build: String?
     let releaseLabel: String?
@@ -113,7 +113,7 @@ struct AboutView: View {
                     ))
                 Text(
                     localized(
-                        "Official builds send your license key and a random installation identifier to activate. Keychain stores that identifier, the activation token, the signed entitlement and its verification state."
+                        "Official builds send your license key and a random installation identifier to activate. License refresh and deactivation send the activation token and installation identifier. Keychain stores that identifier, the activation token, the signed entitlement and its verification state."
                     ))
                 Text(localized("AutoEq downloads its catalogue and the result you select from GitHub."))
             }

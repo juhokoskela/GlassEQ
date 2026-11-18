@@ -1535,12 +1535,18 @@ struct GlassEQAppModelLifecycleTests {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
 
+        let reads = engine.snapshotMetricsCallCount
+        _ = model.supportSnapshot()
+        #expect(engine.snapshotMetricsCallCount > reads)
+        #expect(model.supportPlaybackDescription == "Processing")
+
         lookup.result = .success(scarlett)
         observer.emit(.success(scarlett))
 
         await waitUntil {
             engine.muteOutputCallCount == 1
         }
+        #expect(model.supportPlaybackDescription == "Switching outputs")
         #expect(engine.muteOutputCallCount == 1)
 
         await waitUntil {

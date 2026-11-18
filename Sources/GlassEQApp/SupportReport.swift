@@ -7,7 +7,6 @@ struct SupportReportView: View {
     let model: GlassEQAppModel
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    @State private var generatedAt = Date()
     @State private var didCopy = false
     @State private var saveFailure: String?
 
@@ -58,7 +57,7 @@ struct SupportReportView: View {
                 .accessibilityHint(Text(localized("Copies the whole report to the clipboard")))
 
                 Button(localized("Save…")) {
-                    save()
+                    Task { await save() }
                 }
                 .accessibilityHint(Text(localized("Saves the report as a text file you choose")))
 
@@ -106,8 +105,8 @@ struct SupportReportView: View {
     }
 
     private func regenerate() {
-        generatedAt = Date()
-        let snapshot = model.settingsSnapshot()
+        let generatedAt = Date()
+        let snapshot = model.supportSnapshot()
         text = [
             "GlassEQ support report · \(generatedAt.formatted(.iso8601))",
             AppBuildInfo.current.versionLine,
@@ -123,7 +122,7 @@ struct SupportReportView: View {
         saveFailure = nil
     }
 
-    private func save() {
+    private func save() async {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = "GlassEQ Support Report.txt"
@@ -132,19 +131,14 @@ struct SupportReportView: View {
             return
         }
         do {
-            try Data(text.utf8).write(to: url, options: .atomic)
+            try await Self.write(text, to: url)
             saveFailure = nil
 
         } catch {
             saveFailure = localized("Could not save: \(error.localizedDescription)")
         }
     }
-}
-
-extension GlassEQAppModel {
-    var supportPlaybackDescription: String {
-        if isRunning { return "Processing" }
-        if engineIsHoldingMute { return "Output muted by GlassEQ" }
-        return "Playback with macOS"
+    @concurrent private static func write(_ text: String, to url: URL) async throws {
+        try text.write(to: url, atomically: true, encoding: .utf8)
     }
 }

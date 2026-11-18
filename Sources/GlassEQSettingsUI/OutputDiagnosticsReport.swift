@@ -11,7 +11,7 @@ func outputAddedLatencyLabel(_ snapshot: SettingsSnapshot) -> String {
     )
 }
 
-public struct OutputDiagnosticsReport {
+package struct OutputDiagnosticsReport {
     enum SectionID: Hashable {
         case observation
         case timing
@@ -43,7 +43,7 @@ public struct OutputDiagnosticsReport {
     /// USB device UIDs can embed serial numbers.
     private static let outputUIDRowID = "outputUID"
 
-    public init(snapshot: SettingsSnapshotDTO) {
+    package init(snapshot: SettingsSnapshotDTO) {
         self.snapshot = snapshot
         sections = makeSections()
     }
@@ -54,11 +54,12 @@ public struct OutputDiagnosticsReport {
             localized("Output: \(snapshot.currentOutputName)"),
             localized("Active profile: \(snapshot.activeProfileName)"),
             localized("Status: \(snapshot.statusMessage)"),
+            "",
             sectionText(excludingRows: []),
         ].joined(separator: "\n")
     }
 
-    public var supportText: String {
+    package var supportText: String {
         sectionText(excludingRows: [Self.outputUIDRowID])
     }
 

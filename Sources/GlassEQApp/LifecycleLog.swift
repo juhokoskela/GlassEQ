@@ -1,45 +1,38 @@
 import Foundation
-import os
+import GlassEQSettingsIPC
 
-/// A bounded, timestamped record of what the app did: launches, windows, route changes, engine
-/// failures, license state, and shutdown. The support report includes it, and a process launched
-/// with `--debug` also streams every entry to stderr so a Terminal launch shows what an invisible
-/// menu bar app is doing.
+/// Recent startup and playback status, kept in memory for the support report.
 @MainActor
 final class LifecycleLog {
-    struct Entry: Equatable {
+    private struct Entry {
         let date: Date
         let message: String
     }
 
     static let capacity = 200
-    nonisolated static let debugFlag = "--debug"
 
-    let streamsToStandardError: Bool
-    private(set) var entries: [Entry] = []
-    private let now: () -> Date
-    private let logger = Logger(subsystem: "com.glasseq.app", category: "Lifecycle")
+    private let debugWriter: DispatchSemaphore?
+    private var entries: [Entry] = []
     private static let timestampFormat = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
-    init(streamsToStandardError: Bool = false, now: @escaping () -> Date = Date.init) {
-        self.streamsToStandardError = streamsToStandardError
-        self.now = now
-    }
-
-    nonisolated static func isDebugLaunch(arguments: [String] = CommandLine.arguments) -> Bool {
-        arguments.dropFirst().contains(debugFlag)
+    init() {
+        debugWriter = CommandLine.arguments.dropFirst().contains("--debug") ? DispatchSemaphore(value: 1) : nil
+        if debugWriter != nil { SettingsPipeProcessSignalPolicy.ignoreBrokenPipeSignal() }
     }
 
     func record(_ message: String) {
-        let entry = Entry(date: now(), message: message)
+        let entry = Entry(date: Date(), message: message)
         entries.append(entry)
         if entries.count > Self.capacity {
             entries.removeFirst(entries.count - Self.capacity)
         }
-        logger.info("\(message, privacy: .private)")
-        if streamsToStandardError {
-            let line = "\(Self.line(for: entry))\n"
-            FileHandle.standardError.write(Data(line.utf8))
+        // Drop terminal output while a previous write is blocked. Playback never waits for stderr.
+        if let debugWriter, debugWriter.wait(timeout: .now()) == .success {
+            let data = Data("\(Self.line(for: entry))\n".utf8)
+            DispatchQueue.global(qos: .utility).async {
+                defer { debugWriter.signal() }
+                try? FileHandle.standardError.write(contentsOf: data)
+            }
         }
     }
 

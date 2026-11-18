@@ -59,7 +59,7 @@ struct GlassEQApp: App {
         .restorationBehavior(.disabled)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button(localized("About GlassEQ")) { model.aboutPresentationGeneration &+= 1 }
+                Button(localized("About GlassEQ")) { model.requestAboutPresentation() }
             }
         }
 
@@ -547,13 +547,13 @@ final class GlassEQAppModel {
     var currentOutputSampleRate = 0.0
     var currentOutputChannelCount = 0
     var currentOutputBufferFrameSize: UInt32 = 0
-    let lifecycleLog = LifecycleLog(streamsToStandardError: LifecycleLog.isDebugLaunch())
+    let lifecycleLog = LifecycleLog()
     var statusMessage = localized("Stopped") {
         didSet {
             if oldValue != statusMessage { lifecycleLog.record(statusMessage) }
         }
     }
-    var aboutPresentationGeneration = 0
+    private(set) var aboutPresentationGeneration = 0
     var isRunning: Bool { lifecycleState == .running }
     var activeProfile: EQProfile {
         didSet {
@@ -1011,6 +1011,7 @@ final class GlassEQAppModel {
                 : NoopAggregateBufferNotifier())
         self.profilePersistenceMode = persistenceMode
         if registerAppDelegate {
+            lifecycleLog.record("GlassEQ launched. " + statusMessage)
             GlassEQAppDelegate.model = self
             if OnboardingState.isComplete {
                 AggregateBufferNotifier.shared.start()
@@ -1076,6 +1077,17 @@ final class GlassEQAppModel {
 
     var currentOutputMappedProfileID: UUID? {
         profileStore.outputMappings.first(where: { $0.outputDeviceUID == currentOutputUID })?.profileID
+    }
+
+    var supportPlaybackDescription: String {
+        if pendingOutputTransitionAction == .muted { return "Switching outputs" }
+        if isRunning { return "Processing" }
+        return engineIsHoldingMute ? "Output muted by GlassEQ" : "Playback with macOS"
+    }
+
+    func supportSnapshot() -> SettingsSnapshot {
+        if isRunning { engineMetrics = engine.snapshotMetrics() }
+        return settingsSnapshot()
     }
 
     func settingsSnapshot() -> SettingsSnapshot {
@@ -1699,6 +1711,11 @@ final class GlassEQAppModel {
         }
         await task.value
         grace.cancel()
+    }
+
+    func requestAboutPresentation() {
+        NSApplication.shared.activate()
+        aboutPresentationGeneration &+= 1
     }
 
     func requestOnboardingPresentation() {
@@ -4552,7 +4569,7 @@ private struct MenuBarView: View {
             Spacer()
             Button {
                 dismiss()
-                model.aboutPresentationGeneration &+= 1
+                model.requestAboutPresentation()
             } label: {
                 Image(systemName: "info.circle")
             }
