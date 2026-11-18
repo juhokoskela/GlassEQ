@@ -227,8 +227,13 @@ struct PersistedAudioDeviceRestorationStore {
             records[uid] = updated.isEmpty ? nil : updated
         }
 
-        if records != original { needsSave = true }
-        if needsSave, (try? Self.save(records, to: url)) != nil { needsSave = false }
+        guard needsSave || records != original else { return }
+        do {
+            try Self.save(records, to: url)
+            needsSave = false
+        } catch {
+            needsSave = true
+        }
     }
 }
 
