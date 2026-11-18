@@ -29,7 +29,7 @@ Teardown retains ownership of every IOProc, private aggregate, and process tap u
 
 Bluetooth headset routes at 24 kHz or below run a temporary silent output IOProc with physical inputs disabled and verified. Half-second measurements must confirm the advertised clock slope within eight seconds. GlassEQ keeps that clock running through aggregate qualification and checks the combined timeline for a further 750 ms before unmuting. A qualifying timing interruption on the active headset suspends playback until retry.
 
-Older beta builds could change the shared buffer size or sample rate. At launch GlassEQ reads any pending device restoration records, looks up the device by UID, and clears each setting only after verifying its original value. Disconnected devices retain their records for a later launch.
+Older beta builds could change the shared buffer size or sample rate. At launch GlassEQ reads any pending device restoration records, looks up the device by UID, and clears each setting only after verifying its original value. While a record remains, GlassEQ watches for the device to reconnect, even if another output is selected. It retries each setting on the returning device before starting a renderer on it. The observer follows physical format changes during recovery and GlassEQ removes the device-list listener once all settings are restored.
 
 ## Real-Time Rules
 

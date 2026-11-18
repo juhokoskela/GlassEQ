@@ -1067,8 +1067,8 @@ struct CoreAudioDeviceTests {
         var sampleRate = 44_100.0
         var frameSize: UInt32 = 512
 
-        PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
-            at: url,
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        journal.restoreAvailableDevices(
             outputForUID: { uid in
                 output(uid: uid, channelCount: 2, sampleRate: sampleRate, bufferFrameSize: frameSize)
             },
@@ -1094,14 +1094,122 @@ struct CoreAudioDeviceTests {
         }
         try Data(#"[{"uid":"missing","originalSampleRate":48000}]"#.utf8).write(to: url)
 
-        PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
-            at: url,
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        journal.restoreAvailableDevices(
             outputForUID: { _ in nil },
             setSampleRate: { _, _ in Issue.record("Unexpected sample-rate write") },
             setBufferFrameSize: { _, _ in Issue.record("Unexpected buffer-size write") }
         )
 
         #expect(PersistedAudioDeviceRestorationStore.load(from: url)["missing"]?.originalSampleRate == 48_000)
+    }
+
+    @Test
+    func legacyDeviceSettingsAreRestoredOnReconnectAndOnlyClearedAfterReadback() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let uid = "reconnecting-dac"
+        let original = PersistedAudioDeviceRestorationRecord(
+            uid: uid, originalSampleRate: 48_000, originalBufferFrameSize: 512
+        )
+        try PersistedAudioDeviceRestorationStore.save([uid: original], to: url)
+
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        var deviceID: AudioObjectID?
+        var rate = 44_100.0
+        var buffer: UInt32 = 1_024
+        var acceptBufferWrite = false
+        var rateWrites = 0
+        var bufferWrites = 0
+        func refresh(excluding activeUID: String? = nil) {
+            journal.restoreAvailableDevices(
+                excluding: activeUID,
+                outputForUID: { lookedUp in
+                    #expect(lookedUp == uid)
+                    return deviceID.map {
+                        output(id: $0, uid: uid, channelCount: 2, sampleRate: rate, bufferFrameSize: buffer)
+                    }
+                },
+                setSampleRate: { value, id in
+                    #expect(id == deviceID)
+                    rateWrites += 1
+                    rate = value
+                },
+                setBufferFrameSize: { value, id in
+                    #expect(id == deviceID)
+                    bufferWrites += 1
+                    if acceptBufferWrite { buffer = value }
+                }
+            )
+        }
+        refresh()
+        #expect(journal.hasPendingSettings)
+        #expect(PersistedAudioDeviceRestorationStore.load(from: url)[uid] == original)
+
+        deviceID = 47
+        refresh(excluding: uid)
+        #expect(journal.needsAttempt(for: output(id: 47, uid: uid, channelCount: 2)))
+        #expect(rateWrites == 0)
+        #expect(bufferWrites == 0)
+        refresh()
+        #expect(rate == 48_000)
+        #expect(buffer == 1_024)
+        #expect(!journal.needsAttempt(for: output(id: 47, uid: uid, channelCount: 2)))
+        #expect(
+            PersistedAudioDeviceRestorationStore.load(from: url)[uid]
+                == PersistedAudioDeviceRestorationRecord(uid: uid, originalBufferFrameSize: 512))
+
+        refresh()  // Some other device arrived.
+        #expect(rateWrites == 1)
+        #expect(bufferWrites == 1)
+        deviceID = nil
+        refresh()
+        deviceID = 47  // HAL can reuse the same object ID.
+        acceptBufferWrite = true
+        refresh()
+        #expect(buffer == 512)
+        #expect(bufferWrites == 2)
+        #expect(!journal.hasPendingSettings)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    @Test
+    func legacyRestorationRetriesJournalWriteWithoutRepeatingVerifiedDeviceWrites() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let storeDirectory = directory.appendingPathComponent("AppSupport", isDirectory: true)
+        let savedDirectory = directory.appendingPathComponent("AppSupport-original", isDirectory: true)
+        let url = storeDirectory.appendingPathComponent("DeviceRestorations.json")
+        defer { try? fm.removeItem(at: directory) }
+        let available = PersistedAudioDeviceRestorationRecord(uid: "available", originalBufferFrameSize: 512)
+        let absent = PersistedAudioDeviceRestorationRecord(uid: "absent", originalBufferFrameSize: 256)
+        try PersistedAudioDeviceRestorationStore.save([available.uid: available, absent.uid: absent], to: url)
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        try fm.moveItem(at: storeDirectory, to: savedDirectory)
+        try Data().write(to: storeDirectory)  // A file occupies the directory where the journal would be written.
+        var buffer: UInt32 = 1_024
+        var writes = 0
+        func refresh() {
+            journal.restoreAvailableDevices(
+                outputForUID: { uid in
+                    uid == available.uid ? output(uid: uid, channelCount: 2, bufferFrameSize: buffer) : nil
+                },
+                setSampleRate: { _, _ in Issue.record("Unexpected sample rate write") },
+                setBufferFrameSize: { value, _ in
+                    buffer = value
+                    writes += 1
+                }
+            )
+        }
+        refresh()
+        #expect(writes == 1)
+        try fm.removeItem(at: storeDirectory)
+        try fm.moveItem(at: savedDirectory, to: storeDirectory)
+        #expect(PersistedAudioDeviceRestorationStore.load(from: url).count == 2)
+        refresh()
+        #expect(writes == 1)
+        #expect(PersistedAudioDeviceRestorationStore.load(from: url) == [absent.uid: absent])
     }
 
     @Test
@@ -1389,45 +1497,6 @@ struct CoreAudioDeviceTests {
 
         let activeOutput = output(uid: "profile-update-output", channelCount: 2)
         #expect(try SystemTapAudioEngine.profileUpdateOutput(activeOutput) == activeOutput)
-    }
-
-    @Test
-    func selfChangeGuardSuppressesOnlyMatchingDevice() {
-        let changeGuard = CoreAudioSelfChangeGuard(windowMilliseconds: 1_000)
-
-        changeGuard.beginSelfChange(deviceID: 42)
-
-        #expect(changeGuard.isSelfChange(deviceID: 42))
-        #expect(!changeGuard.isSelfChange(deviceID: 43))
-    }
-
-    @Test
-    func selfChangeGuardExpires() async throws {
-        let changeGuard = CoreAudioSelfChangeGuard(windowMilliseconds: 1)
-
-        changeGuard.beginSelfChange(deviceID: 42)
-        try await Task.sleep(nanoseconds: 5_000_000)
-
-        #expect(!changeGuard.isSelfChange(deviceID: 42))
-    }
-
-    @Test
-    func outputObserverNeverSuppressesDeviceAliveNotifications() {
-        let changeGuard = CoreAudioSelfChangeGuard(windowMilliseconds: 1_000)
-        changeGuard.beginSelfChange(deviceID: 42)
-
-        #expect(
-            DefaultOutputDeviceObserver.shouldSuppressSelfInducedOutputChange(
-                selector: kAudioDevicePropertyBufferFrameSize,
-                deviceID: 42,
-                selfChangeGuard: changeGuard
-            ))
-        #expect(
-            !DefaultOutputDeviceObserver.shouldSuppressSelfInducedOutputChange(
-                selector: kAudioDevicePropertyDeviceIsAlive,
-                deviceID: 42,
-                selfChangeGuard: changeGuard
-            ))
     }
 
     @Test

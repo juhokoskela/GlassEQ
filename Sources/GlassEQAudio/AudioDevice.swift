@@ -232,9 +232,6 @@ public enum CoreAudioDeviceQuery {
         )
         var value = frameSize
         let size = UInt32(MemoryLayout<UInt32>.size)
-        // Mark this as our own change so the default-output observer ignores the resulting
-        // property-change notification instead of rebuilding.
-        CoreAudioSelfChangeGuard.shared.beginSelfChange(deviceID: objectID)
         try checkOSStatus(
             AudioObjectSetPropertyData(objectID, &address, 0, nil, size, &value),
             operation: "AudioObjectSetPropertyData(buffer frame size)"
@@ -250,9 +247,6 @@ public enum CoreAudioDeviceQuery {
         )
         var value = sampleRate
         let size = UInt32(MemoryLayout<Float64>.size)
-        // Mark this as our own change so the default-output observer ignores the resulting
-        // property-change notification instead of rebuilding.
-        CoreAudioSelfChangeGuard.shared.beginSelfChange(deviceID: objectID)
         try checkOSStatus(
             AudioObjectSetPropertyData(objectID, &address, 0, nil, size, &value),
             operation: "AudioObjectSetPropertyData(nominal sample rate)"

@@ -2513,10 +2513,28 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     public var state: AudioEngineState { control.withLock { $0.state } }
     public var status: AudioEngineStatus { control.withLock { $0.status } }
 
+    // Serialized with graph creation so reconnect recovery cannot change a running renderer's format.
+    private var deviceRestorations: PersistedAudioDeviceRestorationStore
+    private var restorationListener: RestorationDeviceListListener?
+
     public init(restorationStoreURL: URL? = nil) {
-        PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
-            at: restorationStoreURL ?? PersistedAudioDeviceRestorationStore.defaultURL()
+        deviceRestorations = PersistedAudioDeviceRestorationStore(
+            url: restorationStoreURL ?? PersistedAudioDeviceRestorationStore.defaultURL()
         )
+        guard deviceRestorations.hasPendingSettings else { return }
+        topologyOperation.withLock { _ in
+            restorationListener = RestorationDeviceListListener { [weak self] in
+                guard let self else { return }
+                self.topologyOperation.withLock { _ in self.restoreAvailableDeviceSettings() }
+            }
+            restoreAvailableDeviceSettings()
+        }
+    }
+
+    private func restoreAvailableDeviceSettings() {
+        guard deviceRestorations.hasPendingSettings else { return }
+        deviceRestorations.restoreAvailableDevices(excluding: control.withLock { $0.activeOutput?.uid })
+        if !deviceRestorations.hasPendingSettings { restorationListener = nil }
     }
 
     @_spi(GlassEQDiagnostics)
@@ -2604,7 +2622,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let coldStart = control.withLock { $0.runtime == nil }
         do {
             try acquireProcessingMute()
+            if deviceRestorations.needsAttempt(for: output), control.withLock({ $0.activeOutput?.uid == output.uid }) {
+                stopCombinedResourcesSerialized()
+            }
             try requireCompletedCoreAudioCleanup(operation: "rebuild the protected output")
+            restoreAvailableDeviceSettings()
             try Self.validateDefaultOutput(output)
             let headset = output.requiresHeadsetClockQualification
             if headset {

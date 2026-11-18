@@ -11,7 +11,7 @@ struct PersistedAudioDeviceRestorationRecord: Codable, Equatable, Sendable {
     }
 }
 
-enum PersistedAudioDeviceRestorationStore {
+struct PersistedAudioDeviceRestorationStore {
     static let maximumStoreBytes = 262_144
     static let maximumRecordCount = 128
     static let maximumUIDUTF8Bytes = 512
@@ -71,7 +71,11 @@ enum PersistedAudioDeviceRestorationStore {
             throw PersistenceError.invalidRecord
         }
         guard !records.isEmpty else {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch CocoaError.fileNoSuchFile {
+                // Another recovery may already have cleared the last record.
+            }
             return
         }
 
@@ -168,23 +172,42 @@ enum PersistedAudioDeviceRestorationStore {
         }
     }
 
-    static func restorePersistedDeviceSettings(
-        at url: URL,
+    private let url: URL
+    private var records: [String: PersistedAudioDeviceRestorationRecord]
+    private var lastAttemptedDeviceIDs: [String: AudioObjectID] = [:]
+    private var needsSave = false
+
+    init(url: URL) {
+        self.url = url
+        self.records = Self.load(from: url)
+    }
+
+    var hasPendingSettings: Bool { !records.isEmpty || needsSave }
+
+    func needsAttempt(for output: AudioOutputDevice) -> Bool {
+        records[output.uid] != nil && lastAttemptedDeviceIDs[output.uid] != output.id
+    }
+
+    mutating func restoreAvailableDevices(
+        excluding activeUID: String? = nil,
         outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
         setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:),
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
     ) {
-        let original = load(from: url)
-        var records = original
-        guard !records.isEmpty else {
-            return
-        }
-
-        for (uid, record) in records {
+        let original = records
+        for (uid, record) in original {
+            guard let output = try? outputForUID(uid) else {
+                lastAttemptedDeviceIDs[uid] = nil
+                continue
+            }
+            // Other clients create private aggregates too. A device-list change is only
+            // a reason to retry a rejected write if this physical device has reappeared.
+            guard uid != activeUID, needsAttempt(for: output) else { continue }
+            lastAttemptedDeviceIDs[uid] = output.id
             var updated = record
             if let originalSampleRate = record.originalSampleRate,
-                restoreSampleRate(
+                Self.restoreSampleRate(
                     uid: uid, to: originalSampleRate,
                     outputForUID: outputForUID,
                     setSampleRate: setSampleRate
@@ -193,7 +216,7 @@ enum PersistedAudioDeviceRestorationStore {
                 updated.originalSampleRate = nil
             }
             if let originalBufferFrameSize = record.originalBufferFrameSize,
-                restoreBufferFrameSize(
+                Self.restoreBufferFrameSize(
                     uid: uid, to: originalBufferFrameSize,
                     outputForUID: outputForUID,
                     setBufferFrameSize: setBufferFrameSize
@@ -204,6 +227,35 @@ enum PersistedAudioDeviceRestorationStore {
             records[uid] = updated.isEmpty ? nil : updated
         }
 
-        if records != original { try? save(records, to: url) }
+        if records != original { needsSave = true }
+        if needsSave, (try? Self.save(records, to: url)) != nil { needsSave = false }
+    }
+}
+
+/// Installed only while device settings from an earlier GlassEQ release still need restoration.
+final class RestorationDeviceListListener {
+    private let notificationQueue = DispatchQueue.global(qos: .utility)
+    private let listener: AudioObjectPropertyListenerBlock
+    private var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    init?(onChange: @escaping @Sendable () -> Void) {
+        let recoveryQueue = DispatchQueue(label: "com.glasseq.device-restoration")
+        // Removal can coincide with startup. Return from HAL before waiting for engine teardown.
+        listener = { _, _ in recoveryQueue.async(execute: onChange) }
+        guard
+            AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, notificationQueue, listener
+            ) == noErr
+        else { return nil }
+    }
+
+    deinit {
+        _ = AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, notificationQueue, listener
+        )
     }
 }
