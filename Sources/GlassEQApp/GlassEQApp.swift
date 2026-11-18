@@ -2413,11 +2413,7 @@ final class GlassEQAppModel {
         )
         let shouldMuteOutput = shouldMuteForSettlingOutputChange(result)
         if shouldStopEngine, pendingOutputTransitionAction != .stopped {
-            pendingOutputTransitionAction = .stopped
-            lifecycleState = .stopped
-            onboardingAudioCaptureState = .pending
-            invalidatePendingEngineStart()
-            scheduleRendererSuspension()
+            suspendForOutputSettlement()
         } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
             pendingOutputTransitionAction = .muted
             onboardingAudioCaptureState = .pending
@@ -2456,6 +2452,14 @@ final class GlassEQAppModel {
             let settledResult = Result { try self.defaultOutputLookup.defaultOutputDevice() }
             self.handleDefaultOutputChange(settledResult)
         }
+    }
+
+    private func suspendForOutputSettlement() {
+        pendingOutputTransitionAction = .stopped
+        lifecycleState = .stopped
+        onboardingAudioCaptureState = .pending
+        invalidatePendingEngineStart()
+        scheduleRendererSuspension()
     }
 
     private func shouldStopEngineForSettlingOutputChange(
@@ -2808,15 +2812,11 @@ final class GlassEQAppModel {
         onboardingState: OnboardingAudioCaptureState
     ) {
         clearProgrammeComparisonSession()
-        let shouldStop = isRunning || engineStartTask != nil || pendingRendererSuspensions > 0 || engineStateNeedsStop
         if pendingOutputTransitionAction == .muted {
-            pendingOutputTransitionAction = .stopped
-            lifecycleState = .stopped
-            onboardingAudioCaptureState = .pending
-            invalidatePendingEngineStart()
-            scheduleRendererSuspension()
+            suspendForOutputSettlement()
             return
         }
+        let shouldStop = isRunning || engineStartTask != nil || pendingRendererSuspensions > 0 || engineStateNeedsStop
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
         renderWatchdog.reset()
@@ -2845,7 +2845,8 @@ final class GlassEQAppModel {
         if processingWasStopped {
             if activeProfile.isBypassed { setBypass(false) }
             start()
-        } else if engine.holdsProcessingMute && !isRunning {
+        } else if processingIntent.awaitsRetry || (engine.holdsProcessingMute && !isRunning && !activeProfileIsBypassed)
+        {
             stop()
         } else {
             setBypass(!activeProfileIsBypassed)

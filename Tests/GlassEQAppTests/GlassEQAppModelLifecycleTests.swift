@@ -6489,6 +6489,32 @@ struct LicenseEnforcementTests {
     }
 
     @Test
+    func licenseRenewalAfterATerminalStallRestoresTheMuteUntilRetry() async throws {
+        let output = makeOutput(uid: "licensed-stall", name: "Licensed stall")
+        let engine = FakeAudioEngine()
+        let source = FakeLicenseSnapshotSource(initial: makeLicenseSnapshot(state: .monthlyActive))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers, outputDelay: .zero, renderWatchdogStallThreshold: .milliseconds(20),
+            renderWatchdogPollInterval: .milliseconds(5), licensing: .provider(source))
+        try #require(await waitUntil { model.licenseSnapshot != nil })
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.canRetryMutedOutput })
+        let terminalReason = model.statusMessage
+        source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
+        try #require(await waitUntil { !engine.holdsProcessingMute && model.statusMessage == expiredText() })
+        source.emit(makeLicenseSnapshot(state: .monthlyActive, sequence: 3))
+        try #require(await waitUntil { engine.holdsProcessingMute && model.canRetryMutedOutput })
+        #expect(model.statusMessage == terminalReason)
+        #expect(engine.startCalls.count == 2)
+        model.toggleMenuProcessing()
+        try #require(await waitUntil { !engine.holdsProcessingMute })
+        #expect(model.processingWasStopped)
+    }
+
+    @Test
     func routeStartAndEditsAcrossLicenseFadeResumeTheSavedDestinationProfile() async throws {
         let url = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
