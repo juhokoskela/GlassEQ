@@ -543,7 +543,7 @@ public struct EQProcessor: ~Copyable, Sendable {
     }
 
     func writeFiltersOffReference(
-        from samples: UnsafeMutableBufferPointer<Float>,
+        from samples: UnsafeBufferPointer<Float>,
         into reference: UnsafeMutableBufferPointer<Float>,
         frameCount: Int,
         channelCount: Int
@@ -858,15 +858,13 @@ struct ConvolverBank: ~Copyable, @unchecked Sendable {
         }
         storage = .allocate(capacity: kernels.count)
         for index in kernels.indices {
-            storage.baseAddress!.advanced(by: index).initialize(to: RealtimeHybridConvolver(kernel: kernels[index]))
+            storage.initializeElement(at: index, to: RealtimeHybridConvolver(kernel: kernels[index]))
         }
     }
 
     deinit {
-        if storage.baseAddress != nil {
-            storage.deinitialize()
-            storage.deallocate()
-        }
+        storage.deinitialize()
+        storage.deallocate()
     }
 
     var count: Int { storage.count }

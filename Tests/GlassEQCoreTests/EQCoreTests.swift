@@ -1514,6 +1514,31 @@ struct EQCoreTests {
     }
 
     @Test
+    func filtersOffPassesThroughChannelsBeyondThePreparedBank() {
+        let rate = 48_000.0
+        var profile = EQProfile.flatParametric
+        profile.preampDB = -6.020_599_913
+        let mono = EQConfiguration(profile: profile, sampleRate: rate, channelCount: 1)
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(configuration: mono), maximumFrameCount: 1, channelCount: 2,
+            sampleRate: rate, warmupSeconds: 0, blendSeconds: 1 / rate
+        )
+        var candidate: EQProcessor? = EQProcessor(configuration: mono)
+        let began = transition.beginProgrammeComparison(equalizedProcessor: &candidate)
+        #expect(began)
+        var samples: [Float] = [0, 0]
+        samples.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics($0, frameCount: 1, channelCount: 2)
+        }
+        transition.setProgrammeComparisonSelection(.reference)
+        samples = [0.25, 0.375]
+        samples.withUnsafeMutableBufferPointer {
+            _ = transition.processInterleavedWithDiagnostics($0, frameCount: 1, channelCount: 2)
+        }
+        #expect(samples == [0.125, 0.375])
+    }
+
+    @Test
     func filtersOffKeepsStereoPreampsWhileTheDraftFIRAdvances() throws {
         let rate = 48_000.0
         var impulse = [Float](repeating: 0, count: 257)

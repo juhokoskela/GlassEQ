@@ -386,7 +386,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 count: sampleCount
             )
             let referenceNonFinite = activeProcessor.writeFiltersOffReference(
-                from: samples, into: alternate, frameCount: frameCount, channelCount: channelCount
+                from: UnsafeBufferPointer(samples), into: alternate, frameCount: frameCount, channelCount: channelCount
             )
             let equalizedDiagnostics = activeProcessor.processInterleavedLinearlyWithDiagnostics(
                 samples,
