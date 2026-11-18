@@ -188,6 +188,8 @@ where both safety offsets belong to the physical output device and are not negot
 
 ## Appendix: reproducing the measurements
 
+Commit `7d9e728` contains the complete USB matrix in `Sources/GlassEQDiagnostics/AggregateClockSourceProbe.swift`. To repeat the hardware experiment, build that revision in a separate checkout and run `GlassEQDiagnostics --clock-source-probe` on the intended route with GlassEQ quit.
+
 The original aggregate-metadata probes are read-only apart from creating and destroying private aggregates. The clock-source probe additionally starts short silent IO cycles and disables physical input streams for combined-aggregate IOProcs. Sketch of the original aggregate matrix:
 
 ```swift

@@ -109,7 +109,7 @@ The release DSP benchmark accepts an optional EqualizerAPO GraphicEQ file so the
 swift run -c release GlassEQDiagnostics dsp-benchmark /path/to/GraphicEQ.txt
 ```
 
-It reports average, p99.9, p99.99, and maximum callback work for the 16,384-tap cases at 48, 96, and 192 kHz, plus dual-bank transition cost. It measures DSP execution only, not Core Audio latency.
+The benchmark feeds independent, preallocated stereo buffers through the render path. Workloads cover 128 active biquads per channel at 192 kHz, 16,384-tap FIR at 48, 96 and 192 kHz, repeated profile edits, and Filters Off comparison. The irregular FIR sequence includes 1, 17, 255, 257 and 480 frames. Each case reports mean, p99.9, p99.99 and maximum DSP duration, minimum time left in the frame budget, and over-budget renders. FIR cases also report minimum tail-job slack and missed jobs. Input refill, bank construction, result consumption and retirement fall outside the timer. The optional `--check` enforces the mean render-budget limit. Callback-start and completion lateness require the live route metrics above.
 
 Diagnostics print full local device names, UIDs, and transport identifiers:
 
