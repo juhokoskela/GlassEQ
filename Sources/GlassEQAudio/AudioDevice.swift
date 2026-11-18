@@ -28,6 +28,11 @@ public struct AudioOutputDevice: Equatable, Sendable {
         self.transportType = transportType
     }
 
+    package func matchesRenderRoute(_ other: AudioOutputDevice) -> Bool {
+        id == other.id && uid == other.uid && nominalSampleRate == other.nominalSampleRate
+            && outputChannelCount == other.outputChannelCount
+    }
+
     public var requiresHeadsetClockQualification: Bool {
         isBluetoothTransport && nominalSampleRate <= 24_000
     }
@@ -50,6 +55,7 @@ public struct AudioBufferFrameSizeRange: Equatable, Sendable {
 
 public enum AudioDeviceAvailabilityError: Error, Equatable, LocalizedError, CustomStringConvertible, Sendable {
     case noDefaultOutput
+    case defaultOutputChanged(AudioOutputDevice)
     case outputDeviceNotAlive(AudioObjectID)
     case outputDeviceHasNoOutputChannels(AudioObjectID)
     case unsupportedOutputChannelCount(AudioObjectID, Int)
@@ -60,6 +66,8 @@ public enum AudioDeviceAvailabilityError: Error, Equatable, LocalizedError, Cust
         switch self {
         case .noDefaultOutput:
             "No default output device is available"
+        case .defaultOutputChanged:
+            "The default output changed during startup."
         case .outputDeviceNotAlive(let id):
             "Output device \(id) is not available"
         case .outputDeviceHasNoOutputChannels(let id):

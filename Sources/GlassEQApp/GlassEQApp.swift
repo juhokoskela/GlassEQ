@@ -593,7 +593,7 @@ final class GlassEQAppModel {
     @ObservationIgnored private var saveGeneration = 0
     @ObservationIgnored private var pendingPreparedSave: ProfilePersistence.PreparedSave?
     private var lifecycleObserverTokens: [NSObjectProtocol] = []
-    private var lastHandledDefaultOutputConfiguration: DefaultOutputConfiguration?
+    private var lastHandledDefaultOutput: AudioOutputDevice?
     private var wakeReconnectAttempts = 0
     private var observerCallbackGeneration = 0
     private var outputChangeGeneration = 0
@@ -679,24 +679,6 @@ final class GlassEQAppModel {
             case .unsupportedSchema, .oversizedStore, .recoveryBackupFailed:
                 return true
             }
-        }
-    }
-
-    private struct DefaultOutputConfiguration: Equatable {
-        var id: AudioObjectID
-        var uid: String
-        var nominalSampleRate: Double
-        var outputChannelCount: Int
-        var bufferFrameSize: UInt32
-        var transportType: UInt32?
-
-        init(_ output: AudioOutputDevice) {
-            id = output.id
-            uid = output.uid
-            nominalSampleRate = output.nominalSampleRate
-            outputChannelCount = output.outputChannelCount
-            bufferFrameSize = output.bufferFrameSize
-            transportType = output.transportType
         }
     }
 
@@ -1117,7 +1099,7 @@ final class GlassEQAppModel {
         {
             return currentOutputSampleRate
         }
-        guard let configuration = lastHandledDefaultOutputConfiguration,
+        guard let configuration = lastHandledDefaultOutput,
             configuration.uid == currentOutputUID, configuration.nominalSampleRate == currentOutputSampleRate
         else { return 0 }
         return currentOutputSampleRate
@@ -1428,8 +1410,7 @@ final class GlassEQAppModel {
         case .requested:
             start()
         case .awaitingRetry(let reason):
-            suspendUntilRetry(reason)
-            startObserver(sendInitialValue: false)
+            restoreRetryAfterInterruption(reason)
         case .stopped:
             break
         }
@@ -2386,7 +2367,10 @@ final class GlassEQAppModel {
         }
         if !reason.requiresFreshAudioGraph,
             case .success(let output) = result,
-            lastHandledDefaultOutputConfiguration == DefaultOutputConfiguration(output),
+            let lastHandledDefaultOutput,
+            lastHandledDefaultOutput.matchesRenderRoute(output),
+            lastHandledDefaultOutput.bufferFrameSize == output.bufferFrameSize,
+            lastHandledDefaultOutput.transportType == output.transportType,
             isRunning || engineStartTask != nil
         {
             guard outputChangeTask != nil else {
@@ -2561,7 +2545,7 @@ final class GlassEQAppModel {
         switch result {
         case .success(let output):
             diagnosticsObservedDeviceSampleRate = output.nominalSampleRate
-            lastHandledDefaultOutputConfiguration = DefaultOutputConfiguration(output)
+            lastHandledDefaultOutput = output
             refreshCurrentOutputMetadata(from: output)
             activeProfile = profileStore.profile(forOutputUID: output.uid)
             selectedProfileID = activeProfile.id
@@ -2589,7 +2573,7 @@ final class GlassEQAppModel {
             diagnosticsObservedDeviceSampleRate = 0
             diagnosticsTransportType = nil
             diagnosticsLatencyMetadata = nil
-            lastHandledDefaultOutputConfiguration = nil
+            lastHandledDefaultOutput = nil
             if lifecycleState == .waking {
                 scheduleWakeReconnectRetry(
                     status: localized("Waiting for audio output after wake: \(error.localizedDescription)"))
@@ -2644,7 +2628,7 @@ final class GlassEQAppModel {
             attempted: attemptedRollback
         )
         let confirmedEngineProfileState = confirmedEngineProfileState
-        let expectedOutputUID = currentOutputUID
+        let expectedOutput = lastHandledDefaultOutput
         let bufferSelections = aggregateBufferPolicyStore.selectionSnapshot()
         let workTask = engineWorkExecutor.enqueue(priority: .userInitiated) {
             Self.performEngineWork(
@@ -2654,7 +2638,7 @@ final class GlassEQAppModel {
                 confirmedState: confirmedEngineProfileState,
                 engine: engine,
                 defaultOutputLookup: defaultOutputLookup,
-                expectedOutputUID: expectedOutputUID,
+                expectedOutput: expectedOutput,
                 bufferSelections: bufferSelections
             )
         }
@@ -2947,7 +2931,7 @@ final class GlassEQAppModel {
         confirmedState: ConfirmedEngineProfileState,
         engine: any AudioEngineControlling,
         defaultOutputLookup: any DefaultOutputLookingUp,
-        expectedOutputUID: String,
+        expectedOutput: AudioOutputDevice?,
         bufferSelections: [AggregateAudioRouteFingerprint: AggregateBufferSelection]
     ) -> EngineWorkResult {
         var attemptedOutput: AudioOutputDevice?
@@ -2970,11 +2954,7 @@ final class GlassEQAppModel {
                     try engine.start(output: requestedOutput, profile: profile)
                 } catch {
                     if case .running(let activeOutput) = engine.state {
-                        guard activeOutput.uid == requestedOutput.uid,
-                            activeOutput.id == requestedOutput.id,
-                            activeOutput.nominalSampleRate == requestedOutput.nominalSampleRate,
-                            activeOutput.outputChannelCount == requestedOutput.outputChannelCount
-                        else {
+                        guard activeOutput.matchesRenderRoute(requestedOutput) else {
                             try engine.suspendRenderer()
                             confirmedState.clear()
                             throw error
@@ -3027,7 +3007,7 @@ final class GlassEQAppModel {
                     output = activeOutput
                 case .stopped, .failed:
                     let defaultOutput = try defaultOutputLookup.defaultOutputDevice()
-                    guard expectedOutputUID == defaultOutput.uid else {
+                    guard expectedOutput?.matchesRenderRoute(defaultOutput) == true else {
                         return .routeChanged(defaultOutput)
                     }
                     attemptedOutput = defaultOutput
@@ -3074,6 +3054,9 @@ final class GlassEQAppModel {
             }
             confirmedState.confirm(confirmation)
             return .success(output, engine.snapshotLatencyMetadata())
+        } catch AudioDeviceAvailabilityError.defaultOutputChanged(let current) {
+            confirmedState.clear()
+            return .routeChanged(current)
         } catch {
             switch engine.state {
             case .running:
@@ -3147,7 +3130,14 @@ final class GlassEQAppModel {
             notifyBluetoothBufferDefaultIfNeeded()
             startAggregateStabilityMonitoring()
         case .routeChanged(let output):
-            handleDefaultOutputChange(.success(output))
+            if currentOutputUID.isEmpty {
+                handleDefaultOutputChange(.success(output))
+            } else {
+                scheduleDefaultOutputChange(
+                    .success(output),
+                    reason: currentOutputUID == output.uid ? .streamConfiguration : .defaultOutputDevice,
+                    observerGeneration: observerCallbackGeneration)
+            }
             return
         case .profileChangeNotApplied(_, let output, let reconciliation):
             refreshCurrentOutputMetadata(from: output)
@@ -3812,7 +3802,7 @@ final class GlassEQAppModel {
             blockProcessingForLicense()
             return
         }
-        if processingIntent.awaitsRetry {
+        if processingIntent.awaitsRetry || canRetryMutedOutput {
             renderWatchdog.reset()
             start()
             return
@@ -4060,8 +4050,15 @@ final class GlassEQAppModel {
         }
     }
 
+    private func restoreRetryAfterInterruption(_ reason: String) {
+        // Handback after expiry may still be queued. Reassert the guard in executor order.
+        suspendUntilRetry(reason)
+        startObserver(sendInitialValue: true)
+    }
+
     private func suspendUntilRetry(_ message: String) {
         processingIntent = .awaitingRetry(message)
+        clearProgrammeComparisonSession()
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
         scheduleRendererSuspension()
@@ -4134,7 +4131,7 @@ final class GlassEQAppModel {
                 forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
-                    self?.handleSessionDidBecomeActive()
+                    self?.handleDidWake()
                 }
             }
         )
@@ -4142,7 +4139,7 @@ final class GlassEQAppModel {
             workspaceCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) {
                 [weak self] _ in
                 Task { @MainActor in
-                    self?.handleSessionDidBecomeActive()
+                    self?.handleDidWake()
                 }
             }
         )
@@ -4193,12 +4190,8 @@ final class GlassEQAppModel {
         guard processingIntent == .requested else {
             lifecycleState = .stopped
             if case .awaitingRetry(let reason) = processingIntent {
-                statusMessage = reason
-                onboardingAudioCaptureState = .failed(message: reason)
-                startObserver(sendInitialValue: false)
-                if !engine.holdsProcessingMute && pendingRendererSuspensions == 0 {
-                    scheduleRendererSuspension()
-                }
+                restoreRetryAfterInterruption(reason)
+                return
             } else {
                 statusMessage = localized("Stopped")
                 onboardingAudioCaptureState = .idle
@@ -4207,10 +4200,6 @@ final class GlassEQAppModel {
             return
         }
         beginAudioReconnect()
-    }
-
-    func handleSessionDidBecomeActive() {
-        handleDidWake()
     }
 
     private func beginAudioReconnect() {

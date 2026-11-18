@@ -17,7 +17,7 @@ struct CoreAudioDeviceTests {
             output(channelCount: 1),
             output(channelCount: 2, sampleRate: 24_000),
         ] {
-            #expect(throws: (any Error).self) {
+            #expect(throws: AudioDeviceAvailabilityError.defaultOutputChanged(changed)) {
                 try SystemTapAudioEngine.validateDefaultOutput(expected) { changed }
             }
         }

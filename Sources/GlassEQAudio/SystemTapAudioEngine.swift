@@ -2620,7 +2620,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     private func startProtectedAggregate(output: AudioOutputDevice, profile: EQProfile) throws {
         try Task.checkCancellation()
-        let coldStart = control.withLock { $0.runtime == nil }
         do {
             try acquireProcessingMute()
             if deviceRestorations.needsAttempt(for: output), control.withLock({ $0.activeOutput?.uid == output.uid }) {
@@ -2629,6 +2628,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             try requireCompletedCoreAudioCleanup(operation: "rebuild the protected output")
             restoreAvailableDeviceSettings()
             try Self.validateDefaultOutput(output)
+            let coldStart = control.withLock { $0.runtime == nil }
             let headset = output.requiresHeadsetClockQualification
             if headset {
                 stopCombinedResourcesSerialized()
@@ -2670,11 +2670,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     ) throws {
         try Task.checkCancellation()
         let current = try lookup()
-        guard current.id == expected.id, current.uid == expected.uid,
-            current.nominalSampleRate == expected.nominalSampleRate,
-            current.outputChannelCount == expected.outputChannelCount
-        else {
-            throw AudioEngineInternalError(message: "The default output changed during startup.")
+        guard current.matchesRenderRoute(expected) else {
+            throw AudioDeviceAvailabilityError.defaultOutputChanged(current)
         }
     }
 
