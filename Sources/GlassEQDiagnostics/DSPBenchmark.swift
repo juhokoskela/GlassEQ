@@ -149,6 +149,7 @@ private func measure(_ item: DSPBenchmarkCase, maximumCallbackBudgetPercent: Dou
 
 private struct DSPRenderMeasurements {
     var durations = [UInt64]()
+    var budgetPercentages = [Double]()
     var totalBudget = 0.0
     var budgetMisses = 0
     var minimumSlack = Double.infinity
@@ -159,6 +160,7 @@ private struct DSPRenderMeasurements {
 
     init() {
         durations.reserveCapacity(20_000)
+        budgetPercentages.reserveCapacity(20_000)
     }
 
     mutating func record(
@@ -167,6 +169,7 @@ private struct DSPRenderMeasurements {
         let budget = Double(frames) * 1e9 / sampleRate
         let slack = budget - Double(elapsed)
         durations.append(elapsed)
+        budgetPercentages.append(100 * Double(elapsed) / budget)
         totalBudget += budget
         minimumSlack = min(minimumSlack, slack)
         if slack < 0 { budgetMisses += 1 }
@@ -180,28 +183,40 @@ private struct DSPRenderMeasurements {
 
     func report(maximumCallbackBudgetPercent: Double?) -> Bool {
         let sorted = durations.sorted()
+        let sortedPercentages = budgetPercentages.sorted()
         let total = Double(sorted.reduce(0, +))
         let used = 100 * total / totalBudget
-        func percentile(_ fraction: Double) -> Double {
-            Double(sorted[Int(ceil(fraction * Double(sorted.count))) - 1]) / 1000
-        }
+        let p999 = Int(ceil(0.999 * Double(sorted.count))) - 1
+        let p9999 = Int(ceil(0.9999 * Double(sorted.count))) - 1
         print(
             String(
                 format: "  DSP µs mean %.3f, p99.9 %.3f, p99.99 %.3f, max %.3f",
-                total / Double(sorted.count) / 1000, percentile(0.999), percentile(0.9999), percentile(1)))
+                total / Double(sorted.count) / 1000, Double(sorted[p999]) / 1000, Double(sorted[p9999]) / 1000,
+                Double(sorted[sorted.count - 1]) / 1000))
         print(
             String(
-                format: "  Render budget used %.2f%%, minimum slack %.3f µs, over budget %d/%d",
-                used, minimumSlack / 1000, budgetMisses, sorted.count))
+                format: "  Render budget used %.2f%% overall, p99.9 %.2f%%, p99.99 %.2f%%",
+                used, sortedPercentages[p999], sortedPercentages[p9999]))
+        print(
+            String(
+                format: "  Minimum slack %.3f µs, over budget %d/%d",
+                minimumSlack / 1000, budgetMisses, sorted.count))
         if minimumTailFrames != .max {
             print("  FIR tail minimum slack \(minimumTailFrames) frames, missed jobs \(tailMisses)")
         }
         print("  Saturated samples \(saturation), output checksum \(checksum)")
-        if let maximumCallbackBudgetPercent, used >= maximumCallbackBudgetPercent {
-            print("  Mean DSP time exceeded the \(maximumCallbackBudgetPercent)% limit.")
-            return false
+        var passed = checksum.isFinite && tailMisses == 0
+        if let maximumCallbackBudgetPercent {
+            if used >= maximumCallbackBudgetPercent {
+                print("  Mean DSP time reached the \(maximumCallbackBudgetPercent)% limit.")
+                passed = false
+            }
+            if sortedPercentages[p9999] > 100 {
+                print("  p99.99 DSP time exceeded the render period.")
+                passed = false
+            }
         }
-        return checksum.isFinite && tailMisses == 0
+        return passed
     }
 }
 
