@@ -138,25 +138,28 @@ struct GlassEQAppModelLifecycleTests {
     func repeatedRenderStallKeepsOutputMutedAndRetryAvailable() async throws {
         let output = makeOutput(uid: "watchdog-stop", name: "Watchdog Stop")
         let engine = FakeAudioEngine()
+        engine.playingOnStartNumber = 2
         let observers = FakeDefaultOutputObserverFactory()
         let lookup = FakeDefaultOutputLookup(.success(output))
         let model = makeModel(
             engine: engine,
             lookup: lookup, observers: observers, outputDelay: .zero,
-            renderWatchdogStallThreshold: .milliseconds(200),
-            renderWatchdogRepeatedFailureWindow: .seconds(1),
+            renderWatchdogStallThreshold: .milliseconds(50),
             renderWatchdogPollInterval: .milliseconds(5)
         )
 
         model.retryAudioEngine()
-        try #require(await waitUntil { engine.startCalls.count == 2 && model.isRunning })
+        try #require(
+            await waitUntil {
+                engine.startCalls.count == 2 && model.settingsSnapshot().aggregateBuffer.isAvailable
+            })
         try model.startProgrammeComparison(profile: makeProfile(name: "Unsaved audition"))
         try #require(model.programmeComparison.isActive)
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.stopCallCount == 2
-                && model.lifecycleState == .stopped
-        }
+        engine.playingOnStartNumber = nil
+        try #require(
+            await waitUntil {
+                engine.startCalls.count == 2 && engine.stopCallCount == 2 && model.lifecycleState == .stopped
+            })
 
         #expect(!model.isRunning)
         #expect(!model.settingsSnapshot().programmeComparison.isActive)
@@ -5856,6 +5859,7 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _muteOutputCallCount = 0
     private var _resumeOutputCallCount = 0
     private var _metrics = AudioEngineMetrics()
+    private var _playingOnStartNumber: Int?
     private var _snapshotMetricsCallCount = 0
     private var _events: [String] = []
     private var _preferredAggregateBufferFrameSize: UInt32 = 16
@@ -5951,6 +5955,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private(set) var resumeOutputCallCount: Int {
         get { withLock { _resumeOutputCallCount } }
         set { withLock { _resumeOutputCallCount = newValue } }
+    }
+
+    var playingOnStartNumber: Int? {
+        get { withLock { _playingOnStartNumber } }
+        set { withLock { _playingOnStartNumber = newValue } }
     }
 
     var metrics: AudioEngineMetrics {
@@ -6234,6 +6243,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     func snapshotMetrics() -> AudioEngineMetrics {
         withLock {
             _snapshotMetricsCallCount += 1
+            if _playingOnStartNumber == _startCalls.count {
+                _metrics.playedFrames += 1
+            }
             return _metrics
         }
     }
