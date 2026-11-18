@@ -60,6 +60,9 @@ public final class GlassEQSettingsViewModel {
         if let activeProfileID = patch.activeProfileID {
             snapshot.activeProfileID = activeProfileID
         }
+        if let matchesLibrary = patch.activeProfileMatchesLibrary {
+            snapshot.activeProfileMatchesLibrary = matchesLibrary
+        }
         if let activeProfileName = patch.activeProfileName {
             snapshot.activeProfileName = activeProfileName
         }
@@ -157,9 +160,6 @@ public final class GlassEQSettingsViewModel {
     ) async -> SettingsCommandResponse? {
         do {
             let response = try await operation()
-            if let snapshot = response.snapshot {
-                accept(snapshot: snapshot)
-            }
             commandErrorMessage = nil
             return response
         } catch is CancellationError {

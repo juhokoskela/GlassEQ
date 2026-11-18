@@ -1302,7 +1302,8 @@ struct GlassEQAppModelLifecycleTests {
         model.selectProgrammeComparison(.reference)
         #expect(engine.programmeComparisonSelections == [.equalized, .reference])
         #expect(model.settingsSnapshot().programmeComparison.selection == .reference)
-        let settingsModel = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidAppear()
+        let settingsModel = try #require(model.fallbackEditor)
 
         engine.programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
             isActive: true,
@@ -2889,13 +2890,14 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func settingsCreateProfileCommandReturnsUpdatedSnapshot() async throws {
+    func settingsCreateProfileCommandUpdatesTheLibrary() async throws {
         let model = makeModel()
         let initialCount = model.profileStore.profiles.count
 
         let response = try await model.performSettingsCommand(.createProfile(.parametric))
 
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(snapshot.profiles.count == initialCount + 1)
         #expect(snapshot.draftProfile.mode == .parametric)
         #expect(snapshot.selectedProfileID == snapshot.draftProfile.id)
@@ -2957,6 +2959,38 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func applyingSavedFallbackEditChangesTheBankWithoutResavingTheLibrary() async throws {
+        let active = makeProfile(name: "Profile")
+        let engine = FakeAudioEngine()
+        let output = makeOutput()
+        let observers = FakeDefaultOutputObserverFactory()
+        let storeURL = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: storeURL) }
+        let model = makeModel(
+            store: ProfileStore(profiles: [active], fallbackProfileID: active.id), storeURL: storeURL,
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers,
+            saveDelay: .seconds(60), outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        #expect(await waitUntil { model.isRunning })
+        var saved = active
+        saved.preampDB = -9
+        try model.setFallback(profile: saved)
+        #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
+        #expect(await model.flushStoreBeforeQuit())
+        let timestamp = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: storeURL.path)
+        _ = try await model.performSettingsCommand(.applyProfile(saved))
+        #expect(engine.updateDSPCalls.last == saved)
+        #expect(model.settingsSnapshot().activeProfileMatchesLibrary)
+        #expect(await model.flushStoreBeforeQuit())
+        let attributes = try FileManager.default.attributesOfItem(atPath: storeURL.path)
+        #expect(attributes[.modificationDate] as? Date == timestamp)
+        model.stop()
+    }
+
+    @Test
     func settingsDuplicateUsesExplicitProfileID() async throws {
         let first = makeProfile(name: "First")
         let second = makeProfile(name: "Second")
@@ -2966,7 +3000,8 @@ struct GlassEQAppModelLifecycleTests {
 
         let response = try await model.performSettingsCommand(.duplicateProfile(second.id))
 
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(snapshot.profiles.count == 3)
         #expect(snapshot.draftProfile.name == "Second Copy")
         #expect(snapshot.draftProfile.id != second.id)
@@ -3092,7 +3127,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(try Data(contentsOf: storeURL) == futureData)
 
         let response = try await model.performSettingsCommand(.resetUnsupportedProfileStore)
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(!snapshot.profileStoreProtection.isProtected)
         #expect(try ProfilePersistence.decode(Data(contentsOf: storeURL)).profiles == ProfileStore.defaultProfiles)
 
@@ -3438,7 +3474,7 @@ struct GlassEQAppModelLifecycleTests {
         var attempted = running
         attempted.name = "Attempted Apply"
         var laterSaved = running
-        laterSaved.name = "Saved While Apply Was Pending"
+        laterSaved.preampDB = -7
         let output = makeOutput(uid: "later-edit-output", name: "Later Edit Output")
         let store = ProfileStore(profiles: [running], fallbackProfileID: running.id)
         let engine = FakeAudioEngine()
@@ -3475,6 +3511,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil { model.statusMessage.contains("not applied") }
 
         #expect(model.activeProfile == running)
+        #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
         #expect(model.profileStore.profiles == [laterSaved])
         #expect(model.profileStore.fallbackProfileID == laterSaved.id)
         #expect(engine.state == .running(output: output))
@@ -4018,9 +4055,8 @@ struct GlassEQAppModelLifecycleTests {
         var pickerCallCount = 0
 
         await #expect(throws: SettingsCommandFailure.self) {
-            _ = try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single),
-                model: model,
+            _ = try await model.performSettingsCommand(
+                .chooseImportFiles(mode: .single),
                 picker: { _ in
                     pickerCallCount += 1
                     return nil
@@ -4038,9 +4074,8 @@ struct GlassEQAppModelLifecycleTests {
         let picker = BlockingSettingsFileImportPicker()
 
         let pickerTask = Task { @MainActor in
-            try await fileImportPickerResponse(
-                for: .chooseImportFiles(mode: .single),
-                model: model,
+            try await model.performSettingsCommand(
+                .chooseImportFiles(mode: .single),
                 picker: picker.choose(mode:)
             )
         }
@@ -4177,7 +4212,7 @@ struct GlassEQAppModelLifecycleTests {
             picker: picker
         )
         let settingsModel = GlassEQSettingsViewModel(client: client)
-        model.inProcessSettingsViewModelStorage = settingsModel
+        model.fallbackEditor = settingsModel
         let pickerTask = Task { @MainActor in
             await settingsModel.perform(.chooseImportFiles(mode: .single))
         }
@@ -4199,7 +4234,7 @@ struct GlassEQAppModelLifecycleTests {
         let picker = CancellableSettingsFileImportPicker()
         let previous = GlassEQSettingsViewModel(
             client: CancellableInProcessSettingsClient(model: model, picker: picker))
-        model.inProcessSettingsViewModelStorage = previous
+        model.fallbackEditor = previous
         let selection = Task { await previous.chooseImportFiles(mode: .stereoPair) }
         #expect(await waitUntil { picker.hasEntered })
 
@@ -4208,8 +4243,8 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(await selection.value == nil)
         #expect(picker.wasCancelled)
-        #expect(model.inProcessSettingsViewModelStorage !== previous)
-        #expect(model.inProcessSettingsViewModelStorage?.isConnected == true)
+        #expect(model.fallbackEditor !== previous)
+        #expect(model.fallbackEditor?.isConnected == true)
         model.inProcessSettingsDidDisappear()
     }
 
@@ -4301,11 +4336,13 @@ struct GlassEQAppModelLifecycleTests {
     @Test
     func closingFallbackRejectsQueuedCompareAfterReopen() async throws {
         let model = makeModel()
-        let closed = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidAppear()
+        let closed = try #require(model.fallbackEditor)
         model.inProcessSettingsDidDisappear()
-        #expect(model.inProcessSettingsViewModelStorage == nil)
+        #expect(model.fallbackEditor == nil)
         #expect(!closed.isConnected)
-        let reopened = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidAppear()
+        let reopened = try #require(model.fallbackEditor)
         #expect(reopened !== closed)
         await #expect(throws: CancellationError.self) {
             _ = try await model.performSettingsCommand(.startProgrammeComparison(model.activeProfile), from: closed)
@@ -4583,6 +4620,62 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func overlappingSettingsCommandsPublishLibraryChangesBeforeAcknowledging() async throws {
+        let importer = BlockingProfileImportOperation()
+        let model = makeModel(profileImportOperation: importer.run(format:name:text:))
+        let launcher = ControllableSettingsHelperLauncher()
+        let coordinator = SettingsCoordinator(
+            model: model, helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
+        )
+        model.settingsCoordinator = coordinator
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
+        let imported = makeProfile(name: "Slow import")
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token, id: "import", kind: .command,
+                command: .importProfile(format: .autoEQ, name: imported.name, text: "1 0")
+            ))
+        #expect(await waitUntil { importer.hasEntered })
+        model.statusMessage = "Changed during import"
+        model.notifyModelDidChange()
+        try launcher.writeHelperMessage(
+            .request(
+                sessionToken: token, id: "create", kind: .command, command: .createProfile(.parametric)))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    if case .response(_, "create", _, _) = $0 { true } else { false }
+                }
+            })
+        importer.complete(with: .success(imported))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    if case .response(_, "import", _, _) = $0 { true } else { false }
+                }
+            })
+        var order: [String] = []
+        for message in launcher.receivedAppMessages {
+            switch message {
+            case .event(_, .snapshotPatched(let patch)) where patch.statusMessage == "Changed during import":
+                order.append("intervening patch")
+            case .event(_, .snapshotChanged(let snapshot)):
+                order.append("library \(snapshot.profiles.count)")
+            case .response(_, let id, let response?, nil) where id == "create" || id == "import":
+                #expect(response.snapshot == nil)
+                order.append(id)
+            default:
+                break
+            }
+        }
+        #expect(order == ["intervening patch", "library 2", "create", "library 3", "import"])
+        #expect(model.selectedProfileID == model.profileStore.profiles.last?.id)
+        coordinator.shutdown()
+    }
+
+    @Test
     func settingsReadyAcknowledgmentFailureRequestsInProcessFallback() async throws {
         let model = makeModel()
         let launcher = ControllableSettingsHelperLauncher()
@@ -4703,16 +4796,19 @@ struct GlassEQAppModelLifecycleTests {
     @Test
     func inProcessSettingsFallbackPerformsCommandsAndTracksModelChanges() async throws {
         let model = makeModel()
-        let settingsModel = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidAppear()
+        let settingsModel = try #require(model.fallbackEditor)
         let profileSnapshotRevision = settingsModel.profileSnapshotRevision
 
         #expect(settingsModel.isConnected)
         #expect(settingsModel.snapshot == model.settingsSnapshot())
-        #expect(model.inProcessSettingsViewModel() === settingsModel)
+        model.inProcessSettingsDidAppear()
+        #expect(model.fallbackEditor === settingsModel)
         #expect(settingsModel.profileSnapshotRevision == profileSnapshotRevision)
 
         let response = await settingsModel.perform(.createProfile(.parametric))
-        #expect(response?.snapshot?.profiles.count == 2)
+        #expect(response != nil && response?.snapshot == nil)
+        #expect(settingsModel.snapshot.profiles.count == 2)
         #expect(settingsModel.snapshot == model.settingsSnapshot())
     }
 
@@ -5234,14 +5330,7 @@ private final class CancellableInProcessSettingsClient: SettingsCommanding {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
-        if let response = try await fileImportPickerResponse(
-            for: command,
-            model: model,
-            picker: picker.choose(mode:)
-        ) {
-            return response
-        }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, picker: picker.choose(mode:))
     }
 }
 

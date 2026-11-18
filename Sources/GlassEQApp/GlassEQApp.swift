@@ -64,7 +64,7 @@ struct GlassEQApp: App {
 
         Window(localized("Configure GlassEQ"), id: GlassEQWindowID.inProcessSettings) {
             ZStack {
-                if let settingsModel = model.inProcessSettingsViewModelStorage {
+                if let settingsModel = model.fallbackEditor {
                     SettingsView(model: settingsModel)
                 }
             }
@@ -624,7 +624,7 @@ final class GlassEQAppModel {
     @ObservationIgnored private let engineWorkExecutor = EngineWorkExecutor()
     @ObservationIgnored private let confirmedEngineProfileState = ConfirmedEngineProfileState()
     @ObservationIgnored lazy var settingsCoordinator = SettingsCoordinator(model: self)
-    var inProcessSettingsViewModelStorage: GlassEQSettingsViewModel?
+    var fallbackEditor: GlassEQSettingsViewModel?
     @ObservationIgnored var inProcessSettingsIsPresented = false
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0
@@ -1068,6 +1068,7 @@ final class GlassEQAppModel {
             selectedProfileID: selectedProfileID,
             draftProfile: draftProfile,
             activeProfileID: activeProfile.id,
+            activeProfileMatchesLibrary: profileStore.profiles.contains(activeProfile),
             activeProfileName: activeProfile.name,
             currentOutputName: currentOutputName,
             currentOutputUID: currentOutputUID,
@@ -1835,12 +1836,16 @@ final class GlassEQAppModel {
         try ensureProfileStoreWritable()
         try ensureCompatibleWithCurrentOutput(profile)
         let rollback = profileRollback()
-        var store = profileStore
-        upsertProfile(profile, in: &store)
-        try commitProfileStore(store)
-        activeProfile = profile
-        selectedProfileID = profile.id
-        draftProfile = profile
+        if let saved = profileStore.profiles.first(where: { $0.id == profile.id }), saved == profile {
+            activeProfile = saved
+        } else {
+            var store = profileStore
+            upsertProfile(profile, in: &store)
+            try commitProfileStore(store)
+            activeProfile = profile
+        }
+        selectedProfileID = activeProfile.id
+        draftProfile = activeProfile
         synchronizeActiveProfileProcessing(rollback: rollback)
         notifyModelDidChange()
     }
@@ -3731,7 +3736,7 @@ final class GlassEQAppModel {
     func stopAcceptingSettingsCommandsAndWait() async {
         acceptsSettingsCommands = false
         await settingsCoordinator.cancelPendingFileImportPickers()
-        await inProcessSettingsViewModelStorage?.cancelPendingFileImportPickers()
+        await fallbackEditor?.cancelPendingFileImportPickers()
         guard activeSettingsCommandCount > 0 else {
             return
         }
@@ -4072,13 +4077,13 @@ final class GlassEQAppModel {
         engineIsHoldingMute = engine.holdsProcessingMute
         NotificationCenter.default.post(name: .glassEQModelDidChange, object: self)
         settingsCoordinator.modelDidChange()
-        refreshInProcessSettingsSnapshot()
+        fallbackEditor?.accept(snapshot: settingsSnapshot())
     }
 
     private func notifyMetricsDidChange() {
         NotificationCenter.default.post(name: .glassEQMetricsDidChange, object: self)
         settingsCoordinator.metricsDidChange()
-        refreshInProcessSettingsMetrics()
+        fallbackEditor?.accept(metrics: settingsMetricsSnapshot())
     }
 
     private func stopObserver() {

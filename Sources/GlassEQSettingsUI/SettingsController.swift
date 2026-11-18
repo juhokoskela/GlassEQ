@@ -76,7 +76,7 @@ final class SettingsController {
 
     var canApplyDraft: Bool {
         !isProfileStoreProtected && !isStartingProgrammeComparison
-            && (hasUnsavedDraft || draftProfile.id != snapshot.activeProfileID)
+            && (hasUnsavedDraft || draftProfile.id != snapshot.activeProfileID || !snapshot.activeProfileMatchesLibrary)
     }
 
     var isProfileStoreProtected: Bool {
@@ -396,8 +396,8 @@ final class SettingsController {
         let dispatchedSelection = selectedProfileID
         let dispatchedDraft = draftProfile
         let response = await model.perform(command)
-        guard response?.snapshot != nil else {
-            return response
+        guard let response else {
+            return nil
         }
         switch command {
         case .createProfile, .duplicateProfile, .deleteProfile,
@@ -408,7 +408,7 @@ final class SettingsController {
                 dispatchedDraft: dispatchedDraft
             )
         default:
-            reconcileWithSnapshot()
+            break
         }
         return response
     }
