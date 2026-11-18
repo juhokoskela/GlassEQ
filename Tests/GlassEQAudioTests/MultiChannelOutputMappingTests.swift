@@ -452,6 +452,38 @@ struct MultiChannelOutputMappingTests {
     }
 
     @Test
+    func shortAlertBuffersLeaveRemainingProgrammeFramesAudible() throws {
+        let frames = 256
+        let runtime = SystemTapAudioEngine.AudioRuntime(
+            renderConfiguration: try .prepare(profile: .flatParametric, sampleRate: 48_000, channelCount: 2),
+            inputChannelOffset: 0, systemSoundInputChannelOffset: 2,
+            expectedCallbackFrames: frames, maxCallbackFrames: frames
+        )
+        runtime.activate()
+        _ = withMappedBuffers(channelLayout: [2, 1, 1], frames: frames, prefill: 0.25) { input in
+            let output = withMappedBuffers(channelLayout: [2], frames: frames) { buffers in
+                func render() {
+                    runtime.render(
+                        inputData: UnsafePointer(input.unsafeMutablePointer), inputTime: AudioTimeStamp(),
+                        outputData: buffers.unsafeMutablePointer, outputTime: AudioTimeStamp()
+                    )
+                }
+                render()  // Finish the activation fade.
+                input[1].mDataByteSize = UInt32(2 * MemoryLayout<Float>.stride)
+                input[2].mDataByteSize = UInt32(3 * MemoryLayout<Float>.stride)
+                render()
+            }
+            var expected = Array(repeating: Float(0.25), count: 2 * frames)
+            expected.replaceSubrange(0..<6, with: [0.5, 0.5, 0.5, 0.5, 0.25, 0.5])
+            #expect(output == [expected])
+        }
+        let metrics = runtime.snapshotMetrics()
+        #expect(metrics.playedFrames == UInt64(2 * frames))
+        #expect(metrics.capturedFrames == metrics.playedFrames)
+        #expect(metrics.playbackUnderrunFrames == 0)
+    }
+
+    @Test
     func systemSoundMixSmoothlyLimitsOverload() {
         let result = mixedInput(
             input: [1, -1],

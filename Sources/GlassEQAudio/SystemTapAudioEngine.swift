@@ -1121,7 +1121,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
-    private final class AudioRuntime: @unchecked Sendable {
+    final class AudioRuntime: @unchecked Sendable {
         private struct TimestampContinuityState {
             var expectedSampleTime: Float64?
             var previousHostTime: UInt64?
@@ -1290,12 +1290,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 UnsafeMutablePointer(mutating: inputData)
             )
             guard
-                let mainInputFrameCount = frameCount(
+                let inputFrameCount = frameCount(
                     inputBuffers,
                     channelOffset: inputChannelOffset,
                     channelCount: channelCount
                 ),
-                let rawSystemSoundFrameCount = frameCount(
+                let systemSoundFrameCount = frameCount(
                     inputBuffers,
                     channelOffset: systemSoundInputChannelOffset,
                     channelCount: channelCount
@@ -1304,11 +1304,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             else {
                 return
             }
-            let systemSoundFrameCount =
-                rawSystemSoundFrameCount == 0
-                ? mainInputFrameCount
-                : rawSystemSoundFrameCount
-            let inputFrameCount = min(mainInputFrameCount, systemSoundFrameCount)
 
             let renderStartNanoseconds = AudioConvertHostTimeToNanos(callbackHostTime)
             _ = firstRenderCallbackHostTimeNanoseconds.compareExchange(
@@ -1439,8 +1434,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 outputFrameCount: outputFrameCount
             )
             startupCallbackValidation = callbackFrameExpectation.validateCallback(
-                mainInputFrameCount: mainInputFrameCount,
-                systemSoundInputFrameCount: rawSystemSoundFrameCount,
+                mainInputFrameCount: inputFrameCount,
+                systemSoundInputFrameCount: systemSoundFrameCount,
                 outputFrameCount: outputFrameCount,
                 timestampsAreStable: timestampsAreStable
             )
