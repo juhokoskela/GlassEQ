@@ -4946,14 +4946,16 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
         }
 
-        for frame in 0..<frameCount {
-            let sampleBase = frame * channelCount
-            for channel in 0..<channelCount {
-                samples[sampleBase + channel] = inputSample(
-                    from: buffers,
-                    frame: frame,
-                    channel: sourceChannelOffset + channel
-                )
+        for channel in 0..<channelCount {
+            let source = inputChannel(in: buffers, channel: sourceChannelOffset + channel)
+            let available = min(frameCount, source?.frameCount ?? 0)
+            if let source {
+                for frame in 0..<available {
+                    samples[frame * channelCount + channel] = source.data[frame * source.stride]
+                }
+            }
+            for frame in available..<frameCount {
+                samples[frame * channelCount + channel] = 0
             }
         }
     }
@@ -4979,32 +4981,24 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         var saturatedSamples: UInt64 = 0
         let targetPreampGains = incomingPreampGains ?? preampGains
-        for frame in 0..<frameCount {
-            let sampleBase = frame * channelCount
-            let incomingWeight =
-                incomingPreampGains == nil
-                ? 0
-                : transition.incomingBlendWeight(frameOffset: frame)
-            let leftGain =
-                preampGains.left
-                + (targetPreampGains.left - preampGains.left) * incomingWeight
-            let rightGain =
-                preampGains.right
-                + (targetPreampGains.right - preampGains.right) * incomingWeight
-            for channel in 0..<channelCount {
-                let gain = channel == 1 ? rightGain : leftGain
-                let additionalSample =
-                    inputSample(
-                        from: buffers,
-                        frame: frame,
-                        channel: sourceChannelOffset + channel
-                    ) * gain
+        for channel in 0..<channelCount {
+            guard let source = inputChannel(in: buffers, channel: sourceChannelOffset + channel) else {
+                continue
+            }
+            let gain = channel == 1 ? preampGains.right : preampGains.left
+            let targetGain = channel == 1 ? targetPreampGains.right : targetPreampGains.left
+            for frame in 0..<min(frameCount, source.frameCount) {
+                let weight =
+                    incomingPreampGains == nil
+                    ? 0
+                    : transition.incomingBlendWeight(frameOffset: frame)
+                let additionalSample = source.data[frame * source.stride] * (gain + (targetGain - gain) * weight)
                 guard additionalSample != 0 else {
                     continue
                 }
-                let mixed = samples[sampleBase + channel] + additionalSample
-                let output = saturateOutputSample(mixed)
-                samples[sampleBase + channel] = output.sample
+                let index = frame * channelCount + channel
+                let output = saturateOutputSample(samples[index] + additionalSample)
+                samples[index] = output.sample
                 if output.saturated {
                     saturatedSamples += 1
                 }
@@ -5035,33 +5029,24 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return (value, false)
     }
 
-    private static func inputSample(
-        from buffers: UnsafeMutableAudioBufferListPointer,
-        frame: Int,
+    private static func inputChannel(
+        in buffers: UnsafeMutableAudioBufferListPointer,
         channel: Int
-    ) -> Float {
-        var remainingChannel = channel
+    ) -> (data: UnsafePointer<Float>, stride: Int, frameCount: Int)? {
+        var offset = channel
         for buffer in buffers {
             let channels = Int(buffer.mNumberChannels)
-            guard channels > 0 else {
+            guard offset < channels else {
+                offset -= channels
                 continue
             }
-            guard remainingChannel < channels else {
-                remainingChannel -= channels
-                continue
+            let samples = Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride
+            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self), offset < samples else {
+                return nil
             }
-            guard let data = buffer.mData?.assumingMemoryBound(to: Float.self) else {
-                return 0
-            }
-            let index = frame * channels + remainingChannel
-            guard index >= 0,
-                index < Int(buffer.mDataByteSize) / MemoryLayout<Float>.stride
-            else {
-                return 0
-            }
-            return data[index]
+            return (UnsafePointer(data + offset), channels, 1 + (samples - 1 - offset) / channels)
         }
-        return 0
+        return nil
     }
 
     static func monoDownmix(

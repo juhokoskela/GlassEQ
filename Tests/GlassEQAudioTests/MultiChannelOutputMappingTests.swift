@@ -405,6 +405,52 @@ struct MultiChannelOutputMappingTests {
         #expect(result.saturated == 0)
     }
 
+    @Test(arguments: [false, true])
+    func systemSoundOnsetUsesOnlyPresentAlertChannels(planar: Bool) {
+        // The alert tap is between the physical stream and programme tap in this layout.
+        let layout = planar ? [2, 1, 1, 2] : [2, 2, 2]
+        _ = withMappedBuffers(channelLayout: layout, frames: 3, prefill: 1) { buffers in
+            let left = buffers[1]
+            let rightIndex = planar ? 2 : 1
+            let right = buffers[rightIndex]
+            let dry: [Float] = [1, -1, -0.0, 0, -0.5, 0.5]
+            func mix() -> ([UInt32], UInt64) {
+                var samples = dry
+                let saturated = samples.withUnsafeMutableBufferPointer {
+                    SystemTapAudioEngine.mixInputSamples(
+                        from: buffers, into: $0, frameCount: 3, channelCount: 2,
+                        sourceChannelOffset: 2, preampGains: (left: 0.5, right: 0.25)
+                    )
+                }
+                return (samples.map(\.bitPattern), saturated)
+            }
+
+            buffers[1].mData = nil
+            buffers[rightIndex].mData = nil
+            #expect(mix() == (dry.map(\.bitPattern), 0))
+
+            if planar {
+                buffers[rightIndex] = right
+                // HAL can supply one side, with fewer frames than the programme.
+                buffers[rightIndex].mDataByteSize = UInt32(2 * MemoryLayout<Float>.stride)
+                let expected: [Float] = [1, -0.75, -0.0, 0.25, -0.5, 0.5]
+                #expect(mix() == (expected.map(\.bitPattern), 0))
+                buffers[rightIndex] = right
+            }
+            buffers[1] = left
+            let audible = mix()
+            #expect(audible.1 == 1)
+            #expect(audible.0 == [Float(1), -0.75, 0.5, 0.25, 0, 0.75].map(\.bitPattern))
+
+            for index in 1...rightIndex {
+                buffers[index].mData?.initializeMemory(
+                    as: Float.self, repeating: 0, count: Int(buffers[index].mDataByteSize) / MemoryLayout<Float>.stride
+                )
+            }
+            #expect(mix() == (dry.map(\.bitPattern), 0))
+        }
+    }
+
     @Test
     func systemSoundMixSmoothlyLimitsOverload() {
         let result = mixedInput(
