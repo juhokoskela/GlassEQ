@@ -96,8 +96,11 @@ final class SettingsCoordinator: NSObject {
     private var pipeReadPump: SettingsPipeReadPump?
     private var pipeReadDelivery: SettingsPipeOrderedMainActorDelivery?
     private var pipeWritePump: SettingsPipeWritePump?
-    private var settingsConnected = false
-    private var readyAcknowledgmentPending = false
+    private enum ConnectionPhase {
+        case waitingForReady, acknowledgingReady, ready
+    }
+
+    private var connectionPhase = ConnectionPhase.waitingForReady
     private var pendingFocusRequest = false
     private var pendingSectionRequest: SettingsSection?
     private var suppressedModelChangeDepth = 0
@@ -125,7 +128,7 @@ final class SettingsCoordinator: NSObject {
     @discardableResult
     func openSettings(section: SettingsSection? = nil) -> SettingsOpenDisposition {
         if let helperProcess, helperProcess.isRunning {
-            if settingsConnected {
+            if connectionPhase == .ready {
                 if let section {
                     send(.sectionRequested(section))
                 } else {
@@ -183,7 +186,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     func modelDidChange() {
-        guard settingsConnected, suppressedModelChangeDepth == 0,
+        guard connectionPhase != .waitingForReady, suppressedModelChangeDepth == 0,
             let model
         else {
             return
@@ -192,7 +195,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     func metricsDidChange() {
-        guard settingsConnected,
+        guard connectionPhase != .waitingForReady,
             let model
         else {
             return
@@ -211,8 +214,7 @@ final class SettingsCoordinator: NSObject {
     private func prepareSession() throws -> String {
         let token = try Self.makeSessionToken()
         launchToken = token
-        settingsConnected = false
-        readyAcknowledgmentPending = false
+        connectionPhase = .waitingForReady
         pendingFocusRequest = false
         pendingSectionRequest = nil
         suppressedModelChangeDepth = 0
@@ -305,7 +307,7 @@ final class SettingsCoordinator: NSObject {
         }
 
         var isHelperReadyForTesting: Bool {
-            settingsConnected
+            connectionPhase == .ready
         }
     #endif
 
@@ -328,7 +330,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func send(_ event: SettingsEvent) {
-        guard settingsConnected else {
+        guard connectionPhase != .waitingForReady else {
             return
         }
         guard let launchToken else {
@@ -379,7 +381,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func handleHelperExitBeforeConnectionIfNeeded() {
-        let shouldUseFallback = !settingsConnected
+        let shouldUseFallback = connectionPhase != .ready
         let section = pendingSectionRequest
         cleanupSession(terminateHelper: false)
         guard shouldUseFallback else {
@@ -440,23 +442,15 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func handleReady(requestID: String) {
-        guard !settingsConnected,
-            !readyAcknowledgmentPending
-        else {
+        guard connectionPhase == .waitingForReady else {
             return
         }
-        readyAcknowledgmentPending = true
+        connectionPhase = .acknowledgingReady
         sendResponse(SettingsCommandResponse(), requestID: requestID) { [weak self] in
-            guard let self,
-                readyAcknowledgmentPending
-            else {
+            guard let self, connectionPhase == .acknowledgingReady else {
                 return
             }
-            readyAcknowledgmentPending = false
-            settingsConnected = true
-            if let model {
-                sendSnapshotUpdate(model.settingsSnapshot())
-            }
+            connectionPhase = .ready
             if pendingFocusRequest {
                 pendingFocusRequest = false
                 if let pendingSectionRequest {
@@ -466,6 +460,10 @@ final class SettingsCoordinator: NSObject {
                     send(.focusRequested)
                 }
             }
+        }
+        // The writer preserves enqueue order. Catch up before another command can enqueue its reply.
+        if let model {
+            sendSnapshotUpdate(model.settingsSnapshot())
         }
     }
 
@@ -516,7 +514,7 @@ final class SettingsCoordinator: NSObject {
                 }
                 if let snapshot = response.snapshot {
                     lastSentSnapshot = snapshot
-                } else if shouldSuppressModelChanges, settingsConnected, let model {
+                } else if shouldSuppressModelChanges, connectionPhase != .waitingForReady, let model {
                     sendSnapshotUpdate(model.settingsSnapshot())
                 }
                 sendResponse(response, requestID: requestID)
@@ -547,7 +545,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func sendSnapshotUpdate(_ snapshot: SettingsSnapshot) {
-        guard settingsConnected else {
+        guard connectionPhase != .waitingForReady else {
             return
         }
 
@@ -704,7 +702,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     private func failPipeSession(_ error: Error) {
-        let shouldUseFallback = launchToken != nil && !settingsConnected
+        let shouldUseFallback = launchToken != nil && connectionPhase != .ready
         let section = pendingSectionRequest
         cleanupSession(terminateHelper: true)
         if shouldUseFallback {
@@ -754,8 +752,7 @@ final class SettingsCoordinator: NSObject {
         lastSentSnapshot = nil
         runningApplication = nil
         helperProcess = nil
-        settingsConnected = false
-        readyAcknowledgmentPending = false
+        connectionPhase = .waitingForReady
         if hadSession {
             model?.stopMetricsPolling()
             model?.stopProgrammeComparison()

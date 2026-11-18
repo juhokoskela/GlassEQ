@@ -4509,17 +4509,16 @@ struct GlassEQAppModelLifecycleTests {
         model.engineMetrics = AudioEngineMetrics(capturedFrames: 42)
         coordinator.modelDidChange()
         coordinator.metricsDidChange()
-        try launcher.writeHelperMessage(
-            .request(
-                sessionToken: token,
-                id: "ready",
-                kind: .ready,
-                command: nil
-            ))
-
-        let metricsEvent = SettingsPipeMessage.event(
-            sessionToken: token, event: .metricsChanged(model.settingsMetricsSnapshot()))
-        #expect(await waitUntil { launcher.receivedAppMessages.contains(metricsEvent) })
+        try launcher.writeHelperOutput(
+            SettingsPipeCodec.encodeLine(.request(sessionToken: token, id: "ready", kind: .ready, command: nil))
+                + SettingsPipeCodec.encodeLine(
+                    .request(sessionToken: token, id: "reset", kind: .command, command: .resetDiagnostics)))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    if case .response(_, "reset", _, _) = $0 { true } else { false }
+                }
+            })
         let messages = launcher.receivedAppMessages
         let ready = try #require(
             messages.firstIndex { if case .response(_, "ready", _, _) = $0 { true } else { false } })
@@ -4528,7 +4527,16 @@ struct GlassEQAppModelLifecycleTests {
                 guard case .event(_, .snapshotPatched(let patch)) = message else { return false }
                 return patch.statusMessage == "Changed before ready"
             })
+        let captured = try #require(
+            messages.firstIndex { message in
+                guard case .event(_, .metricsChanged(let metrics)) = message else { return false }
+                return metrics.capturedFrames == 42
+            })
+        let reset = try #require(
+            messages.firstIndex { if case .response(_, "reset", _, _) = $0 { true } else { false } })
         #expect(ready < patch)
+        #expect(patch < captured)
+        #expect(captured < reset)
         #expect(!messages.contains { if case .event(_, .snapshotChanged) = $0 { true } else { false } })
         #expect(coordinator.isHelperReadyForTesting)
         coordinator.shutdown()
