@@ -309,11 +309,12 @@ public struct AudioEngineMetrics: Equatable, Sendable {
 
 // Each detached renderer publishes into its own slot after HAL has retired its IOProc.
 final class TimestampProbeSnapshot: Sendable {
-    let records = Mutex<[AudioTimestampProbeRecord]>([])
+    private let storage = Mutex<[AudioTimestampProbeRecord]>([])
 
-    func capture(_ readQuiescentProbe: () -> [AudioTimestampProbeRecord]) {
-        let snapshot = readQuiescentProbe()
-        records.withLock { $0 = snapshot }
+    var records: [AudioTimestampProbeRecord] { storage.withLock { $0 } }
+
+    func publish(_ records: [AudioTimestampProbeRecord]) {
+        storage.withLock { $0 = records }
     }
 }
 
@@ -3586,7 +3587,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     public func snapshotTimestampProbeRecords() -> [AudioTimestampProbeRecord] {
-        control.withLock { $0.lastTimestampProbe }?.records.withLock { $0 } ?? []
+        control.withLock { $0.lastTimestampProbe }?.records ?? []
     }
 
     public func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? {
@@ -3678,7 +3679,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             operation: "dispose combined aggregate",
             completion: { [snapshot = detached.timestampProbe] in
                 if let snapshot, let runtime {
-                    snapshot.capture(runtime.snapshotTimestampProbeRecords)
+                    snapshot.publish(runtime.snapshotTimestampProbeRecords())
                 }
                 runtime?.drainDSPConfigBoxes()
             }

@@ -98,17 +98,15 @@ struct CoreAudioDeviceTests {
                     operation: "retire probe",
                     aggregateDeviceIDs: [42],
                     completion: {
-                        snapshot.capture {
-                            finalWrite.withLock { [$0].compactMap { $0 } }
-                        }
+                        snapshot.publish(finalWrite.withLock { $0.map { [$0] } ?? [] })
                     }
                 )))
-        #expect(snapshot.records.withLock { $0.isEmpty })
+        #expect(snapshot.records.isEmpty)
 
         let lastRecord = AudioTimestampProbeRecord(sequence: 17, inputJumpDetected: true)
         finalWrite.withLock { $0 = lastRecord }
         #expect(ledger.retryPending())
-        #expect(snapshot.records.withLock { $0 } == [lastRecord])
+        #expect(snapshot.records == [lastRecord])
     }
 
     @Test
