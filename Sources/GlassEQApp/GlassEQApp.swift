@@ -3769,16 +3769,16 @@ final class GlassEQAppModel {
         let rebuild =
             oldSelection != activeAggregateRoute.map { aggregateBufferSelection(for: $0) }
             || (hasPendingProfileReplacingEngineWork && choicesChanged)
+        let previousActive = activeProfile
         if changeProfile {
-            let previousActive = activeProfile
             activeProfile = nextProfile
             if mode == .replace {
                 selectedProfileID = nextProfile.id
                 draftProfile = nextProfile
             }
-            if previousActive != nextProfile || rebuild { synchronizeActiveProfileProcessing(rebuildBuffer: rebuild) }
-        } else if rebuild {
-            synchronizeActiveProfileProcessing(rebuildBuffer: true)
+        }
+        if processingIntent == .requested && ((changeProfile && previousActive != nextProfile) || rebuild) {
+            synchronizeActiveProfileProcessing(rebuildBuffer: rebuild)
         }
         notifyModelDidChange()
         if mode == .replace {

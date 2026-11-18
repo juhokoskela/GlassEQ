@@ -67,6 +67,38 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func restoringBeforeAudioSetupDoesNotStartCapture() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let model = makeModel(storeURL: url, engine: engine)
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore = ProfileStore(profiles: [makeProfile(name: "Restored")])
+        _ = try model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        #expect(model.onboardingAudioCaptureState == .idle)
+        #expect(engine.startCalls.isEmpty)
+    }
+
+    @Test
+    func failedLibraryReplacementKeepsOutgoingLibrary() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let model = makeModel(storeURL: url)
+        let previous = try model.makeLibraryBackup()
+        var incoming = previous
+        incoming.profileStore = ProfileStore(profiles: [makeProfile(name: "Incoming")])
+        _ = try model.stageLibraryImport(incoming, filename: "Library.json")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        await #expect(throws: POSIXError.self) { try await model.applyLibraryImport(mode: .replace) }
+        #expect(try model.makeLibraryBackup().profileStore == previous.profileStore)
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: url)
+        let copies = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let copy = try #require(copies.first)
+        #expect(try ProfileLibraryBackupCodec.read(from: copy).profileStore == previous.profileStore)
+    }
+
+    @Test
     func staleLibraryPreviewPreservesLaterEdits() async throws {
         let url = temporaryAppStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }

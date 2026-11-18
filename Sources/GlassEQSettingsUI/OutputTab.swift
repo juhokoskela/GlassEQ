@@ -116,6 +116,21 @@ struct OutputTab: View {
             }
 
             Section {
+                HStack {
+                    Button(localized("Export…")) { controller.exportLibrary() }
+                        .disabled(controller.isProfileStoreProtected)
+                    Button(localized("Import…")) { controller.chooseLibraryBackup() }
+                        .disabled(controller.isEditingLocked)
+                    Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }
+                }
+                .disabled(controller.isLibraryTransferInProgress)
+            } header: {
+                Text(localized("Profile Library"))
+            } footer: {
+                if let message = controller.libraryMessage { Text(message) }
+            }
+
+            Section {
                 LabeledContent(localized("Status"), value: statusSummary)
                 LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
                 LabeledContent(localized("Buffer"), value: bufferSummary)
@@ -138,21 +153,6 @@ struct OutputTab: View {
                 Text(localized("Engine Status"))
             } footer: {
                 Text(snapshot.statusMessage)
-            }
-
-            Section {
-                HStack {
-                    Button(localized("Export…")) { controller.exportLibrary() }
-                        .disabled(controller.isProfileStoreProtected)
-                    Button(localized("Import…")) { controller.chooseLibraryBackup() }
-                        .disabled(controller.isEditingLocked)
-                    Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }
-                }
-                .disabled(controller.isLibraryTransferInProgress)
-            } header: {
-                Text(localized("Profile Library"))
-            } footer: {
-                if let message = controller.libraryMessage { Text(message) }
             }
 
             Section {
