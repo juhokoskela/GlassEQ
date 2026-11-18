@@ -68,7 +68,7 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 - App Sandbox: enabled.
 - Audio input entitlement: enabled for Core Audio system/process tap permission.
 - Outgoing network entitlement: enabled for the built-in AutoEq browser.
-- User-selected read-only file entitlement: enabled on the main app, which presents the open panel and reads guided text-profile and WAV impulse-response imports.
+- User-selected read-write file entitlement: enabled on the main app, which presents the open panel and reads selected profile files and saves support reports.
 - The settings helper is signed with only `com.apple.security.app-sandbox` and `com.apple.security.inherit`. Adding another App Sandbox entitlement makes macOS abort the inherited child process during sandbox initialization.
 - Info.plist: use `Sources/GlassEQApp/Info.plist`.
 - Entitlements: use `GlassEQ.entitlements`.

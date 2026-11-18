@@ -89,6 +89,12 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 <a id="supported-target"></a>
 **Supported target:** macOS 26.0 or newer, Apple Silicon / arm64 only.
 
+## Getting help
+
+Open **About GlassEQ** from the menu bar popover or Settings → Output. Choose **Support Report** to preview, copy, or save the current playback state, route diagnostics and recent status changes. Review profile names, output names and error details before sharing the report.
+
+For startup troubleshooting, quit the running copy of GlassEQ first, then launch `/Applications/GlassEQ.app/Contents/MacOS/GlassEQ --debug` from Terminal.
+
 ## Support the project
 
 GlassEQ's source is released under GPL-3.0-or-later. The current beta is ad hoc-signed and still needs the Gatekeeper workaround described above. Sponsorship helps cover the Apple Developer Program membership and other release costs required for a **Developer ID-signed, notarized** app.

@@ -1175,6 +1175,9 @@ extension GlassEQAppModel {
         case .resetUnsupportedProfileStore:
             try await resetUnsupportedProfileStore()
 
+        case .showAbout:
+            aboutPresentationGeneration &+= 1
+
         case .showSetupGuide:
             requestOnboardingPresentation()
         }

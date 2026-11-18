@@ -22,6 +22,17 @@ struct GlassEQSettingsApp: App {
         .defaultSize(width: 1180, height: 720)
         .windowResizability(.contentMinSize)
         .restorationBehavior(.disabled)
+        // The helper has no About content of its own; GlassEQ opens its About window instead.
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(localized("About GlassEQ")) {
+                    let model = appDelegate.model
+                    Task { @MainActor in
+                        await model.perform(.showAbout)
+                    }
+                }
+            }
+        }
     }
 }
 

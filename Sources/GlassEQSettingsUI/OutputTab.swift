@@ -141,6 +141,7 @@ struct OutputTab: View {
             }
 
             Section {
+                Button(localized("About GlassEQ and Support Report…")) { controller.showAbout() }
                 LabeledContent {
                     Button(localized("Open Setup Guide")) {
                         controller.showSetupGuide()

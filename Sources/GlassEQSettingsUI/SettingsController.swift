@@ -251,6 +251,8 @@ final class SettingsController {
         perform(.openPrivacySettings)
     }
 
+    func showAbout() { perform(.showAbout) }
+
     func showSetupGuide() {
         perform(.showSetupGuide)
     }

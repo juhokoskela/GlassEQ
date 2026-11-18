@@ -9,6 +9,7 @@ import SwiftUI
 
 private enum GlassEQWindowID {
     static let inProcessSettings = "in-process-settings"
+    static let about = "about"
     static let onboarding = "onboarding"
 }
 
@@ -40,6 +41,7 @@ struct GlassEQApp: App {
                         generation: model.inProcessSettingsPresentationGeneration,
                         windowID: GlassEQWindowID.inProcessSettings
                     )
+                    WindowPresenter(generation: model.aboutPresentationGeneration, windowID: GlassEQWindowID.about)
                     WindowPresenter(
                         generation: model.onboardingPresentationGeneration,
                         windowID: GlassEQWindowID.onboarding
@@ -47,6 +49,19 @@ struct GlassEQApp: App {
                 }
         }
         .menuBarExtraStyle(.window)
+
+        Window(localized("About GlassEQ"), id: GlassEQWindowID.about) {
+            AboutView(model: model)
+                .onAppear { model.foregroundWindowDidAppear() }
+                .onDisappear { model.foregroundWindowDidDisappear() }
+        }
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button(localized("About GlassEQ")) { model.aboutPresentationGeneration &+= 1 }
+            }
+        }
 
         Window(localized("Welcome to GlassEQ"), id: GlassEQWindowID.onboarding) {
             OnboardingView(model: model)
@@ -153,20 +168,6 @@ extension SettingsImportFormat {
 private extension Notification.Name {
     static let glassEQModelDidChange = Notification.Name("com.glasseq.modelDidChange")
     static let glassEQMetricsDidChange = Notification.Name("com.glasseq.metricsDidChange")
-}
-
-private enum AppBuildInfo {
-    static var displayVersion: String {
-        let bundle = Bundle.main
-        if let releaseLabel = bundle.object(forInfoDictionaryKey: "GlassEQReleaseLabel") as? String,
-            !releaseLabel.isEmpty
-        {
-            return releaseLabel
-        }
-        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.9.3"
-        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "15"
-        return "v\(version) (\(build))"
-    }
 }
 
 private enum WakeReconnectPolicy {
@@ -546,7 +547,13 @@ final class GlassEQAppModel {
     var currentOutputSampleRate = 0.0
     var currentOutputChannelCount = 0
     var currentOutputBufferFrameSize: UInt32 = 0
-    var statusMessage = localized("Stopped")
+    let lifecycleLog = LifecycleLog(streamsToStandardError: LifecycleLog.isDebugLaunch())
+    var statusMessage = localized("Stopped") {
+        didSet {
+            if oldValue != statusMessage { lifecycleLog.record(statusMessage) }
+        }
+    }
+    var aboutPresentationGeneration = 0
     var isRunning: Bool { lifecycleState == .running }
     var activeProfile: EQProfile {
         didSet {
@@ -4538,11 +4545,18 @@ private struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(localized("GlassEQ"))
                     .font(.title3.weight(.semibold))
-                Text(AppBuildInfo.displayVersion)
+                Text(AppBuildInfo.current.displayVersion)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            Button {
+                dismiss()
+                model.aboutPresentationGeneration &+= 1
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .accessibilityLabel(Text(localized("About GlassEQ")))
             Text(statusBadgeTitle)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(statusBadgeColor)
