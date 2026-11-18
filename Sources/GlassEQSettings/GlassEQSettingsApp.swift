@@ -236,12 +236,7 @@ final class SettingsPipeClient: NSObject, SettingsPipeClientConnection, @uncheck
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
-        let timeout: Duration?
-        if case .chooseImportFiles = command {
-            timeout = nil
-        } else {
-            timeout = requestTimeout
-        }
+        let timeout = command.presentsFilePanel ? nil : requestTimeout
         return try await send(kind: .command, command: command, timeout: timeout)
     }
 

@@ -222,6 +222,23 @@ struct ProfilePersistenceTests {
     }
 
     @Test
+    func repairingOneMalformedBufferChoiceKeepsTheOthers() throws {
+        let url = try temporaryStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        var store = ProfileStore(profiles: [EQProfile(name: "Saved", mode: .parametric, filters: [])])
+        let route = AggregateAudioRouteFingerprint(
+            outputDeviceUID: "usb", nativeOutputStreamIndex: 0, nominalSampleRate: 48_000)
+        store.fixedBuffers = [OutputBufferPreference(route: route, mode: .frames64)]
+        var json = try #require(JSONSerialization.jsonObject(with: ProfilePersistence.encode(store)) as? [String: Any])
+        var choices = try #require(json["fixedBuffers"] as? [[String: Any]])
+        choices.append(["mode": "unknown"])
+        json["fixedBuffers"] = choices
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+        #expect(ProfilePersistence.load(from: url).store == store)
+        #expect(ProfilePersistence.load(from: url).store == store)
+    }
+
+    @Test
     func loadProtectsSchemaOneStoreWhenMigrationBackupFails() throws {
         let url = try temporaryStoreURL()
         defer { removeTemporaryStoreDirectory(for: url) }
@@ -248,7 +265,7 @@ struct ProfilePersistenceTests {
 
         let result = ProfilePersistence.load(from: url, timestamp: timestamp)
 
-        #expect(result.status == .backupFailed)
+        #expect(result.status == .migrationBackupFailed)
         #expect(result.store == store)
         #expect(try Data(contentsOf: url) == schemaOneData)
         #expect(

@@ -34,7 +34,6 @@ struct ProfileLibraryBackupCodecTests {
         #expect(second.store == first.store)
         #expect(second.summary.copiedProfiles == 0)
         #expect(second.summary.unchangedProfiles == incoming.profiles.count)
-        #expect(ProfileLibraryMerge.preview(current: first.store, incoming: incoming).copiedProfiles == 0)
     }
 
     @Test
@@ -194,7 +193,7 @@ struct ProfileLibraryMergeTests {
         #expect(result.summary.addedProfiles == 1)
         #expect(result.summary.copiedProfiles == 1)
         #expect(result.summary.unchangedProfiles == 1)
-        #expect(result.summary.resultingProfileCount == 4)
+        #expect(result.store.profiles.count == 4)
         #expect(result.store.fallbackProfileID == mine.id)
         #expect(result.store.profiles.map(\.name) == ["Mine", "Shared", "Theirs", "Shared (imported)"])
         let copy = result.store.profiles[3]
@@ -236,8 +235,6 @@ struct ProfileLibraryMergeTests {
         let current = ProfileStore(profiles: (0..<limit).map { profile("Current \($0)") })
         let incoming = ProfileStore(profiles: [profile("One more")])
 
-        let preview = ProfileLibraryMerge.preview(current: current, incoming: incoming)
-        #expect(preview.exceedsProfileLimit)
         #expect(throws: ProfileLibraryBackupError.tooManyProfiles(count: limit + 1, maximum: limit)) {
             try ProfileLibraryMerge.merge(current: current, incoming: incoming)
         }

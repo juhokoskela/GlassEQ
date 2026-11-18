@@ -118,7 +118,7 @@ struct OutputTab: View {
             Section {
                 HStack {
                     Button(localized("Export…")) { controller.exportLibrary() }
-                        .disabled(controller.isProfileStoreProtected)
+                        .disabled(!snapshot.profileStoreProtection.canExportLibrary)
                     Button(localized("Import…")) { controller.chooseLibraryBackup() }
                         .disabled(controller.isEditingLocked)
                     Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }

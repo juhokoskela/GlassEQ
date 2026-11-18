@@ -1,4 +1,3 @@
-import GlassEQCore
 import GlassEQSettingsIPC
 import SwiftUI
 
@@ -29,18 +28,15 @@ struct LibraryImportSheet: View {
                 choice(
                     title: localized("Add to your library"),
                     detail: mergeDetail,
-                    warning: preview.merge.exceedsProfileLimit
-                        ? localized(
-                            "Adding these would exceed the limit of \(ProfilePersistence.profileCountRange.upperBound) profiles. Delete some first, or replace the library."
-                        )
-                        : nil
+                    warning: preview.mergeFailure
                 )
                 choice(
                     title: localized("Replace your library"),
                     detail: localized(
                         "Removes your current profiles and output assignments and restores these \(preview.profileCount) profiles instead. GlassEQ saves a copy of your current library first."
                     ),
-                    warning: hasUnsavedDraft ? localized("Replace also discards your unapplied profile edits.") : nil
+                    warning: preview.replaceFailure
+                        ?? (hasUnsavedDraft ? localized("Replace also discards your unapplied profile edits.") : nil)
                 )
             }
 
@@ -49,10 +45,11 @@ struct LibraryImportSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button(localized("Replace"), role: .destructive, action: onReplace)
+                    .disabled(preview.replaceFailure != nil)
                 Button(localized("Add"), action: onMerge)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(preview.merge.exceedsProfileLimit)
+                    .disabled(preview.merge == nil)
             }
             .controlSize(.large)
         }
@@ -74,31 +71,14 @@ struct LibraryImportSheet: View {
     }
 
     private var mergeDetail: String {
-        var parts: [String] = []
-        if preview.merge.addedProfiles > 0 {
-            parts.append(localized("adds \(preview.merge.addedProfiles) new profiles"))
-        }
-        if preview.merge.copiedProfiles > 0 {
-            parts.append(
-                localized(
-                    "adds \(preview.merge.copiedProfiles) as copies because a profile with the same identity here differs"
-                ))
-        }
-        if preview.merge.unchangedProfiles > 0 {
-            parts.append(localized("skips \(preview.merge.unchangedProfiles) already here"))
-        }
-        if preview.merge.addedMappings > 0 {
-            parts.append(localized("assigns \(preview.merge.addedMappings) outputs that have no profile yet"))
-        }
-        if preview.merge.addedBufferPreferences > 0 {
-            parts.append(localized("adds \(preview.merge.addedBufferPreferences) fixed buffer preferences"))
-        }
-        guard !parts.isEmpty else {
-            return localized("Every profile in this file is already in your library. Nothing would change.")
-        }
-        var detail = parts.joined(separator: ", ")
-        detail = detail.prefix(1).uppercased() + detail.dropFirst()
-        return detail + localized(". Nothing you have is changed.")
+        guard let merge = preview.merge else { return localized("Your current library will be kept.") }
+        return [
+            localized("New profiles: \(merge.addedProfiles)."),
+            localized("Conflicting profiles added as copies: \(merge.copiedProfiles)."),
+            localized("Existing profiles kept: \(merge.unchangedProfiles)."),
+            localized("New output assignments: \(merge.addedMappings)."),
+            localized("New fixed buffer choices: \(merge.addedBufferPreferences)."),
+        ].joined(separator: " ")
     }
 
     private func choice(title: String, detail: String, warning: String?) -> some View {

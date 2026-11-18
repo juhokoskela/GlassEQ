@@ -730,14 +730,16 @@ public struct SettingsProfileStoreProtectionDTO: Codable, Equatable, Sendable {
     public var isProtected: Bool
     public var message: String
     public var resetButtonTitle: String
+    public var canExportLibrary: Bool
 
     public init(
         isProtected: Bool = false,
         message: String = "",
-        resetButtonTitle: String = ""
+        resetButtonTitle: String = "", canExportLibrary: Bool = false
     ) {
         self.isProtected = isProtected
         self.message = message
+        self.canExportLibrary = !isProtected || canExportLibrary
         self.resetButtonTitle = resetButtonTitle
     }
 
@@ -994,11 +996,14 @@ public struct SettingsLibraryImportPreviewDTO: Codable, Equatable, Sendable {
     public var profileCount: Int
     public var outputMappingCount: Int
     public var hasBufferPreferences: Bool
-    public var merge: ProfileLibraryMergeSummary
+    public var merge: ProfileLibraryMergeSummary?
+    public var mergeFailure: String?
+    public var replaceFailure: String?
 
     public init(
         filename: String, createdAt: Date, appVersion: String?, profileCount: Int,
-        outputMappingCount: Int, hasBufferPreferences: Bool, merge: ProfileLibraryMergeSummary
+        outputMappingCount: Int, hasBufferPreferences: Bool, merge: ProfileLibraryMergeSummary?, mergeFailure: String?,
+        replaceFailure: String?
     ) {
         self.filename = filename
         self.createdAt = createdAt
@@ -1007,6 +1012,8 @@ public struct SettingsLibraryImportPreviewDTO: Codable, Equatable, Sendable {
         self.outputMappingCount = outputMappingCount
         self.hasBufferPreferences = hasBufferPreferences
         self.merge = merge
+        self.replaceFailure = replaceFailure
+        self.mergeFailure = mergeFailure
     }
 }
 

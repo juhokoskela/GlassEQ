@@ -129,12 +129,14 @@ struct ProfileStoreProtectionBanner: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
-            Button(role: .destructive) {
-                onReset()
-            } label: {
-                ActionButtonLabel(title: protection.resetButtonTitle, systemImage: "arrow.counterclockwise")
+            if !protection.resetButtonTitle.isEmpty {
+                Button(role: .destructive) {
+                    onReset()
+                } label: {
+                    ActionButtonLabel(title: protection.resetButtonTitle, systemImage: "arrow.counterclockwise")
+                }
+                .accessibilityLabel(Text(protection.resetButtonTitle))
             }
-            .accessibilityLabel(Text(protection.resetButtonTitle))
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)

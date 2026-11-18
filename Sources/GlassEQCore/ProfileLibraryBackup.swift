@@ -5,7 +5,7 @@ import Foundation
 public struct ProfileLibraryBackup: Codable, Equatable, Sendable {
     public static let formatIdentifier = "glasseq-profile-library"
     public static let currentVersion = 1
-    /// The store's own limit plus room for the envelope, pretty printing, and buffer preferences.
+    /// Leave room for the backup envelope around a full store.
     public static let maxBytes = ProfilePersistence.maxStoreBytes + 262_144
 
     public let format: String
@@ -143,22 +143,13 @@ public struct ProfileLibraryMergeSummary: Codable, Equatable, Sendable {
     /// Output mappings left alone because the output already had one.
     public var skippedMappings = 0
     public var addedBufferPreferences = 0
-    public var resultingProfileCount = 0
 
     public init() {}
-
-    public var exceedsProfileLimit: Bool {
-        resultingProfileCount > ProfilePersistence.profileCountRange.upperBound
-    }
 }
 
 /// Adds a saved library to the current one without replacing anything already there.
 public enum ProfileLibraryMerge {
     public static let copiedProfileNameSuffix = " (imported)"
-
-    public static func preview(current: ProfileStore, incoming: ProfileStore) -> ProfileLibraryMergeSummary {
-        plan(current: current, incoming: incoming).summary
-    }
 
     public static func merge(current: ProfileStore, incoming: ProfileStore) throws -> (
         store: ProfileStore, summary: ProfileLibraryMergeSummary
@@ -226,7 +217,6 @@ public enum ProfileLibraryMerge {
         let added = (incoming.fixedBuffers ?? []).filter { !currentRoutes.contains($0.route) }
         if !added.isEmpty { store.fixedBuffers = (current.fixedBuffers ?? []) + added }
         summary.addedBufferPreferences = added.count
-        summary.resultingProfileCount = store.profiles.count
         return (store, summary)
     }
 

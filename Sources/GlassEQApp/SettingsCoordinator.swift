@@ -1146,7 +1146,7 @@ extension GlassEQAppModel {
                 let url = try await LibraryBackupPanels.chooseExportDestination(
                     suggestedName: LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
             else { break }
-            try await LibraryBackupIO.write(LibraryBackupIO.encode(backup), to: url)
+            try await LibraryBackupIO.saveBackup(backup, to: url)
             return SettingsCommandResponse(libraryMessage: localized("Saved the library to \(url.lastPathComponent)."))
         case .chooseLibraryBackup:
             try ensureProfileStoreWritable()
@@ -1154,7 +1154,7 @@ extension GlassEQAppModel {
             let backup = try await LibraryBackupIO.read(from: url)
             try Task.checkCancellation()
             return SettingsCommandResponse(
-                libraryImportPreview: try stageLibraryImport(backup, filename: url.lastPathComponent))
+                libraryImportPreview: try await stageLibraryImport(backup, filename: url.lastPathComponent))
         case .applyLibraryImport(let mode):
             return SettingsCommandResponse(libraryMessage: try await applyLibraryImport(mode: mode))
         case .cancelLibraryImport:

@@ -17,6 +17,7 @@ public enum ProfileStoreLoadStatus: Equatable, Sendable {
     case repairedInvalidStore(backupURL: URL, ProfileStoreRepairSummary)
     case recoveredDefaults(backupURL: URL)
     case backupFailed
+    case migrationBackupFailed
     case unsupportedSchemaVersion(version: Int, maximumSupported: Int)
     case oversizedStore(byteCount: Int, maximum: Int)
 }
@@ -115,7 +116,10 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
 }
 
 public enum ProfilePersistence {
-    public static let maxStoreBytes = 5 * 1_024 * 1_024
+    private static let maxProfileBytes = 5 * 1_024 * 1_024
+    // Reserve space for 256 fixed choices, including JSON escaping of 512-byte route UIDs.
+    public static let maxStoreBytes = maxProfileBytes + 1_024 * 1_024
+    package static let maxBufferPreferenceCount = 256
     public static let profileCountRange = 1...64
     public static let outputMappingCountRange = 0...256
     public static let maxProfileNameUTF8Bytes = 120
@@ -176,7 +180,8 @@ public enum ProfilePersistence {
         }
 
         if let choices = store.fixedBuffers {
-            guard choices.count <= 256, choices.allSatisfy({ $0.route.isValid && $0.mode != .automatic }),
+            guard choices.count <= maxBufferPreferenceCount,
+                choices.allSatisfy({ $0.route.isValid && $0.mode != .automatic }),
                 Set(choices.map(\.route)).count == choices.count
             else { throw ProfileStoreValidationError.invalidBufferPreferences }
         }
@@ -332,23 +337,26 @@ public enum ProfilePersistence {
             )
         }
 
-        if store.schemaVersion < ProfileStore.currentSchemaVersion {
-            do {
-                let backupURL = uniqueBackupURL(
-                    migrationBackupURL(for: url, fromSchemaVersion: store.schemaVersion, timestamp: timestamp))
-                try FileManager.default.copyItem(at: url, to: backupURL)
-            } catch {
-                return ProfileStoreLoadResult(store: store, status: .backupFailed)
-            }
-        }
-        if repairSummary.didRepair || store.schemaVersion < ProfileStore.currentSchemaVersion {
+        let migrating = store.schemaVersion < ProfileStore.currentSchemaVersion
+        if repairSummary.didRepair || migrating {
             var committedStore = store
             committedStore.upgradeSchema()
+            var migrationBackup: URL?
             do {
-                try save(committedStore, to: url)
+                let prepared = try PreparedSave(committedStore)
+                if migrating {
+                    let backup = uniqueBackupURL(
+                        migrationBackupURL(for: url, fromSchemaVersion: store.schemaVersion, timestamp: timestamp))
+                    try FileManager.default.copyItem(at: url, to: backup)
+                    migrationBackup = backup
+                }
+                try prepared.write(to: url)
                 store = committedStore
             } catch {
-                // Leave the original file intact; a later save may retry the commit.
+                if migrating {
+                    if let migrationBackup { try? FileManager.default.removeItem(at: migrationBackup) }
+                    return ProfileStoreLoadResult(store: store, status: .migrationBackupFailed)
+                }
             }
             return ProfileStoreLoadResult(
                 store: store, status: repairSummary.didRepair ? .repairedReferences(repairSummary) : .loaded)
@@ -435,6 +443,14 @@ public enum ProfilePersistence {
         committedStore.upgradeSchema()
         let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
+        if data.count > maxProfileBytes {
+            let hadChoices = committedStore.fixedBuffers != nil
+            committedStore.fixedBuffers = nil
+            let profileBytes = hadChoices ? try encode(committedStore).count : data.count
+            guard profileBytes <= maxProfileBytes else {
+                throw ProfileStoreValidationError.inputTooLarge(byteCount: profileBytes, maximum: maxProfileBytes)
+            }
+        }
         return data
     }
 
@@ -454,13 +470,11 @@ public enum ProfilePersistence {
     }
 
     private struct ProfileStoreEnvelope: Decodable {
-        var fixedBuffers: [OutputBufferPreference]?
         var schemaVersion: Int
         var outputMappings: [OutputDeviceProfileMapping]
         var fallbackProfileID: UUID
 
         private enum CodingKeys: String, CodingKey {
-            case fixedBuffers
             case schemaVersion
             case outputMappings
             case fallbackProfileID
@@ -471,9 +485,6 @@ public enum ProfilePersistence {
             schemaVersion =
                 try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
                 ?? ProfileStore.initialSchemaVersion
-            fixedBuffers =
-                container.contains(.fixedBuffers)
-                ? (try? container.decode([OutputBufferPreference].self, forKey: .fixedBuffers)) ?? [] : nil
             outputMappings = try container.decode([OutputDeviceProfileMapping].self, forKey: .outputMappings)
             fallbackProfileID = try container.decode(UUID.self, forKey: .fallbackProfileID)
         }
@@ -514,7 +525,14 @@ public enum ProfilePersistence {
             outputMappings: envelope.outputMappings,
             fallbackProfileID: envelope.fallbackProfileID
         )
-        store.fixedBuffers = envelope.fixedBuffers
+        if let rawChoices = object["fixedBuffers"] {
+            store.fixedBuffers = ((rawChoices as? [Any]) ?? []).compactMap { raw in
+                guard JSONSerialization.isValidJSONObject(raw),
+                    let data = try? JSONSerialization.data(withJSONObject: raw)
+                else { return nil }
+                return try? decoder.decode(OutputBufferPreference.self, from: data)
+            }
+        }
         return (store, removedInvalidProfiles)
     }
 
@@ -806,7 +824,7 @@ public enum ProfilePersistence {
         store.fixedBuffers = store.fixedBuffers.map { choices in
             Array(
                 choices.filter { $0.route.isValid && $0.mode != .automatic && routes.insert($0.route).inserted }.prefix(
-                    256))
+                    maxBufferPreferenceCount))
         }
         let profileCountBeforeRepair = store.profiles.count
         var seenProfileIDs = Set<UUID>()

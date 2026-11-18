@@ -12,7 +12,7 @@ struct AggregateBufferSelection: Equatable, Sendable {
 @MainActor
 final class AggregateBufferPolicyStore {
     static let maximumStoreBytes = 262_144
-    static let maximumRecordCount = 256
+    static let maximumRecordCount = ProfilePersistence.maxBufferPreferenceCount
 
     private enum PersistenceError: Error {
         case storeTooLarge
@@ -84,16 +84,6 @@ final class AggregateBufferPolicyStore {
         didSet {
             libraryModes = libraryChoices.map {
                 Dictionary($0.map { ($0.route, $0.mode) }, uniquingKeysWith: { first, _ in first })
-            }
-            guard let libraryModes else { return }
-            for index in records.indices {
-                let mode = libraryModes[records[index].route] ?? .automatic
-                if records[index].mode != mode {
-                    records[index].mode = mode
-                    records[index].failureWindowStartedAt = nil
-                    records[index].failureCount = 0
-                    records[index].cleanSessionCount = 0
-                }
             }
         }
     }
@@ -173,8 +163,9 @@ final class AggregateBufferPolicyStore {
         _ mode: SettingsAggregateBufferMode,
         for route: AggregateAudioRouteFingerprint
     ) throws {
+        let effectiveMode = selection(for: route).mode
         try update(route: route) { record in
-            guard record.mode != mode else {
+            guard record.mode != mode || effectiveMode != mode else {
                 return
             }
             record.mode = mode
