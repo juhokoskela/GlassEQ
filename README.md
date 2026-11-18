@@ -152,7 +152,7 @@ codesign -d --entitlements :- .build/release-app/GlassEQ.app
 spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 ```
 
-The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`.
+The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-write`, and `com.apple.security.network.client`, all set to `true`.
 
 ## Architecture
 

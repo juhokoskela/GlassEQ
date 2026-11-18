@@ -11,6 +11,75 @@ import Testing
 @MainActor
 @Suite
 struct GlassEQAppModelLifecycleTests {
+    @Test
+    func replaceBacksUpTheOutgoingLibraryAndPreservesStop() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(storeURL: url, engine: engine, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(makeOutput()))
+        try #require(await waitUntil { model.isRunning })
+        model.stop()
+        try #require(await waitUntil { model.processingWasStopped && !model.isRunning })
+        let previous = try model.makeLibraryBackup()
+        var incoming = previous
+        incoming.profileStore = ProfileStore(profiles: [makeProfile(name: "Restored")])
+        let route = AggregateAudioRouteFingerprint(
+            outputDeviceUID: "usb", nativeOutputStreamIndex: 0, nominalSampleRate: 48000)
+        incoming.profileStore.fixedBuffers = [OutputBufferPreference(route: route, mode: .frames64)]
+        _ = try model.stageLibraryImport(incoming, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        #expect(model.processingWasStopped)
+        #expect(engine.startCalls.count == 1)
+        #expect(ProfilePersistence.load(from: url).store == incoming.profileStore)
+        #expect(try model.makeLibraryBackup().profileStore == incoming.profileStore)
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: url)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let backup = try #require(files.first)
+        #expect(try ProfileLibraryBackupCodec.read(from: backup).profileStore == previous.profileStore)
+    }
+
+    @Test
+    func rejectedAudioUpdateDoesNotUndoLibraryReplacement() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(storeURL: url, engine: engine, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(makeOutput()))
+        try #require(await waitUntil { model.isRunning })
+        let playing = model.activeProfile
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore = ProfileStore(profiles: [makeProfile(name: "Restored")])
+        _ = try model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        try #require(await waitUntil { model.statusMessage.contains("not applied") })
+        #expect(model.activeProfile == playing)
+        #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
+        #expect(ProfilePersistence.load(from: url).store.profiles == backup.profileStore.profiles)
+        model.stop()
+    }
+
+    @Test
+    func staleLibraryPreviewPreservesLaterEdits() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let model = makeModel(storeURL: url)
+        let backup = try model.makeLibraryBackup()
+        _ = try model.stageLibraryImport(backup, filename: "Library.json")
+        try model.duplicateProfile(id: model.activeProfile.id)
+        await #expect(throws: SettingsCommandFailure.self) { try await model.applyLibraryImport(mode: .replace) }
+        #expect(model.profileStore.profiles.count == 2)
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(ProfilePersistence.load(from: url).store.profiles.count == 2)
+    }
+
     @Test(arguments: [
         kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeUSB,
     ])

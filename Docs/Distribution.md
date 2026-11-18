@@ -68,7 +68,7 @@ If system audio permission gets stuck during testing, remove GlassEQ from the re
 - App Sandbox: enabled.
 - Audio input entitlement: enabled for Core Audio system/process tap permission.
 - Outgoing network entitlement: enabled for the built-in AutoEq browser.
-- User-selected read-only file entitlement: enabled on the main app, which presents the open panel and reads guided text-profile and WAV impulse-response imports.
+- The main app has user-selected read-write file access for files chosen in an Open or Save panel.
 - The settings helper is signed with only `com.apple.security.app-sandbox` and `com.apple.security.inherit`. Adding another App Sandbox entitlement makes macOS abort the inherited child process during sandbox initialization.
 - Info.plist: use `Sources/GlassEQApp/Info.plist`.
 - Entitlements: use `GlassEQ.entitlements`.
@@ -103,6 +103,6 @@ spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 unzip -Z1 .build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip
 ```
 
-`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
+`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-write`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
 
 For manual sandbox verification, launch the packaged app and open Activity Monitor, then enable the `Sandbox` column. GlassEQ should show `Yes`.

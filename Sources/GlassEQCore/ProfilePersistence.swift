@@ -26,6 +26,7 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
     case unsupportedSchemaVersion(version: Int, maximumSupported: Int)
     case invalidProfileCount(count: Int, allowed: ClosedRange<Int>)
     case invalidOutputMappingCount(count: Int, allowed: ClosedRange<Int>)
+    case invalidBufferPreferences
     case duplicateProfileID(profileID: UUID)
     case missingFallbackProfile(profileID: UUID)
     case emptyProfileName(profileID: UUID)
@@ -56,6 +57,8 @@ public enum ProfileStoreValidationError: Error, Equatable, Sendable, LocalizedEr
             return "Profile store has \(count) profiles; expected \(allowed.lowerBound)...\(allowed.upperBound)."
         case let .invalidOutputMappingCount(count, allowed):
             return "Profile store has \(count) output mappings; expected \(allowed.lowerBound)...\(allowed.upperBound)."
+        case .invalidBufferPreferences:
+            return "The library contains invalid or duplicate fixed buffer preferences."
         case let .duplicateProfileID(profileID):
             return "Profile store contains duplicate profile ID \(profileID)."
         case let .missingFallbackProfile(profileID):
@@ -170,6 +173,12 @@ public enum ProfilePersistence {
                 version: store.schemaVersion,
                 maximumSupported: ProfileStore.currentSchemaVersion
             )
+        }
+
+        if let choices = store.fixedBuffers {
+            guard choices.count <= 256, choices.allSatisfy({ $0.route.isValid && $0.mode != .automatic }),
+                Set(choices.map(\.route)).count == choices.count
+            else { throw ProfileStoreValidationError.invalidBufferPreferences }
         }
 
         guard profileCountRange.contains(store.profiles.count) else {
@@ -323,48 +332,48 @@ public enum ProfilePersistence {
             )
         }
 
-        if repairSummary.didRepair {
-            var committedStore = store
-            committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        if store.schemaVersion < ProfileStore.currentSchemaVersion {
             do {
-                try save(committedStore, to: url)
-                return ProfileStoreLoadResult(
-                    store: committedStore,
-                    status: .repairedReferences(repairSummary)
-                )
+                let backupURL = uniqueBackupURL(
+                    migrationBackupURL(for: url, fromSchemaVersion: store.schemaVersion, timestamp: timestamp))
+                try FileManager.default.copyItem(at: url, to: backupURL)
             } catch {
-                return ProfileStoreLoadResult(
-                    store: store,
-                    status: .repairedReferences(repairSummary)
-                )
+                return ProfileStoreLoadResult(store: store, status: .backupFailed)
             }
         }
-
-        if store.schemaVersion < ProfileStore.currentSchemaVersion {
-            var migratedStore = store
-            migratedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        if repairSummary.didRepair || store.schemaVersion < ProfileStore.currentSchemaVersion {
+            var committedStore = store
+            committedStore.upgradeSchema()
             do {
-                try save(migratedStore, to: url)
-                return ProfileStoreLoadResult(store: migratedStore, status: .loaded)
+                try save(committedStore, to: url)
+                store = committedStore
             } catch {
-                return ProfileStoreLoadResult(store: store, status: .loaded)
+                // Leave the original file intact; a later save may retry the commit.
             }
+            return ProfileStoreLoadResult(
+                store: store, status: repairSummary.didRepair ? .repairedReferences(repairSummary) : .loaded)
         }
 
         return ProfileStoreLoadResult(store: store, status: .loaded)
     }
 
-    public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {
-        let baseName = storeURL.deletingPathExtension().lastPathComponent
-        let pathExtension = storeURL.pathExtension
-        let backupName =
-            if pathExtension.isEmpty {
-                "\(baseName).invalid-\(timestampString(from: timestamp))"
-            } else {
-                "\(baseName).invalid-\(timestampString(from: timestamp)).\(pathExtension)"
-            }
+    public static func migrationBackupURL(
+        for storeURL: URL,
+        fromSchemaVersion schemaVersion: Int,
+        timestamp: Date = Date()
+    ) -> URL {
+        backupURL(for: storeURL, reason: "schema-\(schemaVersion)", timestamp: timestamp)
+    }
 
-        return storeURL.deletingLastPathComponent().appendingPathComponent(backupName)
+    public static func invalidStoreBackupURL(for storeURL: URL, timestamp: Date = Date()) -> URL {
+        backupURL(for: storeURL, reason: "invalid", timestamp: timestamp)
+    }
+
+    private static func backupURL(for storeURL: URL, reason: String, timestamp: Date) -> URL {
+        let baseName = storeURL.deletingPathExtension().lastPathComponent
+        let suffix = storeURL.pathExtension.isEmpty ? "" : ".\(storeURL.pathExtension)"
+        return storeURL.deletingLastPathComponent().appendingPathComponent(
+            "\(baseName).\(reason)-\(timestampString(from: timestamp))\(suffix)")
     }
 
     public static func resetUnsupportedStore(
@@ -372,7 +381,7 @@ public enum ProfilePersistence {
         timestamp: Date = Date()
     ) throws -> (store: ProfileStore, backupURL: URL) {
         let store = defaultStore()
-        let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
+        let backupURL = uniqueBackupURL(invalidStoreBackupURL(for: url, timestamp: timestamp))
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try FileManager.default.moveItem(at: url, to: backupURL)
         do {
@@ -401,12 +410,12 @@ public enum ProfilePersistence {
         }
     }
 
-    private static func readStoreData(from url: URL) throws -> Data {
+    static func readStoreData(from url: URL, maxBytes: Int = maxStoreBytes) throws -> Data {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var data = Data()
-        while data.count <= maxStoreBytes {
-            let remaining = maxStoreBytes + 1 - data.count
+        while data.count <= maxBytes {
+            let remaining = maxBytes + 1 - data.count
             guard let chunk = try handle.read(upToCount: remaining),
                 !chunk.isEmpty
             else {
@@ -414,14 +423,16 @@ public enum ProfilePersistence {
             }
             data.append(chunk)
         }
-        try validateStoreSize(byteCount: data.count)
+        guard data.count <= maxBytes else {
+            throw ProfileStoreValidationError.inputTooLarge(byteCount: data.count, maximum: maxBytes)
+        }
         return data
     }
 
     private static func encodeForCommit(_ store: ProfileStore) throws -> Data {
         try validate(store)
         var committedStore = store
-        committedStore.schemaVersion = ProfileStore.currentSchemaVersion
+        committedStore.upgradeSchema()
         let data = try encode(committedStore)
         try validateStoreSize(byteCount: data.count)
         return data
@@ -443,11 +454,13 @@ public enum ProfilePersistence {
     }
 
     private struct ProfileStoreEnvelope: Decodable {
+        var fixedBuffers: [OutputBufferPreference]?
         var schemaVersion: Int
         var outputMappings: [OutputDeviceProfileMapping]
         var fallbackProfileID: UUID
 
         private enum CodingKeys: String, CodingKey {
+            case fixedBuffers
             case schemaVersion
             case outputMappings
             case fallbackProfileID
@@ -458,6 +471,9 @@ public enum ProfilePersistence {
             schemaVersion =
                 try container.decodeIfPresent(Int.self, forKey: .schemaVersion)
                 ?? ProfileStore.initialSchemaVersion
+            fixedBuffers =
+                container.contains(.fixedBuffers)
+                ? (try? container.decode([OutputBufferPreference].self, forKey: .fixedBuffers)) ?? [] : nil
             outputMappings = try container.decode([OutputDeviceProfileMapping].self, forKey: .outputMappings)
             fallbackProfileID = try container.decode(UUID.self, forKey: .fallbackProfileID)
         }
@@ -492,15 +508,14 @@ public enum ProfilePersistence {
             }
         }
 
-        return (
-            ProfileStore(
-                schemaVersion: envelope.schemaVersion,
-                profiles: profiles,
-                outputMappings: envelope.outputMappings,
-                fallbackProfileID: envelope.fallbackProfileID
-            ),
-            removedInvalidProfiles
+        var store = ProfileStore(
+            schemaVersion: envelope.schemaVersion,
+            profiles: profiles,
+            outputMappings: envelope.outputMappings,
+            fallbackProfileID: envelope.fallbackProfileID
         )
+        store.fixedBuffers = envelope.fixedBuffers
+        return (store, removedInvalidProfiles)
     }
 
     private static func validate(_ profile: EQProfile) throws {
@@ -779,7 +794,7 @@ public enum ProfilePersistence {
     ) -> ProfileStoreLoadResult {
         var store = decodedStore
         var summary = initialRepairSummary
-        let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
+        let backupURL = uniqueBackupURL(invalidStoreBackupURL(for: url, timestamp: timestamp))
 
         do {
             try FileManager.default.copyItem(at: url, to: backupURL)
@@ -787,6 +802,12 @@ public enum ProfilePersistence {
             return ProfileStoreLoadResult(store: defaultStore(), status: .backupFailed)
         }
 
+        var routes = Set<AggregateAudioRouteFingerprint>()
+        store.fixedBuffers = store.fixedBuffers.map { choices in
+            Array(
+                choices.filter { $0.route.isValid && $0.mode != .automatic && routes.insert($0.route).inserted }.prefix(
+                    256))
+        }
         let profileCountBeforeRepair = store.profiles.count
         var seenProfileIDs = Set<UUID>()
         store.profiles = store.profiles.filter { profile in
@@ -828,7 +849,7 @@ public enum ProfilePersistence {
         if store.schemaVersion >= ProfileStore.initialSchemaVersion,
             store.schemaVersion < ProfileStore.currentSchemaVersion
         {
-            store.schemaVersion = ProfileStore.currentSchemaVersion
+            store.upgradeSchema()
         }
 
         do {
@@ -848,7 +869,7 @@ public enum ProfilePersistence {
 
     private static func recoverInvalidStore(at url: URL, timestamp: Date) -> ProfileStoreLoadResult {
         let store = defaultStore()
-        let backupURL = uniqueInvalidStoreBackupURL(for: url, timestamp: timestamp)
+        let backupURL = uniqueBackupURL(invalidStoreBackupURL(for: url, timestamp: timestamp))
 
         do {
             try FileManager.default.createDirectory(
@@ -869,8 +890,7 @@ public enum ProfilePersistence {
         )
     }
 
-    private static func uniqueInvalidStoreBackupURL(for storeURL: URL, timestamp: Date) -> URL {
-        let first = invalidStoreBackupURL(for: storeURL, timestamp: timestamp)
+    private static func uniqueBackupURL(_ first: URL) -> URL {
         guard FileManager.default.fileExists(atPath: first.path) else {
             return first
         }

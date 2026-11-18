@@ -4,10 +4,10 @@ import GlassEQSettingsIPC
 import UniformTypeIdentifiers
 
 package enum SettingsFileImportPicker {
+    /// Brings this app forward for a panel and hands focus back to whichever app had it, which is
+    /// the Settings helper when it asked for the panel.
     @MainActor
-    package static func choose(
-        mode: SettingsFileImportMode
-    ) async throws -> SettingsFileImportSelectionDTO? {
+    package static func presentingPanel<T>(_ body: () async throws -> T) async rethrows -> T {
         let previousApplication = NSWorkspace.shared.frontmostApplication
         NSApp.activate()
         defer {
@@ -17,7 +17,22 @@ package enum SettingsFileImportPicker {
                 previousApplication.activate(from: .current, options: [.activateAllWindows])
             }
         }
+        return try await body()
+    }
 
+    @MainActor
+    package static func choose(
+        mode: SettingsFileImportMode
+    ) async throws -> SettingsFileImportSelectionDTO? {
+        try await presentingPanel {
+            try await chooseWithoutActivation(mode: mode)
+        }
+    }
+
+    @MainActor
+    private static func chooseWithoutActivation(
+        mode: SettingsFileImportMode
+    ) async throws -> SettingsFileImportSelectionDTO? {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.plainText, .wav]
         panel.canChooseDirectories = false
@@ -92,7 +107,7 @@ package enum SettingsFileImportPicker {
     }
 
     @MainActor
-    static func waitForPanelResponse(
+    package static func waitForPanelResponse(
         begin: (@escaping (NSApplication.ModalResponse) -> Void) -> Void,
         cancel: @escaping @MainActor () -> Void
     ) async throws -> NSApplication.ModalResponse {

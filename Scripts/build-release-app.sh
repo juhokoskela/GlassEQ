@@ -380,13 +380,13 @@ codesign --verify --strict --verbose=2 "$SETTINGS_APP_DIR" >/dev/null
 codesign --verify --strict --verbose=2 "$APP_DIR" >/dev/null
 verify_signed_entitlement "$APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$APP_DIR" com.apple.security.device.audio-input
-verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-only
+verify_signed_entitlement "$APP_DIR" com.apple.security.files.user-selected.read-write
 verify_signed_entitlement "$APP_DIR" com.apple.security.network.client
 verify_signed_entitlement_keys \
     "$APP_DIR" \
     com.apple.security.app-sandbox \
     com.apple.security.device.audio-input \
-    com.apple.security.files.user-selected.read-only \
+    com.apple.security.files.user-selected.read-write \
     com.apple.security.network.client
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.app-sandbox
 verify_signed_entitlement "$SETTINGS_APP_DIR" com.apple.security.inherit

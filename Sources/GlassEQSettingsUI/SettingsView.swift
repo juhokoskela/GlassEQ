@@ -74,6 +74,7 @@ public struct SettingsView: View {
         }
         .onDisappear {
             controller.stopAnalyses()
+            controller.cancelLibraryImport()
             controller.stopMetricsPolling()
         }
         .onChange(of: controller.analysisSampleRate) {

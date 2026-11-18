@@ -467,12 +467,7 @@ final class SettingsCoordinator: NSObject {
             return
         }
         let commandToken = UUID()
-        let isFileImportPicker: Bool
-        if case .chooseImportFiles = command {
-            isFileImportPicker = true
-        } else {
-            isFileImportPicker = false
-        }
+        let isFileImportPicker = command.presentsFilePanel
         let task = Task { @MainActor [weak self] in
             guard let self else {
                 return
@@ -683,6 +678,7 @@ final class SettingsCoordinator: NSObject {
 
     @discardableResult
     private func cleanupSession(terminateHelper: Bool) -> Task<Void, Never>? {
+        model?.cancelLibraryImport()
         let hadSession = launchToken != nil
         let processToTerminate = terminateHelper ? helperProcess : nil
         let writePumpToDrain = pipeWritePump
@@ -1091,6 +1087,7 @@ extension GlassEQAppModel {
     func inProcessSettingsDidDisappear() {
         inProcessSettingsPresentationIsPending = false
         inProcessSettingsIsPresented = false
+        cancelLibraryImport()
         fallbackEditor?.disconnect()
         fallbackEditor = nil
         stopMetricsPolling()
@@ -1141,6 +1138,27 @@ extension GlassEQAppModel {
         case .chooseImportFiles(let mode):
             return SettingsCommandResponse(fileImportSelection: try await picker(mode))
 
+        case .showLibraryBackups:
+            try showLibraryBackups()
+        case .exportLibrary:
+            let backup = try makeLibraryBackup()
+            guard
+                let url = try await LibraryBackupPanels.chooseExportDestination(
+                    suggestedName: LibraryBackupFile.suggestedFilename(createdAt: backup.createdAt))
+            else { break }
+            try await LibraryBackupIO.write(LibraryBackupIO.encode(backup), to: url)
+            return SettingsCommandResponse(libraryMessage: localized("Saved the library to \(url.lastPathComponent)."))
+        case .chooseLibraryBackup:
+            try ensureProfileStoreWritable()
+            guard let url = try await LibraryBackupPanels.chooseBackupToImport() else { break }
+            let backup = try await LibraryBackupIO.read(from: url)
+            try Task.checkCancellation()
+            return SettingsCommandResponse(
+                libraryImportPreview: try stageLibraryImport(backup, filename: url.lastPathComponent))
+        case .applyLibraryImport(let mode):
+            return SettingsCommandResponse(libraryMessage: try await applyLibraryImport(mode: mode))
+        case .cancelLibraryImport:
+            cancelLibraryImport()
         case .startProgrammeComparison(let profile):
             try validateIncomingProfile(profile)
             try startProgrammeComparison(profile: profile)
