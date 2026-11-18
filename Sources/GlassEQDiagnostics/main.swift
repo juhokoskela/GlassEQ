@@ -165,7 +165,7 @@ private enum DiagnosticsArgumentError: Error, CustomStringConvertible {
             return "\(option) requires a positive Core Audio object ID; got \(value)."
         case .invalidHandoffExperiment(let option, let value):
             return
-                "\(option) requires production-start, quiesce-only, combined-incumbent, combined-16, physical-create-only, combined-create-only, combined-output-only, physical-first-live-taps, physical-first-live-taps-16, complete-route-switch, or physical-first-route-switch; got \(value)."
+                "\(option) requires production-start, combined-incumbent, combined-16, physical-create-only, combined-create-only, combined-output-only, physical-first-live-taps, physical-first-live-taps-16, complete-route-switch, or physical-first-route-switch; got \(value)."
         case .incompatibleOptions(let first, let second):
             return "\(first) and \(second) cannot be used together."
         case .unknownOption(let option):

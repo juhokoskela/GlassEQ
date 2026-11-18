@@ -43,12 +43,12 @@ GlassEQ is an early beta: Apple Silicon only, tested on macOS 26, with no automa
 
 ## How it works
 
-1. GlassEQ opens a **private, muted process tap** for the current physical output stream. The tap excludes GlassEQ itself, pulling the dry system mix out of that route without creating a feedback loop.
-2. On normal-rate routes, GlassEQ places that tap and the physical output in one private aggregate device. One Core Audio callback applies EQ and writes directly to the output on the same clock.
-3. Low-rate Bluetooth headset modes begin on a separate-clock compatibility path with a bounded ring buffer, drift servo, and realtime sample-rate conversion. Once the route's clock settles, GlassEQ tests the normal low-latency aggregate and returns to compatibility mode if its timing becomes unstable.
-4. GlassEQ switches backend automatically when the output device, stream, or headset sample rate changes.
+1. GlassEQ holds a private global mute tap while processing is enabled. Audio explicitly routed to a different device can be silenced.
+2. A device-scoped tap and the selected output share a private aggregate. One callback applies the mapped profile and writes the result to the output.
+3. GlassEQ qualifies the replacement graph while muted. On low-rate Bluetooth headsets it also waits for the physical clock to settle.
+4. If startup fails, use Retry in the menu or Disable to restore normal playback.
 
-The normal fast path has low, predictable latency without a separate playback queue. The built-in diagnostics report tap-to-output latency from Core Audio's I/O timestamps alongside frame delivery, callback sizes, underruns, dropped input, and saturation. Headset mode reports its bridge occupancy, clock correction, sample-rate conversion, and output timing separately.
+The normal fast path has low, predictable latency without a separate playback queue. The built-in diagnostics report tap-to-output latency from Core Audio's I/O timestamps alongside frame delivery, callback sizes, underruns, dropped input, and saturation.
 
 The current low-latency path requires the output's preferred pair to occupy one native mono or stereo hardware stream. Audio routed to a different device or a distinct system-alert output is outside that tap.
 
@@ -63,7 +63,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
-- **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.
+- **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, missed render deadlines, and tap-to-output latency.
 
 ![GlassEQ Editor tab with a convolution response graph and collapsed response points](Docs/Screenshots/beta-0.9.3-editor.png)
 
@@ -79,11 +79,11 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ## Known limitations
 
-- **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
+- **AirPlay outputs are not yet supported.** If the renderer cannot start on an AirPlay receiver, choose Disable for ordinary playback or switch to a supported output.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
-- **Bluetooth** headset modes initially use a higher-latency separate-clock compatibility path to avoid periodic combined-aggregate timestamp faults while the route settles. Promotion to the low-latency path is experimental; please report the device model, macOS version, and steps if a route still produces jitter.
+- **Bluetooth** call transitions can briefly interrupt playback while the headset clock settles. Unstable timing keeps the output muted until recovery or explicit handback.
 - **AirPods Pro 2 on macOS 27.0** can use a 256-frame audio buffer after playback even when 32 frames are selected. GlassEQ then reports “32 selected, 256 frames active.” This behavior was reproduced outside GlassEQ and on the same Mac after upgrading from macOS 26.6.2. Retrying the audio engine or quitting the player did not restore the smaller buffer in these tests. No reliable workaround is established. See the [measurements and Apple feedback reference](Docs/AggregateClockExperiment.md#macos-27-airpods-buffer-clamp).
-- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. On separate-clock Bluetooth routes, the DSP rate can differ from the physical output rate. If a mapped route later changes processing rate, GlassEQ keeps the mapping and leaves normal unprocessed playback active until the rate matches again. It never silently resamples or truncates the impulse response.
+- **Imported impulse responses** retain their source sample rate and contain at most 16,384 taps per channel. They can remain in the profile library for another route, but Apply, A/B comparison, and current-output mapping require a matching active DSP processing rate. If a mapped route changes to an incompatible rate, GlassEQ keeps the mapping and holds playback muted. Choose a matching profile or disable processing to resume playback. It never silently resamples or truncates the impulse response.
 - No automatic updates, no crash reporting, no x86_64 build.
 
 <a id="supported-target"></a>
@@ -156,7 +156,7 @@ The entitlements output should include `com.apple.security.app-sandbox`, `com.ap
 
 ## Architecture
 
-macOS owns output switching, GlassEQ follows it. Normal-rate routes use a muted device-scoped tap and physical output in one aggregate callback and clock. Bluetooth routes at 24 kHz or below start on a separate capture/playback clock bridge, then attempt the combined path after the device clock settles; a timing failure returns them to the bridge for that output transition. GlassEQ disables unused physical input streams and never records the microphone. The render path stays free of allocation, locks, disk, logging, and SwiftUI state. The Core Audio bridge is isolated under `GlassEQAudio` so device-format and hardware work can be hardened without disturbing the UI and profile code.
+macOS owns output switching. GlassEQ follows the selected output, applies its mapped profile and holds direct playback muted during graph replacement. The render path stays free of allocation, locks, disk, logging and SwiftUI state.
 
 See [Docs/Architecture.md](Docs/Architecture.md) for the full ownership model and runtime flow.
 

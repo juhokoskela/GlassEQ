@@ -834,8 +834,8 @@ protocol SettingsCodeSigningValidating {
 }
 
 enum SettingsHelperVerifier {
-    static let hostBundleIdentifier = "com.glasseq.app"
-    static let helperBundleIdentifier = "com.glasseq.app.settings"
+    static let hostBundleIdentifier = SettingsBundleIdentity.host
+    static let helperBundleIdentifier = SettingsBundleIdentity.helper
 
     static func validatedExecutableURL(
         for helperURL: URL,

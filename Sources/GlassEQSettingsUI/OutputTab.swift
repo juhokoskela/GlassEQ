@@ -117,7 +117,6 @@ struct OutputTab: View {
 
             Section {
                 LabeledContent(localized("Status"), value: statusSummary)
-                LabeledContent(localized("Mode"), value: routeModeSummary)
                 LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
                 LabeledContent(localized("Buffer"), value: bufferSummary)
                 LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
@@ -203,19 +202,6 @@ struct OutputTab: View {
             return localized("Recovering")
         case .needsAttention:
             return localized("Needs attention")
-        }
-    }
-
-    private var routeModeSummary: String {
-        switch diagnostics.status.routeMode {
-        case .unavailable:
-            return localized("Unavailable")
-        case .lowLatency:
-            return localized("Low-latency path")
-        case .compatibility:
-            return localized("Compatibility path")
-        case .headsetCompatibility:
-            return localized("Headset compatibility path")
         }
     }
 

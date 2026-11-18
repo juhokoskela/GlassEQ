@@ -2,6 +2,19 @@ import Darwin
 import Foundation
 import GlassEQCore
 
+package enum SettingsBundleIdentity {
+    package static let host: String = {
+        #if DEBUG
+            let debugHost = "com.glasseq.app.debug"
+            if Bundle.main.bundleIdentifier == debugHost || Bundle.main.bundleIdentifier == debugHost + ".settings" {
+                return debugHost
+            }
+        #endif
+        return "com.glasseq.app"
+    }()
+    package static let helper = host + ".settings"
+}
+
 private struct UncheckedSendable<Value>: @unchecked Sendable {
     let value: Value
 }
@@ -108,34 +121,21 @@ public enum SettingsAudioHealth: String, Codable, Equatable, Sendable {
     case needsAttention
 }
 
-public enum SettingsAudioRouteMode: String, Codable, Equatable, Sendable {
-    case unavailable
-    case lowLatency
-    case compatibility
-    case headsetCompatibility
-}
-
 public enum SettingsAudioRecoveryReason: String, Codable, Equatable, Sendable {
     case renderStall
     case deadlineMisses
     case timestampDiscontinuity
-    case headsetInstability
-    case playbackUnderrun
-    case adaptiveRenderFailure
 }
 
 public struct SettingsAudioStatusDTO: Codable, Equatable, Sendable {
     public var health: SettingsAudioHealth
-    public var routeMode: SettingsAudioRouteMode
     public var isUsingSaferBuffer: Bool
 
     public init(
         health: SettingsAudioHealth = .stopped,
-        routeMode: SettingsAudioRouteMode = .unavailable,
         isUsingSaferBuffer: Bool = false
     ) {
         self.health = health
-        self.routeMode = routeMode
         self.isUsingSaferBuffer = isUsingSaferBuffer
     }
 }
@@ -215,7 +215,6 @@ public struct SettingsAudioRecoveryDTO: Codable, Equatable, Sendable {
     public var runtimeRebuilds: UInt64
     public var automaticRecoveries: UInt64
     public var bufferEscalations: UInt64
-    public var headsetFallbacks: UInt64
     public var lastReason: SettingsAudioRecoveryReason?
     public var lastRecoveryAt: Date?
 
@@ -223,14 +222,12 @@ public struct SettingsAudioRecoveryDTO: Codable, Equatable, Sendable {
         runtimeRebuilds: UInt64 = 0,
         automaticRecoveries: UInt64 = 0,
         bufferEscalations: UInt64 = 0,
-        headsetFallbacks: UInt64 = 0,
         lastReason: SettingsAudioRecoveryReason? = nil,
         lastRecoveryAt: Date? = nil
     ) {
         self.runtimeRebuilds = runtimeRebuilds
         self.automaticRecoveries = automaticRecoveries
         self.bufferEscalations = bufferEscalations
-        self.headsetFallbacks = headsetFallbacks
         self.lastReason = lastReason
         self.lastRecoveryAt = lastRecoveryAt
     }
@@ -478,14 +475,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var playbackUnderrunEvents: UInt64
     public var playbackUnderrunFrames: UInt64
     public var droppedInputFrames: UInt64
-    public var droppedBufferedFrames: UInt64
     public var saturatedSamples: UInt64
-    public var currentBufferedFrames: Int
-    public var maxBufferedFrames: Int
-    public var maximumPlaybackBufferedFrames: Int
-    public var minimumPlaybackBufferedFrames: Int
-    public var averagePlaybackBufferedFrames: Double
-    public var playbackBufferObservations: UInt64
     public var inputTimestampDiscontinuities: UInt64
     public var outputTimestampDiscontinuities: UInt64
     public var pairedTimestampDiscontinuities: UInt64
@@ -505,15 +495,6 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
     public var renderDeadlineMisses: UInt64
     public var callbackStartStarvations: UInt64
     public var renderOverruns: UInt64
-    public var playbackTimestampDiscontinuities: UInt64
-    public var playbackBufferRenegotiations: UInt64
-    public var adaptivePlaybackRenderFailures: UInt64
-    public var playbackRateCorrectionPPM: Double
-    public var playbackRateCorrectionSaturated: Bool
-    public var playbackOccupancyTargetFrames: Int
-    public var filteredPlaybackOccupancyFrames: Double
-    public var playbackBufferSampleRate: Double
-    public var playbackSampleRateConversionActive: Bool
     public var tapToOutputLatencyObservations: UInt64
     public var minimumTapToOutputLatencyNanoseconds: UInt64
     public var maximumTapToOutputLatencyNanoseconds: UInt64
@@ -534,14 +515,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case playbackUnderrunEvents
         case playbackUnderrunFrames
         case droppedInputFrames
-        case droppedBufferedFrames
         case saturatedSamples
-        case currentBufferedFrames
-        case maxBufferedFrames
-        case maximumPlaybackBufferedFrames
-        case minimumPlaybackBufferedFrames
-        case averagePlaybackBufferedFrames
-        case playbackBufferObservations
         case inputTimestampDiscontinuities
         case outputTimestampDiscontinuities
         case pairedTimestampDiscontinuities
@@ -561,15 +535,6 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         case renderDeadlineMisses
         case callbackStartStarvations
         case renderOverruns
-        case playbackTimestampDiscontinuities
-        case playbackBufferRenegotiations
-        case adaptivePlaybackRenderFailures
-        case playbackRateCorrectionPPM
-        case playbackRateCorrectionSaturated
-        case playbackOccupancyTargetFrames
-        case filteredPlaybackOccupancyFrames
-        case playbackBufferSampleRate
-        case playbackSampleRateConversionActive
         case tapToOutputLatencyObservations
         case minimumTapToOutputLatencyNanoseconds
         case maximumTapToOutputLatencyNanoseconds
@@ -591,14 +556,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         playbackUnderrunEvents: UInt64 = 0,
         playbackUnderrunFrames: UInt64 = 0,
         droppedInputFrames: UInt64 = 0,
-        droppedBufferedFrames: UInt64 = 0,
         saturatedSamples: UInt64 = 0,
-        currentBufferedFrames: Int = 0,
-        maxBufferedFrames: Int = 0,
-        maximumPlaybackBufferedFrames: Int = 0,
-        minimumPlaybackBufferedFrames: Int = 0,
-        averagePlaybackBufferedFrames: Double = 0,
-        playbackBufferObservations: UInt64 = 0,
         inputTimestampDiscontinuities: UInt64 = 0,
         outputTimestampDiscontinuities: UInt64 = 0,
         pairedTimestampDiscontinuities: UInt64 = 0,
@@ -618,15 +576,6 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         renderDeadlineMisses: UInt64 = 0,
         callbackStartStarvations: UInt64 = 0,
         renderOverruns: UInt64 = 0,
-        playbackTimestampDiscontinuities: UInt64 = 0,
-        playbackBufferRenegotiations: UInt64 = 0,
-        adaptivePlaybackRenderFailures: UInt64 = 0,
-        playbackRateCorrectionPPM: Double = 0,
-        playbackRateCorrectionSaturated: Bool = false,
-        playbackOccupancyTargetFrames: Int = 0,
-        filteredPlaybackOccupancyFrames: Double = 0,
-        playbackBufferSampleRate: Double = 0,
-        playbackSampleRateConversionActive: Bool = false,
         tapToOutputLatencyObservations: UInt64 = 0,
         minimumTapToOutputLatencyNanoseconds: UInt64 = 0,
         maximumTapToOutputLatencyNanoseconds: UInt64 = 0,
@@ -646,14 +595,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.playbackUnderrunEvents = playbackUnderrunEvents
         self.playbackUnderrunFrames = playbackUnderrunFrames
         self.droppedInputFrames = droppedInputFrames
-        self.droppedBufferedFrames = droppedBufferedFrames
         self.saturatedSamples = saturatedSamples
-        self.currentBufferedFrames = currentBufferedFrames
-        self.maxBufferedFrames = maxBufferedFrames
-        self.maximumPlaybackBufferedFrames = maximumPlaybackBufferedFrames
-        self.minimumPlaybackBufferedFrames = minimumPlaybackBufferedFrames
-        self.averagePlaybackBufferedFrames = averagePlaybackBufferedFrames
-        self.playbackBufferObservations = playbackBufferObservations
         self.inputTimestampDiscontinuities = inputTimestampDiscontinuities
         self.outputTimestampDiscontinuities = outputTimestampDiscontinuities
         self.pairedTimestampDiscontinuities = pairedTimestampDiscontinuities
@@ -673,15 +615,6 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
         self.renderDeadlineMisses = renderDeadlineMisses
         self.callbackStartStarvations = callbackStartStarvations
         self.renderOverruns = renderOverruns
-        self.playbackTimestampDiscontinuities = playbackTimestampDiscontinuities
-        self.playbackBufferRenegotiations = playbackBufferRenegotiations
-        self.adaptivePlaybackRenderFailures = adaptivePlaybackRenderFailures
-        self.playbackRateCorrectionPPM = playbackRateCorrectionPPM
-        self.playbackRateCorrectionSaturated = playbackRateCorrectionSaturated
-        self.playbackOccupancyTargetFrames = playbackOccupancyTargetFrames
-        self.filteredPlaybackOccupancyFrames = filteredPlaybackOccupancyFrames
-        self.playbackBufferSampleRate = playbackBufferSampleRate
-        self.playbackSampleRateConversionActive = playbackSampleRateConversionActive
         self.tapToOutputLatencyObservations = tapToOutputLatencyObservations
         self.minimumTapToOutputLatencyNanoseconds = minimumTapToOutputLatencyNanoseconds
         self.maximumTapToOutputLatencyNanoseconds = maximumTapToOutputLatencyNanoseconds
@@ -705,18 +638,7 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             playbackUnderrunEvents: try container.decodeIfPresent(UInt64.self, forKey: .playbackUnderrunEvents) ?? 0,
             playbackUnderrunFrames: try container.decodeIfPresent(UInt64.self, forKey: .playbackUnderrunFrames) ?? 0,
             droppedInputFrames: try container.decodeIfPresent(UInt64.self, forKey: .droppedInputFrames) ?? 0,
-            droppedBufferedFrames: try container.decodeIfPresent(UInt64.self, forKey: .droppedBufferedFrames) ?? 0,
             saturatedSamples: try container.decodeIfPresent(UInt64.self, forKey: .saturatedSamples) ?? 0,
-            currentBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .currentBufferedFrames) ?? 0,
-            maxBufferedFrames: try container.decodeIfPresent(Int.self, forKey: .maxBufferedFrames) ?? 0,
-            maximumPlaybackBufferedFrames: try container.decodeIfPresent(
-                Int.self, forKey: .maximumPlaybackBufferedFrames) ?? 0,
-            minimumPlaybackBufferedFrames: try container.decodeIfPresent(
-                Int.self, forKey: .minimumPlaybackBufferedFrames) ?? 0,
-            averagePlaybackBufferedFrames: try container.decodeIfPresent(
-                Double.self, forKey: .averagePlaybackBufferedFrames) ?? 0,
-            playbackBufferObservations: try container.decodeIfPresent(UInt64.self, forKey: .playbackBufferObservations)
-                ?? 0,
             inputTimestampDiscontinuities: try container.decodeIfPresent(
                 UInt64.self, forKey: .inputTimestampDiscontinuities) ?? 0,
             outputTimestampDiscontinuities: try container.decodeIfPresent(
@@ -757,24 +679,6 @@ public struct SettingsAudioMetricsDTO: Codable, Equatable, Sendable {
             callbackStartStarvations: try container.decodeIfPresent(UInt64.self, forKey: .callbackStartStarvations)
                 ?? 0,
             renderOverruns: try container.decodeIfPresent(UInt64.self, forKey: .renderOverruns) ?? 0,
-            playbackTimestampDiscontinuities: try container.decodeIfPresent(
-                UInt64.self, forKey: .playbackTimestampDiscontinuities) ?? 0,
-            playbackBufferRenegotiations: try container.decodeIfPresent(
-                UInt64.self, forKey: .playbackBufferRenegotiations) ?? 0,
-            adaptivePlaybackRenderFailures: try container.decodeIfPresent(
-                UInt64.self, forKey: .adaptivePlaybackRenderFailures) ?? 0,
-            playbackRateCorrectionPPM: try container.decodeIfPresent(Double.self, forKey: .playbackRateCorrectionPPM)
-                ?? 0,
-            playbackRateCorrectionSaturated: try container.decodeIfPresent(
-                Bool.self, forKey: .playbackRateCorrectionSaturated) ?? false,
-            playbackOccupancyTargetFrames: try container.decodeIfPresent(
-                Int.self, forKey: .playbackOccupancyTargetFrames) ?? 0,
-            filteredPlaybackOccupancyFrames: try container.decodeIfPresent(
-                Double.self, forKey: .filteredPlaybackOccupancyFrames) ?? 0,
-            playbackBufferSampleRate: try container.decodeIfPresent(Double.self, forKey: .playbackBufferSampleRate)
-                ?? 0,
-            playbackSampleRateConversionActive: try container.decodeIfPresent(
-                Bool.self, forKey: .playbackSampleRateConversionActive) ?? false,
             tapToOutputLatencyObservations: try container.decodeIfPresent(
                 UInt64.self, forKey: .tapToOutputLatencyObservations) ?? 0,
             minimumTapToOutputLatencyNanoseconds: try container.decodeIfPresent(

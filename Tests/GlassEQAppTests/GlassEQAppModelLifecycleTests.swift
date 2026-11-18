@@ -83,7 +83,6 @@ struct GlassEQAppModelLifecycleTests {
 
         var diagnostics = model.settingsSnapshot().metrics.diagnostics
         #expect(diagnostics.status.health == .stable)
-        #expect(diagnostics.status.routeMode == .lowLatency)
         #expect(!diagnostics.status.isUsingSaferBuffer)
         #expect(diagnostics.route.transport == "USB")
         #expect(diagnostics.route.observedDeviceSampleRate == 48_000)
@@ -110,248 +109,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func playbackInstabilityAddsRecoveryAndEscalationContext() async {
-        let output = makeOutput(
-            uid: "diagnostic-adaptive-output",
-            name: "Diagnostic Adaptive Output",
-            bufferFrameSize: 480
-        )
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero
-        )
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        model.resetDiagnostics()
-
-        var renegotiatedOutput = output
-        renegotiatedOutput.bufferFrameSize = 512
-        engine.state = .running(output: renegotiatedOutput)
-        engine.emitPlaybackBufferRenegotiation(
-            PlaybackBufferRenegotiation(
-                outputName: output.name,
-                outputUID: output.uid,
-                sampleRate: output.nominalSampleRate,
-                previousFrameSize: 480,
-                frameSize: 512,
-                previousPlaybackTargetFrames: 512,
-                playbackTargetFrames: 1_024,
-                cause: .instability(.underrun)
-            ))
-        await waitUntil {
-            model.currentOutputBufferFrameSize == 512
-        }
-
-        let recovery = model.settingsSnapshot().metrics.diagnostics.recovery
-        #expect(recovery.automaticRecoveries == 1)
-        #expect(recovery.bufferEscalations == 1)
-        #expect(recovery.lastReason == .playbackUnderrun)
-        #expect(recovery.lastRecoveryAt != nil)
-    }
-
-    @Test
-    func separateClockRenegotiationRefreshesCurrentOutputMetadata() async {
-        let output = makeOutput(
-            uid: "adaptive-output",
-            name: "Adaptive Output",
-            bufferFrameSize: 480
-        )
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero
-        )
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        engine.emitPlaybackBufferRenegotiation(
-            PlaybackBufferRenegotiation(
-                outputName: "Other Output",
-                outputUID: "other-output",
-                sampleRate: 48_000,
-                previousFrameSize: 480,
-                frameSize: 128,
-                playbackTargetFrames: 512,
-                cause: .stableDecay
-            ))
-        await settleAsyncWork()
-        #expect(model.currentOutputBufferFrameSize == 480)
-
-        var renegotiatedOutput = output
-        renegotiatedOutput.bufferFrameSize = 256
-        engine.state = .running(output: renegotiatedOutput)
-        engine.emitPlaybackBufferRenegotiation(
-            PlaybackBufferRenegotiation(
-                outputName: output.name,
-                outputUID: output.uid,
-                sampleRate: output.nominalSampleRate,
-                previousFrameSize: 480,
-                frameSize: 256,
-                previousPlaybackTargetFrames: 1_024,
-                playbackTargetFrames: 512,
-                cause: .stableDecay
-            ))
-        await waitUntil {
-            model.currentOutputBufferFrameSize == 256
-        }
-
-        #expect(model.settingsSnapshot().currentOutputBufferFrameSize == 256)
-    }
-
-    @Test
-    func staleSameUIDRenegotiationCannotOverwriteNewOutputFormatMetadata() async {
-        let initialOutput = makeOutput(
-            uid: "changing-adaptive-output",
-            name: "Changing Adaptive Output",
-            nominalSampleRate: 48_000,
-            bufferFrameSize: 480
-        )
-        let changedOutput = makeOutput(
-            uid: initialOutput.uid,
-            name: initialOutput.name,
-            nominalSampleRate: 96_000,
-            bufferFrameSize: 512
-        )
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero
-        )
-        model.start()
-        observers.observers[0].emit(.success(initialOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        lookup.result = .success(changedOutput)
-        observers.observers[0].emit(.success(changedOutput))
-        await waitUntil {
-            engine.startCalls.count == 2
-                && model.currentOutputSampleRate == changedOutput.nominalSampleRate
-                && model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize
-        }
-
-        engine.emitPlaybackBufferRenegotiation(
-            PlaybackBufferRenegotiation(
-                outputName: initialOutput.name,
-                outputUID: initialOutput.uid,
-                sampleRate: initialOutput.nominalSampleRate,
-                previousFrameSize: initialOutput.bufferFrameSize,
-                frameSize: 128,
-                playbackTargetFrames: 512,
-                cause: .stableDecay
-            ))
-        await settleAsyncWork()
-
-        #expect(model.currentOutputSampleRate == changedOutput.nominalSampleRate)
-        #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
-    }
-
-    @Test
-    func renegotiationCannotOverwriteMetadataDuringSameRouteReplacement() async {
-        let initialOutput = makeOutput(
-            uid: "replacing-adaptive-output",
-            name: "Replacing Adaptive Output",
-            bufferFrameSize: 480
-        )
-        let replacementOutput = makeOutput(
-            uid: initialOutput.uid,
-            name: initialOutput.name,
-            bufferFrameSize: 512
-        )
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let lookup = FakeDefaultOutputLookup(.success(initialOutput))
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero
-        )
-        model.start()
-        observers.observers[0].emit(.success(initialOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        engine.blockStart(for: replacementOutput.uid)
-        lookup.result = .success(replacementOutput)
-        observers.observers[0].emit(.success(replacementOutput))
-        await waitUntil {
-            engine.startCalls.count == 2
-                && model.currentOutputBufferFrameSize == replacementOutput.bufferFrameSize
-        }
-        #expect(
-            engine.waitUntilStartIsBlocked(
-                for: replacementOutput.uid,
-                timeout: .now() + 1
-            ))
-
-        engine.emitPlaybackBufferRenegotiation(
-            PlaybackBufferRenegotiation(
-                outputName: initialOutput.name,
-                outputUID: initialOutput.uid,
-                sampleRate: initialOutput.nominalSampleRate,
-                previousFrameSize: 256,
-                frameSize: initialOutput.bufferFrameSize,
-                playbackTargetFrames: 1_024,
-                cause: .stableDecay
-            ))
-        await settleAsyncWork()
-
-        #expect(model.currentOutputBufferFrameSize == replacementOutput.bufferFrameSize)
-
-        engine.unblockStart(for: replacementOutput.uid)
-        await waitUntil {
-            model.lifecycleState == .running
-                && engine.startCalls.count == 2
-                && engine.state == .running(output: replacementOutput)
-        }
-    }
-
-    @Test
-    func runtimeEngineFailureStopsTheModelAndSurfacesItsStatus() async {
-        let output = makeOutput(uid: "runtime-output", name: "Runtime Output")
-        let engine = FakeAudioEngine()
-        engine.state = .running(output: output)
-        let model = makeModel(engine: engine)
-
-        model.retryAudioEngine()
-        await waitUntil {
-            model.lifecycleState == .running
-        }
-        engine.emitRuntimeFailure(adaptiveRenderFailure)
-        await waitUntil {
-            model.lifecycleState == .stopped
-        }
-
-        #expect(!model.isRunning)
-        #expect(
-            model.statusMessage
-                == localized(
-                    "Audio engine failed: \(adaptiveRenderFailure.userMessage)"
-                ))
-    }
-
-    @Test
-    func renderWatchdogStopsTapBeforeOneAutomaticRebuild() async {
+    func renderWatchdogRetainsMuteAcrossOneAutomaticRebuild() async {
         let output = makeOutput(uid: "watchdog-rebuild", name: "Watchdog Rebuild")
         let engine = FakeAudioEngine()
         let model = makeModel(
@@ -377,45 +135,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func bluetoothCompatibilityWatchdogPreservesTheFixedAggregatePreference() async throws {
-        let storeURL = temporaryAppStoreURL()
-        defer { removeTemporaryStoreDirectory(for: storeURL) }
-        let output = makeOutput(
-            uid: "headset-watchdog",
-            name: "AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480,
-            transportType: kAudioDeviceTransportTypeBluetooth
-        )
-        try AggregateBufferPolicyStore(
-            url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
-        ).setMode(
-            .frames16,
-            for: AggregateAudioRouteFingerprint(
-                outputDeviceUID: output.uid,
-                nativeOutputStreamIndex: 0,
-                nominalSampleRate: output.nominalSampleRate
-            ))
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        let model = makeModel(
-            storeURL: storeURL,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            renderWatchdogStallThreshold: .milliseconds(50),
-            renderWatchdogRepeatedFailureWindow: .seconds(1),
-            renderWatchdogPollInterval: .milliseconds(5)
-        )
-        model.retryAudioEngine()
-        await waitUntil { engine.startCalls.count == 2 && model.lifecycleState == .running }
-        #expect(engine.isUsingSeparateClockBackend)
-        #expect(!model.settingsSnapshot().aggregateBuffer.isAvailable)
-        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [16, 16])
-        model.stop()
-    }
-
-    @Test
-    func repeatedRenderStallFailsOpenAndLeavesRetryAvailable() async {
+    func repeatedRenderStallKeepsOutputMutedAndRetryAvailable() async {
         let output = makeOutput(uid: "watchdog-stop", name: "Watchdog Stop")
         let engine = FakeAudioEngine()
         let model = makeModel(
@@ -435,740 +155,15 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(!model.isRunning)
         #expect(model.statusMessage.contains("stalled again"))
-    }
-
-    @Test
-    func runtimeFailureDoesNotCancelNewerPendingRouteStart() async {
-        let firstOutput = makeOutput(uid: "runtime-first", name: "Runtime First", id: 200)
-        let secondOutput = makeOutput(uid: "runtime-second", name: "Runtime Second", id: 300)
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero
-        )
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(firstOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        engine.blockStart(for: secondOutput.uid)
-        lookup.result = .success(secondOutput)
-        observer.emit(.success(secondOutput))
-        await waitUntil {
-            engine.startCalls.contains { $0.output == secondOutput }
-        }
-        #expect(engine.waitUntilStartIsBlocked(for: secondOutput.uid, timeout: .now() + 1))
-
-        engine.emitRuntimeFailure(adaptiveRenderFailure)
+        #expect(engine.holdsProcessingMute)
+        #expect(engine.handbackCount == 0)
+        model.handleWillSleep()
+        model.handleDidWake()
         await settleAsyncWork()
-        #expect(model.lifecycleState == .running)
-
-        engine.unblockStart(for: secondOutput.uid)
-        await waitUntil {
-            model.lifecycleState == .running
-                && model.currentOutputUID == secondOutput.uid
-                && engine.state == .running(output: secondOutput)
-        }
-    }
-
-    @Test
-    func staleRuntimeFailureDoesNotStopCompletedNewerRoute() async {
-        let firstOutput = makeOutput(uid: "stale-runtime-first", name: "Stale Runtime First", id: 200)
-        let secondOutput = makeOutput(uid: "stale-runtime-second", name: "Stale Runtime Second", id: 300)
-        let engine = FakeAudioEngine()
-        let lookup = FakeDefaultOutputLookup(.success(firstOutput))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero
-        )
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(firstOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-        lookup.result = .success(secondOutput)
-        observer.emit(.success(secondOutput))
-        await waitUntil {
-            model.lifecycleState == .running
-                && model.currentOutputUID == secondOutput.uid
-                && engine.state == .running(output: secondOutput)
-        }
-
-        engine.emitRuntimeFailure(adaptiveRenderFailure, markEngineFailed: false)
-        await settleAsyncWork()
-
-        #expect(model.lifecycleState == .running)
-        #expect(model.isRunning)
-        #expect(model.currentOutputUID == secondOutput.uid)
-        #expect(engine.state == .running(output: secondOutput))
-    }
-
-    @Test
-    func settledHeadsetRoutePromotesToCombinedAggregate() async {
-        let output = makeOutput(
-            uid: "headset-promotion",
-            name: "AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480
-        )
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        engine.headsetAggregatePromotionResult = .promoted(output)
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero,
-            aggregateStabilityDelay: .seconds(1),
-            headsetAggregatePromotionDelay: .zero
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.headsetAggregatePromotionAttemptCount == 1
-                && engine.isUsingPromotedHeadsetAggregate
-                && model.settingsSnapshot().aggregateBuffer.isAvailable
-        }
-
-        #expect(engine.startCalls.count == 1)
-        #expect(model.statusMessage.contains("low-latency headset path"))
-    }
-
-    @Test
-    func revertedOutputChangeReconcilesCommittedHeadsetPromotion() async {
-        let output = makeOutput(
-            uid: "headset-promotion-reconcile",
-            name: "AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480
-        )
-        let transientOutput = makeOutput(uid: "transient-output", name: "Transient")
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        engine.headsetAggregatePromotionResult = .promoted(output)
-        engine.blockHeadsetAggregatePromotion()
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .seconds(1),
-            aggregateStabilityDelay: .seconds(1),
-            headsetAggregatePromotionDelay: .zero
-        )
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(output))
-        await waitUntil {
-            engine.headsetAggregatePromotionAttemptCount == 1
-        }
-        #expect(
-            engine.waitUntilHeadsetAggregatePromotionIsBlocked(
-                timeout: .now() + 1
-            ))
-
-        lookup.result = .success(transientOutput)
-        observer.emit(.success(transientOutput))
-        engine.unblockHeadsetAggregatePromotion()
-        await waitUntil {
-            engine.isUsingPromotedHeadsetAggregate
-        }
-
-        lookup.result = .success(output)
-        observer.emit(.success(output))
-        let reconciled = await waitUntil {
-            model.settingsSnapshot().aggregateBuffer.isAvailable
-                && model.statusMessage.contains("low-latency headset path")
-        }
-
-        #expect(reconciled)
-        #expect(engine.headsetAggregatePromotionAttemptCount == 1)
-        #expect(model.currentOutputUID == output.uid)
-    }
-
-    @Test
-    func coldStartupCompatibilityWaitsForActivePlaybackBeforePromotion() async {
-        let output = makeOutput(uid: "cold-start-promotion", name: "D10s")
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .clientsActive
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.coldStartupAggregatePromotionAttemptCount > 0
-                && model.statusMessage.contains("until active playback releases the output")
-        }
-
-        engine.coldStartupAggregatePromotionResult = .promoted(output)
-        await waitUntil {
-            !engine.isDeferringColdStartupAggregate
-                && model.statusMessage.contains("Processing D10s")
-        }
-
-        #expect(engine.startCalls.count == 1)
-        #expect(engine.coldStartupAggregatePromotionAttemptCount >= 2)
-    }
-
-    @Test
-    func duplicateOutputNotificationDoesNotDropAnInFlightColdStartupPromotion() async {
-        let output = makeOutput(uid: "in-flight-cold-promotion", name: "D10s")
-        var promotedOutput = output
-        promotedOutput.bufferFrameSize = 32
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .promoted(promotedOutput)
-        engine.blockColdStartupAggregatePromotion()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.coldStartupAggregatePromotionAttemptCount == 1
-        }
-        #expect(
-            engine.waitUntilColdStartupAggregatePromotionIsBlocked(
-                timeout: .now() + 1
-            ))
-
-        observers.observers[0].emit(.success(output))
-        engine.unblockColdStartupAggregatePromotion()
-
-        let completed = await waitUntil {
-            !engine.isDeferringColdStartupAggregate
-                && model.settingsSnapshot().aggregateBuffer.isAvailable
-                && model.settingsSnapshot().currentOutputBufferFrameSize == 32
-        }
-        #expect(completed)
-        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
-        #expect(model.statusMessage.contains("Processing D10s"))
-    }
-
-    @Test
-    func cancelledTransientOutputChangeDoesNotDropAnInFlightColdStartupPromotion() async {
-        let output = makeOutput(uid: "reverted-cold-promotion", name: "D10s")
-        let transientOutput = makeOutput(uid: "transient-output", name: "Transient")
-        var promotedOutput = output
-        promotedOutput.bufferFrameSize = 32
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .promoted(promotedOutput)
-        engine.blockColdStartupAggregatePromotion()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .seconds(1),
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.coldStartupAggregatePromotionAttemptCount == 1
-        }
-        #expect(
-            engine.waitUntilColdStartupAggregatePromotionIsBlocked(
-                timeout: .now() + 1
-            ))
-
-        observers.observers[0].emit(.success(transientOutput))
-        observers.observers[0].emit(.success(output))
-        engine.unblockColdStartupAggregatePromotion()
-
-        let completed = await waitUntil {
-            !engine.isDeferringColdStartupAggregate
-                && model.settingsSnapshot().aggregateBuffer.isAvailable
-                && model.settingsSnapshot().currentOutputBufferFrameSize == 32
-        }
-        #expect(completed)
-        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
-        #expect(model.currentOutputUID == output.uid)
-    }
-
-    @Test
-    func formatTransitionDoesNotPublishACommittedColdStartupPromotionAfterStopOwnsTheEngine() async {
-        let output = makeOutput(
-            uid: "stopped-cold-promotion",
-            name: "D10s",
-            nominalSampleRate: 48_000
-        )
-        let changedOutput = makeOutput(
-            uid: output.uid,
-            name: output.name,
-            nominalSampleRate: 44_100
-        )
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .promoted(output)
-        engine.blockColdStartupAggregatePromotion()
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .seconds(1),
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(output))
-        await waitUntil {
-            engine.coldStartupAggregatePromotionAttemptCount == 1
-        }
-        #expect(
-            engine.waitUntilColdStartupAggregatePromotionIsBlocked(
-                timeout: .now() + 1
-            ))
-
-        lookup.result = .success(changedOutput)
-        observer.emit(.success(changedOutput))
-        await waitUntil {
-            model.lifecycleState == .stopped && !model.isRunning
-        }
-        engine.coldStartupPromotionCandidateUIDs = []
-        engine.unblockColdStartupAggregatePromotion()
-        await waitUntil {
-            engine.stopCallCount == 1 && engine.state == .stopped
-        }
-
-        #expect(model.statusMessage == "Audio output format changed; rebuilding...")
-        #expect(!model.settingsSnapshot().aggregateBuffer.isAvailable)
-
-        let rebuilt = await waitUntil(maxAttempts: 150) {
-            model.lifecycleState == .running
-                && engine.startCalls.count == 2
-                && model.currentOutputSampleRate == changedOutput.nominalSampleRate
-        }
-        #expect(rebuilt)
-        #expect(
-            engine.events == [
-                "start:\(output.uid)",
-                "stop",
-                "start:\(changedOutput.uid)",
-            ])
-    }
-
-    @Test
-    func deferredColdStartupRebuildKeepsTheStoredAggregateBufferPreference() async throws {
-        let storeURL = temporaryAppStoreURL()
-        defer { removeTemporaryStoreDirectory(for: storeURL) }
-        let output = makeOutput(
-            uid: "deferred-buffer-preference",
-            name: "D10s",
-            bufferFrameSize: 512
-        )
-        let route = AggregateAudioRouteFingerprint(
-            outputDeviceUID: output.uid,
-            nativeOutputStreamIndex: 0,
-            nominalSampleRate: output.nominalSampleRate
-        )
-        try AggregateBufferPolicyStore(
-            url: storeURL.deletingPathExtension()
-                .appendingPathExtension("aggregate-buffer-policy.json")
-        ).setMode(.frames64, for: route)
-
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .clientsActive
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            storeURL: storeURL,
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero,
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running
-                && engine.startCalls.count == 1
-                && engine.isDeferringColdStartupAggregate
-        }
-
-        var changedOutput = output
-        changedOutput.bufferFrameSize = 256
-        lookup.result = .success(changedOutput)
-        observers.observers[0].emit(.success(changedOutput))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 2
-        }
-
-        #expect(engine.startCalls.map(\.aggregateBufferFrameSize) == [64, 64])
-        #expect(!model.settingsSnapshot().aggregateBuffer.isAvailable)
-    }
-
-    @Test
-    func unstableColdStartupPromotionIsNotRetriedAfterARejectedProfileChange() async throws {
-        let running = makeProfile(name: "Cold Start Running")
-        let requested = makeProfile(name: "Cold Start Requested")
-        let output = makeOutput(uid: "unstable-cold-promotion", name: "D10s")
-        let store = ProfileStore(
-            profiles: [running, requested],
-            fallbackProfileID: running.id
-        )
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .aggregateUnstable
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.coldStartupAggregatePromotionAttemptCount == 1
-                && model.statusMessage.contains("startup path was unstable")
-        }
-
-        engine.updateDSPResult = false
-        engine.updateError = TestAudioError.updateFailed
-        engine.updateErrorPreservesRunningState = true
-        try model.apply(profile: requested)
-        await waitUntil {
-            model.statusMessage.contains("not applied")
-        }
-        try? await Task.sleep(for: .milliseconds(50))
-
-        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
-        #expect(engine.state == .running(output: output))
-    }
-
-    @Test
-    func revertedOutputChangePreservesUnstableColdStartupStatus() async {
-        let output = makeOutput(uid: "unstable-status-output", name: "D10s")
-        let transientOutput = makeOutput(uid: "transient-output", name: "Transient")
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .aggregateUnstable
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .seconds(1),
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        let observer = observers.observers[0]
-        observer.emit(.success(output))
-        await waitUntil {
-            engine.coldStartupAggregatePromotionAttemptCount == 1
-                && model.statusMessage.contains("startup path was unstable")
-        }
-
-        lookup.result = .success(transientOutput)
-        observer.emit(.success(transientOutput))
-        await waitUntil {
-            model.statusMessage == "Audio output changed; rebuilding..."
-        }
-        lookup.result = .success(output)
-        observer.emit(.success(output))
-        let statusWasRestored = await waitUntil {
-            model.statusMessage.contains("startup path was unstable")
-        }
-
-        #expect(statusWasRestored)
-        #expect(engine.coldStartupAggregatePromotionAttemptCount == 1)
-        #expect(model.currentOutputUID == output.uid)
-    }
-
-    @Test
-    func rejectedProfileChangeRestartsColdStartupPromotion() async throws {
-        let running = makeProfile(name: "Cold Start Running")
-        let requested = makeProfile(name: "Cold Start Requested")
-        let output = makeOutput(uid: "cold-start-profile-failure", name: "D10s")
-        let store = ProfileStore(
-            profiles: [running, requested],
-            fallbackProfileID: running.id
-        )
-        let engine = FakeAudioEngine()
-        engine.coldStartupPromotionCandidateUIDs = [output.uid]
-        engine.coldStartupAggregatePromotionResult = .clientsActive
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: store,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            coldStartupAggregatePromotionPollInterval: .milliseconds(10)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running
-                && engine.coldStartupAggregatePromotionAttemptCount > 0
-        }
-
-        engine.updateDSPResult = false
-        engine.updateError = TestAudioError.updateFailed
-        engine.updateErrorPreservesRunningState = true
-        try model.apply(profile: requested)
-        await waitUntil {
-            model.statusMessage.contains("not applied")
-        }
-
-        engine.coldStartupAggregatePromotionResult = .promoted(output)
-        await waitUntil {
-            !engine.isDeferringColdStartupAggregate
-        }
-
-        #expect(model.activeProfile == running)
-        #expect(engine.state == .running(output: output))
-    }
-
-    @Test
-    func promotedHeadsetRouteFallsBackAfterOneSteadyStateJump() async {
-        let output = makeOutput(
-            uid: "headset-demotion",
-            name: "AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480
-        )
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        engine.headsetAggregatePromotionResult = .promoted(output)
-        let lookup = FakeDefaultOutputLookup(.success(output))
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            engine: engine,
-            lookup: lookup,
-            observers: observers,
-            outputDelay: .zero,
-            headsetAggregatePromotionDelay: .zero
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.headsetAggregatePromotionAttemptCount == 1
-                && engine.isUsingPromotedHeadsetAggregate
-                && model.settingsSnapshot().aggregateBuffer.isAvailable
-        }
-        try? await Task.sleep(for: .milliseconds(300))
-
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 1
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.isUsingTransitionalHeadsetBackend
-        }
-
-        try? await Task.sleep(for: .milliseconds(100))
-        #expect(engine.headsetAggregatePromotionAttemptCount == 1)
-        #expect(model.statusMessage.contains("compatibility mode"))
-    }
-
-    @Test
-    func fixedBufferPromotedHeadsetRouteStillFallsBackAfterAClockJump() async throws {
-        let storeURL = temporaryAppStoreURL()
-        defer { removeTemporaryStoreDirectory(for: storeURL) }
-        let output = makeOutput(
-            uid: "fixed-headset-demotion",
-            name: "Fixed AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480,
-            transportType: kAudioDeviceTransportTypeBluetooth
-        )
-        try AggregateBufferPolicyStore(
-            url: storeURL.deletingPathExtension().appendingPathExtension("aggregate-buffer-policy.json")
-        ).setMode(
-            .frames16,
-            for: AggregateAudioRouteFingerprint(
-                outputDeviceUID: output.uid,
-                nativeOutputStreamIndex: 0,
-                nominalSampleRate: output.nominalSampleRate
-            ))
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        engine.headsetAggregatePromotionResult = .promoted(output)
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            storeURL: storeURL,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            headsetAggregatePromotionDelay: .zero
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.headsetAggregatePromotionAttemptCount == 1
-                && engine.isUsingPromotedHeadsetAggregate
-                && model.settingsSnapshot().aggregateBuffer.isAvailable
-        }
-        #expect(engine.startCalls.first?.aggregateBufferFrameSize == 16)
-        let route = try engine.aggregateRouteFingerprint(for: output)
-        let aggregateRoute = try #require(route)
-
-        try model.setAggregateBufferMode(.frames32)
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.isUsingPromotedHeadsetAggregate
-        }
-        try? await Task.sleep(for: .milliseconds(300))
-
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 1
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 3
-                && engine.isUsingTransitionalHeadsetBackend
-                && model.statusMessage.hasPrefix("Processing")
-                && model.statusMessage.contains("compatibility mode")
-        }
-
-        let policyURL = storeURL.deletingPathExtension()
-            .appendingPathExtension("aggregate-buffer-policy.json")
-        let selection = AggregateBufferPolicyStore(url: policyURL).selection(for: aggregateRoute)
-        #expect(selection.mode == .frames32)
-    }
-
-    @Test
-    func failedPromotedHeadsetDemotionStopsTheRejectedGraph() async throws {
-        let storeURL = temporaryAppStoreURL()
-        defer { removeTemporaryStoreDirectory(for: storeURL) }
-        let output = makeOutput(
-            uid: "failed-fixed-headset-demotion",
-            name: "Failed Fixed AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480
-        )
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        engine.headsetAggregatePromotionResult = .promoted(output)
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            storeURL: storeURL,
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            headsetAggregatePromotionDelay: .zero
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            engine.headsetAggregatePromotionAttemptCount == 1
-                && engine.isUsingPromotedHeadsetAggregate
-                && model.settingsSnapshot().aggregateBuffer.isAvailable
-        }
-
-        try model.setAggregateBufferMode(.frames32)
-        await waitUntil {
-            engine.startCalls.count == 2
-                && engine.isUsingPromotedHeadsetAggregate
-        }
-        try? await Task.sleep(for: .milliseconds(300))
-
-        engine.startError = TestAudioError.startFailed
-        engine.startErrorPreservesRunningState = true
-        var metrics = engine.metrics
-        metrics.qualifyingPairedTimestampDiscontinuities = 1
-        engine.metrics = metrics
-        await waitUntil {
-            engine.startCalls.count == 3
-                && engine.stopCallCount == 1
-                && model.lifecycleState == .stopped
-        }
-
-        #expect(!model.isRunning)
-        #expect(engine.state == .stopped)
-        #expect(!engine.isUsingPromotedHeadsetAggregate)
-    }
-
-    @Test
-    func cancelledHeadsetPromotionDelayCanRetryInTheSameOutputGeneration() async throws {
-        let active = makeProfile(name: "Headset Active")
-        let applied = makeProfile(name: "Headset Applied")
-        let output = makeOutput(
-            uid: "cancelled-headset-promotion",
-            name: "Cancelled AirPods Headset",
-            nominalSampleRate: 24_000,
-            bufferFrameSize: 480
-        )
-        let engine = FakeAudioEngine()
-        engine.headsetPromotionCandidateUIDs = [output.uid]
-        engine.headsetAggregatePromotionResult = .clockUnstable
-        engine.updateDSPResult = false
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: ProfileStore(profiles: [active, applied], fallbackProfileID: active.id),
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero,
-            headsetAggregatePromotionDelay: .milliseconds(200)
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        try model.apply(profile: applied)
-        await waitUntil {
-            engine.updateCalls.count == 1 && model.lifecycleState == .running
-        }
-        await waitUntil {
-            engine.headsetAggregatePromotionAttemptCount == 1
-        }
-
-        #expect(engine.headsetAggregatePromotionAttemptCount == 1)
+        #expect(engine.holdsProcessingMute)
+        #expect(model.lifecycleState == .stopped)
+        #expect(engine.startCalls.count == 2)
+        #expect(model.statusMessage.contains("stalled again"))
     }
 
     @Test(arguments: [SettingsAggregateBufferMode.automatic, .frames16, .frames128])
@@ -1498,6 +493,8 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         model.retryAudioEngine()
+        #expect(observers.observers.count == 2)
+        observers.observers.last?.emit(.success(output))
         await waitUntil {
             model.lifecycleState == .running
                 && engine.startCalls.last?.aggregateBufferFrameSize == 16
@@ -1959,7 +956,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func routeStartFailureAfterPendingInitialStartRestoresItsProfile() async {
+    func routeReversalDuringStartupKeepsDestinationMappingAndMuteOnFailure() async {
         let firstOutput = makeOutput(uid: "pending-rollback-first", name: "Pending Rollback First", id: 200)
         let secondOutput = makeOutput(uid: "pending-rollback-second", name: "Pending Rollback Second", id: 300)
         let firstProfile = makeProfile(name: "Pending First Profile")
@@ -2005,20 +1002,24 @@ struct GlassEQAppModelLifecycleTests {
 
         await waitUntil {
             engine.startCalls.count == 2
-                && model.lifecycleState == .running
-                && model.statusMessage.contains("not applied")
+                && model.lifecycleState == .stopped
+                && engine.holdsProcessingMute
         }
 
-        #expect(engine.state == .running(output: firstOutput))
-        #expect(model.currentOutputUID == firstOutput.uid)
-        #expect(model.activeProfile == firstProfile)
-        #expect(model.selectedProfileID == firstProfile.id)
-        #expect(model.draftProfile == firstProfile)
+        #expect(!model.isRunning)
+        #expect(engine.holdsProcessingMute)
+        #expect(model.currentOutputUID == secondOutput.uid)
+        #expect(model.activeProfile == secondProfile)
+        #expect(model.selectedProfileID == secondProfile.id)
+        #expect(model.draftProfile == secondProfile)
         #expect(model.profileStore == store)
+        model.stop()
+        await waitUntil { !engine.holdsProcessingMute }
+        #expect(!engine.holdsProcessingMute)
     }
 
     @Test
-    func chainedProfileAndRouteFailuresRestoreTheLastConfirmedProfile() async throws {
+    func routeChangeDuringProfileUpdateKeepsSavedWorkAndSuspendsOnDestinationFailure() async throws {
         let firstOutput = makeOutput(uid: "confirmed-first", name: "Confirmed First", id: 200)
         let secondOutput = makeOutput(uid: "confirmed-second", name: "Confirmed Second", id: 300)
         let confirmedProfile = makeProfile(name: "Confirmed Profile")
@@ -2076,15 +1077,15 @@ struct GlassEQAppModelLifecycleTests {
 
         await waitUntil {
             engine.startCalls.count == 2
-                && model.lifecycleState == .running
-                && model.statusMessage.contains("not applied")
+                && model.lifecycleState == .stopped && engine.holdsProcessingMute
         }
 
-        #expect(engine.state == .running(output: firstOutput))
-        #expect(model.currentOutputUID == firstOutput.uid)
-        #expect(model.activeProfile == confirmedProfile)
-        #expect(model.selectedProfileID == createdProfile.id)
-        #expect(model.draftProfile == createdProfile)
+        #expect(engine.holdsProcessingMute)
+        #expect(!model.isRunning)
+        #expect(model.currentOutputUID == secondOutput.uid)
+        #expect(model.activeProfile == routeProfile)
+        #expect(model.selectedProfileID == routeProfile.id)
+        #expect(model.draftProfile == routeProfile)
         #expect(model.profileStore.profiles.contains(createdProfile))
         #expect(model.profileStore.profiles.count == store.profiles.count + 1)
         #expect(model.profileStore.outputMappings == store.outputMappings)
@@ -2405,46 +1406,6 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func runtimeFailureClearsProgrammeComparisonAndLaterStopIsNoOp() async throws {
-        let active = makeProfile(name: "Runtime Comparison")
-        let output = makeOutput(uid: "runtime-comparison-output", name: "Runtime Output")
-        let engine = FakeAudioEngine()
-        let observers = FakeDefaultOutputObserverFactory()
-        let model = makeModel(
-            store: ProfileStore(profiles: [active], fallbackProfileID: active.id),
-            engine: engine,
-            lookup: FakeDefaultOutputLookup(.success(output)),
-            observers: observers,
-            outputDelay: .zero
-        )
-
-        model.start()
-        observers.observers[0].emit(.success(output))
-        await waitUntil {
-            model.lifecycleState == .running && engine.startCalls.count == 1
-        }
-
-        var comparisonProfile = active
-        comparisonProfile.preampDB = -6
-        try model.startProgrammeComparison(profile: comparisonProfile)
-        model.selectProgrammeComparison(.reference)
-
-        engine.emitRuntimeFailure(adaptiveRenderFailure)
-        await waitUntil {
-            model.lifecycleState == .stopped
-        }
-
-        #expect(!model.settingsSnapshot().programmeComparison.isActive)
-        #expect(model.activeProfile == active)
-
-        let updatesBeforeStop = engine.updateDSPCalls
-        model.stopProgrammeComparison()
-
-        #expect(engine.updateDSPCalls == updatesBeforeStop)
-        #expect(model.activeProfile == active)
-    }
-
-    @Test
     func outputChangeToBypassedProfileDoesNotStartEngine() async {
         let fallback = makeProfile(name: "Fallback")
         var disabled = makeProfile(name: "Disabled")
@@ -2699,7 +1660,9 @@ struct GlassEQAppModelLifecycleTests {
             #expect(model.activeProfile.isBypassed)
             #expect(model.lifecycleState == .stopped)
             #expect(engine.startCalls.map(\.output) == [initialOutput])
-            #expect(engine.events == ["start:\(initialOutput.uid)", "stop"])
+            await waitUntil { !engine.holdsProcessingMute }
+            #expect(!engine.holdsProcessingMute)
+            #expect(engine.stopCallCount == 2)
         }
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
     }
@@ -3104,52 +2067,6 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func settingsSnapshotUsesTheActiveDSPRateForAConvertedOutput() {
-        let output = makeOutput(
-            uid: "converted-output",
-            name: "Bluetooth headset",
-            nominalSampleRate: 24_000
-        )
-        let engine = FakeAudioEngine()
-        engine.state = .running(output: output)
-        engine.processingSampleRate = 48_000
-        let model = makeModel(engine: engine)
-        model.currentOutputUID = output.uid
-        model.currentOutputSampleRate = output.nominalSampleRate
-
-        let snapshot = model.settingsSnapshot()
-
-        #expect(snapshot.currentOutputSampleRate == 24_000)
-        #expect(snapshot.currentProcessingSampleRate == 48_000)
-    }
-
-    @Test
-    func settingsSnapshotPreservesTheDSPRateWhileTheSameRouteIsStopped() {
-        let output = makeOutput(
-            uid: "converted-output",
-            name: "Bluetooth headset",
-            nominalSampleRate: 24_000
-        )
-        let engine = FakeAudioEngine()
-        engine.state = .running(output: output)
-        engine.processingSampleRate = 48_000
-        let model = makeModel(engine: engine)
-        model.currentOutputUID = output.uid
-        model.currentOutputSampleRate = output.nominalSampleRate
-
-        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
-
-        engine.state = .stopped
-        engine.processingSampleRate = nil
-
-        #expect(model.settingsSnapshot().currentProcessingSampleRate == 48_000)
-
-        model.currentOutputSampleRate = 44_100
-
-        #expect(model.settingsSnapshot().currentProcessingSampleRate == 0)
-    }
-
-    @Test
     func settingsSnapshotDoesNotSubstituteAnUnknownDSPRate() {
         let output = makeOutput(
             uid: "converted-output",
@@ -3180,7 +2097,6 @@ struct GlassEQAppModelLifecycleTests {
         )
         let engine = FakeAudioEngine()
         engine.state = .running(output: oldOutput)
-        engine.processingSampleRate = 48_000
         let model = makeModel(engine: engine)
         model.currentOutputUID = newOutput.uid
         model.currentOutputSampleRate = newOutput.nominalSampleRate
@@ -3189,7 +2105,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func unknownSeparateClockImpulseResponseStaysDryAcrossRetries() async throws {
+    func mismatchedHeadsetImpulseResponseRemainsMutedAcrossRetries() async throws {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "Cold Route IR", sampleRate: 48_000)
         let output = makeOutput(
@@ -3226,28 +2142,27 @@ struct GlassEQAppModelLifecycleTests {
                 && model.statusMessage.contains(impulse.name)
         }
 
+        await waitUntil { engine.holdsProcessingMute }
+        #expect(engine.holdsProcessingMute)
         #expect(!model.isRunning)
         #expect(engine.startCalls.isEmpty)
         #expect(model.profileStore.outputMappings == store.outputMappings)
-        #expect(model.statusMessage.contains("not measured"))
+        #expect(model.statusMessage.contains("24"))
 
         model.retryAudioEngine()
         await settleAsyncWork()
 
         #expect(engine.startCalls.isEmpty)
         #expect(model.lifecycleState == .stopped)
-        #expect(model.statusMessage.contains("not measured"))
+        #expect(model.statusMessage.contains("24"))
 
         try model.apply(profile: fallback)
         await waitUntil {
             model.lifecycleState == .running && engine.startCalls.count == 1
         }
-        engine.processingSampleRate = 48_000
 
-        try model.apply(profile: impulse)
-
-        #expect(model.activeProfile == impulse)
-        #expect(engine.updateDSPCalls.last == impulse)
+        #expect(throws: SettingsCommandFailure.self) { try model.apply(profile: impulse) }
+        #expect(model.activeProfile == fallback)
     }
 
     @Test
@@ -3322,7 +2237,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.currentOutputUID == secondOutput.uid)
         #expect(model.currentOutputName == secondOutput.name)
         #expect(model.statusMessage == localized("Processing \(secondOutput.name) with \(model.activeProfile.name)"))
-        #expect(engine.stopCallCount == 0)
+        #expect(engine.handbackCount == 0)
 
         try? await Task.sleep(for: .milliseconds(120))
         #expect(engine.state == .running(output: secondOutput))
@@ -3820,6 +2735,35 @@ struct GlassEQAppModelLifecycleTests {
         #expect(!model.isRunning)
         #expect(model.lifecycleState == .stopped)
         #expect(model.statusMessage == localized("Stopped"))
+    }
+
+    @Test
+    func disableDuringStartupSurvivesSleepAndProfileEdits() async throws {
+        let output = makeOutput(uid: "stopped-during-start", name: "USB")
+        let engine = FakeAudioEngine()
+        engine.blockStart(for: output.uid)
+        defer { engine.unblockStart(for: output.uid) }
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers, outputDelay: .zero, wakeDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { engine.holdsProcessingMute })
+        model.stop()
+        model.handleWillSleep()
+        model.handleDidWake()
+        engine.unblockStart(for: output.uid)
+        try #require(await waitUntil { !engine.holdsProcessingMute })
+        let edited = makeProfile(name: "Saved while disabled")
+        try model.apply(profile: edited)
+        await settleAsyncWork()
+        #expect(model.activeProfile == edited)
+        #expect(model.processingWasStopped)
+        #expect(observers.observers.count == 1)
+        #expect(engine.startCalls.count == 1)
+        #expect(!model.engineIsHoldingMute)
     }
 
     @Test
@@ -4534,37 +3478,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func impulseResponseCompatibilityUsesTheActiveDSPRateForConvertedOutput() throws {
-        let fallback = makeProfile(name: "Fallback")
-        let compatible = makeImpulseResponseProfile(name: "48 kHz IR", sampleRate: 48_000)
-        let incompatible = makeImpulseResponseProfile(name: "24 kHz IR", sampleRate: 24_000)
-        let output = makeOutput(
-            uid: "converted-output",
-            name: "Bluetooth headset",
-            nominalSampleRate: 24_000
-        )
-        let engine = FakeAudioEngine()
-        engine.state = .running(output: output)
-        engine.processingSampleRate = 48_000
-        let model = makeModel(
-            store: ProfileStore(profiles: [fallback, compatible, incompatible]),
-            engine: engine
-        )
-        model.currentOutputUID = output.uid
-        model.currentOutputSampleRate = output.nominalSampleRate
-        model.currentOutputChannelCount = output.outputChannelCount
-
-        try model.apply(profile: compatible)
-
-        #expect(model.activeProfile == compatible)
-        #expect(throws: SettingsCommandFailure.self) {
-            try model.apply(profile: incompatible)
-        }
-        #expect(model.activeProfile == compatible)
-    }
-
-    @Test
-    func incompatibleMappedImpulseResponseStaysDryUntilTheRouteMatches() async {
+    func incompatibleMappedImpulseResponseRemainsMutedUntilTheRouteMatches() async {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "Mapped IR", sampleRate: 48_000)
         let incompatibleOutput = makeOutput(
@@ -5837,8 +4751,6 @@ private func makeModel(
     wakeDelay: Duration? = nil,
     aggregateStabilityDelay: Duration = .zero,
     aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
-    headsetAggregatePromotionDelay: Duration = .seconds(6),
-    coldStartupAggregatePromotionPollInterval: Duration = .seconds(1),
     renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
     renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
     renderWatchdogPollInterval: Duration = .milliseconds(500),
@@ -5868,8 +4780,6 @@ private func makeModel(
             .appendingPathExtension("aggregate-buffer-policy.json"),
         aggregateStabilitySettlingDelay: aggregateStabilityDelay,
         aggregateCleanSessionDuration: aggregateCleanSessionDuration,
-        headsetAggregatePromotionDelay: headsetAggregatePromotionDelay,
-        coldStartupAggregatePromotionPollInterval: coldStartupAggregatePromotionPollInterval,
         renderWatchdogStallThreshold: renderWatchdogStallThreshold,
         renderWatchdogRepeatedFailureWindow: renderWatchdogRepeatedFailureWindow,
         renderWatchdogPollInterval: renderWatchdogPollInterval,
@@ -6164,12 +5074,6 @@ private enum TestAudioError: Error, Equatable {
     case updateFailed
     case defaultOutputUnavailable
 }
-
-private let adaptiveRenderFailure = AudioEngineFailure(
-    category: .coreAudioOperationFailed,
-    userMessage: "Adaptive playback rendering repeatedly failed.",
-    operation: "AdaptivePlaybackRender"
-)
 
 @MainActor
 private final class FakeWorkspaceOpener: WorkspaceOpening {
@@ -6526,7 +5430,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
 
     private let lock = NSLock()
     private var _state: AudioEngineState = .stopped
-    private var _processingSampleRate: Double?
     private var _startError: Error?
     private var _startErrorProfileID: UUID?
     private var _startErrorPreservesRunningState = false
@@ -6537,8 +5440,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _startBlockersByUID: [String: FakeStartBlocker] = [:]
     private var _preferredFrameSizeBlockers: [UInt32: FakeStartBlocker] = [:]
     private var _updateBlockersByProfileID: [UUID: FakeStartBlocker] = [:]
-    private var _coldStartupPromotionBlocker: FakeStartBlocker?
-    private var _headsetPromotionBlocker: FakeStartBlocker?
     private var _startCalls: [StartCall] = []
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
@@ -6560,45 +5461,11 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _nativeOutputStreamIndex = 0
     private var _reflectPreferredAggregateBufferFrameSize = false
     private var _forcedAppliedAggregateBufferFrameSize: UInt32?
-    private var _headsetPromotionCandidateUIDs: Set<String> = []
-    private var _headsetAggregatePromotionResult = HeadsetAggregatePromotionResult.notApplicable
-    private var _headsetAggregatePromotionAttemptCount = 0
-    private var _isUsingSeparateClockBackend = false
-    private var _isUsingTransitionalHeadsetBackend = false
-    private var _isUsingPromotedHeadsetAggregate = false
-    private var _promotedHeadsetOutputUID: String?
-    private var _coldStartupPromotionCandidateUIDs: Set<String> = []
-    private var _coldStartupAggregatePromotionResult = ColdStartupAggregatePromotionResult.notApplicable
-    private var _coldStartupAggregatePromotionAttemptCount = 0
-    private var _isDeferringColdStartupAggregate = false
     private var _latencyMetadata: AudioEngineLatencyMetadata?
-    private var _playbackBufferRenegotiationHandler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
-    private var _runtimeFailureHandler: (@Sendable (AudioEngineFailure) -> Void)?
 
     var state: AudioEngineState {
         get { withLock { _state } }
         set { withLock { _state = newValue } }
-    }
-
-    var processingSampleRate: Double? {
-        get { withLock { _processingSampleRate } }
-        set { withLock { _processingSampleRate = newValue } }
-    }
-
-    var isUsingTransitionalHeadsetBackend: Bool {
-        withLock { _isUsingTransitionalHeadsetBackend }
-    }
-
-    var isUsingSeparateClockBackend: Bool {
-        withLock { _isUsingSeparateClockBackend }
-    }
-
-    var isUsingPromotedHeadsetAggregate: Bool {
-        withLock { _isUsingPromotedHeadsetAggregate }
-    }
-
-    var isDeferringColdStartupAggregate: Bool {
-        withLock { _isDeferringColdStartupAggregate }
     }
 
     var startError: Error? {
@@ -6714,34 +5581,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _forcedAppliedAggregateBufferFrameSize = newValue } }
     }
 
-    var headsetPromotionCandidateUIDs: Set<String> {
-        get { withLock { _headsetPromotionCandidateUIDs } }
-        set { withLock { _headsetPromotionCandidateUIDs = newValue } }
-    }
-
-    var headsetAggregatePromotionResult: HeadsetAggregatePromotionResult {
-        get { withLock { _headsetAggregatePromotionResult } }
-        set { withLock { _headsetAggregatePromotionResult = newValue } }
-    }
-
-    var headsetAggregatePromotionAttemptCount: Int {
-        withLock { _headsetAggregatePromotionAttemptCount }
-    }
-
-    var coldStartupPromotionCandidateUIDs: Set<String> {
-        get { withLock { _coldStartupPromotionCandidateUIDs } }
-        set { withLock { _coldStartupPromotionCandidateUIDs = newValue } }
-    }
-
-    var coldStartupAggregatePromotionResult: ColdStartupAggregatePromotionResult {
-        get { withLock { _coldStartupAggregatePromotionResult } }
-        set { withLock { _coldStartupAggregatePromotionResult = newValue } }
-    }
-
-    var coldStartupAggregatePromotionAttemptCount: Int {
-        withLock { _coldStartupAggregatePromotionAttemptCount }
-    }
-
     var events: [String] {
         withLock { _events }
     }
@@ -6806,54 +5645,18 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         blocker?.unblock()
     }
 
-    func blockColdStartupAggregatePromotion() {
-        withLock {
-            _coldStartupPromotionBlocker = FakeStartBlocker()
-        }
-    }
+    private var _holdsProcessingMute = false
+    private var _handbackCount = 0
+    var holdsProcessingMute: Bool { withLock { _holdsProcessingMute } }
+    var handbackCount: Int { withLock { _handbackCount } }
 
-    func waitUntilColdStartupAggregatePromotionIsBlocked(
-        timeout: DispatchTime
-    ) -> Bool {
-        withLock {
-            _coldStartupPromotionBlocker
-        }?.waitUntilEntered(timeout: timeout) ?? false
-    }
-
-    func unblockColdStartupAggregatePromotion() {
-        let blocker = withLock {
-            let blocker = _coldStartupPromotionBlocker
-            _coldStartupPromotionBlocker = nil
-            return blocker
-        }
-        blocker?.unblock()
-    }
-
-    func blockHeadsetAggregatePromotion() {
-        withLock {
-            _headsetPromotionBlocker = FakeStartBlocker()
-        }
-    }
-
-    func waitUntilHeadsetAggregatePromotionIsBlocked(
-        timeout: DispatchTime
-    ) -> Bool {
-        withLock {
-            _headsetPromotionBlocker
-        }?.waitUntilEntered(timeout: timeout) ?? false
-    }
-
-    func unblockHeadsetAggregatePromotion() {
-        let blocker = withLock {
-            let blocker = _headsetPromotionBlocker
-            _headsetPromotionBlocker = nil
-            return blocker
-        }
-        blocker?.unblock()
+    func suspendRenderer() {
+        tearDownRenderer(keepingMute: true)
     }
 
     func start(output: AudioOutputDevice, profile: EQProfile) throws {
         let startControl = withLock {
+            _holdsProcessingMute = true
             _events.append("start:\(output.uid)")
             _startCalls.append(
                 StartCall(
@@ -6890,76 +5693,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
                 activeOutput.bufferFrameSize = _preferredAggregateBufferFrameSize
             }
             _state = .running(output: activeOutput)
-            let remainsPromoted =
-                _isUsingPromotedHeadsetAggregate
-                && _promotedHeadsetOutputUID == output.uid
-            _isUsingTransitionalHeadsetBackend =
-                !remainsPromoted
-                && _headsetPromotionCandidateUIDs.contains(output.uid)
-            _isUsingPromotedHeadsetAggregate = remainsPromoted
-            if !remainsPromoted {
-                _promotedHeadsetOutputUID = nil
-            }
-            _isDeferringColdStartupAggregate = _coldStartupPromotionCandidateUIDs.contains(output.uid)
-            _isUsingSeparateClockBackend =
-                _isUsingTransitionalHeadsetBackend
-                || _isDeferringColdStartupAggregate
-        }
-    }
-
-    func attemptColdStartupAggregatePromotion() throws
-        -> ColdStartupAggregatePromotionResult
-    {
-        let attempt = withLock {
-            _coldStartupAggregatePromotionAttemptCount += 1
-            return (
-                result: _coldStartupAggregatePromotionResult,
-                blocker: _coldStartupPromotionBlocker
-            )
-        }
-        attempt.blocker?.waitUntilUnblocked()
-        return withLock {
-            let result = attempt.result
-            switch result {
-            case .promoted(let output):
-                _state = .running(output: output)
-                _isDeferringColdStartupAggregate = false
-                _isUsingSeparateClockBackend = false
-            case .aggregateUnstable:
-                _isDeferringColdStartupAggregate = false
-            case .clientsActive, .notApplicable:
-                break
-            }
-            return result
-        }
-    }
-
-    func attemptHeadsetAggregatePromotion() throws -> HeadsetAggregatePromotionResult {
-        let attempt = withLock {
-            _headsetAggregatePromotionAttemptCount += 1
-            return (
-                result: _headsetAggregatePromotionResult,
-                blocker: _headsetPromotionBlocker
-            )
-        }
-        attempt.blocker?.waitUntilUnblocked()
-        return withLock {
-            let result = attempt.result
-            if case .promoted(let output) = result {
-                _state = .running(output: output)
-                _isUsingTransitionalHeadsetBackend = false
-                _isUsingPromotedHeadsetAggregate = true
-                _isUsingSeparateClockBackend = false
-                _promotedHeadsetOutputUID = output.uid
-            }
-            return result
-        }
-    }
-
-    func rejectHeadsetAggregatePromotion() {
-        withLock {
-            _isUsingPromotedHeadsetAggregate = false
-            _promotedHeadsetOutputUID = nil
         }
     }
 
@@ -7082,23 +5815,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func setPlaybackBufferRenegotiationHandler(
-        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
-    ) {
-        withLock {
-            _playbackBufferRenegotiationHandler = handler
-        }
-    }
-
-    func emitPlaybackBufferRenegotiation(
-        _ renegotiation: PlaybackBufferRenegotiation
-    ) {
-        let handler = withLock {
-            _playbackBufferRenegotiationHandler
-        }
-        handler?(renegotiation)
-    }
-
     func resumeOutputAfterCancelledTransition() {
         withLock {
             _events.append("resume")
@@ -7106,33 +5822,17 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func setRuntimeFailureHandler(
-        _ handler: (@Sendable (AudioEngineFailure) -> Void)?
-    ) {
-        withLock {
-            _runtimeFailureHandler = handler
-        }
-    }
-
-    func emitRuntimeFailure(_ failure: AudioEngineFailure, markEngineFailed: Bool = true) {
-        let handler = withLock {
-            if markEngineFailed {
-                _state = .failed(failure.description)
-            }
-            return _runtimeFailureHandler
-        }
-        handler?(failure)
-    }
-
     func stop() {
+        tearDownRenderer(keepingMute: false)
+    }
+
+    private func tearDownRenderer(keepingMute: Bool) {
         withLock {
+            _holdsProcessingMute = keepingMute
+            if !keepingMute { _handbackCount += 1 }
             _events.append("stop")
             _stopCallCount += 1
             _state = .stopped
-            _isUsingTransitionalHeadsetBackend = false
-            _isUsingPromotedHeadsetAggregate = false
-            _isDeferringColdStartupAggregate = false
-            _isUsingSeparateClockBackend = false
         }
     }
 
@@ -7600,22 +6300,6 @@ struct LicenseEnforcementTests {
         #expect(running.engine.startCalls.count == 1)
         #expect(running.source.checkpointCount == 1)
         #expect(stopCountAtShutdown.value == 1)
-    }
-
-    @Test
-    func runtimeFailureDuringTheFadeStillRestoresDryPlayback() async {
-        let running = await makeRunningModel(licenseStopTransitionTimeout: .milliseconds(50)) {
-            $0.deferDSPTransitionCompletion = true
-        }
-
-        running.source.emit(makeLicenseSnapshot(state: .monthlyExpired, sequence: 2))
-        await waitUntil { running.engine.updateDSPCalls.count == 1 }
-        running.engine.emitRuntimeFailure(adaptiveRenderFailure)
-        await waitUntil { running.engine.stopCallCount == 1 }
-        await waitUntil { running.model.statusMessage == expiredText() }
-
-        #expect(running.model.statusMessage == expiredText())
-        #expect(running.model.lifecycleState == .stopped)
     }
 
     @Test

@@ -2,25 +2,7 @@ import AppKit
 import GlassEQSettingsIPC
 import SwiftUI
 
-private extension SettingsAudioRouteMode {
-    var usesSeparateClockDiagnostics: Bool {
-        self == .compatibility || self == .headsetCompatibility
-    }
-}
-
 func outputAddedLatencyLabel(_ snapshot: SettingsSnapshot) -> String {
-    if snapshot.metrics.diagnostics.status.routeMode.usesSeparateClockDiagnostics {
-        guard snapshot.metrics.playbackBufferObservations > 0 else {
-            return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
-        }
-        return localizedLatency(
-            milliseconds: playbackFramesToMilliseconds(
-                snapshot.metrics.averagePlaybackBufferedFrames,
-                bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
-                fallbackSampleRate: snapshot.currentOutputSampleRate
-            )
-        )
-    }
     guard snapshot.metrics.tapToOutputLatencyObservations > 0 else {
         return snapshot.isRunning ? localized("Measuring...") : localized("Unavailable")
     }
@@ -107,9 +89,7 @@ struct OutputDiagnosticsReport {
                 id: .reliability,
                 title: localized("Reliability"),
                 symbol: "checkmark.shield",
-                note: diagnostics.status.routeMode.usesSeparateClockDiagnostics
-                    ? localized("Buffered discards include priming and recovery. Failure categories can overlap.")
-                    : localized("Failure categories can overlap."),
+                note: localized("Failure categories can overlap."),
                 rows: reliabilityRows
             ),
             Section(
@@ -126,9 +106,6 @@ struct OutputDiagnosticsReport {
                     Row(
                         id: "bufferEscalations", title: localized("Buffer Escalations"),
                         value: localizedInteger(diagnostics.recovery.bufferEscalations)),
-                    Row(
-                        id: "headsetFallbacks", title: localized("Headset Fallbacks"),
-                        value: localizedInteger(diagnostics.recovery.headsetFallbacks)),
                     Row(id: "lastRecovery", title: localized("Last Recovery"), value: lastRecoveryLabel),
                 ]
             ),
@@ -191,13 +168,6 @@ struct OutputDiagnosticsReport {
                     Row(
                         id: "aggregateSafetyOffsets", title: localized("Aggregate Safety Offsets in / out"),
                         value: aggregateSafetyOffsetsLabel),
-                    Row(
-                        id: "sampleRateConversion",
-                        title: localized("Sample Rate Conversion"),
-                        value: snapshot.metrics.playbackSampleRateConversionActive
-                            ? localized("Active")
-                            : localized("Inactive")
-                    ),
                 ]
             ),
         ]
@@ -285,7 +255,7 @@ struct OutputDiagnosticsReport {
     }
 
     private var reliabilityRows: [Row] {
-        var rows = [
+        [
             Row(
                 id: "capturedFrames", title: localized("Captured Frames"),
                 value: localizedInteger(snapshot.metrics.capturedFrames)),
@@ -297,24 +267,11 @@ struct OutputDiagnosticsReport {
                 id: "droppedInputFrames", title: localized("Capture Frames Dropped"),
                 value: localizedInteger(snapshot.metrics.droppedInputFrames)),
             Row(
-                id: "droppedBufferedFrames", title: localized("Buffered Frames Discarded"),
-                value: localizedInteger(snapshot.metrics.droppedBufferedFrames)),
-            Row(
                 id: "saturatedSamples", title: localized("Saturated Samples"),
                 value: localizedInteger(snapshot.metrics.saturatedSamples)),
             Row(id: "deadlineMisses", title: localized("Deadline Misses"), value: deadlineMissesLabel),
             Row(id: "discontinuities", title: localized("Discontinuities"), value: discontinuityLabel),
         ]
-        if diagnostics.status.routeMode.usesSeparateClockDiagnostics {
-            rows += [
-                Row(id: "bufferedFrames", title: localized("Buffered / Peak"), value: bufferedFramesLabel),
-                Row(id: "clockCorrection", title: localized("Clock Correction"), value: playbackRateCorrectionLabel),
-                Row(id: "servoBuffer", title: localized("Servo Buffer"), value: servoBufferLabel),
-                Row(id: "bridgeLatency", title: localized("Bridge Latency"), value: bridgeLatencyLabel),
-                Row(id: "bridgeLatencyRange", title: localized("Bridge Latency Range"), value: bridgeLatencyRangeLabel),
-            ]
-        }
-        return rows
     }
 
     private func durationPercentilesLabel(
@@ -415,12 +372,6 @@ struct OutputDiagnosticsReport {
         )
     }
 
-    private var bufferedFramesLabel: String {
-        localized(
-            "\(localizedInteger(snapshot.metrics.currentBufferedFrames)) / \(localizedInteger(snapshot.metrics.maximumPlaybackBufferedFrames)) frames"
-        )
-    }
-
     private var lastRecoveryLabel: String {
         guard let reason = diagnostics.recovery.lastReason,
             let date = diagnostics.recovery.lastRecoveryAt
@@ -440,12 +391,6 @@ struct OutputDiagnosticsReport {
             localized("deadline misses")
         case .timestampDiscontinuity:
             localized("timestamp discontinuity")
-        case .headsetInstability:
-            localized("headset instability")
-        case .playbackUnderrun:
-            localized("playback underrun")
-        case .adaptiveRenderFailure:
-            localized("adaptive render failure")
         }
     }
 
@@ -627,51 +572,6 @@ struct OutputDiagnosticsReport {
         frames.map(localizedFrameCount) ?? localized("Unavailable")
     }
 
-    private var bridgeLatencyLabel: String {
-        localizedLatency(
-            milliseconds: playbackFramesToMilliseconds(
-                snapshot.metrics.averagePlaybackBufferedFrames,
-                bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
-                fallbackSampleRate: snapshot.currentOutputSampleRate
-            )
-        )
-    }
-
-    private var bridgeLatencyRangeLabel: String {
-        let minimum = playbackFramesToMilliseconds(
-            Double(snapshot.metrics.minimumPlaybackBufferedFrames),
-            bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
-            fallbackSampleRate: snapshot.currentOutputSampleRate
-        )
-        let maximum = playbackFramesToMilliseconds(
-            Double(snapshot.metrics.maximumPlaybackBufferedFrames),
-            bufferSampleRate: snapshot.metrics.playbackBufferSampleRate,
-            fallbackSampleRate: snapshot.currentOutputSampleRate
-        )
-        return localized(
-            "\(localizedLatency(milliseconds: minimum)) to \(localizedLatency(milliseconds: maximum))"
-        )
-    }
-
-    private var playbackRateCorrectionLabel: String {
-        let correction = localizedDecimal(
-            snapshot.metrics.playbackRateCorrectionPPM,
-            minimumFractionDigits: 1,
-            maximumFractionDigits: 1,
-            signed: true
-        )
-        return localized("\(correction) ppm")
-    }
-
-    private var servoBufferLabel: String {
-        let occupancy = localizedDecimal(
-            snapshot.metrics.filteredPlaybackOccupancyFrames,
-            minimumFractionDigits: 1,
-            maximumFractionDigits: 1
-        )
-        let target = localizedInteger(snapshot.metrics.playbackOccupancyTargetFrames)
-        return localized("\(occupancy) / \(target) frames")
-    }
 }
 
 struct OutputDiagnosticsSheet: View {

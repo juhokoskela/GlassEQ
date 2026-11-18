@@ -142,9 +142,8 @@ private func isSystemAudioCaptureOperation(_ operation: String) -> Bool {
     }
 
     switch operation {
-    case "AudioDeviceStart(capture tap)",
-        "AudioDeviceStart(combined aggregate)",
-        "AudioDeviceStart(profile rebuild mute tap)":
+    case "AudioDeviceStart(combined aggregate)",
+        "AudioDeviceStart(processing mute tap)":
         return true
     default:
         return false

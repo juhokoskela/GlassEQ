@@ -8,6 +8,32 @@ import Testing
 @Suite
 struct CoreAudioDeviceTests {
     @Test
+    func protectedStartupChecksTheLiveRouteBeforeActivation() throws {
+        let expected = output(channelCount: 2)
+        try SystemTapAudioEngine.validateDefaultOutput(expected) { output(channelCount: 2, bufferFrameSize: 512) }
+        for changed in [
+            output(id: 43, channelCount: 2),
+            output(uid: "another-output", channelCount: 2),
+            output(channelCount: 1),
+            output(channelCount: 2, sampleRate: 24_000),
+        ] {
+            #expect(throws: (any Error).self) {
+                try SystemTapAudioEngine.validateDefaultOutput(expected) { changed }
+            }
+        }
+    }
+
+    @Test
+    func cancelledStartupCannotActivateEvenIfTheOriginalRouteHasReturned() async {
+        let expected = output(channelCount: 2)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try SystemTapAudioEngine.validateDefaultOutput(expected) { expected }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test
     func coreAudioCleanupRetainsFailedResourcesForRetry() {
         let counts = Mutex((aggregateDestroyAttempts: 0, tapDestroyAttempts: 0, completionCount: 0))
         let operations = CoreAudioResourceCleanupLedger.Operations(
@@ -545,7 +571,7 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func aggregateStartupProbationCountsOnlyPostActivationCallbacks() {
+    func aggregateStartupProbationCountsOnlyCallbacksFromTheNewGeneration() {
         let expectation = SystemTapAudioEngine.AggregateCallbackFrameExpectation(
             frameCount: 16
         )
@@ -621,14 +647,12 @@ struct CoreAudioDeviceTests {
 
         try SystemTapAudioEngine.runCombinedStartupAttempts(
             frameSizes: [16, 16],
-            isSeparateClockHandoff: false,
             attempt: { frameSize in
                 attempts.append(frameSize)
                 if attempts.count == 1 {
                     throw error
                 }
             },
-            restoreSeparateClockOutput: {},
             waitBeforeRetry: {
                 waitCount += 1
             }
@@ -636,289 +660,6 @@ struct CoreAudioDeviceTests {
 
         #expect(attempts == [16, 16])
         #expect(waitCount == 1)
-    }
-
-    @Test
-    func finalCombinedHandoffQualificationFailureRestoresOutputBeforeEscaping() {
-        var events: [String] = []
-        var compatibilityOutputIsActive = true
-        let output = output(
-            id: 91,
-            uid: "qualification-output",
-            channelCount: 2,
-            bufferFrameSize: 16
-        )
-        let profile = EQProfile(
-            name: "Qualification handoff",
-            mode: .parametric,
-            filters: []
-        )
-        let engine = SystemTapAudioEngine(
-            restorationStoreURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("qualification-handoff-\(UUID()).json")
-        )
-        let startupError = SystemTapAudioEngine.AggregateStartupQualificationError(
-            expectedFrameCount: 32,
-            snapshot: .init(
-                validCallbackStreak: 0,
-                observedCallbacks: 0,
-                rejectedCallbacks: 0
-            )
-        )
-
-        do {
-            try engine.startCombinedAggregateHandoffForTesting(
-                output: output,
-                profile: profile,
-                preserveStagingOutputBuffer: true,
-                boundary: .init(
-                    attempt: { frameSize in
-                        #expect(compatibilityOutputIsActive)
-                        events.append("attempt \(frameSize)")
-                        compatibilityOutputIsActive = false
-                        throw startupError
-                    },
-                    restoreSeparateClockBackend: {
-                        restoredOutput,
-                        restoredProfile,
-                        preserveOutputBuffer in
-                        #expect(!compatibilityOutputIsActive)
-                        #expect(restoredOutput == output)
-                        #expect(restoredProfile == profile)
-                        #expect(preserveOutputBuffer)
-                        events.append("restore")
-                        compatibilityOutputIsActive = true
-                    },
-                    waitBeforeRetry: {
-                        #expect(compatibilityOutputIsActive)
-                        events.append("wait")
-                    }
-                )
-            )
-            Issue.record("Expected final qualification failure")
-        } catch let error as SystemTapAudioEngine.AggregateStartupQualificationError {
-            events.append("escape")
-            #expect(error.expectedFrameCount == startupError.expectedFrameCount)
-        } catch {
-            Issue.record("Expected the qualification error, got \(error)")
-        }
-
-        #expect(compatibilityOutputIsActive)
-        #expect(
-            events == [
-                "attempt 16", "restore", "wait",
-                "attempt 16", "restore", "wait",
-                "attempt 32", "restore", "escape",
-            ])
-    }
-
-    @Test
-    func nonQualificationCombinedHandoffFailureRestoresOutputBeforeEscaping() {
-        var events: [String] = []
-        var compatibilityOutputIsActive = true
-        let output = output(
-            id: 92,
-            uid: "arbitrary-failure-output",
-            channelCount: 2,
-            bufferFrameSize: 16
-        )
-        let profile = EQProfile(
-            name: "Arbitrary failure handoff",
-            mode: .parametric,
-            filters: []
-        )
-        let engine = SystemTapAudioEngine(
-            restorationStoreURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("arbitrary-handoff-\(UUID()).json")
-        )
-        let startupError = HandoffStartupTestError()
-
-        do {
-            try engine.startCombinedAggregateHandoffForTesting(
-                output: output,
-                profile: profile,
-                preserveStagingOutputBuffer: false,
-                boundary: .init(
-                    attempt: { frameSize in
-                        #expect(compatibilityOutputIsActive)
-                        events.append("attempt \(frameSize)")
-                        compatibilityOutputIsActive = false
-                        throw startupError
-                    },
-                    restoreSeparateClockBackend: {
-                        restoredOutput,
-                        restoredProfile,
-                        preserveOutputBuffer in
-                        #expect(!compatibilityOutputIsActive)
-                        #expect(restoredOutput == output)
-                        #expect(restoredProfile == profile)
-                        #expect(!preserveOutputBuffer)
-                        events.append("restore")
-                        compatibilityOutputIsActive = true
-                    },
-                    waitBeforeRetry: {
-                        events.append("wait")
-                    }
-                )
-            )
-            Issue.record("Expected non-qualification startup failure")
-        } catch let error as HandoffStartupTestError {
-            events.append("escape")
-            #expect(error === startupError)
-        } catch {
-            Issue.record("Expected the original startup error, got \(error)")
-        }
-
-        #expect(compatibilityOutputIsActive)
-        #expect(events == ["attempt 16", "restore", "escape"])
-    }
-
-    @Test
-    func combinedHandoffRestorationFailurePreservesStartupError() {
-        var events: [String] = []
-        var compatibilityTapIsActive = true
-        var combinedGraphIsActive = true
-        let output = output(
-            id: 93,
-            uid: "restoration-failure-output",
-            channelCount: 2,
-            bufferFrameSize: 16
-        )
-        let profile = EQProfile(
-            name: "Restoration failure handoff",
-            mode: .parametric,
-            filters: []
-        )
-        let engine = SystemTapAudioEngine(
-            restorationStoreURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("restoration-failure-\(UUID()).json")
-        )
-        let startupError = HandoffStartupTestError()
-
-        do {
-            try engine.startCombinedAggregateHandoffForTesting(
-                output: output,
-                profile: profile,
-                preserveStagingOutputBuffer: true,
-                boundary: .init(
-                    attempt: { frameSize in
-                        events.append("attempt \(frameSize)")
-                        throw startupError
-                    },
-                    restoreSeparateClockBackend: {
-                        restoredOutput,
-                        restoredProfile,
-                        preserveOutputBuffer in
-                        #expect(restoredOutput == output)
-                        #expect(restoredProfile == profile)
-                        #expect(preserveOutputBuffer)
-                        events.append("restore")
-                        throw HandoffRestorationTestError()
-                    },
-                    waitBeforeRetry: {
-                        events.append("wait")
-                    },
-                    stopSeparateClockBackend: {
-                        events.append("stop")
-                        compatibilityTapIsActive = false
-                    },
-                    stopCombinedResources: {
-                        events.append("stop combined")
-                        combinedGraphIsActive = false
-                    }
-                )
-            )
-            Issue.record("Expected handoff restoration to fail")
-        } catch let error as HandoffStartupTestError {
-            events.append("escape")
-            #expect(error === startupError)
-        } catch {
-            Issue.record("Expected the startup error, got \(error)")
-        }
-
-        #expect(!compatibilityTapIsActive)
-        #expect(!combinedGraphIsActive)
-        #expect(
-            events == [
-                "attempt 16", "restore", "stop", "stop combined", "escape",
-            ])
-    }
-
-    @Test
-    func rejectedHeadsetPromotionStopsBothGraphsWhenRestorationFails() {
-        var events: [String] = []
-        let output = output(
-            id: 94,
-            uid: "rejected-promotion-output",
-            channelCount: 2,
-            sampleRate: 24_000,
-            bufferFrameSize: 480,
-            transportType: kAudioDeviceTransportTypeBluetooth
-        )
-        let profile = EQProfile(
-            name: "Rejected promotion",
-            mode: .parametric,
-            filters: []
-        )
-        let engine = SystemTapAudioEngine(
-            restorationStoreURL: FileManager.default.temporaryDirectory
-                .appendingPathComponent("rejected-promotion-\(UUID()).json")
-        )
-
-        do {
-            _ = try engine.rejectHeadsetAggregatePromotionForTesting(
-                output: output,
-                profile: profile,
-                boundary: .init(
-                    attempt: { _ in },
-                    restoreSeparateClockBackend: { _, _, _ in
-                        events.append("restore")
-                        throw HandoffRestorationTestError()
-                    },
-                    waitBeforeRetry: {},
-                    stopSeparateClockBackend: {
-                        events.append("stop compatibility")
-                    },
-                    stopCombinedResources: {
-                        events.append("stop combined")
-                    }
-                )
-            )
-            Issue.record("Expected rejected-promotion restoration to fail")
-        } catch is HandoffRestorationTestError {
-            events.append("escape")
-        } catch {
-            Issue.record("Expected the restoration error, got \(error)")
-        }
-
-        #expect(
-            events == [
-                "restore", "stop compatibility", "stop combined", "escape",
-            ])
-    }
-
-    @Test
-    func activeSeparateClockOutputDoesNotNeedRestoration() {
-        #expect(
-            !SystemTapAudioEngine.requiresSeparateClockRestoration(
-                activeBackendIsSeparate: true,
-                hasActiveOutputAndProfile: true
-            ))
-        #expect(
-            SystemTapAudioEngine.requiresSeparateClockRestoration(
-                activeBackendIsSeparate: false,
-                hasActiveOutputAndProfile: false
-            ))
-        #expect(
-            SystemTapAudioEngine.requiresSeparateClockRestoration(
-                activeBackendIsSeparate: false,
-                hasActiveOutputAndProfile: true
-            ))
-        #expect(
-            SystemTapAudioEngine.requiresSeparateClockRestoration(
-                activeBackendIsSeparate: true,
-                hasActiveOutputAndProfile: false
-            ))
     }
 
     @Test
@@ -935,169 +676,6 @@ struct CoreAudioDeviceTests {
                 sampleRate: 24_000,
                 minimumConsecutiveCallbacks: 32
             ) > 1.5)
-    }
-
-    @Test
-    func physicalFirstColdStartupIsUsedOnlyWhenNoBackendIsRunning() {
-        #expect(
-            SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-                activeBackendIsSeparate: false,
-                combinedState: .stopped
-            ))
-        #expect(
-            SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-                activeBackendIsSeparate: false,
-                combinedState: .failed("Previous startup failed")
-            ))
-        #expect(
-            !SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-                activeBackendIsSeparate: true,
-                combinedState: .stopped
-            ))
-        #expect(
-            !SystemTapAudioEngine.shouldUsePhysicalFirstColdStartup(
-                activeBackendIsSeparate: false,
-                combinedState: .running(
-                    output: AudioOutputDevice(
-                        id: 1,
-                        uid: "running-output",
-                        name: "Running Output",
-                        nominalSampleRate: 48_000,
-                        outputChannelCount: 2,
-                        bufferFrameSize: 16
-                    ))
-            ))
-    }
-
-    @Test
-    func deferredColdStartupRebuildsStayCompatibleWhileClientsAreActive() {
-        #expect(
-            SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-                activeBackendIsSeparate: true,
-                deferredRouteMatches: true,
-                externalClientsMayBeActive: false
-            ))
-        #expect(
-            SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-                activeBackendIsSeparate: true,
-                deferredRouteMatches: false,
-                externalClientsMayBeActive: true
-            ))
-        #expect(
-            !SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-                activeBackendIsSeparate: false,
-                deferredRouteMatches: true,
-                externalClientsMayBeActive: true
-            ))
-        #expect(
-            !SystemTapAudioEngine.shouldUseColdStartupCompatibilityBackend(
-                activeBackendIsSeparate: true,
-                deferredRouteMatches: false,
-                externalClientsMayBeActive: false
-            ))
-    }
-
-    @Test
-    func coldStartupPromotionReturnsTheAppliedAggregateMetadata() throws {
-        let physicalOutput = output(
-            id: 9_101,
-            uid: "cold-promotion-output",
-            channelCount: 2,
-            bufferFrameSize: 512
-        )
-        var aggregateOutput = physicalOutput
-        aggregateOutput.bufferFrameSize = 32
-
-        let result = try SystemTapAudioEngine.coldStartupPromotionResult(
-            combinedState: .running(output: aggregateOutput)
-        )
-
-        guard case .promoted(let promotedOutput) = result else {
-            Issue.record("Expected a promoted output")
-            return
-        }
-        #expect(promotedOutput == aggregateOutput)
-        #expect(promotedOutput.bufferFrameSize == 32)
-        #expect(promotedOutput.bufferFrameSize != physicalOutput.bufferFrameSize)
-    }
-
-    @Test
-    func potentialActiveOutputProcessDetectionMatchesTheDeviceAndExclusions() {
-        let processDevices: [AudioObjectID: [AudioObjectID]] = [
-            10: [100],
-            20: [200],
-            30: [100, 200],
-        ]
-        let runningProcesses: Set<AudioObjectID> = [20, 30]
-        let query: (AudioObjectID, Set<AudioObjectID>) -> Bool = {
-            deviceID,
-            excluded in
-            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
-                using: deviceID,
-                excluding: excluded,
-                processObjectIDs: { [10, 20, 30] },
-                isRunningOutput: { runningProcesses.contains($0) },
-                outputDeviceIDs: { processDevices[$0] ?? [] }
-            )
-        }
-
-        #expect(query(100, []))
-        #expect(query(200, []))
-        #expect(!query(100, [30]))
-        #expect(!query(300, []))
-    }
-
-    @Test
-    func activeOutputProcessDetectionSkipsConfirmedStaleProcessObjects() {
-        let mayHaveActiveProcess = CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
-            using: 100,
-            excluding: [],
-            processObjectIDs: { [10, 20] },
-            isRunningOutput: { processObjectID in
-                if processObjectID == 10 {
-                    throw CoreAudioError(
-                        operation: "read running state",
-                        status: kAudioHardwareBadObjectError
-                    )
-                }
-                return true
-            },
-            outputDeviceIDs: { processObjectID in
-                if processObjectID == 20 {
-                    throw CoreAudioError(
-                        operation: "read output devices",
-                        status: kAudioHardwareBadObjectError
-                    )
-                }
-                return [100]
-            }
-        )
-
-        #expect(!mayHaveActiveProcess)
-    }
-
-    @Test
-    func activeOutputProcessDetectionTreatsProcessListFailuresAsPotentialActivity() {
-        #expect(
-            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
-                using: 100,
-                excluding: [],
-                processObjectIDs: { throw ActiveProcessQueryTestError.processList },
-                isRunningOutput: { _ in true },
-                outputDeviceIDs: { _ in [100] }
-            ))
-    }
-
-    @Test
-    func activeOutputProcessDetectionTreatsUnknownPropertyFailuresAsPotentialActivity() {
-        #expect(
-            CoreAudioDeviceQuery.mayHaveActiveOutputProcess(
-                using: 100,
-                excluding: [],
-                processObjectIDs: { [10] },
-                isRunningOutput: { _ in true },
-                outputDeviceIDs: { _ in throw ActiveProcessQueryTestError.propertyQuery }
-            ))
     }
 
     @Test
@@ -1343,131 +921,15 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func stagingPreservesANormalRateOutputAndUsesConversion() {
-        let nativeOutput = output(
-            uid: "native-rate-output",
-            channelCount: 2,
-            sampleRate: 44_100,
-            bufferFrameSize: 512
-        )
-
-        #expect(
-            !SeparateClockAudioBackend.shouldUseSampleRateConversion(
-                tapSampleRate: 48_000,
-                output: nativeOutput
-            ))
-        #expect(
-            SeparateClockAudioBackend.shouldUseSampleRateConversion(
-                tapSampleRate: 48_000,
-                output: nativeOutput,
-                preservingOutputSampleRate: true
-            ))
-
-        let convertedCallbackFrames = PlaybackSampleRatePlan(
-            inputSampleRate: 48_000,
-            outputSampleRate: 44_100
-        ).inputFrames(forOutputFrames: 512)
-        #expect(
-            SeparateClockAudioBackend.preferredPlaybackPrimeFrames(
-                for: nativeOutput,
-                tapSampleRate: 48_000,
-                captureCallbackFrames: 64
-            ) >= convertedCallbackFrames + 64)
-    }
-
-    @Test
-    func compatibilityCaptureRefreshesForNormalRateChanges() {
-        let output48 = output(
-            uid: "normal-rate-output",
-            channelCount: 2,
-            sampleRate: 48_000
-        )
-        let output88 = output(
-            uid: "normal-rate-output",
-            channelCount: 2,
-            sampleRate: 88_200
-        )
-        let lowRateOutput = output(
-            uid: "low-rate-output",
-            channelCount: 2,
-            sampleRate: 24_000
-        )
-
-        #expect(
-            !SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-                tapSampleRate: 48_000,
-                output: output48
-            ))
-        #expect(
-            SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-                tapSampleRate: 44_100,
-                output: output48
-            ))
-        #expect(
-            SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-                tapSampleRate: 48_000,
-                output: output88
-            ))
-        #expect(
-            !SeparateClockAudioBackend.shouldRefreshCaptureForOutput(
-                tapSampleRate: 48_000,
-                output: lowRateOutput
-            ))
-    }
-
-    @Test
-    func sampleRateMutationRecordsRestorationBeforeDeviceWrite() throws {
-        let output = output(uid: "record-before-set", channelCount: 2, sampleRate: 44_100)
-        var events: [String] = []
-
-        try SeparateClockAudioBackend.setSampleRateAfterRecordingRestoration(
-            48_000,
-            on: output,
-            recordRestoration: { restoration in
-                #expect(restoration.uid == output.uid)
-                #expect(restoration.originalSampleRate == 44_100)
-                events.append("record")
-            },
-            setSampleRate: { sampleRate, objectID in
-                #expect(sampleRate == 48_000)
-                #expect(objectID == output.id)
-                events.append("set")
-            }
-        )
-
-        #expect(events == ["record", "set"])
-    }
-
-    @Test
-    func sampleRateMutationSkipsDeviceWriteWhenRestorationRecordFails() {
-        let output = output(uid: "record-fails", channelCount: 2, sampleRate: 44_100)
-        var didSet = false
-
-        #expect(throws: TestDeviceMutationError.recordFailed) {
-            try SeparateClockAudioBackend.setSampleRateAfterRecordingRestoration(
-                48_000,
-                on: output,
-                recordRestoration: { _ in throw TestDeviceMutationError.recordFailed },
-                setSampleRate: { _, _ in didSet = true }
-            )
-        }
-
-        #expect(!didSet)
-    }
-
-    @Test
     func sampleRateRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentSampleRate = 44_100.0
         var setCalls: [(sampleRate: Double, objectID: AudioObjectID)] = []
-        let restoration = SeparateClockAudioBackend.SampleRateRestoration(
-            uid: "restored-output",
-            originalSampleRate: 48_000
-        )
+        let deviceUID = "restored-output"
 
-        let restored = SeparateClockAudioBackend.restoreSampleRateRestoration(
-            restoration,
+        let restored = PersistedAudioDeviceRestorationStore.restoreSampleRate(
+            uid: deviceUID, to: 48_000,
             outputForUID: { uid in
-                #expect(uid == restoration.uid)
+                #expect(uid == deviceUID)
                 return output(
                     id: 9_001,
                     uid: uid,
@@ -1490,13 +952,10 @@ struct CoreAudioDeviceTests {
     @Test
     func sampleRateRestorationIsRetainedWhenDeviceIsAbsentOrWriteCannotBeVerified() {
         var setCallCount = 0
-        let restoration = SeparateClockAudioBackend.SampleRateRestoration(
-            uid: "missing-output",
-            originalSampleRate: 48_000
-        )
+        let deviceUID = "missing-output"
 
-        let absentRestored = SeparateClockAudioBackend.restoreSampleRateRestoration(
-            restoration,
+        let absentRestored = PersistedAudioDeviceRestorationStore.restoreSampleRate(
+            uid: deviceUID, to: 48_000,
             outputForUID: { _ in nil },
             setSampleRate: { _, _ in setCallCount += 1 }
         )
@@ -1504,8 +963,8 @@ struct CoreAudioDeviceTests {
         #expect(!absentRestored)
         #expect(setCallCount == 0)
 
-        let unverifiedRestored = SeparateClockAudioBackend.restoreSampleRateRestoration(
-            restoration,
+        let unverifiedRestored = PersistedAudioDeviceRestorationStore.restoreSampleRate(
+            uid: deviceUID, to: 48_000,
             outputForUID: { uid in
                 output(id: 9_002, uid: uid, channelCount: 2, sampleRate: 44_100)
             },
@@ -1520,15 +979,12 @@ struct CoreAudioDeviceTests {
     func bufferFrameSizeRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentFrameSize: UInt32 = 512
         var setCalls: [(frameSize: UInt32, objectID: AudioObjectID)] = []
-        let restoration = SeparateClockAudioBackend.BufferFrameSizeRestoration(
-            uid: "buffer-output",
-            originalFrameSize: 256
-        )
+        let deviceUID = "buffer-output"
 
-        let restored = SeparateClockAudioBackend.restoreBufferFrameSizeRestoration(
-            restoration,
+        let restored = PersistedAudioDeviceRestorationStore.restoreBufferFrameSize(
+            uid: deviceUID, to: 256,
             outputForUID: { uid in
-                #expect(uid == restoration.uid)
+                #expect(uid == deviceUID)
                 return output(
                     id: 9_003,
                     uid: uid,
@@ -1551,13 +1007,10 @@ struct CoreAudioDeviceTests {
     @Test
     func bufferFrameSizeRestorationSkipsAlreadyRestoredDevice() {
         var didSet = false
-        let restoration = SeparateClockAudioBackend.BufferFrameSizeRestoration(
-            uid: "already-restored-buffer-output",
-            originalFrameSize: 256
-        )
+        let deviceUID = "already-restored-buffer-output"
 
-        let restored = SeparateClockAudioBackend.restoreBufferFrameSizeRestoration(
-            restoration,
+        let restored = PersistedAudioDeviceRestorationStore.restoreBufferFrameSize(
+            uid: deviceUID, to: 256,
             outputForUID: { uid in
                 output(id: 9_004, uid: uid, channelCount: 2, bufferFrameSize: 256)
             },
@@ -1569,68 +1022,17 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func adaptiveBufferDecayWritesAndVerifiesThePreviousStep() throws {
-        let current = output(channelCount: 2, bufferFrameSize: 256)
-        var requestedFrameSize: UInt32?
-
-        let updated = try SeparateClockAudioBackend.decayedPlaybackOutput(
-            current,
-            supportedRange: AudioBufferFrameSizeRange(minimum: 64, maximum: 512),
-            setBufferFrameSize: { frameSize, objectID in
-                #expect(objectID == current.id)
-                requestedFrameSize = frameSize
-            },
-            queryOutput: { objectID in
-                #expect(objectID == current.id)
-                return output(id: objectID, channelCount: 2, bufferFrameSize: 128)
-            }
-        )
-
-        #expect(requestedFrameSize == 128)
-        #expect(updated?.bufferFrameSize == 128)
-    }
-
-    @Test
-    func adaptiveBufferDecayWaitsForTheDevicePropertyToSettle() throws {
-        let current = output(channelCount: 2, bufferFrameSize: 256)
-        var queryCount = 0
-        var waitCount = 0
-
-        let updated = try SeparateClockAudioBackend.decayedPlaybackOutput(
-            current,
-            supportedRange: AudioBufferFrameSizeRange(minimum: 64, maximum: 512),
-            setBufferFrameSize: { _, _ in },
-            queryOutput: { objectID in
-                queryCount += 1
-                return output(
-                    id: objectID,
-                    channelCount: 2,
-                    bufferFrameSize: queryCount < 3 ? 256 : 128
-                )
-            },
-            waitForPropertySettlement: {
-                waitCount += 1
-            }
-        )
-
-        #expect(queryCount == 3)
-        #expect(waitCount == 2)
-        #expect(updated?.bufferFrameSize == 128)
-    }
-
-    @Test
     func persistedDeviceRestorationRestoresAndClearsVerifiedSettings() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
         defer {
             try? FileManager.default.removeItem(at: url)
         }
-        try PersistedAudioDeviceRestorationStore.recordSampleRate(uid: "dac", originalSampleRate: 48_000, at: url)
-        try PersistedAudioDeviceRestorationStore.recordBufferFrameSize(uid: "dac", originalFrameSize: 256, at: url)
+        try Data(#"[{"uid":"dac","originalSampleRate":48000,"originalBufferFrameSize":256}]"#.utf8).write(to: url)
         var sampleRate = 44_100.0
         var frameSize: UInt32 = 512
 
-        SeparateClockAudioBackend.restorePersistedDeviceSettings(
+        PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
             at: url,
             outputForUID: { uid in
                 output(uid: uid, channelCount: 2, sampleRate: sampleRate, bufferFrameSize: frameSize)
@@ -1655,9 +1057,9 @@ struct CoreAudioDeviceTests {
         defer {
             try? FileManager.default.removeItem(at: url)
         }
-        try PersistedAudioDeviceRestorationStore.recordSampleRate(uid: "missing", originalSampleRate: 48_000, at: url)
+        try Data(#"[{"uid":"missing","originalSampleRate":48000}]"#.utf8).write(to: url)
 
-        SeparateClockAudioBackend.restorePersistedDeviceSettings(
+        PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
             at: url,
             outputForUID: { _ in nil },
             setSampleRate: { _, _ in Issue.record("Unexpected sample-rate write") },
@@ -1665,24 +1067,6 @@ struct CoreAudioDeviceTests {
         )
 
         #expect(PersistedAudioDeviceRestorationStore.load(from: url)["missing"]?.originalSampleRate == 48_000)
-    }
-
-    @Test
-    func persistedDeviceRestorationDoesNotOverwritePendingOriginals() throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
-        defer {
-            try? FileManager.default.removeItem(at: url)
-        }
-
-        try PersistedAudioDeviceRestorationStore.recordSampleRate(uid: "dac", originalSampleRate: 48_000, at: url)
-        try PersistedAudioDeviceRestorationStore.recordSampleRate(uid: "dac", originalSampleRate: 44_100, at: url)
-        try PersistedAudioDeviceRestorationStore.recordBufferFrameSize(uid: "dac", originalFrameSize: 256, at: url)
-        try PersistedAudioDeviceRestorationStore.recordBufferFrameSize(uid: "dac", originalFrameSize: 512, at: url)
-
-        let record = try #require(PersistedAudioDeviceRestorationStore.load(from: url)["dac"])
-        #expect(record.originalSampleRate == 48_000)
-        #expect(record.originalBufferFrameSize == 256)
     }
 
     @Test
@@ -1921,7 +1305,21 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func headsetPromotionRequiresDeviceClockToMatchTheNominalRate() {
+    func headsetProbationCoversThreeQuartersOfASecondAtTheAppliedBufferSize() {
+        func callbacks(at rate: Double, frames: UInt32) -> UInt64 {
+            SystemTapAudioEngine.probationCallbackCount(
+                for: output(
+                    channelCount: 1, sampleRate: rate, bufferFrameSize: frames,
+                    transportType: kAudioDeviceTransportTypeBluetooth
+                ))
+        }
+        #expect(callbacks(at: 24_000, frames: 480) == 38)
+        #expect(callbacks(at: 16_000, frames: 64) == 188)
+        #expect(callbacks(at: 48_000, frames: 64) == 8)
+    }
+
+    @Test
+    func headsetQualificationRequiresDeviceClockToMatchTheNominalRate() {
         #expect(
             SystemTapAudioEngine.deviceClockSlopeAgrees(
                 sampleTimeDeltaFrames: 2_400,
@@ -1949,32 +1347,6 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func headsetModeUsesSeparateClockBackend() {
-        #expect(
-            SystemTapAudioEngine.shouldUseSeparateClockBackend(
-                for: output(
-                    channelCount: 2,
-                    sampleRate: 24_000,
-                    bufferFrameSize: 480,
-                    transportType: kAudioDeviceTransportTypeBluetooth
-                )
-            ))
-        #expect(
-            !SystemTapAudioEngine.shouldUseSeparateClockBackend(
-                for: output(
-                    channelCount: 2,
-                    sampleRate: 48_000,
-                    bufferFrameSize: 512,
-                    transportType: kAudioDeviceTransportTypeBluetooth
-                )
-            ))
-        #expect(
-            !SystemTapAudioEngine.shouldUseSeparateClockBackend(
-                for: output(channelCount: 2, sampleRate: 24_000, bufferFrameSize: 480)
-            ))
-    }
-
-    @Test
     func profileUpdateRejectsTheTemporaryGapInAnOutputRebuild() throws {
         #expect(throws: AudioEngineProfileUpdateUnavailable.self) {
             _ = try SystemTapAudioEngine.profileUpdateOutput(nil)
@@ -1982,64 +1354,6 @@ struct CoreAudioDeviceTests {
 
         let activeOutput = output(uid: "profile-update-output", channelCount: 2)
         #expect(try SystemTapAudioEngine.profileUpdateOutput(activeOutput) == activeOutput)
-    }
-
-    @Test
-    func topologyRebuildAcquiresMuteGuardBeforeRebuildAndReleasesAfter() throws {
-        var events: [String] = []
-        let result = try SeparateClockAudioBackend.performTopologyRebuild(
-            acquireMuteGuard: {
-                events.append("acquire")
-                return FakeTopologyRebuildMuteGuard(events: { events.append($0) })
-            },
-            rebuild: {
-                events.append("rebuild")
-                return 7
-            }
-        )
-
-        #expect(result == 7)
-        #expect(events == ["acquire", "rebuild", "release"])
-    }
-
-    @Test
-    func topologyRebuildSkipsTeardownWhenMuteGuardCannotBeAcquired() {
-        var rebuildWasCalled = false
-
-        #expect(throws: TopologyRebuildMuteGuardUnavailable.self) {
-            _ = try SeparateClockAudioBackend.performTopologyRebuild(
-                acquireMuteGuard: {
-                    throw CoreAudioError(
-                        operation: "test mute guard",
-                        status: kAudioHardwareUnspecifiedError
-                    )
-                },
-                rebuild: {
-                    rebuildWasCalled = true
-                }
-            )
-        }
-        #expect(!rebuildWasCalled)
-    }
-
-    @Test
-    func topologyRebuildSurfacesMuteGuardReleaseFailure() {
-        var events: [String] = []
-
-        #expect(throws: CoreAudioError.self) {
-            _ = try SeparateClockAudioBackend.performTopologyRebuild(
-                acquireMuteGuard: {
-                    FakeTopologyRebuildMuteGuard(
-                        releaseSucceeds: false,
-                        events: { events.append($0) }
-                    )
-                },
-                rebuild: {
-                    events.append("rebuild")
-                }
-            )
-        }
-        #expect(events == ["rebuild", "release"])
     }
 
     @Test
@@ -2376,37 +1690,6 @@ struct CoreAudioDeviceTests {
             transportType: transportType
         )
     }
-}
-
-private enum TestDeviceMutationError: Error {
-    case recordFailed
-}
-
-private final class HandoffStartupTestError: Error {}
-
-private struct HandoffRestorationTestError: Error {}
-
-private final class FakeTopologyRebuildMuteGuard: TopologyRebuildMuteGuarding {
-    private let releaseSucceeds: Bool
-    private let record: (String) -> Void
-
-    init(
-        releaseSucceeds: Bool = true,
-        events record: @escaping (String) -> Void
-    ) {
-        self.releaseSucceeds = releaseSucceeds
-        self.record = record
-    }
-
-    func release() -> Bool {
-        record("release")
-        return releaseSucceeds
-    }
-}
-
-private enum ActiveProcessQueryTestError: Error {
-    case processList
-    case propertyQuery
 }
 
 private final class LockedCounter: @unchecked Sendable {
