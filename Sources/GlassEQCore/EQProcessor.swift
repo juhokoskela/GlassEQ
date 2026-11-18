@@ -115,7 +115,7 @@ public struct EQConfiguration: Equatable, Sendable {
         channelCount: Int
     ) -> [EQConvolutionSource?] {
         guard profile.mode == .convolution else {
-            return Array(repeating: nil, count: channelCount)
+            return []
         }
         guard profile.channelMode == .stereo else {
             return Array(repeating: profile.convolution, count: channelCount)
@@ -139,7 +139,7 @@ public struct EQRenderConfiguration: Sendable {
     let channelStarts: [Int]
     let channelFilterCounts: [Int]
     let preampLinearGains: [Float]
-    let convolutionKernels: [PreparedConvolutionKernel?]
+    let convolutionKernels: [PreparedConvolutionKernel]
     private let preparationSucceeded: Bool
 
     public init(
@@ -195,7 +195,7 @@ public struct EQRenderConfiguration: Sendable {
         // wasted work on the path that fades processing out.
         self.convolutionKernels =
             configuration.isBypassed
-            ? Array(repeating: nil, count: configuration.channelCount)
+            ? []
             : try Self.makeConvolutionKernels(configuration: configuration)
         self.preparationSucceeded = true
     }
@@ -207,7 +207,7 @@ public struct EQRenderConfiguration: Sendable {
         self.channelStarts = renderLayout.channelStarts
         self.channelFilterCounts = renderLayout.channelFilterCounts
         self.preampLinearGains = renderLayout.preampLinearGains
-        self.convolutionKernels = Array(repeating: nil, count: configuration.channelCount)
+        self.convolutionKernels = []
         self.preparationSucceeded = !configuration.usesConvolution
     }
 
@@ -220,15 +220,14 @@ public struct EQRenderConfiguration: Sendable {
             && coefficients.allSatisfy(Self.isNumericallySafe)
             && (!configuration.usesConvolution
                 || configuration.isBypassed
-                || convolutionKernels.count == configuration.channelCount
-                    && convolutionKernels.allSatisfy { $0 != nil })
+                || convolutionKernels.count == configuration.channelCount)
     }
 
     private static func makeConvolutionKernels(
         configuration: EQConfiguration
-    ) throws -> [PreparedConvolutionKernel?] {
+    ) throws -> [PreparedConvolutionKernel] {
         guard configuration.usesConvolution else {
-            return Array(repeating: nil, count: configuration.channelCount)
+            return []
         }
 
         var preparedSources: [(source: EQConvolutionSource, kernel: PreparedConvolutionKernel)] = []
@@ -502,8 +501,8 @@ public struct EQProcessor: ~Copyable, Sendable {
         }
 
         if configuration.isBypassed {
-            return Self.scanLinearSamples(
-                UnsafeBufferPointer(samples),
+            return Self.sanitizeBypassSamples(
+                samples,
                 sampleCount: availableFrames * sourceChannelCount
             )
         }
@@ -543,6 +542,30 @@ public struct EQProcessor: ~Copyable, Sendable {
         }
     }
 
+    func writeFiltersOffReference(
+        from samples: UnsafeMutableBufferPointer<Float>,
+        into reference: UnsafeMutableBufferPointer<Float>,
+        frameCount: Int,
+        channelCount: Int
+    ) -> UInt64 {
+        var nonFiniteSamples: UInt64 = 0
+        for channel in 0..<channelCount {
+            let gain = channel < preampLinearGains.count ? preampLinearGains[channel] : 1
+            var index = channel
+            for _ in 0..<frameCount {
+                let value = samples[index] * gain
+                if value.isFinite {
+                    reference[index] = value
+                } else {
+                    reference[index] = 0
+                    nonFiniteSamples += 1
+                }
+                index += channelCount
+            }
+        }
+        return nonFiniteSamples
+    }
+
     static func protectInterleavedWithDiagnostics(
         _ samples: UnsafeMutableBufferPointer<Float>,
         frameCount: Int,
@@ -575,12 +598,10 @@ public struct EQProcessor: ~Copyable, Sendable {
             return (input, false)
         }
         if configuration.usesConvolution {
-            guard channel < convolvers.count,
-                convolvers.hasConvolver(at: channel)
-            else {
+            guard channel < convolvers.count else {
                 return (0, true)
             }
-            let processed = convolvers[channel]!.processSample(
+            let processed = convolvers[channel].processSample(
                 input * preampLinearGains[channel]
             )
             let protected = Self.saturate(processed.sample)
@@ -637,9 +658,9 @@ public struct EQProcessor: ~Copyable, Sendable {
         channelCount: Int
     ) -> EQLinearRenderDiagnostics {
         var diagnostics = EQLinearRenderDiagnostics()
-        let channels = min(channelCount, convolvers.count)
+        let channels = min(channelCount, preampLinearGains.count)
         for channel in 0..<channels {
-            guard convolvers.hasConvolver(at: channel) else {
+            guard channel < convolvers.count else {
                 diagnostics.nonFiniteSamples += UInt64(frameCount)
                 var sampleIndex = channel
                 for _ in 0..<frameCount {
@@ -648,7 +669,7 @@ public struct EQProcessor: ~Copyable, Sendable {
                 }
                 continue
             }
-            let channelDiagnostics = convolvers[channel]!.processInterleavedChannel(
+            let channelDiagnostics = convolvers[channel].processInterleavedChannel(
                 samples,
                 frameCount: frameCount,
                 channel: channel,
@@ -763,16 +784,14 @@ public struct EQProcessor: ~Copyable, Sendable {
         return (value, encounteredNonFinite)
     }
 
-    private static func scanLinearSamples(
-        _ samples: UnsafeBufferPointer<Float>,
+    private static func sanitizeBypassSamples(
+        _ samples: UnsafeMutableBufferPointer<Float>,
         sampleCount: Int
     ) -> EQLinearRenderDiagnostics {
         var diagnostics = EQLinearRenderDiagnostics()
-        for index in 0..<min(max(sampleCount, 0), samples.count) {
-            let sample = samples[index]
-            if !sample.isFinite {
-                diagnostics.nonFiniteSamples += 1
-            }
+        for index in 0..<min(max(sampleCount, 0), samples.count) where !samples[index].isFinite {
+            samples[index] = 0
+            diagnostics.nonFiniteSamples += 1
         }
         return diagnostics
     }
@@ -800,7 +819,6 @@ public struct EQProcessor: ~Copyable, Sendable {
 
     static func makeRenderLayout(configuration: EQConfiguration) -> (
         coefficients: [RenderBiquadCoefficients],
-        states: [BiquadState],
         channelStarts: [Int],
         channelFilterCounts: [Int],
         preampLinearGains: [Float]
@@ -819,7 +837,6 @@ public struct EQProcessor: ~Copyable, Sendable {
 
         return (
             coefficients: coefficients,
-            states: Array(repeating: BiquadState(), count: coefficients.count),
             channelStarts: channelStarts,
             channelFilterCounts: channelFilterCounts,
             preampLinearGains: preampLinearGains
@@ -832,33 +849,31 @@ public struct EQProcessor: ~Copyable, Sendable {
 // Swift 6.4 emits references to this metadata when inlining processor destruction in clients.
 @usableFromInline
 struct ConvolverBank: ~Copyable, @unchecked Sendable {
-    private let storage: UnsafeMutableBufferPointer<RealtimeHybridConvolver?>
+    private let storage: UnsafeMutableBufferPointer<RealtimeHybridConvolver>
 
-    init(kernels: [PreparedConvolutionKernel?]) {
+    init(kernels: [PreparedConvolutionKernel]) {
+        guard !kernels.isEmpty else {
+            storage = UnsafeMutableBufferPointer(start: nil, count: 0)
+            return
+        }
         storage = .allocate(capacity: kernels.count)
         for index in kernels.indices {
-            let slot = storage.baseAddress!.advanced(by: index)
-            if let kernel = kernels[index] {
-                slot.initialize(to: RealtimeHybridConvolver(kernel: kernel))
-            } else {
-                slot.initialize(to: nil)
-            }
+            storage.baseAddress!.advanced(by: index).initialize(to: RealtimeHybridConvolver(kernel: kernels[index]))
         }
     }
 
     deinit {
-        storage.deinitialize()
-        storage.deallocate()
+        if storage.baseAddress != nil {
+            storage.deinitialize()
+            storage.deallocate()
+        }
     }
 
     var count: Int { storage.count }
 
-    // Checking through the borrowing subscript materializes the large optional in Swift 6.4.
-    func hasConvolver(at index: Int) -> Bool { storage[index] != nil }
-
     // SwiftLint does not recognize uses of these borrowing and mutating accessors.
     // swiftlint:disable unused_declaration
-    subscript(index: Int) -> RealtimeHybridConvolver? {
+    subscript(index: Int) -> RealtimeHybridConvolver {
         _read { yield storage[index] }
         _modify { yield &storage[index] }
     }

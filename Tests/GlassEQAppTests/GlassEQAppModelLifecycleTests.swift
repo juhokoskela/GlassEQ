@@ -1265,7 +1265,6 @@ struct GlassEQAppModelLifecycleTests {
         try model.startProgrammeComparison(profile: draft)
 
         #expect(engine.programmeComparisonCalls == [draft])
-        #expect(engine.programmeComparisonReferences == [draft.filtersOffReference])
         #expect(engine.programmeComparisonSelections == [.equalized])
         #expect(model.activeProfile == active)
         #expect(model.settingsSnapshot().programmeComparison.isActive)
@@ -5486,7 +5485,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     private var _updateCalls: [EQProfile] = []
     private var _updateDSPCalls: [EQProfile] = []
     private var _programmeComparisonCalls: [EQProfile] = []
-    private var _programmeComparisonReferences: [EQProfile] = []
     private var _programmeComparisonSelections: [EQProgrammeComparisonSelection] = []
     private var _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot()
     private var _snapshotProgrammeComparisonCallCount = 0
@@ -5565,10 +5563,6 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         set { withLock { _programmeComparisonCalls = newValue } }
     }
 
-    private(set) var programmeComparisonReferences: [EQProfile] {
-        get { withLock { _programmeComparisonReferences } }
-        set { withLock { _programmeComparisonReferences = newValue } }
-    }
 
     private(set) var programmeComparisonSelections: [EQProgrammeComparisonSelection] {
         get { withLock { _programmeComparisonSelections } }
@@ -5822,10 +5816,9 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         }
     }
 
-    func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
+    func beginProgrammeComparison(profile: EQProfile) -> Bool {
         withLock {
             _programmeComparisonCalls.append(profile)
-            _programmeComparisonReferences.append(reference)
             _programmeComparisonSnapshot = EQProgrammeComparisonSnapshot(
                 isActive: true,
                 selection: .equalized

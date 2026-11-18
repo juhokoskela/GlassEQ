@@ -249,7 +249,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func setPreferredAggregateBufferFrameSize(_ frameSize: UInt32)
     func update(profile: EQProfile) throws
     @discardableResult func updateDSP(profile: EQProfile) -> DSPTransitionProgress.Target?
-    @discardableResult func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool
+    @discardableResult func beginProgrammeComparison(profile: EQProfile) -> Bool
     func setProgrammeComparisonSelection(_ selection: EQProgrammeComparisonSelection)
     func snapshotProgrammeComparison() -> EQProgrammeComparisonSnapshot
     func dspTransitionProgress() -> DSPTransitionProgress
@@ -267,7 +267,7 @@ protocol AudioEngineControlling: AnyObject, Sendable {
 
 extension AudioEngineControlling {
 
-    func beginProgrammeComparison(profile _: EQProfile, reference _: EQProfile) -> Bool { false }
+    func beginProgrammeComparison(profile _: EQProfile) -> Bool { false }
 
     func setProgrammeComparisonSelection(_: EQProgrammeComparisonSelection) {}
 
@@ -1997,7 +1997,7 @@ final class GlassEQAppModel {
         }
 
         engine.setProgrammeComparisonSelection(.equalized)
-        guard engine.beginProgrammeComparison(profile: profile, reference: profile.filtersOffReference) else {
+        guard engine.beginProgrammeComparison(profile: profile) else {
             throw SettingsCommandFailure(
                 message: localized("The audio engine could not start A/B comparison.")
             )

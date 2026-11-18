@@ -1105,32 +1105,17 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private final class PreparedDSPConfigBox: @unchecked Sendable {
         let transitionID: UInt64
         var processor: EQProcessor?
-        var comparisonReferenceProcessor: EQProcessor?
+        let startsComparison: Bool
         let systemSoundPreampGains: (left: Float, right: Float)
         var retiredProcessor: EQProcessor?
-        var secondRetiredProcessor: EQProcessor?
         var nextRetiredPointer: UInt = 0
 
-        init(config: EQRenderConfiguration, transitionID: UInt64) {
+        init(config: EQRenderConfiguration, transitionID: UInt64, startsComparison: Bool) {
+            self.startsComparison = startsComparison
             self.transitionID = transitionID
             self.processor = EQProcessor(renderConfiguration: config)
             self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
                 for: config
-            )
-        }
-
-        init(
-            equalizedConfig: EQRenderConfiguration,
-            referenceConfig: EQRenderConfiguration,
-            transitionID: UInt64
-        ) {
-            self.transitionID = transitionID
-            self.processor = EQProcessor(renderConfiguration: equalizedConfig)
-            self.comparisonReferenceProcessor = EQProcessor(
-                renderConfiguration: referenceConfig
-            )
-            self.systemSoundPreampGains = SystemTapAudioEngine.systemSoundPreampGains(
-                for: equalizedConfig
             )
         }
     }
@@ -1857,24 +1842,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
 
         @discardableResult
-        func publishPendingDSPConfig(_ config: EQRenderConfiguration) -> DSPTransitionProgress.Target {
-            let target = nextDSPTransitionTarget()
-            let box = PreparedDSPConfigBox(config: config, transitionID: target.id)
-            publishPendingDSPConfigBox(box)
-            return target
-        }
-
-        @discardableResult
-        func publishPendingProgrammeComparison(
-            equalizedConfig: EQRenderConfiguration,
-            referenceConfig: EQRenderConfiguration
+        func publishPendingDSPConfig(
+            _ config: EQRenderConfiguration, startsComparison: Bool = false
         ) -> DSPTransitionProgress.Target {
             let target = nextDSPTransitionTarget()
-            let box = PreparedDSPConfigBox(
-                equalizedConfig: equalizedConfig,
-                referenceConfig: referenceConfig,
-                transitionID: target.id
-            )
+            let box = PreparedDSPConfigBox(config: config, transitionID: target.id, startsComparison: startsComparison)
             publishPendingDSPConfigBox(box)
             return target
         }
@@ -1964,11 +1936,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 return
             }
             let didBegin: Bool
-            if box.comparisonReferenceProcessor != nil {
-                didBegin = dspTransition.beginProgrammeComparison(
-                    equalizedProcessor: &box.processor,
-                    referenceProcessor: &box.comparisonReferenceProcessor
-                )
+            if box.startsComparison {
+                didBegin = dspTransition.beginProgrammeComparison(equalizedProcessor: &box.processor)
             } else {
                 didBegin = dspTransition.beginTransition(to: &box.processor)
             }
@@ -1981,7 +1950,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
         private func finishDSPTransition(_ result: inout EQTransitionRenderResult) {
             guard result.completedTransition else { return }
-            // Every adopted bank retains its publication box until its retired processors return.
+            // Every adopted bank retains its publication box until the retired processor returns.
             precondition(activeDSPConfigPointer != 0)
             let pointer = UnsafeRawPointer(bitPattern: activeDSPConfigPointer)!
             let rawPointer = activeDSPConfigPointer
@@ -1991,7 +1960,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 .takeUnretainedValue()
             let transitionID = box.transitionID
             box.retiredProcessor = result.retiredProcessor.take()
-            box.secondRetiredProcessor = result.secondRetiredProcessor.take()
             activeSystemSoundPreampGains = box.systemSoundPreampGains
             pushRetiredDSPConfigBox(rawPointer)
             completedDSPTransitions.store(transitionID, ordering: .releasing)
@@ -3498,7 +3466,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     @discardableResult
-    public func beginProgrammeComparison(profile: EQProfile, reference: EQProfile) -> Bool {
+    public func beginProgrammeComparison(profile: EQProfile) -> Bool {
         guard !profile.isBypassed else {
             return false
         }
@@ -3524,12 +3492,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 sampleRate: runtime.sampleRate,
                 channelCount: runtime.channelCount,
                 maximumUsableFrequency: maximumUsableFrequency
-            ),
-            let referenceConfig = try? EQRenderConfiguration.prepare(
-                profile: reference,
-                sampleRate: runtime.sampleRate,
-                channelCount: runtime.channelCount,
-                maximumUsableFrequency: maximumUsableFrequency
             )
         else {
             return false
@@ -3542,10 +3504,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
             runtime.setProgrammeComparisonSelection(.equalized)
             runtime.drainDSPConfigBoxes()
-            runtime.publishPendingProgrammeComparison(
-                equalizedConfig: equalizedConfig,
-                referenceConfig: referenceConfig
-            )
+            runtime.publishPendingDSPConfig(equalizedConfig, startsComparison: true)
             return true
         }
     }

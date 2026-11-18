@@ -469,8 +469,7 @@ struct ConvolutionTests {
         )
 
         #expect(configuration.isNumericallySafe)
-        #expect(configuration.convolutionKernels.count == 2)
-        #expect(configuration.convolutionKernels.allSatisfy { $0 == nil })
+        #expect(configuration.convolutionKernels.isEmpty)
     }
 
 }
