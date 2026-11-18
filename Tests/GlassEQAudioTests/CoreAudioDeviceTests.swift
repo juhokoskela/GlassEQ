@@ -77,6 +77,41 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func timestampSnapshotIncludesLastCallbackAfterDeferredTeardown() {
+        let finalWrite = Mutex<AudioTimestampProbeRecord?>(nil)
+        let snapshot = TimestampProbeSnapshot()
+        let ledger = CoreAudioResourceCleanupLedger(
+            operations: .init(
+                stopIOProc: { _, _ in noErr },
+                destroyIOProc: { _, _ in noErr },
+                destroyAggregate: { _ in
+                    finalWrite.withLock { $0 == nil ? kAudioHardwareUnspecifiedError : noErr }
+                },
+                destroyTap: { _ in noErr }
+            ),
+            preservesFailuresOnDeinit: false,
+            automaticRetryDelaysMilliseconds: []
+        )
+        #expect(
+            !ledger.dispose(
+                .init(
+                    operation: "retire probe",
+                    aggregateDeviceIDs: [42],
+                    completion: {
+                        snapshot.capture {
+                            finalWrite.withLock { [$0].compactMap { $0 } }
+                        }
+                    }
+                )))
+        #expect(snapshot.records.withLock { $0.isEmpty })
+
+        let lastRecord = AudioTimestampProbeRecord(sequence: 17, inputJumpDetected: true)
+        finalWrite.withLock { $0 = lastRecord }
+        #expect(ledger.retryPending())
+        #expect(snapshot.records.withLock { $0 } == [lastRecord])
+    }
+
+    @Test
     func coreAudioCleanupAutomaticallyRetriesRetainedResources() {
         let attempts = Mutex(0)
         let completed = DispatchSemaphore(value: 0)

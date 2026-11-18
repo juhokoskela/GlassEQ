@@ -307,6 +307,16 @@ public struct AudioEngineMetrics: Equatable, Sendable {
     }
 }
 
+// Each detached renderer publishes into its own slot after HAL has retired its IOProc.
+final class TimestampProbeSnapshot: Sendable {
+    let records = Mutex<[AudioTimestampProbeRecord]>([])
+
+    func capture(_ readQuiescentProbe: () -> [AudioTimestampProbeRecord]) {
+        let snapshot = readQuiescentProbe()
+        records.withLock { $0 = snapshot }
+    }
+}
+
 public struct AudioTimestampProbeRecord: Equatable, Sendable {
     public var sequence: UInt64
     public var inputJumpDetected: Bool
@@ -1048,7 +1058,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
-        var lastTimestampProbeRecords: [AudioTimestampProbeRecord] = []
+        var lastTimestampProbe: TimestampProbeSnapshot?
         var activeOutput: AudioOutputDevice?
         var activeProfile: EQProfile?
         var preferredAggregateBufferFrameSize = SystemTapAudioEngine.preferredAggregateBufferFrameSize
@@ -1073,6 +1083,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         var deviceID: AudioObjectID
         var ioProcID: AudioDeviceIOProcID?
         var runtime: AudioRuntime?
+        var timestampProbe: TimestampProbeSnapshot?
     }
 
     private struct PreparedCombinedAggregate {
@@ -2823,9 +2834,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             var staleTaps: CombinedTapSet?
 
             control.withLock { state in
+                state.lastTimestampProbe = nil
                 detachedAggregate = detachCombinedAggregateLocked(&state)
                 state.state = .stopped
-                state.lastTimestampProbeRecords.removeAll(keepingCapacity: true)
 
                 if Self.combinedTapMatchesRoute(
                     existingOutputUID: state.tapOutputUID,
@@ -2852,10 +2863,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             }
 
             if let detachedAggregate {
-                let records = disposeDetachedCombinedAggregate(detachedAggregate)
-                control.withLock { state in
-                    state.lastTimestampProbeRecords = records
-                }
+                disposeDetachedCombinedAggregate(detachedAggregate)
             }
             if let staleTaps {
                 destroyTapSet(staleTaps)
@@ -2953,7 +2961,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 installedTaps?.main == taps?.main
                 && installedTaps?.systemSounds == taps?.systemSounds
             if let preparedAggregate {
-                _ = disposeDetachedCombinedAggregate(
+                disposeDetachedCombinedAggregate(
                     DetachedCombinedAggregate(
                         deviceID: preparedAggregate.deviceID,
                         ioProcID: preparedAggregate.ioProcID,
@@ -2965,10 +2973,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 failedStateAggregate?.deviceID
                 == preparedAggregate?.deviceID
             if let failedStateAggregate, !failedStateMatchesPrepared {
-                let records = disposeDetachedCombinedAggregate(failedStateAggregate)
-                control.withLock { state in
-                    state.lastTimestampProbeRecords = records
-                }
+                disposeDetachedCombinedAggregate(failedStateAggregate)
             }
             if let installedTaps {
                 destroyTapSet(installedTaps)
@@ -3209,7 +3214,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: false
             )
         } catch {
-            _ = disposeDetachedCombinedAggregate(
+            disposeDetachedCombinedAggregate(
                 DetachedCombinedAggregate(
                     deviceID: aggregateDeviceID,
                     ioProcID: ioProcID,
@@ -3412,7 +3417,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 ioStarted: true
             )
         } catch {
-            _ = disposeDetachedCombinedAggregate(
+            disposeDetachedCombinedAggregate(
                 DetachedCombinedAggregate(
                     deviceID: aggregateDeviceID,
                     ioProcID: ioProcID,
@@ -3600,7 +3605,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     public func snapshotTimestampProbeRecords() -> [AudioTimestampProbeRecord] {
-        control.withLock { $0.lastTimestampProbeRecords }
+        control.withLock { $0.lastTimestampProbe }?.records.withLock { $0 } ?? []
     }
 
     public func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? {
@@ -3646,13 +3651,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         // Explicit handback skips the fade and destroys the taps immediately after the aggregate;
         // rebuild teardown retains the fade before replacing the graph.
         if let detachedAggregate {
-            let records = disposeDetachedCombinedAggregate(
+            disposeDetachedCombinedAggregate(
                 detachedAggregate,
                 fadeOut: !restoringDirectPlayback
             )
-            control.withLock { state in
-                state.lastTimestampProbeRecords = records
-            }
         }
         if let detachedTaps {
             destroyTapSet(detachedTaps)
@@ -3662,38 +3664,41 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private func detachCombinedAggregateLocked(
         _ state: inout ControlState
     ) -> DetachedCombinedAggregate? {
+        guard
+            state.aggregateDeviceID != kAudioObjectUnknown || state.ioProcID != nil || state.runtime != nil
+        else {
+            return nil
+        }
+        let snapshot = TimestampProbeSnapshot()
+        state.lastTimestampProbe = snapshot
         let detached = DetachedCombinedAggregate(
             deviceID: state.aggregateDeviceID,
             ioProcID: state.ioProcID,
-            runtime: state.runtime
+            runtime: state.runtime,
+            timestampProbe: snapshot
         )
         state.aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         state.ioProcID = nil
         state.runtime = nil
         state.activeOutput = nil
-        guard
-            detached.deviceID != kAudioObjectUnknown
-                || detached.ioProcID != nil
-                || detached.runtime != nil
-        else {
-            return nil
-        }
         return detached
     }
 
     private func disposeDetachedCombinedAggregate(
         _ detached: DetachedCombinedAggregate,
         fadeOut: Bool = true
-    ) -> [AudioTimestampProbeRecord] {
+    ) {
         if fadeOut {
             detached.runtime?.fadeOutForStop()
         }
         detached.runtime?.markStopping()
-        let records = detached.runtime?.snapshotTimestampProbeRecords() ?? []
         let runtime = detached.runtime
         var resources = CoreAudioResourceCleanupLedger.PendingResources(
             operation: "dispose combined aggregate",
-            completion: {
+            completion: { [snapshot = detached.timestampProbe] in
+                if let snapshot, let runtime {
+                    snapshot.capture(runtime.snapshotTimestampProbeRecords)
+                }
                 runtime?.drainDSPConfigBoxes()
             }
         )
@@ -3709,19 +3714,11 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         if detached.deviceID != kAudioObjectUnknown {
             resources.aggregateDeviceIDs.append(detached.deviceID)
         }
-        guard
-            resources.ioProcs.isEmpty == false
-                || resources.aggregateDeviceIDs.isEmpty == false
-        else {
-            runtime?.drainDSPConfigBoxes()
-            return records
-        }
         if !cleanupLedger.dispose(resources) {
             traceDiagnostic {
                 "Core Audio cleanup deferred operation=dispose combined aggregate pending=\(cleanupLedger.pendingCount)"
             }
         }
-        return records
     }
 
     private func detachTapSetLocked(_ state: inout ControlState) -> CombinedTapSet? {
