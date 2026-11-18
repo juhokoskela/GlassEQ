@@ -140,6 +140,6 @@ spctl --assess --type execute --verbose=4 .build/release-app/GlassEQ.app
 unzip -Z1 .build/dist/GlassEQ-beta-0.9.3-macos26-arm64.zip
 ```
 
-`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `TRADEMARKS.md`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
+`codesign --verify` should pass. The entitlements output should include `com.apple.security.app-sandbox`, `com.apple.security.device.audio-input`, `com.apple.security.files.user-selected.read-only`, and `com.apple.security.network.client`, all set to `true`. The ZIP listing should include `GlassEQ.app`, `LICENSE`, `SOURCE.md`, and the release's source archive. `spctl` should reject the ad hoc-signed beta because it is not Developer ID signed or notarized.
 
 For manual sandbox verification, launch the packaged app and open Activity Monitor, then enable the `Sandbox` column. GlassEQ should show `Yes`.
