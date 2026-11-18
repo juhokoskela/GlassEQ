@@ -945,3 +945,35 @@ The benchmark at `e6b877b` ran 20,000 renders per workload after 1,000 warm-up r
 | Same FIR, Filters Off comparison | 48 kHz | 17/255/1/257/480 | 32.10 | 777.75 | 1,090.08 | 3 |
 
 The 128-section edit exceeded the optional 50% mean budget, using 63.84% of the 83.33 µs period. All FIR cases completed every scheduled tail job by its due frame. Wall-clock render duration includes any descheduling between the two reads of the clock. To qualify 128-section edits on hardware, use a packaged build on a 192 kHz stereo route that actually grants 16 frames. Repeat the edits and read callback-start lateness, total render time, completion lateness and deadline misses separately.
+
+### Alert input and profile Apply, 18 November 2026
+
+Two standalone arm64 executables exercised the combined callback with synthetic buffers on the same Mac. Both used the Core module from `7d9e728` and Apple Swift 6.4.2 with `-O -whole-module-optimization` targeting macOS 26. The baseline SHA-256 was `1b3399fd8773eaae6c0dea8f99d8fc348f6c57deea31be06ee415d067f4464e9`. The candidate, with only the programme copy and alert mix changed, was `b7285645998738c9655454cd4d62194efdc9662f26a9ed74d06285ae72103903`. Nine workloads produced identical output and counters. No HAL device participated.
+
+For stereo 48 kHz programme audio, flat graphic EQ, a duplex layout with no physical input, no alert samples and 480 frames, three alternating trials of 12,000 calls per build gave the following results. The rerun started after Swift compilation paused. Other desktop activity continued.
+
+| Callback duration | Baseline | Candidate |
+| --- | ---: | ---: |
+| Median of run medians | 92.17 µs | 21.83 µs |
+| Median of run p99.99 | 1.577 ms | 0.151 ms |
+| Largest observation | 39.489 ms | 0.865 ms |
+| Calls longer than the 10 ms period | 16 / 36,000 | 0 / 36,000 |
+
+The result supports skipping absent channels. Tail timing varied by workload and run. With stereo 128-section EQ at 192 kHz and 16 frames, 344 baseline and 534 candidate calls exceeded the 83.33 µs period in 126,000 calls per build. Device callback-start and completion lateness still require a packaged trial.
+
+A separate optimized Core executable (`5861bb0b4ad115853826d865e44226387668655ec249d1d4cf9539db8729bfe0`) measured preparation of a 5,136,962-byte library with thirteen linked 16,384-frame impulse responses at 48 kHz. Across 17 alternating pairs the median fell from 34.75 ms for two synchronous validations and encodes to 17.58 ms for a single preparation. The saved bytes matched the reference. This timed only preparation, with disk I/O and IPC outside the interval.
+
+### Settings window memory, 18 November 2026
+
+A single release-optimized arm64 fixture opened the real Settings editor ten times through the bundled helper, then ten times in the fallback in a fresh parent. It used an isolated identity, disabled processing, a synthetic stereo 48 kHz route with a nominal 256-frame buffer and thirteen linked 16,384-sample IRs. Both hosts displayed the same editor at the same size. The measured source included the window-lifetime changes in `aedf851` and preceded the ready-acknowledgment ordering change in `7eb1bce`.
+
+The trial used Mac17,9, macOS 27.2.1 (26B131), Apple Swift 6.4.2 and ad hoc signing. The SHA-256 hashes of the parent and helper executables were `e03fcdbd8532e773598b8d9549fecd53ec2c8ee05cfccd1c62181201a2f855ce` and `503d5af9944105751c4397a29fa2cb29459ca1b411381e4da1bad8ae40d60d0b`. Each footprint used the median of three per-process readings from `proc_pid_rusage`. Open readings followed completion of all thirteen analyses by one second. Closed readings followed dismissal by ten seconds. Each helper had exited before the closed reading.
+
+| Physical footprint (MiB) | Helper-hosted | In-process fallback |
+| --- | ---: | ---: |
+| Parent at cold start | 20.56 | 21.06 |
+| Median total with Settings open | 136.66 | 91.64 |
+| Parent after first close | 31.88 | 82.47 |
+| Parent after tenth close | 39.53 | 89.00 |
+
+The helper consumed more memory while the window was open. After ten closes its parent retained 49.47 MiB less. This comparison supports the bundled helper as the default host. It measured one fresh parent per arm and did not exercise listening or licensing.
