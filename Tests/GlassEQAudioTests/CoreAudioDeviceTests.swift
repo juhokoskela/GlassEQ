@@ -1223,6 +1223,44 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func queuedInventoryRemovalAllowsOneRetryWhenHALReusesTheDeviceID() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let uid = "reattached-dac"
+        let original = PersistedAudioDeviceRestorationRecord(uid: uid, originalBufferFrameSize: 512)
+        try PersistedAudioDeviceRestorationStore.save([uid: original], to: url)
+
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        var writes = 0
+        func refresh() {
+            journal.restoreAvailableDevices(
+                // By the time engine work runs, every live query already sees the same ID again.
+                outputForUID: { _ in output(id: 47, uid: uid, channelCount: 2, bufferFrameSize: 1_024) },
+                setSampleRate: { _, _ in Issue.record("Unexpected sample rate write") },
+                setBufferFrameSize: { _, _ in writes += 1 }
+            )
+        }
+
+        refresh()
+        let removedAt = ContinuousClock.now
+        let reattachedAt = ContinuousClock.now
+        journal.observeDeviceInventory([47, 99], capturedAt: reattachedAt)
+        refresh()  // Adding an aggregate does not rearm the physical write.
+        #expect(writes == 1)
+
+        journal.observeDeviceInventory([99], capturedAt: removedAt)
+        refresh()
+        journal.observeDeviceInventory([47, 99], capturedAt: reattachedAt)
+        refresh()
+        #expect(writes == 2)
+
+        journal.observeDeviceInventory([99], capturedAt: removedAt)
+        refresh()  // A stale absence cannot rearm a write made after that snapshot.
+        #expect(writes == 2)
+    }
+
+    @Test
     func replacementDuringJournalRecoveryWaitsForItsOwnAttempt() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")

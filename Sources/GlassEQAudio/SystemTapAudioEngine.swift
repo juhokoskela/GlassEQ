@@ -2520,9 +2520,12 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
         guard deviceRestorations.hasPendingSettings else { return }
         topologyOperation.withLock { _ in
-            restorationListener = RestorationDeviceListListener { [weak self] in
+            restorationListener = RestorationDeviceListListener { [weak self] devices, capturedAt in
                 guard let self else { return }
-                self.topologyOperation.withLock { _ in self.restoreAvailableDeviceSettings() }
+                self.topologyOperation.withLock { _ in
+                    if let devices { self.deviceRestorations.observeDeviceInventory(devices, capturedAt: capturedAt) }
+                    self.restoreAvailableDeviceSettings()
+                }
             }
             restoreAvailableDeviceSettings()
         }

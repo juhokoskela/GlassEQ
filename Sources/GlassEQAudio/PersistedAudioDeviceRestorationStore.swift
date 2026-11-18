@@ -174,7 +174,12 @@ struct PersistedAudioDeviceRestorationStore {
 
     private let url: URL
     private var records: [String: PersistedAudioDeviceRestorationRecord]
-    private var lastAttemptedDeviceIDs: [String: AudioObjectID] = [:]
+    private struct Attempt {
+        let deviceID: AudioObjectID
+        let startedAt: ContinuousClock.Instant
+    }
+
+    private var lastAttempts: [String: Attempt] = [:]
     private var needsSave = false
 
     init(url: URL) {
@@ -185,7 +190,14 @@ struct PersistedAudioDeviceRestorationStore {
     var hasPendingSettings: Bool { !records.isEmpty || needsSave }
 
     func needsAttempt(for output: AudioOutputDevice) -> Bool {
-        records[output.uid] != nil && lastAttemptedDeviceIDs[output.uid] != output.id
+        records[output.uid] != nil && lastAttempts[output.uid]?.deviceID != output.id
+    }
+
+    mutating func observeDeviceInventory(_ devices: Set<AudioObjectID>, capturedAt: ContinuousClock.Instant) {
+        // A queued removal can precede a more recent write to the reattached device.
+        lastAttempts = lastAttempts.filter { _, attempt in
+            attempt.startedAt >= capturedAt || devices.contains(attempt.deviceID)
+        }
     }
 
     /// Returns true when a new write still needs a later readback.
@@ -204,7 +216,7 @@ struct PersistedAudioDeviceRestorationStore {
             let output: AudioOutputDevice
             do {
                 guard let available = try outputForUID(uid) else {
-                    if !verifyOnly { lastAttemptedDeviceIDs[uid] = nil }
+                    if !verifyOnly { lastAttempts[uid] = nil }
                     continue
                 }
                 output = available
@@ -225,7 +237,7 @@ struct PersistedAudioDeviceRestorationStore {
                 continue
             }
             // HAL can reuse object IDs. Retry writes only after a confirmed absence or a new ID.
-            lastAttemptedDeviceIDs[uid] = output.id
+            lastAttempts[uid] = Attempt(deviceID: output.id, startedAt: .now)
             func attachedOutput(_ uid: String) throws -> AudioOutputDevice? {
                 let current = try outputForUID(uid)
                 return current?.id == output.id ? current : nil
@@ -265,7 +277,7 @@ struct PersistedAudioDeviceRestorationStore {
 
 /// Installed only while device settings from an earlier GlassEQ release still need restoration.
 final class RestorationDeviceListListener {
-    private let notificationQueue = DispatchQueue.global(qos: .utility)
+    private let notificationQueue = DispatchQueue(label: "com.glasseq.device-restoration.notifications")
     private let listener: AudioObjectPropertyListenerBlock
     private var address = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDevices,
@@ -273,10 +285,14 @@ final class RestorationDeviceListListener {
         mElement: kAudioObjectPropertyElementMain
     )
 
-    init?(onChange: @escaping @Sendable () -> Void) {
+    init?(onChange: @escaping @Sendable (Set<AudioObjectID>?, ContinuousClock.Instant) -> Void) {
         let recoveryQueue = DispatchQueue(label: "com.glasseq.device-restoration")
-        // Removal can coincide with startup. Return from HAL before waiting for engine teardown.
-        listener = { _, _ in recoveryQueue.async(execute: onChange) }
+        listener = { _, _ in
+            // Sample on the notification queue. Graph teardown can outlast a disconnect and reconnect.
+            let capturedAt = ContinuousClock.now
+            let devices = try? Set(CoreAudioDeviceQuery.audioDeviceIDs())
+            recoveryQueue.async { onChange(devices, capturedAt) }
+        }
         guard
             AudioObjectAddPropertyListenerBlock(
                 AudioObjectID(kAudioObjectSystemObject), &address, notificationQueue, listener
