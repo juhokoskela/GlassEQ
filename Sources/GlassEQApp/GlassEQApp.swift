@@ -1888,6 +1888,10 @@ final class GlassEQAppModel {
     }
 
     func setBypass(_ isBypassed: Bool) {
+        if isBypassed && profilePersistenceMode.isProtected {
+            stop()
+            return
+        }
         do {
             try ensureProfileStoreWritable()
             if !isBypassed {

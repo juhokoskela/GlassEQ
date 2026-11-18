@@ -3151,14 +3151,26 @@ struct GlassEQAppModelLifecycleTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try original.write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let output = makeOutput()
         let model = GlassEQAppModel(
-            storeURL: url, engine: FakeAudioEngine(),
-            defaultOutputLookup: FakeDefaultOutputLookup(.success(makeOutput())),
-            observerFactory: FakeDefaultOutputObserverFactory(), autoStart: false,
+            storeURL: url, engine: engine,
+            defaultOutputLookup: FakeDefaultOutputLookup(.success(output)),
+            observerFactory: observers, autoStart: false,
             installLifecycleObservers: false, registerAppDelegate: false)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
 
         #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        model.toggleMenuProcessing()
+        try #require(await waitUntil { model.processingWasStopped && engine.handbackCount > 0 })
+        #expect(!engine.holdsProcessingMute)
+        model.toggleMenuProcessing()
+        observers.observers.last?.emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
         #expect(await model.flushStoreBeforeQuit())
         try #require(Data(contentsOf: url) == original)
         #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
