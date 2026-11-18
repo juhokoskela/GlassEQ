@@ -1307,6 +1307,35 @@ struct EQCoreTests {
     }
 
     @Test
+    func bypassFadeRepairsNonFiniteInputWhileWetBankIsPresent() {
+        var dry = EQProfile.flatParametric
+        dry.isBypassed = true
+        let rate = 48_000.0
+        var transition = RealtimeEQTransition(
+            activeProcessor: EQProcessor(
+                configuration: EQConfiguration(
+                    profile: dry, sampleRate: rate, channelCount: 1
+                )),
+            maximumFrameCount: 4, channelCount: 1, sampleRate: rate,
+            warmupSeconds: 0, blendSeconds: 4 / rate
+        )
+        var candidate: EQProcessor? = EQProcessor(
+            configuration: EQConfiguration(profile: .flatParametric, sampleRate: rate, channelCount: 1)
+        )
+        let began = transition.beginTransition(to: &candidate)
+        #expect(began)
+        var samples: [Float] = [1, .nan, .infinity, -1]
+        samples.withUnsafeMutableBufferPointer {
+            let result = transition.processInterleavedWithDiagnostics($0, frameCount: 4, channelCount: 1)
+            #expect(result.saturatedSamples >= 2)
+        }
+        #expect(samples[0] == 1)
+        #expect(samples[1] == 0)
+        #expect(samples[2] == 0)
+        #expect(samples[3].isFinite)
+    }
+
+    @Test
     func bypassedConvolutionLeavesNearFullScaleSamplesUntouched() {
         var profile = EQProfile.flatConvolution
         profile.isBypassed = true
