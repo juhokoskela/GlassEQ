@@ -115,7 +115,7 @@ public struct EQConfiguration: Equatable, Sendable {
         channelCount: Int
     ) -> [EQConvolutionSource?] {
         guard profile.mode == .convolution else {
-            return []
+            return Array(repeating: nil, count: channelCount)
         }
         guard profile.channelMode == .stereo else {
             return Array(repeating: profile.convolution, count: channelCount)

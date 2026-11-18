@@ -72,7 +72,6 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
     private var comparisonSelectionStartWeight: Float = 0
     private var comparisonSelectionWeight: Float = 0
     private var comparisonSelectionBlendedFrames = 0
-    private var comparisonExitRequested = false
     private var comparisonExitGainStart: Float?
     private var comparisonExitGainBlendedFrames = 0
     private var programmeLoudnessMatcher: RealtimeProgrammeLoudnessMatcher
@@ -128,7 +127,6 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
         }
         swap(&incomingProcessor, &processor)
         if comparisonPhase == .active {
-            comparisonExitRequested = true
             setProgrammeComparisonSelection(.equalized)
         } else {
             beginStandardTransition()
@@ -345,7 +343,6 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 comparisonSelectionStartWeight = 0
                 comparisonSelectionWeight = 0
                 comparisonSelectionBlendedFrames = blendFrameCount
-                comparisonExitRequested = false
                 comparisonExitGainStart = nil
                 comparisonExitGainBlendedFrames = 0
                 programmeLoudnessMatcher.reset()
@@ -435,7 +432,7 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
                 sampleIndex += channelCount
             }
 
-            if comparisonExitRequested,
+            if incomingProcessor != nil,
                 comparisonSelection == .equalized,
                 comparisonSelectionBlendedFrames >= blendFrameCount
             {
@@ -504,7 +501,6 @@ public struct RealtimeEQTransition: ~Copyable, Sendable {
 
     private mutating func finishProgrammeComparison() {
         comparisonPhase = .inactive
-        comparisonExitRequested = false
         comparisonExitGainStart = nil
         comparisonExitGainBlendedFrames = 0
         comparisonSelection = .equalized

@@ -6,6 +6,13 @@ import Testing
 @Suite
 struct ConvolutionTests {
     @Test
+    func biquadConfigurationRetainsOneSourceSlotPerChannelWithoutPreparingKernels() {
+        let configuration = EQConfiguration(profile: .flatParametric, sampleRate: 48_000, channelCount: 2)
+        #expect(configuration.convolutionSources == [nil, nil])
+        #expect(EQRenderConfiguration(configuration: configuration).convolutionKernels.isEmpty)
+    }
+
+    @Test
     func flatCurveCompilesToIdentityImpulse() throws {
         let impulse = try MinimumPhaseFIRCompiler.compile(
             points: [
