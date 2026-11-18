@@ -50,7 +50,6 @@ public enum AudioDeviceAvailabilityError: Error, Equatable, LocalizedError, Cust
     case outputDeviceHasNoOutputChannels(AudioObjectID)
     case unsupportedOutputChannelCount(AudioObjectID, Int)
     case unsupportedOutputBufferFrameSize(AudioObjectID, UInt32, maximum: UInt32)
-    case unsupportedPlaybackConversionBuffer(AudioObjectID, requiredPrimeFrames: Int, maximumPrimeFrames: Int)
     case invalidDeviceMetadata(AudioObjectID, String)
 
     public var description: String {
@@ -65,8 +64,6 @@ public enum AudioDeviceAvailabilityError: Error, Equatable, LocalizedError, Cust
             "Output device \(id) reports channel count \(channelCount); GlassEQ supports up to \(CoreAudioDeviceQuery.maxChannelCount) output channels"
         case .unsupportedOutputBufferFrameSize(let id, let frameSize, let maximum):
             "Output device \(id) uses \(frameSize)-frame buffers; GlassEQ supports playback callbacks up to \(maximum) frames"
-        case .unsupportedPlaybackConversionBuffer(let id, let requiredPrimeFrames, let maximumPrimeFrames):
-            "Output device \(id) requires a \(requiredPrimeFrames)-frame converted playback prime; GlassEQ supports up to \(maximumPrimeFrames) frames with drift headroom"
         case .invalidDeviceMetadata(let id, let message):
             "Output device \(id) reported invalid Core Audio metadata: \(message)"
         }
@@ -290,66 +287,6 @@ public enum CoreAudioDeviceQuery {
             selector: kAudioHardwarePropertyDevices,
             scope: kAudioObjectPropertyScopeGlobal,
             description: "devices"
-        )
-    }
-
-    static func mayHaveActiveOutputProcess(
-        using deviceID: AudioObjectID,
-        excluding excludedProcessObjectIDs: Set<AudioObjectID>,
-        processObjectIDs: () throws -> [AudioObjectID] = audioProcessObjectIDs,
-        isRunningOutput: (AudioObjectID) throws -> Bool = isProcessRunningOutput,
-        outputDeviceIDs: (AudioObjectID) throws -> [AudioObjectID] = processOutputDeviceIDs
-    ) -> Bool {
-        let processIDs: [AudioObjectID]
-        do {
-            processIDs = try processObjectIDs()
-        } catch {
-            return true
-        }
-
-        for processObjectID in processIDs
-        where !excludedProcessObjectIDs.contains(processObjectID) {
-            do {
-                guard try isRunningOutput(processObjectID) else {
-                    continue
-                }
-                if try outputDeviceIDs(processObjectID).contains(deviceID) {
-                    return true
-                }
-            } catch let error as CoreAudioError where error.status == kAudioHardwareBadObjectError {
-                continue
-            } catch {
-                return true
-            }
-        }
-        return false
-    }
-
-    private static func audioProcessObjectIDs() throws -> [AudioObjectID] {
-        try audioObjectIDs(
-            objectID: AudioObjectID(kAudioObjectSystemObject),
-            selector: kAudioHardwarePropertyProcessObjectList,
-            scope: kAudioObjectPropertyScopeGlobal,
-            description: "audio processes"
-        )
-    }
-
-    private static func isProcessRunningOutput(_ processObjectID: AudioObjectID) throws -> Bool {
-        try getUInt32Property(
-            objectID: processObjectID,
-            selector: kAudioProcessPropertyIsRunningOutput,
-            scope: kAudioObjectPropertyScopeGlobal
-        ) != 0
-    }
-
-    private static func processOutputDeviceIDs(
-        _ processObjectID: AudioObjectID
-    ) throws -> [AudioObjectID] {
-        try audioObjectIDs(
-            objectID: processObjectID,
-            selector: kAudioProcessPropertyDevices,
-            scope: kAudioObjectPropertyScopeOutput,
-            description: "process output devices"
         )
     }
 

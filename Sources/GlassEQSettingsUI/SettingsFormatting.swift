@@ -125,18 +125,6 @@ func quantized(_ value: Double, step: Double) -> Double {
     return (value * scale).rounded() / scale
 }
 
-func playbackFramesToMilliseconds(
-    _ frames: Double,
-    bufferSampleRate: Double,
-    fallbackSampleRate: Double
-) -> Double {
-    let sampleRate = bufferSampleRate > 0 ? bufferSampleRate : fallbackSampleRate
-    guard sampleRate > 0 else {
-        return 0
-    }
-    return frames / sampleRate * 1_000
-}
-
 public func localizedInteger(_ value: Int) -> String {
     value.formatted(.number.locale(.autoupdatingCurrent))
 }

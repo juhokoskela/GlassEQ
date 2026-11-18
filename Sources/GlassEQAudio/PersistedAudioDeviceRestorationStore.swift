@@ -1,3 +1,4 @@
+import CoreAudio
 import Foundation
 
 struct PersistedAudioDeviceRestorationRecord: Codable, Equatable, Sendable {
@@ -84,61 +85,6 @@ enum PersistedAudioDeviceRestorationStore {
         try data.write(to: url, options: .atomic)
     }
 
-    static func recordSampleRate(uid: String, originalSampleRate: Double, at url: URL) throws {
-        guard isValidUID(uid),
-            originalSampleRate.isFinite,
-            originalSampleRate > 0,
-            originalSampleRate <= CoreAudioDeviceQuery.maxSampleRate
-        else {
-            throw PersistenceError.invalidRecord
-        }
-        var records = load(from: url)
-        var record = records[uid] ?? PersistedAudioDeviceRestorationRecord(uid: uid)
-        if record.originalSampleRate == nil {
-            record.originalSampleRate = originalSampleRate
-        }
-        records[uid] = record
-        try save(records, to: url)
-    }
-
-    static func recordBufferFrameSize(uid: String, originalFrameSize: UInt32, at url: URL) throws {
-        guard isValidUID(uid),
-            originalFrameSize > 0,
-            originalFrameSize <= CoreAudioDeviceQuery.maxBufferFrameSize
-        else {
-            throw PersistenceError.invalidRecord
-        }
-        var records = load(from: url)
-        var record = records[uid] ?? PersistedAudioDeviceRestorationRecord(uid: uid)
-        if record.originalBufferFrameSize == nil {
-            record.originalBufferFrameSize = originalFrameSize
-        }
-        records[uid] = record
-        try save(records, to: url)
-    }
-
-    static func clearSampleRate(uid: String, at url: URL) throws {
-        try update(uid: uid, at: url) { $0.originalSampleRate = nil }
-    }
-
-    static func clearBufferFrameSize(uid: String, at url: URL) throws {
-        try update(uid: uid, at: url) { $0.originalBufferFrameSize = nil }
-    }
-
-    private static func update(
-        uid: String,
-        at url: URL,
-        mutation: (inout PersistedAudioDeviceRestorationRecord) -> Void
-    ) throws {
-        var records = load(from: url)
-        guard var record = records[uid] else {
-            return
-        }
-        mutation(&record)
-        records[uid] = record.isEmpty ? nil : record
-        try save(records, to: url)
-    }
-
     private static func isValid(_ record: PersistedAudioDeviceRestorationRecord) -> Bool {
         guard isValidUID(record.uid) else {
             return false
@@ -175,5 +121,98 @@ enum PersistedAudioDeviceRestorationStore {
             throw PersistenceError.storeTooLarge
         }
         return data
+    }
+
+    struct BufferFrameSizeRestoration: Equatable, Sendable {
+        var uid: String
+        var originalFrameSize: UInt32
+    }
+
+    struct SampleRateRestoration: Equatable, Sendable {
+        var uid: String
+        var originalSampleRate: Double
+    }
+
+    static func restoreSampleRateRestoration(
+        _ restoration: SampleRateRestoration,
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
+    ) -> Bool {
+        do {
+            guard let output = try outputForUID(restoration.uid) else {
+                return false
+            }
+            guard abs(output.nominalSampleRate - restoration.originalSampleRate) >= 1 else {
+                return true
+            }
+            try setSampleRate(restoration.originalSampleRate, output.id)
+            guard let verifiedOutput = try outputForUID(restoration.uid) else {
+                return false
+            }
+            return abs(verifiedOutput.nominalSampleRate - restoration.originalSampleRate) < 1
+        } catch {
+            return false
+        }
+    }
+
+    static func restoreBufferFrameSizeRestoration(
+        _ restoration: BufferFrameSizeRestoration,
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
+            _:objectID:)
+    ) -> Bool {
+        do {
+            guard let output = try outputForUID(restoration.uid) else {
+                return false
+            }
+            guard output.bufferFrameSize != restoration.originalFrameSize else {
+                return true
+            }
+            try setBufferFrameSize(restoration.originalFrameSize, output.id)
+            guard let verifiedOutput = try outputForUID(restoration.uid) else {
+                return false
+            }
+            return verifiedOutput.bufferFrameSize == restoration.originalFrameSize
+        } catch {
+            return false
+        }
+    }
+
+    static func restorePersistedDeviceSettings(
+        at url: URL,
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:),
+        setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
+            _:objectID:)
+    ) {
+        var records = PersistedAudioDeviceRestorationStore.load(from: url)
+        guard !records.isEmpty else {
+            return
+        }
+
+        for (uid, record) in records {
+            var updated = record
+            if let originalSampleRate = record.originalSampleRate,
+                restoreSampleRateRestoration(
+                    SampleRateRestoration(uid: uid, originalSampleRate: originalSampleRate),
+                    outputForUID: outputForUID,
+                    setSampleRate: setSampleRate
+                )
+            {
+                updated.originalSampleRate = nil
+            }
+            if let originalBufferFrameSize = record.originalBufferFrameSize,
+                restoreBufferFrameSizeRestoration(
+                    BufferFrameSizeRestoration(uid: uid, originalFrameSize: originalBufferFrameSize),
+                    outputForUID: outputForUID,
+                    setBufferFrameSize: setBufferFrameSize
+                )
+            {
+                updated.originalBufferFrameSize = nil
+            }
+            records[uid] = updated.isEmpty ? nil : updated
+        }
+
+        try? PersistedAudioDeviceRestorationStore.save(records, to: url)
     }
 }

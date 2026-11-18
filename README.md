@@ -48,7 +48,7 @@ GlassEQ is an early beta: Apple Silicon only, tested on macOS 26, with no automa
 3. GlassEQ qualifies the replacement graph while muted. On low-rate Bluetooth headsets it also waits for the physical clock to settle.
 4. If startup fails, use Retry in the menu or Disable to restore normal playback.
 
-The normal fast path has low, predictable latency without a separate playback queue. The built-in diagnostics report tap-to-output latency from Core Audio's I/O timestamps alongside frame delivery, callback sizes, underruns, dropped input, and saturation. Headset mode reports its bridge occupancy, clock correction, sample-rate conversion, and output timing separately.
+The normal fast path has low, predictable latency without a separate playback queue. The built-in diagnostics report tap-to-output latency from Core Audio's I/O timestamps alongside frame delivery, callback sizes, underruns, dropped input, and saturation.
 
 The current low-latency path requires the output's preferred pair to occupy one native mono or stereo hardware stream. Audio routed to a different device or a distinct system-alert output is outside that tap.
 

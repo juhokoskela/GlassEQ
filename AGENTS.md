@@ -30,7 +30,7 @@ This is a permanently open-source project. Code should be reviewable by someone 
 ## Repository Map
 
 - `Sources/GlassEQCore`: profile models, persistence, filter design, DSP, convolution, and realtime bank transitions.
-- `Sources/GlassEQAudio`: Core Audio ownership, device discovery, taps, aggregate devices, render callbacks, fallback clock bridging, and diagnostics.
+- `Sources/GlassEQAudio`: Core Audio ownership, device discovery, taps, aggregate devices, render callbacks, and diagnostics.
 - `Sources/GlassEQApp`: menu bar application, lifecycle coordination, policy, and the main side of Settings IPC.
 - `Sources/GlassEQSettingsIPC`: bounded messages shared by the app and Settings helper.
 - `Sources/GlassEQProfileImport`: AutoEq catalogue access, WAV impulse-response decoding, and file import loading shared by the settings UI.
@@ -46,7 +46,7 @@ Respect these module boundaries. In particular, UI code must not own audio resou
 
 - macOS owns output selection. GlassEQ observes the default route and follows it; it does not present a competing physical-output selector.
 - Normal-rate routes use one private aggregate joining a device-scoped process tap to the physical output. The physical device remains the timebase.
-- The app retains a global mute tap while qualifying the combined renderer. Low-rate headset clocks require explicit qualification. Keep the separate-clock renderer available for diagnostic comparisons during hardware qualification.
+- The app retains a global mute tap while qualifying the combined renderer. Low-rate headset clocks require explicit qualification.
 - Disable and verify all physical input streams before starting output. After tap attachment, enable only the process-tap input streams. If the microphone path cannot be isolated, startup must fail safely.
 - Hold direct playback muted during a requested rebuild or recoverable processing failure. Expose retry and explicit handback. Bypass, stop and quit must release capture so normal playback resumes.
 - Do not mutate shared physical-device settings when a private aggregate setting will do. Any unavoidable shared-device mutation needs explicit ownership, persistence, restoration, and crash recovery.

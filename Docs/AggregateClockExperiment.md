@@ -929,3 +929,5 @@ Juho reported that all three manual hardware checks passed with the sandboxed Ap
 | Headset reversal and rejected startup | Leave a call while the AirPods route settles. Force startup rejection, exercise retry while muted, then recover by clearing the fault and retrying or by disabling processing. |
 
 This sign-off qualifies the three sequences on Juho’s setup. The packaged run supplied a pass result for each check. The numerical timing and level traces above came from the earlier instrumented prototype.
+
+Following that qualification, GlassEQ retired the separate-clock backend. The clock, bridge, and ring measurements above describe the earlier implementation.

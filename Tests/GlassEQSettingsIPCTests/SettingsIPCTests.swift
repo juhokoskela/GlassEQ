@@ -1041,8 +1041,6 @@ struct SettingsIPCTests {
               "playedFrames": 24,
               "playbackUnderrunFrames": 1,
               "saturatedSamples": 2,
-              "currentBufferedFrames": 512,
-              "maxBufferedFrames": 1024
             }
             """.utf8)
 
@@ -1148,7 +1146,6 @@ struct SettingsIPCTests {
             diagnostics: SettingsAudioDiagnosticsDTO(
                 status: SettingsAudioStatusDTO(
                     health: .stable,
-                    routeMode: .lowLatency,
                     isUsingSaferBuffer: true
                 ),
                 route: SettingsAudioRouteDTO(
@@ -1175,7 +1172,6 @@ struct SettingsIPCTests {
                     runtimeRebuilds: 2,
                     automaticRecoveries: 1,
                     bufferEscalations: 1,
-                    headsetFallbacks: 0,
                     lastReason: .deadlineMisses,
                     lastRecoveryAt: Date(timeIntervalSince1970: 1_020)
                 )

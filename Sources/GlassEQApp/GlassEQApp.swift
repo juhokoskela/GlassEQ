@@ -239,19 +239,11 @@ enum GlassEQAppLifecycleState: Equatable {
 
 protocol AudioEngineControlling: AnyObject, Sendable {
     var state: AudioEngineState { get }
-    var isUsingSeparateClockBackend: Bool { get }
     var processingSampleRate: Double? { get }
-    var isUsingTransitionalHeadsetBackend: Bool { get }
-    var isUsingPromotedHeadsetAggregate: Bool { get }
-    var isDeferringColdStartupAggregate: Bool { get }
 
     var holdsProcessingMute: Bool { get }
     func start(output: AudioOutputDevice, profile: EQProfile) throws
     func suspendRenderer() throws
-    func attemptColdStartupAggregatePromotion() throws
-        -> ColdStartupAggregatePromotionResult
-    func attemptHeadsetAggregatePromotion() throws -> HeadsetAggregatePromotionResult
-    func rejectHeadsetAggregatePromotion()
     func aggregateRouteFingerprint(
         for output: AudioOutputDevice
     ) throws -> AggregateAudioRouteFingerprint?
@@ -268,10 +260,6 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     func snapshotMetrics() -> AudioEngineMetrics
     func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata?
     func resetDiagnostics()
-    func setPlaybackBufferRenegotiationHandler(
-        _ handler: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
-    )
-    func setRuntimeFailureHandler(_ handler: (@Sendable (AudioEngineFailure) -> Void)?)
     #if DEBUG
         func setRejectProtectedStartupForTesting(_ reject: Bool)
         func simulateRenderStallForTesting()
@@ -279,8 +267,6 @@ protocol AudioEngineControlling: AnyObject, Sendable {
 }
 
 extension AudioEngineControlling {
-
-    var isUsingSeparateClockBackend: Bool { false }
 
     func beginProgrammeComparison(profile _: EQProfile, reference _: EQProfile) -> Bool { false }
 
@@ -291,14 +277,6 @@ extension AudioEngineControlling {
     }
 
     func snapshotLatencyMetadata() -> AudioEngineLatencyMetadata? { nil }
-
-    func setPlaybackBufferRenegotiationHandler(
-        _: (@Sendable (PlaybackBufferRenegotiation) -> Void)?
-    ) {}
-
-    func setRuntimeFailureHandler(
-        _: (@Sendable (AudioEngineFailure) -> Void)?
-    ) {}
 
     #if DEBUG
         func setRejectProtectedStartupForTesting(_: Bool) {}
@@ -417,14 +395,7 @@ extension SettingsAudioMetricsDTO {
             playbackUnderrunEvents: metrics.playbackUnderrunEvents,
             playbackUnderrunFrames: metrics.playbackUnderrunFrames,
             droppedInputFrames: metrics.droppedInputFrames,
-            droppedBufferedFrames: metrics.droppedBufferedFrames,
             saturatedSamples: metrics.saturatedSamples,
-            currentBufferedFrames: metrics.currentBufferedFrames,
-            maxBufferedFrames: metrics.maxBufferedFrames,
-            maximumPlaybackBufferedFrames: metrics.maximumPlaybackBufferedFrames,
-            minimumPlaybackBufferedFrames: metrics.minimumPlaybackBufferedFrames,
-            averagePlaybackBufferedFrames: metrics.averagePlaybackBufferedFrames,
-            playbackBufferObservations: metrics.playbackBufferObservations,
             inputTimestampDiscontinuities: metrics.inputTimestampDiscontinuities,
             outputTimestampDiscontinuities: metrics.outputTimestampDiscontinuities,
             pairedTimestampDiscontinuities: metrics.pairedTimestampDiscontinuities,
@@ -460,15 +431,6 @@ extension SettingsAudioMetricsDTO {
             renderDeadlineMisses: metrics.renderDeadlineMisses,
             callbackStartStarvations: metrics.callbackStartStarvations,
             renderOverruns: metrics.renderOverruns,
-            playbackTimestampDiscontinuities: metrics.playbackTimestampDiscontinuities,
-            playbackBufferRenegotiations: metrics.playbackBufferRenegotiations,
-            adaptivePlaybackRenderFailures: metrics.adaptivePlaybackRenderFailures,
-            playbackRateCorrectionPPM: metrics.playbackRateCorrectionPPM,
-            playbackRateCorrectionSaturated: metrics.playbackRateCorrectionSaturated,
-            playbackOccupancyTargetFrames: metrics.playbackOccupancyTargetFrames,
-            filteredPlaybackOccupancyFrames: metrics.filteredPlaybackOccupancyFrames,
-            playbackBufferSampleRate: metrics.playbackBufferSampleRate,
-            playbackSampleRateConversionActive: metrics.playbackSampleRateConversionActive,
             tapToOutputLatencyObservations: metrics.tapToOutputLatencyObservations,
             minimumTapToOutputLatencyNanoseconds: metrics.minimumTapToOutputLatencyNanoseconds,
             maximumTapToOutputLatencyNanoseconds: metrics.maximumTapToOutputLatencyNanoseconds,
@@ -626,10 +588,6 @@ final class GlassEQAppModel {
     private var renderWatchdog: AudioRenderWatchdog
     private let renderWatchdogPollInterval: Duration
     private var aggregateStabilityTask: Task<Void, Never>?
-    private var headsetAggregatePromotionTask: Task<Void, Never>?
-    private var coldStartupAggregatePromotionTask: Task<Void, Never>?
-    private var headsetAggregatePromotionTaskGeneration = 0
-    private var coldStartupAggregatePromotionTaskGeneration = 0
     private var outputChangeTask: Task<Void, Never>?
     private var pendingOutputTransitionAction = PendingOutputTransitionAction.none
     private var engineStartTask: Task<Void, Never>?
@@ -655,11 +613,6 @@ final class GlassEQAppModel {
     private let aggregateBufferPolicyStore: AggregateBufferPolicyStore
     private let aggregateStabilitySettlingDelay: Duration
     private let aggregateCleanSessionDuration: Duration
-    private let headsetAggregatePromotionDelay: Duration
-    private let coldStartupAggregatePromotionPollInterval: Duration
-    private var headsetPromotionAttemptedOutputGeneration: Int?
-    private var coldStartupPromotionAttemptedOutputGeneration: Int?
-    private var unstableColdStartupOutputConfiguration: DefaultOutputConfiguration?
     private let aggregateBufferNotifier: any AggregateBufferChangeNotifying
     private var pendingAggregateBufferIncrease: PendingAggregateBufferIncrease?
     private var fixedBufferRecovery: FixedBufferRecovery?
@@ -671,7 +624,6 @@ final class GlassEQAppModel {
     private var diagnosticsRuntimeRebuilds: UInt64 = 0
     private var diagnosticsAutomaticRecoveries: UInt64 = 0
     private var diagnosticsBufferEscalations: UInt64 = 0
-    private var diagnosticsHeadsetFallbacks: UInt64 = 0
     private var diagnosticsLastRecoveryReason: SettingsAudioRecoveryReason?
     private var diagnosticsLastRecoveryAt: Date?
     private var diagnosticsObservedDeviceSampleRate = 0.0
@@ -962,16 +914,6 @@ final class GlassEQAppModel {
         case cancelled
     }
 
-    private enum HeadsetPromotionWorkResult: Sendable {
-        case success(HeadsetAggregatePromotionResult, AudioEngineLatencyMetadata?)
-        case failure(String)
-    }
-
-    private enum ColdStartupPromotionWorkResult: Sendable {
-        case success(ColdStartupAggregatePromotionResult, AudioEngineLatencyMetadata?)
-        case failure(String)
-    }
-
     private struct EngineWorkFailure: Error, LocalizedError, Sendable {
         var message: String
 
@@ -1000,8 +942,6 @@ final class GlassEQAppModel {
         aggregateBufferPolicyURL: URL? = nil,
         aggregateStabilitySettlingDelay: Duration = .seconds(2),
         aggregateCleanSessionDuration: Duration = .seconds(5 * 60),
-        headsetAggregatePromotionDelay: Duration = .seconds(6),
-        coldStartupAggregatePromotionPollInterval: Duration = .seconds(1),
         renderWatchdogStallThreshold: Duration = AudioRenderWatchdog.defaultStallThreshold,
         renderWatchdogRepeatedFailureWindow: Duration = AudioRenderWatchdog.defaultRepeatedFailureWindow,
         renderWatchdogPollInterval: Duration = .milliseconds(500),
@@ -1062,8 +1002,6 @@ final class GlassEQAppModel {
         )
         self.aggregateStabilitySettlingDelay = aggregateStabilitySettlingDelay
         self.aggregateCleanSessionDuration = aggregateCleanSessionDuration
-        self.headsetAggregatePromotionDelay = headsetAggregatePromotionDelay
-        self.coldStartupAggregatePromotionPollInterval = coldStartupAggregatePromotionPollInterval
         self.renderWatchdog = AudioRenderWatchdog(
             stallThreshold: renderWatchdogStallThreshold,
             repeatedFailureWindow: renderWatchdogRepeatedFailureWindow
@@ -1078,16 +1016,6 @@ final class GlassEQAppModel {
                 ? AggregateBufferNotifier.shared
                 : NoopAggregateBufferNotifier())
         self.profilePersistenceMode = persistenceMode
-        engine.setPlaybackBufferRenegotiationHandler { [weak self] renegotiation in
-            Task { @MainActor [weak self] in
-                self?.processPlaybackBufferRenegotiation(renegotiation)
-            }
-        }
-        engine.setRuntimeFailureHandler { [weak self] failure in
-            Task { @MainActor in
-                self?.handleRuntimeAudioEngineFailure(failure)
-            }
-        }
         if registerAppDelegate {
             GlassEQAppDelegate.model = self
             if OnboardingState.isComplete {
@@ -1284,25 +1212,11 @@ final class GlassEQAppModel {
         } else {
             health = .needsAttention
         }
-        let routeMode: SettingsAudioRouteMode
-        if engine.isUsingTransitionalHeadsetBackend {
-            routeMode = .headsetCompatibility
-        } else if engine.isUsingSeparateClockBackend {
-            routeMode = .compatibility
-        } else if isRunning {
-            routeMode = .lowLatency
-        } else {
-            routeMode = .unavailable
-        }
         let latency = diagnosticsLatencyMetadata
-        let processingSampleRate =
-            engineMetrics.playbackBufferSampleRate > 0
-            ? engineMetrics.playbackBufferSampleRate
-            : processingSampleRateForSettings()
+        let processingSampleRate = processingSampleRateForSettings()
         return SettingsAudioDiagnosticsDTO(
             status: SettingsAudioStatusDTO(
                 health: health,
-                routeMode: routeMode,
                 isUsingSaferBuffer: isUsingSaferBuffer
             ),
             route: SettingsAudioRouteDTO(
@@ -1343,7 +1257,6 @@ final class GlassEQAppModel {
                 runtimeRebuilds: diagnosticsRuntimeRebuilds,
                 automaticRecoveries: diagnosticsAutomaticRecoveries,
                 bufferEscalations: diagnosticsBufferEscalations,
-                headsetFallbacks: diagnosticsHeadsetFallbacks,
                 lastReason: diagnosticsLastRecoveryReason,
                 lastRecoveryAt: diagnosticsLastRecoveryAt
             )
@@ -2195,7 +2108,6 @@ final class GlassEQAppModel {
         diagnosticsRuntimeRebuilds = 0
         diagnosticsAutomaticRecoveries = 0
         diagnosticsBufferEscalations = 0
-        diagnosticsHeadsetFallbacks = 0
         diagnosticsLastRecoveryReason = nil
         diagnosticsLastRecoveryAt = nil
         if isRunning {
@@ -2229,14 +2141,8 @@ final class GlassEQAppModel {
         diagnosticsLatencyMetadata = nil
     }
 
-    private func recordAutomaticRecovery(
-        _ reason: SettingsAudioRecoveryReason,
-        headsetFallback: Bool = false
-    ) {
+    private func recordAutomaticRecovery(_ reason: SettingsAudioRecoveryReason) {
         diagnosticsAutomaticRecoveries &+= 1
-        if headsetFallback {
-            diagnosticsHeadsetFallbacks &+= 1
-        }
         diagnosticsLastRecoveryReason = reason
         diagnosticsLastRecoveryAt = Date()
     }
@@ -2531,8 +2437,6 @@ final class GlassEQAppModel {
                     statusMessage = runningEngineStatusMessage(for: output)
                     onboardingAudioCaptureState = .running(outputName: output.name)
                     startAggregateStabilityMonitoring()
-                    startColdStartupAggregatePromotionIfNeeded()
-                    startHeadsetAggregatePromotionIfNeeded()
                     notifyModelDidChange()
                 }
                 return
@@ -2855,9 +2759,6 @@ final class GlassEQAppModel {
     private func activeAggregateRouteFingerprint(
         for output: AudioOutputDevice
     ) -> AggregateAudioRouteFingerprint? {
-        guard !engine.isUsingSeparateClockBackend else {
-            return nil
-        }
         return try? engine.aggregateRouteFingerprint(for: output)
     }
 
@@ -3026,12 +2927,6 @@ final class GlassEQAppModel {
         renderWatchdog.pause()
         aggregateStabilityTask?.cancel()
         aggregateStabilityTask = nil
-        headsetAggregatePromotionTask?.cancel()
-        headsetAggregatePromotionTask = nil
-        headsetAggregatePromotionTaskGeneration += 1
-        coldStartupAggregatePromotionTask?.cancel()
-        coldStartupAggregatePromotionTask = nil
-        coldStartupAggregatePromotionTaskGeneration += 1
     }
 
     private func scheduleEngineMuteForTransition() {
@@ -3267,8 +3162,6 @@ final class GlassEQAppModel {
             completePendingAggregateBufferIncreaseIfNeeded(output: output)
             notifyBluetoothBufferDefaultIfNeeded()
             startAggregateStabilityMonitoring()
-            startColdStartupAggregatePromotionIfNeeded()
-            startHeadsetAggregatePromotionIfNeeded()
         case .routeChanged(let output):
             handleDefaultOutputChange(.success(output))
             return
@@ -3294,8 +3187,6 @@ final class GlassEQAppModel {
             pendingAggregateBufferIncrease = nil
             notifyBluetoothBufferDefaultIfNeeded()
             startAggregateStabilityMonitoring()
-            startColdStartupAggregatePromotionIfNeeded()
-            startHeadsetAggregatePromotionIfNeeded()
         case .failure(let error, let attemptedOutput):
             if let attemptedOutput {
                 refreshCurrentOutputMetadata(from: attemptedOutput)
@@ -3326,25 +3217,6 @@ final class GlassEQAppModel {
     }
 
     private func runningEngineStatusMessage(for output: AudioOutputDevice) -> String {
-        if engine.isDeferringColdStartupAggregate {
-            return localized(
-                "Processing \(output.name) in compatibility mode until active playback releases the output"
-            )
-        }
-        if engine.isUsingSeparateClockBackend,
-            unstableColdStartupOutputConfiguration == DefaultOutputConfiguration(output)
-        {
-            return localized(
-                "The low-latency startup path was unstable; compatibility mode remains active."
-            )
-        }
-        if engine.isUsingTransitionalHeadsetBackend,
-            headsetPromotionAttemptedOutputGeneration == outputChangeGeneration
-        {
-            return localized(
-                "Processing \(output.name) with \(activeProfile.name) in compatibility mode"
-            )
-        }
         return processingStatus(
             outputName: output.name,
             profileName: activeProfile.name
@@ -3426,9 +3298,7 @@ final class GlassEQAppModel {
                         self.notifyModelDidChange()
                         return
                     }
-                    if self.engine.isUsingPromotedHeadsetAggregate
-                        || selection.mode == .automatic
-                    {
+                    if selection.mode == .automatic {
                         if self.handleQualifyingAggregateInterruption(
                             on: route,
                             occurrences: occurrenceCount
@@ -3468,249 +3338,6 @@ final class GlassEQAppModel {
                 }
             }
         }
-    }
-
-    private func startColdStartupAggregatePromotionIfNeeded() {
-        coldStartupAggregatePromotionTask?.cancel()
-        coldStartupAggregatePromotionTask = nil
-        coldStartupAggregatePromotionTaskGeneration += 1
-        guard engine.isDeferringColdStartupAggregate,
-            coldStartupPromotionAttemptedOutputGeneration != outputChangeGeneration
-        else {
-            return
-        }
-        unstableColdStartupOutputConfiguration = nil
-        let engineGeneration = engineStartGeneration
-        let outputGeneration = outputChangeGeneration
-        let taskGeneration = coldStartupAggregatePromotionTaskGeneration
-        let pollInterval = coldStartupAggregatePromotionPollInterval
-        coldStartupAggregatePromotionTask = Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            defer {
-                if self.coldStartupAggregatePromotionTaskGeneration == taskGeneration {
-                    self.coldStartupAggregatePromotionTask = nil
-                }
-            }
-            while !Task.isCancelled {
-                try? await Task.sleep(for: pollInterval)
-                guard !Task.isCancelled,
-                    self.lifecycleState == .running,
-                    self.isRunning,
-                    self.engineStartGeneration == engineGeneration,
-                    self.outputChangeGeneration == outputGeneration,
-                    self.engine.isDeferringColdStartupAggregate
-                else {
-                    return
-                }
-                let engine = self.engine
-                let work = self.engineWorkExecutor.enqueue(priority: .userInitiated) {
-                    do {
-                        return ColdStartupPromotionWorkResult.success(
-                            try engine.attemptColdStartupAggregatePromotion(),
-                            engine.snapshotLatencyMetadata()
-                        )
-                    } catch {
-                        return ColdStartupPromotionWorkResult.failure(
-                            error.localizedDescription
-                        )
-                    }
-                }
-                let result = await work.value
-                guard self.lifecycleState == .running,
-                    self.isRunning,
-                    self.pendingOutputTransitionAction != .stopped,
-                    self.engineStartGeneration == engineGeneration
-                else {
-                    return
-                }
-                // The worker may have committed the backend switch before a transient output
-                // notification cancelled this monitor. Reconcile a successful promotion unless
-                // newer engine work has taken ownership; that work will publish its own result.
-                if case .success(.promoted, _) = result {
-                    self.completeColdStartupAggregatePromotion(result)
-                    return
-                }
-                guard !Task.isCancelled,
-                    self.outputChangeGeneration == outputGeneration
-                else {
-                    return
-                }
-                if case .success(.clientsActive, _) = result {
-                    continue
-                }
-                self.completeColdStartupAggregatePromotion(result)
-                return
-            }
-        }
-    }
-
-    private func completeColdStartupAggregatePromotion(
-        _ workResult: ColdStartupPromotionWorkResult
-    ) {
-        switch workResult {
-        case .success(.promoted(let output), let latencyMetadata):
-            unstableColdStartupOutputConfiguration = nil
-            refreshCurrentOutputMetadata(from: output)
-            recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
-            activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
-            engineMetrics = engine.snapshotMetrics()
-            statusMessage = processingStatus(
-                outputName: output.name,
-                profileName: activeProfile.name
-            )
-            onboardingAudioCaptureState = .running(outputName: output.name)
-            startAggregateStabilityMonitoring()
-        case .success(.clientsActive, _):
-            return
-        case .success(.aggregateUnstable, _):
-            coldStartupPromotionAttemptedOutputGeneration = outputChangeGeneration
-            unstableColdStartupOutputConfiguration = lastHandledDefaultOutputConfiguration
-            activeAggregateRoute = nil
-            statusMessage = localized(
-                "The low-latency startup path was unstable; compatibility mode remains active."
-            )
-        case .success(.notApplicable, _):
-            unstableColdStartupOutputConfiguration = nil
-            statusMessage = processingStatus(
-                outputName: currentOutputName,
-                profileName: activeProfile.name
-            )
-        case .failure(let message):
-            activeAggregateRoute = nil
-            if case .running = engine.state {
-                statusMessage = localized(
-                    "Could not enter the low-latency path; compatibility mode remains active: \(message)"
-                )
-            } else {
-                lifecycleState = .stopped
-                isRunning = false
-                statusMessage = localized("Audio engine failed: \(message)")
-                onboardingAudioCaptureState = .failed(message: statusMessage)
-            }
-        }
-        notifyModelDidChange()
-    }
-
-    private func startHeadsetAggregatePromotionIfNeeded() {
-        headsetAggregatePromotionTask?.cancel()
-        headsetAggregatePromotionTask = nil
-        headsetAggregatePromotionTaskGeneration += 1
-        guard engine.isUsingTransitionalHeadsetBackend,
-            headsetPromotionAttemptedOutputGeneration != outputChangeGeneration
-        else {
-            return
-        }
-        let engineGeneration = engineStartGeneration
-        let outputGeneration = outputChangeGeneration
-        let taskGeneration = headsetAggregatePromotionTaskGeneration
-        let delay = headsetAggregatePromotionDelay
-        statusMessage = localized(
-            "Processing \(currentOutputName) in compatibility mode while its clock settles..."
-        )
-        headsetAggregatePromotionTask = Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            defer {
-                if self.headsetAggregatePromotionTaskGeneration == taskGeneration {
-                    self.headsetAggregatePromotionTask = nil
-                }
-            }
-            try? await Task.sleep(for: delay)
-            guard !Task.isCancelled,
-                self.lifecycleState == .running,
-                self.isRunning,
-                self.engineStartGeneration == engineGeneration,
-                self.outputChangeGeneration == outputGeneration,
-                self.engine.isUsingTransitionalHeadsetBackend
-            else {
-                return
-            }
-            self.statusMessage = localized("Testing the low-latency headset path...")
-            self.notifyModelDidChange()
-            guard !Task.isCancelled,
-                self.engineStartGeneration == engineGeneration,
-                self.outputChangeGeneration == outputGeneration
-            else {
-                return
-            }
-            self.headsetPromotionAttemptedOutputGeneration = outputGeneration
-            let engine = self.engine
-            let work = self.engineWorkExecutor.enqueue(priority: .userInitiated) {
-                do {
-                    return HeadsetPromotionWorkResult.success(
-                        try engine.attemptHeadsetAggregatePromotion(),
-                        engine.snapshotLatencyMetadata()
-                    )
-                } catch {
-                    return HeadsetPromotionWorkResult.failure(error.localizedDescription)
-                }
-            }
-            let result = await work.value
-            guard self.lifecycleState == .running,
-                self.isRunning,
-                self.pendingOutputTransitionAction != .stopped,
-                self.engineStartGeneration == engineGeneration
-            else {
-                return
-            }
-            if case .success(.promoted, _) = result {
-                self.completeHeadsetAggregatePromotion(result)
-                return
-            }
-            guard !Task.isCancelled,
-                self.outputChangeGeneration == outputGeneration
-            else {
-                return
-            }
-            self.completeHeadsetAggregatePromotion(result)
-        }
-    }
-
-    private func completeHeadsetAggregatePromotion(
-        _ workResult: HeadsetPromotionWorkResult
-    ) {
-        switch workResult {
-        case .success(.promoted(let output), let latencyMetadata):
-            refreshCurrentOutputMetadata(from: output)
-            recordDiagnosticsRuntimeStart(latencyMetadata: latencyMetadata)
-            activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
-            engineMetrics = engine.snapshotMetrics()
-            statusMessage = localized(
-                "Processing \(output.name) with \(activeProfile.name) on the low-latency headset path"
-            )
-            onboardingAudioCaptureState = .running(outputName: output.name)
-            startAggregateStabilityMonitoring()
-        case .success(.clockUnstable, _):
-            statusMessage = localized(
-                "The headset clock is still settling; compatibility mode remains active."
-            )
-        case .success(.aggregateUnstable, _):
-            activeAggregateRoute = nil
-            statusMessage = localized(
-                "The headset aggregate was still unstable; compatibility mode remains active."
-            )
-        case .success(.notApplicable, _):
-            statusMessage = processingStatus(
-                outputName: currentOutputName,
-                profileName: activeProfile.name
-            )
-        case .failure(let message):
-            activeAggregateRoute = nil
-            if case .running = engine.state {
-                statusMessage = localized(
-                    "Could not test the low-latency headset path; compatibility mode remains active: \(message)"
-                )
-            } else {
-                lifecycleState = .stopped
-                isRunning = false
-                statusMessage = localized("Audio engine failed: \(message)")
-                onboardingAudioCaptureState = .failed(message: statusMessage)
-            }
-        }
-        notifyModelDidChange()
     }
 
     private func aggregateRouteIsSettled(
@@ -3827,22 +3454,6 @@ final class GlassEQAppModel {
             case .running(let output) = engine.state
         else {
             return false
-        }
-        if engine.isUsingPromotedHeadsetAggregate {
-            recordAutomaticRecovery(.headsetInstability, headsetFallback: true)
-            engine.rejectHeadsetAggregatePromotion()
-            pendingAggregateBufferIncrease = nil
-            statusMessage = localized(
-                "Headset timing became unstable; returning to compatibility mode..."
-            )
-            notifyModelDidChange()
-            scheduleEngineStart(
-                output: output,
-                profile: activeProfile,
-                rollback: nil,
-                failurePolicy: .stopRunningGraph
-            )
-            return true
         }
         let previousFrameSize = aggregateBufferSelection(for: route).frameSize
         do {
@@ -4377,35 +3988,6 @@ final class GlassEQAppModel {
         metricsTask = nil
     }
 
-    private func processPlaybackBufferRenegotiation(
-        _ renegotiation: PlaybackBufferRenegotiation
-    ) {
-        guard lifecycleState == .running,
-            isRunning,
-            engineStartTask == nil,
-            case .running(let output) = engine.state,
-            output.uid == renegotiation.outputUID,
-            output.uid == currentOutputUID,
-            abs(output.nominalSampleRate - renegotiation.sampleRate) < 0.5,
-            abs(output.nominalSampleRate - currentOutputSampleRate) < 0.5
-        else {
-            return
-        }
-        if case .instability(let reason) = renegotiation.cause {
-            recordAutomaticRecovery(
-                reason == .underrun ? .playbackUnderrun : .adaptiveRenderFailure
-            )
-            if renegotiation.frameSize > renegotiation.previousFrameSize
-                || renegotiation.playbackTargetFrames
-                    > renegotiation.previousPlaybackTargetFrames
-            {
-                diagnosticsBufferEscalations &+= 1
-            }
-        }
-        refreshCurrentOutputMetadata(from: output)
-        notifyModelDidChange()
-    }
-
     private func startRenderWatchdog() {
         renderWatchdogTask?.cancel()
         renderWatchdog.pause()
@@ -4718,7 +4300,6 @@ final class GlassEQAppModel {
             return false
         }
         lifecycleState = .terminating
-        engine.setPlaybackBufferRenegotiationHandler(nil)
         acceptsSettingsCommands = false
         wasRunningBeforeSleep = false
         invalidatePendingOutputChange()
@@ -4789,25 +4370,6 @@ final class GlassEQAppModel {
             }
             return localized("Audio engine failed: \(failure.userMessage)")
         }
-    }
-
-    private func handleRuntimeAudioEngineFailure(_ failure: AudioEngineFailure) {
-        guard lifecycleState == .running,
-            engineStartTask == nil,
-            case .failed = engine.state
-        else {
-            return
-        }
-        clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
-        invalidatePendingEngineStart()
-        lifecycleState = .stopped
-        isRunning = false
-        statusMessage = audioEngineStatusMessage(failure)
-        onboardingAudioCaptureState =
-            failure.category == .systemAudioCapturePermission
-            ? .permissionDenied(settingsError: nil)
-            : .failed(message: statusMessage)
-        notifyModelDidChange()
     }
 
     private static func profileStoreLoadStatusMessage(_ status: ProfileStoreLoadStatus) -> String? {

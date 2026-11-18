@@ -15,19 +15,4 @@ struct OutputDiagnosticsReportTests {
         #expect(outputAddedLatencyLabel(snapshot) == localizedLatency(milliseconds: 1.5))
     }
 
-    @Test
-    func addedLatencyUsesBufferedFramesForCompatibilityRoutes() {
-        var snapshot = SettingsSnapshotDTO.disconnected
-        snapshot.currentOutputSampleRate = 48_000
-        snapshot.metrics = SettingsAudioMetricsDTO(
-            averagePlaybackBufferedFrames: 480,
-            playbackBufferObservations: 1,
-            playbackBufferSampleRate: 48_000,
-            diagnostics: SettingsAudioDiagnosticsDTO(
-                status: SettingsAudioStatusDTO(routeMode: .compatibility)
-            )
-        )
-
-        #expect(outputAddedLatencyLabel(snapshot) == localizedLatency(milliseconds: 10))
-    }
 }

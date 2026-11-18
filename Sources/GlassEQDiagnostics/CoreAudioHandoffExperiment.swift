@@ -7,7 +7,6 @@ import GlassEQCore
 
 enum CoreAudioHandoffExperiment: String {
     case productionStart = "production-start"
-    case quiesceOnly = "quiesce-only"
     case combinedIncumbent = "combined-incumbent"
     case combined16 = "combined-16"
     case physicalCreateOnly = "physical-create-only"
@@ -42,13 +41,6 @@ func runCoreAudioHandoffExperiment(
     switch experiment {
     case .productionStart:
         try runProductionStartExperiment(
-            engine: engine,
-            output: output,
-            holdDuration: holdDuration,
-            trace: trace
-        )
-    case .quiesceOnly:
-        try runQuiesceOnlyExperiment(
             engine: engine,
             output: output,
             holdDuration: holdDuration,
@@ -1259,46 +1251,6 @@ private func waitUntilDeviceIsAlive(_ deviceID: AudioObjectID) throws {
         operation: "wait for aggregate \(deviceID) to become alive",
         status: kAudioHardwareNotRunningError
     )
-}
-
-private func runQuiesceOnlyExperiment(
-    engine: SystemTapAudioEngine,
-    output: AudioOutputDevice,
-    holdDuration: TimeInterval,
-    trace: CoreAudioExperimentTrace
-) throws {
-    let profile = EQProfile.flatGraphic31
-    try engine.startDiagnosticCompatibilityPath(output: output, profile: profile)
-    trace.record(message: "compatibility path running")
-    printCoreAudioRouteSnapshot(
-        label: "compatibility running",
-        physicalDeviceID: output.id
-    )
-
-    let victimState = readExperimentValue(
-        prompt: "Prepare the victim, then enter its state (for example firefox-playing or firefox-paused):",
-        defaultValue: "unspecified"
-    )
-    trace.record(message: "victim prepared state=\(victimState)")
-    printCoreAudioRouteSnapshot(label: "before quiesce", physicalDeviceID: output.id)
-
-    trace.record(message: "STOP-ONLY CONTROL begin; no combined aggregate will be created")
-    try engine.quiesceDiagnosticCompatibilityOutput()
-    trace.record(message: "STOP-ONLY CONTROL quiesced")
-    printCoreAudioRouteSnapshot(label: "after quiesce", physicalDeviceID: output.id)
-
-    Thread.sleep(forTimeInterval: holdDuration)
-    trace.record(message: "STOP-ONLY CONTROL hold complete seconds=\(holdDuration)")
-    try engine.restoreDiagnosticCompatibilityOutput(output: output, profile: profile)
-    trace.record(message: "STOP-ONLY CONTROL compatibility restored")
-    printCoreAudioRouteSnapshot(label: "after restore", physicalDeviceID: output.id)
-
-    let result = readExperimentValue(
-        prompt: "Resume or listen to the victim, then enter the result (clean, robotic, silent, dry-leak, or notes):",
-        defaultValue: "unreported"
-    )
-    trace.record(message: "audible result=\(result)")
-    printExperimentMeasurements(engine: engine, sampleRate: output.nominalSampleRate)
 }
 
 private func runCombinedExperiment(
