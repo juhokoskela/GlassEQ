@@ -30,6 +30,12 @@ public final class GlassEQSettingsViewModel {
         commandErrorMessage = nil
     }
 
+    public func disconnect() {
+        client = nil
+        isConnected = false
+        fileImportTask?.cancel()
+    }
+
     public func accept(snapshot: SettingsSnapshotDTO) {
         self.snapshot = snapshot
         profileSnapshotRevision += 1

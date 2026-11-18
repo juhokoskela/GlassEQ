@@ -1226,7 +1226,8 @@ struct GlassEQAppModelLifecycleTests {
         let response = try await model.performSettingsCommand(.retryAudioEngine)
         await settleAsyncWork()
 
-        let snapshot = try #require(response.snapshot)
+        #expect(response.snapshot == nil)
+        let snapshot = model.settingsSnapshot()
         #expect(snapshot.statusMessage == localized("Audio processing disabled"))
         #expect(snapshot.activeProfileID == disabled.id)
         #expect(engine.startCalls.isEmpty)
@@ -4034,6 +4035,26 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func closingFallbackCancelsItsPickerAndLetsTheNextWindowOpen() async {
+        let model = makeModel()
+        let picker = CancellableSettingsFileImportPicker()
+        let previous = GlassEQSettingsViewModel(
+            client: CancellableInProcessSettingsClient(model: model, picker: picker))
+        model.inProcessSettingsViewModelStorage = previous
+        let selection = Task { await previous.chooseImportFiles(mode: .stereoPair) }
+        #expect(await waitUntil { picker.hasEntered })
+
+        model.inProcessSettingsDidDisappear()
+        model.inProcessSettingsDidAppear()
+
+        #expect(await selection.value == nil)
+        #expect(picker.wasCancelled)
+        #expect(model.inProcessSettingsViewModelStorage !== previous)
+        #expect(model.inProcessSettingsViewModelStorage?.isConnected == true)
+        model.inProcessSettingsDidDisappear()
+    }
+
+    @Test
     func settingsHelperDisconnectCancelsItsInFlightFilePicker() async throws {
         let model = makeModel()
         let launcher = ControllableSettingsHelperLauncher()
@@ -4073,6 +4094,64 @@ struct GlassEQAppModelLifecycleTests {
         #expect(!coordinator.hasActiveSessionResourcesForTesting)
         await model.stopAcceptingSettingsCommandsAndWait()
         model.resumeSettingsCommandsAfterCancelledQuit()
+    }
+
+    @Test
+    func settingsPipeClosureEndsAuditionAndRestoresTheSavedProfile() async throws {
+        let engine = FakeAudioEngine()
+        let output = makeOutput(uid: "comparison", name: "Output")
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)),
+            observers: observers, outputDelay: .zero
+        )
+        model.start()
+        observers.observers[0].emit(.success(output))
+        #expect(await waitUntil { model.lifecycleState == .running })
+        let active = model.activeProfile
+        var draft = active
+        draft.preampDB = -7
+        let launcher = ControllableSettingsHelperLauncher()
+        let coordinator = SettingsCoordinator(
+            model: model, helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
+        )
+        model.settingsCoordinator = coordinator
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher)
+        try launcher.writeHelperMessage(
+            .request(sessionToken: token, id: "compare", kind: .command, command: .startProgrammeComparison(draft)))
+        #expect(await waitUntil { model.programmeComparison.isActive })
+        try launcher.writeHelperMessage(
+            .request(sessionToken: token, id: "off", kind: .command, command: .selectProgrammeComparison(.reference)))
+        #expect(
+            await waitUntil {
+                launcher.receivedAppMessages.contains {
+                    guard case let .response(_, "off", response, nil) = $0 else { return false }
+                    return response != nil && response?.snapshot == nil
+                }
+            })
+        #expect(model.programmeComparison.selection == .reference)
+        try launcher.closeHelperOutput()
+        #expect(await waitUntil { !model.programmeComparison.isActive })
+        #expect(engine.updateDSPCalls.last == active)
+        #expect(model.activeProfile == active)
+        model.stop()
+    }
+
+    @Test
+    func closingFallbackRejectsQueuedCompareAfterReopen() async throws {
+        let model = makeModel()
+        let closed = model.inProcessSettingsViewModel()
+        model.inProcessSettingsDidDisappear()
+        #expect(model.inProcessSettingsViewModelStorage == nil)
+        #expect(!closed.isConnected)
+        let reopened = model.inProcessSettingsViewModel()
+        #expect(reopened !== closed)
+        await #expect(throws: CancellationError.self) {
+            _ = try await model.performSettingsCommand(.startProgrammeComparison(model.activeProfile), from: closed)
+        }
+        #expect(!model.programmeComparison.isActive)
     }
 
     @Test
@@ -4319,15 +4398,19 @@ struct GlassEQAppModelLifecycleTests {
                 command: nil
             ))
 
-        await waitUntil {
-            launcher.receivedAppMessages.contains { message in
-                guard case .event(_, .snapshotChanged(let snapshot)) = message else {
-                    return false
-                }
-                return snapshot.statusMessage == "Changed before ready"
-                    && snapshot.metrics.capturedFrames == 42
-            }
-        }
+        let metricsEvent = SettingsPipeMessage.event(
+            sessionToken: token, event: .metricsChanged(model.settingsMetricsSnapshot()))
+        #expect(await waitUntil { launcher.receivedAppMessages.contains(metricsEvent) })
+        let messages = launcher.receivedAppMessages
+        let ready = try #require(
+            messages.firstIndex { if case .response(_, "ready", _, _) = $0 { true } else { false } })
+        let patch = try #require(
+            messages.firstIndex { message in
+                guard case .event(_, .snapshotPatched(let patch)) = message else { return false }
+                return patch.statusMessage == "Changed before ready"
+            })
+        #expect(ready < patch)
+        #expect(!messages.contains { if case .event(_, .snapshotChanged) = $0 { true } else { false } })
         #expect(coordinator.isHelperReadyForTesting)
         coordinator.shutdown()
     }
@@ -4432,14 +4515,22 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func aggregateBufferNotificationOpensSettingsInTheMainProcess() {
+    func aggregateBufferNotificationOpensOutputInTheHelper() async throws {
         let model = makeModel()
-
+        let launcher = ControllableSettingsHelperLauncher()
+        let coordinator = SettingsCoordinator(
+            model: model, helperLauncher: launcher,
+            helperValidator: PermissiveSettingsHelperLaunchValidator(),
+            settingsHelperURLProvider: { URL(fileURLWithPath: "/tmp/GlassEQSettings.app") }
+        )
+        model.settingsCoordinator = coordinator
         model.openAggregateBufferSettings()
-
-        #expect(model.inProcessSettingsPresentationIsPending)
-        #expect(model.inProcessSettingsPresentationGeneration == 1)
-        #expect(!model.settingsCoordinator.hasActiveSessionResourcesForTesting)
+        #expect(coordinator.hasActiveSessionResourcesForTesting)
+        #expect(!model.inProcessSettingsPresentationIsPending)
+        let token = try await connectSettingsHelper(coordinator: coordinator, launcher: launcher, open: false)
+        let expected = SettingsPipeMessage.event(sessionToken: token, event: .sectionRequested(.output))
+        #expect(await waitUntil { launcher.receivedAppMessages.contains(expected) })
+        coordinator.shutdown()
     }
 
     @Test
@@ -5087,9 +5178,12 @@ private func settleAsyncWork() async {
 @MainActor
 private func connectSettingsHelper(
     coordinator: SettingsCoordinator,
-    launcher: ControllableSettingsHelperLauncher
+    launcher: ControllableSettingsHelperLauncher,
+    open: Bool = true
 ) async throws -> String {
-    #expect(coordinator.openSettings() == .helper)
+    if open {
+        #expect(coordinator.openSettings() == .helper)
+    }
     await waitUntil {
         launcher.receivedAppMessages.contains { message in
             if case .bootstrap = message {

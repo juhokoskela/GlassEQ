@@ -63,16 +63,20 @@ struct GlassEQApp: App {
         .restorationBehavior(.disabled)
 
         Window(localized("Configure GlassEQ"), id: GlassEQWindowID.inProcessSettings) {
-            InProcessSettingsWindowContent(model: model)
-                .frame(minWidth: 760, minHeight: 500)
-                .onAppear {
-                    model.foregroundWindowDidAppear()
-                    model.inProcessSettingsDidAppear()
+            ZStack {
+                if let settingsModel = model.inProcessSettingsViewModelStorage {
+                    SettingsView(model: settingsModel)
                 }
-                .onDisappear {
-                    model.inProcessSettingsDidDisappear()
-                    model.foregroundWindowDidDisappear()
-                }
+            }
+            .frame(minWidth: 760, minHeight: 500)
+            .onAppear {
+                model.foregroundWindowDidAppear()
+                model.inProcessSettingsDidAppear()
+            }
+            .onDisappear {
+                model.inProcessSettingsDidDisappear()
+                model.foregroundWindowDidDisappear()
+            }
         }
         .defaultSize(width: 1180, height: 720)
         .windowResizability(.contentMinSize)
@@ -91,22 +95,6 @@ private struct WindowPresenter: View {
             .onChange(of: generation) {
                 openWindow(id: windowID)
             }
-    }
-}
-
-private struct InProcessSettingsWindowContent: View {
-    let model: GlassEQAppModel
-    @State private var settingsModel: GlassEQSettingsViewModel?
-
-    var body: some View {
-        if let settingsModel {
-            SettingsView(model: settingsModel)
-        } else {
-            Color.clear
-                .task {
-                    settingsModel = model.inProcessSettingsViewModel()
-                }
-        }
     }
 }
 
@@ -641,7 +629,7 @@ final class GlassEQAppModel {
     @ObservationIgnored private let engineWorkExecutor = EngineWorkExecutor()
     @ObservationIgnored private let confirmedEngineProfileState = ConfirmedEngineProfileState()
     @ObservationIgnored lazy var settingsCoordinator = SettingsCoordinator(model: self)
-    @ObservationIgnored var inProcessSettingsViewModelStorage: GlassEQSettingsViewModel?
+    var inProcessSettingsViewModelStorage: GlassEQSettingsViewModel?
     @ObservationIgnored var inProcessSettingsIsPresented = false
     @ObservationIgnored var inProcessSettingsPresentationIsPending = false
     var inProcessSettingsPresentationGeneration = 0

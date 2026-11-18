@@ -304,6 +304,26 @@ struct SettingsIPCTests {
         #expect(!controller.hasUnsavedDraft)
     }
 
+    @Test
+    @MainActor
+    func cleanImportedProfileCanBeAppliedDuringAudition() async {
+        let active = EQProfile(name: "Active", mode: .parametric, filters: [])
+        let imported = EQProfile(name: "Imported", mode: .parametric, filters: [])
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [active, imported]
+        snapshot.selectedProfileID = imported.id
+        snapshot.draftProfile = imported
+        snapshot.activeProfileID = active.id
+        snapshot.programmeComparison.isActive = true
+        let model = GlassEQSettingsViewModel(snapshot: snapshot)
+        let controller = SettingsController(model: model)
+        #expect(!controller.hasUnsavedDraft)
+        #expect(controller.canApplyDraft)
+        snapshot.activeProfileID = imported.id
+        model.accept(snapshot: snapshot)
+        #expect(!controller.canApplyDraft)
+    }
+
     @Test(arguments: [false, true])
     @MainActor
     func compareLocksTheCurrentDraftBeforeDispatching(comparisonStarted: Bool) async {

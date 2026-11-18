@@ -139,6 +139,9 @@ final class SettingsCoordinator: NSObject {
             return .helper
         }
 
+        if helperProcess != nil {
+            cleanupSession(terminateHelper: false)
+        }
         do {
             let token = try prepareSession()
             pendingFocusRequest = true
@@ -152,10 +155,6 @@ final class SettingsCoordinator: NSObject {
             cleanupSession(terminateHelper: true)
             return .inProcessFallback(reason: reason)
         }
-    }
-
-    var hasRunningSettingsHelper: Bool {
-        helperProcess?.isRunning == true
     }
 
     func shutdown() {
@@ -184,7 +183,7 @@ final class SettingsCoordinator: NSObject {
     }
 
     func modelDidChange() {
-        guard suppressedModelChangeDepth == 0,
+        guard settingsConnected, suppressedModelChangeDepth == 0,
             let model
         else {
             return
@@ -381,12 +380,14 @@ final class SettingsCoordinator: NSObject {
 
     private func handleHelperExitBeforeConnectionIfNeeded() {
         let shouldUseFallback = !settingsConnected
+        let section = pendingSectionRequest
         cleanupSession(terminateHelper: false)
         guard shouldUseFallback else {
             return
         }
         model?.requestInProcessSettingsPresentation(
-            statusMessage: localized("Settings helper exited before connecting. Opened Settings in GlassEQ instead.")
+            statusMessage: localized("Settings helper exited before connecting. Opened Settings in GlassEQ instead."),
+            section: section
         )
     }
 
@@ -454,9 +455,7 @@ final class SettingsCoordinator: NSObject {
             readyAcknowledgmentPending = false
             settingsConnected = true
             if let model {
-                let snapshot = model.settingsSnapshot()
-                lastSentSnapshot = snapshot
-                send(.snapshotChanged(snapshot))
+                sendSnapshotUpdate(model.settingsSnapshot())
             }
             if pendingFocusRequest {
                 pendingFocusRequest = false
@@ -500,12 +499,7 @@ final class SettingsCoordinator: NSObject {
                     commandTasks[requestID] = nil
                 }
             }
-            let shouldSuppressModelChanges: Bool
-            if case .chooseImportFiles = command {
-                shouldSuppressModelChanges = false
-            } else {
-                shouldSuppressModelChanges = true
-            }
+            let shouldSuppressModelChanges = !isFileImportPicker
             do {
                 if shouldSuppressModelChanges {
                     suppressedModelChangeDepth += 1
@@ -522,6 +516,8 @@ final class SettingsCoordinator: NSObject {
                 }
                 if let snapshot = response.snapshot {
                     lastSentSnapshot = snapshot
+                } else if shouldSuppressModelChanges, settingsConnected, let model {
+                    sendSnapshotUpdate(model.settingsSnapshot())
                 }
                 sendResponse(response, requestID: requestID)
             } catch {
@@ -529,9 +525,7 @@ final class SettingsCoordinator: NSObject {
                     launchToken == commandSessionToken
                 {
                     suppressedModelChangeDepth = max(suppressedModelChangeDepth - 1, 0)
-                    if suppressedModelChangeDepth == 0, let model {
-                        sendSnapshotUpdate(model.settingsSnapshot())
-                    }
+                    modelDidChange()
                 }
                 guard !Task.isCancelled,
                     !(error is CancellationError)
@@ -711,12 +705,14 @@ final class SettingsCoordinator: NSObject {
 
     private func failPipeSession(_ error: Error) {
         let shouldUseFallback = launchToken != nil && !settingsConnected
+        let section = pendingSectionRequest
         cleanupSession(terminateHelper: true)
         if shouldUseFallback {
             model?.requestInProcessSettingsPresentation(
                 statusMessage: localized(
                     "Settings IPC failed before connecting: \(error.localizedDescription). Opened Settings in GlassEQ instead."
-                )
+                ),
+                section: section
             )
         } else {
             statusMessageForIPCFailure(error)
@@ -730,9 +726,7 @@ final class SettingsCoordinator: NSObject {
 
     @discardableResult
     private func cleanupSession(terminateHelper: Bool) -> Task<Void, Never>? {
-        if settingsConnected {
-            model?.stopMetricsPolling()
-        }
+        let hadSession = launchToken != nil
         let processToTerminate = terminateHelper ? helperProcess : nil
         let writePumpToDrain = pipeWritePump
         let writerToCloseDirectly = writePumpToDrain == nil ? pipeWriter : nil
@@ -762,6 +756,10 @@ final class SettingsCoordinator: NSObject {
         helperProcess = nil
         settingsConnected = false
         readyAcknowledgmentPending = false
+        if hadSession {
+            model?.stopMetricsPolling()
+            model?.stopProgrammeComparison()
+        }
         if writePumpToDrain != nil || processToTerminate != nil || !commandTasksToCancel.isEmpty {
             return Task {
                 for task in commandTasksToCancel {
@@ -1093,12 +1091,7 @@ struct SecuritySettingsCodeSigningValidator: SettingsCodeSigningValidating {
 
 extension GlassEQAppModel {
     func openAggregateBufferSettings() {
-        if settingsCoordinator.hasRunningSettingsHelper {
-            openSettings(section: .output)
-            return
-        }
-        SettingsWindowFocus.request(section: .output)
-        requestInProcessSettingsPresentation()
+        openSettings(section: .output)
     }
 
     @discardableResult
@@ -1106,25 +1099,23 @@ extension GlassEQAppModel {
         guard !inProcessSettingsIsPresented,
             !inProcessSettingsPresentationIsPending
         else {
-            if let section {
-                SettingsWindowFocus.request(section: section)
-            }
-            requestInProcessSettingsPresentation()
+            requestInProcessSettingsPresentation(section: section)
             return .activeInProcessFallback
         }
         let disposition = settingsCoordinator.openSettings(section: section)
         if case .inProcessFallback(let reason) = disposition {
-            if let section {
-                SettingsWindowFocus.request(section: section)
-            }
             requestInProcessSettingsPresentation(
-                statusMessage: localized("Settings helper unavailable: \(reason). Opened Settings in GlassEQ instead.")
+                statusMessage: localized("Settings helper unavailable: \(reason). Opened Settings in GlassEQ instead."),
+                section: section
             )
         }
         return disposition
     }
 
-    func requestInProcessSettingsPresentation(statusMessage: String? = nil) {
+    func requestInProcessSettingsPresentation(statusMessage: String? = nil, section: SettingsSection? = nil) {
+        if let section {
+            SettingsWindowFocus.request(section: section)
+        }
         if let statusMessage {
             self.statusMessage = statusMessage
             notifyModelDidChange()
@@ -1136,11 +1127,16 @@ extension GlassEQAppModel {
     func inProcessSettingsDidAppear() {
         inProcessSettingsPresentationIsPending = false
         inProcessSettingsIsPresented = true
+        _ = inProcessSettingsViewModel()
     }
 
     func inProcessSettingsDidDisappear() {
         inProcessSettingsPresentationIsPending = false
         inProcessSettingsIsPresented = false
+        inProcessSettingsViewModelStorage?.disconnect()
+        inProcessSettingsViewModelStorage = nil
+        stopMetricsPolling()
+        stopProgrammeComparison()
     }
 
     func inProcessSettingsViewModel() -> GlassEQSettingsViewModel {
@@ -1150,7 +1146,7 @@ extension GlassEQAppModel {
 
         let settingsModel = GlassEQSettingsViewModel()
         settingsModel.attach(
-            client: InProcessSettingsClient(model: self),
+            client: InProcessSettingsClient(model: self, editor: settingsModel),
             snapshot: settingsSnapshot()
         )
         inProcessSettingsViewModelStorage = settingsModel
@@ -1169,7 +1165,13 @@ extension GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func performSettingsCommand(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
+    func performSettingsCommand(
+        _ command: SettingsCommand, from editor: GlassEQSettingsViewModel? = nil
+    ) async throws -> SettingsCommandResponse {
+        try Task.checkCancellation()
+        if let editor, editor !== inProcessSettingsViewModelStorage {
+            throw CancellationError()
+        }
         try beginSettingsCommand()
         defer {
             finishSettingsCommand()
@@ -1215,35 +1217,35 @@ extension GlassEQAppModel {
         case .startProgrammeComparison(let profile):
             try validateIncomingProfile(profile)
             try startProgrammeComparison(profile: profile)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .selectProgrammeComparison(let selection):
             selectProgrammeComparison(selection)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .stopProgrammeComparison:
             stopProgrammeComparison()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .resetDiagnostics:
             resetDiagnostics()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .setAggregateBufferMode(let mode):
             try setAggregateBufferMode(mode)
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .retryAutomaticAggregateBuffer:
             try retryAutomaticAggregateBuffer()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .retryAudioEngine:
             retryAudioEngine()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .openPrivacySettings:
             try openPrivacySettings()
-            return SettingsCommandResponse(snapshot: settingsSnapshot())
+            return SettingsCommandResponse()
 
         case .startMetricsPolling:
             startMetricsPolling()
@@ -1279,18 +1281,24 @@ extension GlassEQAppModel {
 private final class InProcessSettingsClient: SettingsCommanding {
     private weak var model: GlassEQAppModel?
 
-    init(model: GlassEQAppModel) {
+    private weak var editor: GlassEQSettingsViewModel?
+
+    init(model: GlassEQAppModel, editor: GlassEQSettingsViewModel) {
         self.model = model
+        self.editor = editor
     }
 
     func perform(_ command: SettingsCommand) async throws -> SettingsCommandResponse {
         guard let model else {
             throw SettingsCommandFailure(message: "GlassEQ is shutting down.")
         }
+        guard let editor, editor === model.inProcessSettingsViewModelStorage else {
+            throw CancellationError()
+        }
         if let response = try await fileImportPickerResponse(for: command, model: model) {
             return response
         }
-        return try await model.performSettingsCommand(command)
+        return try await model.performSettingsCommand(command, from: editor)
     }
 }
 

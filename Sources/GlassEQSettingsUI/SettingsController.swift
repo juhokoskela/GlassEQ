@@ -74,6 +74,11 @@ final class SettingsController {
         draftProfile != storedProfile
     }
 
+    var canApplyDraft: Bool {
+        !isProfileStoreProtected && !isStartingProgrammeComparison
+            && (hasUnsavedDraft || draftProfile.id != snapshot.activeProfileID)
+    }
+
     var isProfileStoreProtected: Bool {
         snapshot.profileStoreProtection.isProtected
     }
@@ -195,7 +200,7 @@ final class SettingsController {
     }
 
     func applyDraft() {
-        guard !isStartingProgrammeComparison else { return }
+        guard canApplyDraft else { return }
         perform(.applyProfile(draftProfile))
     }
 
