@@ -129,7 +129,7 @@ struct PersistedAudioDeviceRestorationStore {
 
     static func restoreSampleRate(
         uid: String, to originalSampleRate: Double,
-        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.restorationOutputDevice(uid:),
         setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
     ) -> Bool {
         do {
@@ -151,7 +151,7 @@ struct PersistedAudioDeviceRestorationStore {
 
     static func restoreBufferFrameSize(
         uid: String, to originalFrameSize: UInt32,
-        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.restorationOutputDevice(uid:),
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
     ) -> Bool {
@@ -188,28 +188,52 @@ struct PersistedAudioDeviceRestorationStore {
         records[output.uid] != nil && lastAttemptedDeviceIDs[output.uid] != output.id
     }
 
+    /// Returns true when a new write still needs a later readback.
+    @discardableResult
     mutating func restoreAvailableDevices(
+        verifyOnly: Bool = false,
         excluding activeUID: String? = nil,
-        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
+        outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.restorationOutputDevice(uid:),
         setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:),
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
-    ) {
+    ) -> Bool {
         let original = records
+        var needsReadback = false
         for (uid, record) in original {
-            guard let output = try? outputForUID(uid) else {
-                lastAttemptedDeviceIDs[uid] = nil
+            let output: AudioOutputDevice
+            do {
+                guard let available = try outputForUID(uid) else {
+                    if !verifyOnly { lastAttemptedDeviceIDs[uid] = nil }
+                    continue
+                }
+                output = available
+            } catch {
+                // A property read failure does not establish a new physical attachment.
                 continue
             }
-            // Other clients create private aggregates too. A device-list change is only
-            // a reason to retry a rejected write if this physical device has reappeared.
-            guard uid != activeUID, needsAttempt(for: output) else { continue }
-            lastAttemptedDeviceIDs[uid] = output.id
+
             var updated = record
+            guard !verifyOnly, uid != activeUID, needsAttempt(for: output) else {
+                if let rate = updated.originalSampleRate, abs(output.nominalSampleRate - rate) < 1 {
+                    updated.originalSampleRate = nil
+                }
+                if updated.originalBufferFrameSize == output.bufferFrameSize {
+                    updated.originalBufferFrameSize = nil
+                }
+                records[uid] = updated.isEmpty ? nil : updated
+                continue
+            }
+            // HAL can reuse object IDs. Retry writes only after a confirmed absence or a new ID.
+            lastAttemptedDeviceIDs[uid] = output.id
+            func attachedOutput(_ uid: String) throws -> AudioOutputDevice? {
+                let current = try outputForUID(uid)
+                return current?.id == output.id ? current : nil
+            }
             if let originalSampleRate = record.originalSampleRate,
                 Self.restoreSampleRate(
                     uid: uid, to: originalSampleRate,
-                    outputForUID: outputForUID,
+                    outputForUID: attachedOutput,
                     setSampleRate: setSampleRate
                 )
             {
@@ -218,22 +242,24 @@ struct PersistedAudioDeviceRestorationStore {
             if let originalBufferFrameSize = record.originalBufferFrameSize,
                 Self.restoreBufferFrameSize(
                     uid: uid, to: originalBufferFrameSize,
-                    outputForUID: outputForUID,
+                    outputForUID: attachedOutput,
                     setBufferFrameSize: setBufferFrameSize
                 )
             {
                 updated.originalBufferFrameSize = nil
             }
+            needsReadback = needsReadback || !updated.isEmpty
             records[uid] = updated.isEmpty ? nil : updated
         }
 
-        guard needsSave || records != original else { return }
+        guard needsSave || records != original else { return needsReadback }
         do {
             try Self.save(records, to: url)
             needsSave = false
         } catch {
             needsSave = true
         }
+        return needsReadback
     }
 }
 

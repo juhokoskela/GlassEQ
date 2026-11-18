@@ -1173,6 +1173,88 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
+    func delayedDeviceReadbackClearsJournalWithoutReissuingAcceptedWrites() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let uid = "delayed-dac"
+        let original = PersistedAudioDeviceRestorationRecord(
+            uid: uid, originalSampleRate: 48_000, originalBufferFrameSize: 512
+        )
+        try PersistedAudioDeviceRestorationStore.save([uid: original], to: url)
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        var rate = 44_100.0
+        var frames: UInt32 = 1_024
+        var readFails = false
+        var rateWrites = 0
+        var frameWrites = 0
+        func refresh(verifyOnly: Bool = false) -> Bool {
+            journal.restoreAvailableDevices(
+                verifyOnly: verifyOnly,
+                outputForUID: { _ in
+                    if readFails { throw CocoaError(.fileReadUnknown) }
+                    return output(uid: uid, channelCount: 2, sampleRate: rate, bufferFrameSize: frames)
+                },
+                setSampleRate: { _, _ in rateWrites += 1 },
+                setBufferFrameSize: { _, _ in frameWrites += 1 }
+            )
+        }
+
+        #expect(refresh())  // A delayed verification is requested.
+        readFails = true
+        #expect(!refresh())
+        readFails = false
+        #expect(!refresh())  // The transient failure did not establish a reconnect.
+        rate = 48_000
+        _ = refresh(verifyOnly: true)
+        #expect(
+            PersistedAudioDeviceRestorationStore.load(from: url)[uid]
+                == PersistedAudioDeviceRestorationRecord(uid: uid, originalBufferFrameSize: 512))
+        frames = 512
+        _ = refresh(verifyOnly: true)
+        #expect(!journal.hasPendingSettings)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        rate = 96_000  // New user choice survives a subsequent launch.
+        journal = PersistedAudioDeviceRestorationStore(url: url)
+        #expect(!refresh())
+        #expect(rateWrites == 1)
+        #expect(frameWrites == 1)
+    }
+
+    @Test
+    func replacementDuringJournalRecoveryWaitsForItsOwnAttempt() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GlassEQDeviceRestoration-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let uid = "replaced-dac"
+        let original = PersistedAudioDeviceRestorationRecord(uid: uid, originalBufferFrameSize: 512)
+        try PersistedAudioDeviceRestorationStore.save([uid: original], to: url)
+        var journal = PersistedAudioDeviceRestorationStore(url: url)
+        var deviceID: AudioObjectID = 41
+        var frames: UInt32 = 1_024
+        var writeIDs: [AudioObjectID] = []
+        func refresh() -> Bool {
+            journal.restoreAvailableDevices(
+                outputForUID: { _ in
+                    defer { deviceID = 42 }
+                    return output(id: deviceID, uid: uid, channelCount: 2, bufferFrameSize: frames)
+                },
+                setSampleRate: { _, _ in Issue.record("Unexpected rate write") },
+                setBufferFrameSize: { value, id in
+                    writeIDs.append(id)
+                    frames = value
+                }
+            )
+        }
+        #expect(refresh())
+        #expect(writeIDs.isEmpty)
+        #expect(!refresh())
+        #expect(writeIDs == [42])
+        #expect(!journal.hasPendingSettings)
+    }
+
+    @Test
     func legacyRestorationRetriesJournalWriteWithoutRepeatingVerifiedDeviceWrites() throws {
         let fm = FileManager.default
         let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

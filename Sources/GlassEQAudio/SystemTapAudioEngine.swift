@@ -2517,6 +2517,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     // Serialized with graph creation so reconnect recovery cannot change a running renderer's format.
     private var deviceRestorations: PersistedAudioDeviceRestorationStore
     private var restorationListener: RestorationDeviceListListener?
+    private var restorationReadback: Task<Void, Never>?
 
     public init(restorationStoreURL: URL? = nil) {
         deviceRestorations = PersistedAudioDeviceRestorationStore(
@@ -2532,10 +2533,29 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         }
     }
 
-    private func restoreAvailableDeviceSettings() {
+    private func restoreAvailableDeviceSettings(verifyOnly: Bool = false) {
         guard deviceRestorations.hasPendingSettings else { return }
-        deviceRestorations.restoreAvailableDevices(excluding: control.withLock { $0.activeOutput?.uid })
-        if !deviceRestorations.hasPendingSettings { restorationListener = nil }
+        let needsReadback = deviceRestorations.restoreAvailableDevices(
+            verifyOnly: verifyOnly, excluding: control.withLock { $0.activeOutput?.uid }
+        )
+        if !deviceRestorations.hasPendingSettings {
+            restorationListener = nil
+            restorationReadback?.cancel()
+            restorationReadback = nil
+        } else if needsReadback {
+            restorationReadback?.cancel()
+            restorationReadback = Task { [weak self] in
+                // Some drivers accept the write before their property reflects its value.
+                // Give them a bounded verification window without repeating the write.
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self else { return }
+                self.topologyOperation.withLock { _ in
+                    guard !Task.isCancelled else { return }
+                    self.restorationReadback = nil
+                    self.restoreAvailableDeviceSettings(verifyOnly: true)
+                }
+            }
+        }
     }
 
     @_spi(GlassEQDiagnostics)
@@ -2573,6 +2593,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     deinit {
+        restorationReadback?.cancel()
         stop()
     }
 

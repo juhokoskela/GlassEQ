@@ -169,32 +169,46 @@ public enum CoreAudioDeviceQuery {
         )
     }
 
-    static func outputDevice(uid targetUID: String) throws -> AudioOutputDevice? {
+    static func outputDevice(uid: String) throws -> AudioOutputDevice? {
+        do {
+            return try restorationOutputDevice(uid: uid)
+        } catch AudioDeviceAvailabilityError.outputDeviceNotAlive, AudioDeviceAvailabilityError
+            .outputDeviceHasNoOutputChannels
+        {
+            return nil
+        }
+    }
+
+    static func restorationOutputDevice(uid targetUID: String) throws -> AudioOutputDevice? {
         guard !targetUID.isEmpty else {
             return nil
         }
 
-        for deviceID in try audioDeviceIDs() {
-            guard
-                (try? getStringProperty(
-                    objectID: deviceID,
-                    selector: kAudioDevicePropertyDeviceUID,
-                    scope: kAudioObjectPropertyScopeGlobal
-                )) == targetUID
-            else {
-                continue
-            }
-            guard (try? isDeviceAlive(id: deviceID)) == true else {
-                return nil
-            }
-            do {
-                return try outputDevice(id: deviceID)
-            } catch AudioDeviceAvailabilityError.outputDeviceHasNoOutputChannels {
-                return nil
-            }
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var deviceID = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = withUnsafePointer(to: targetUID as CFString) { uid in
+            AudioObjectGetPropertyData(
+                system, &address, UInt32(MemoryLayout<CFString>.size), uid, &size, &deviceID
+            )
         }
-
-        return nil
+        let operation = "AudioObjectGetPropertyData(translate device UID)"
+        try checkOSStatus(status, operation: operation)
+        try validatePropertySize(
+            actual: size, expected: UInt32(MemoryLayout<AudioObjectID>.size), operation: operation, objectID: system)
+        // HAL returns the unknown ID only when this UID is absent. Other lookup failures
+        // must not reset the restoration journal's one-write-per-attachment guard.
+        guard deviceID != kAudioObjectUnknown else { return nil }
+        let output = try outputDevice(id: deviceID)
+        guard output.uid == targetUID else {
+            throw CoreAudioError(operation: operation, status: kAudioHardwareBadObjectError)
+        }
+        return output
     }
 
     public static func bufferFrameSizeRangeValue(objectID: AudioObjectID) throws -> AudioBufferFrameSizeRange {
