@@ -518,19 +518,12 @@ final class SettingsCoordinator: NSObject {
             return
         }
 
-        guard let previous = lastSentSnapshot else {
-            lastSentSnapshot = snapshot
+        let previous = lastSentSnapshot
+        lastSentSnapshot = snapshot
+        guard let previous, previous.profiles == snapshot.profiles else {
             send(.snapshotChanged(snapshot))
             return
         }
-
-        if previous.profiles != snapshot.profiles {
-            lastSentSnapshot = snapshot
-            send(.snapshotChanged(snapshot))
-            return
-        }
-
-        let metricsChanged = previous.metrics != snapshot.metrics
 
         var patch = SettingsSnapshotPatchDTO()
         var didPatch = false
@@ -607,17 +600,10 @@ final class SettingsCoordinator: NSObject {
             didPatch = true
         }
 
-        guard didPatch else {
-            lastSentSnapshot = snapshot
-            if metricsChanged {
-                send(.metricsChanged(snapshot.metrics))
-            }
-            return
+        if didPatch {
+            send(.snapshotPatched(patch))
         }
-
-        lastSentSnapshot = snapshot
-        send(.snapshotPatched(patch))
-        if metricsChanged {
+        if previous.metrics != snapshot.metrics {
             send(.metricsChanged(snapshot.metrics))
         }
     }
