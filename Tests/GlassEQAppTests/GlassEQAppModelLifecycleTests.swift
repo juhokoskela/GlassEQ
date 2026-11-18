@@ -8794,16 +8794,56 @@ struct LibraryImportRegressionTests {
     @Test(arguments: [1, 2], [false, true])
     func failedMigrationBackupProtectsTheStoreFromLaterSaves(schema: Int, danglingReferences: Bool) async throws {
         let url = temporaryAppStoreURL()
-        let directory = url.deletingLastPathComponent()
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
-            removeTemporaryStoreDirectory(for: url)
-        }
+        defer { removeTemporaryStoreDirectory(for: url) }
         let profile = makeProfile(name: "Older library")
         let store = ProfileStore(
             schemaVersion: schema, profiles: [profile], fallbackProfileID: danglingReferences ? UUID() : profile.id)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let original = try ProfilePersistence.encoder.encode(store)
+        let model = try loadWithReadOnlyDirectory(original, at: url)
+        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try Data(contentsOf: url) == original)
+        await model.cleanupForTerminationAndWait()
+        #expect(ProfilePersistence.load(from: url).store.schemaVersion == ProfileStore.currentSchemaVersion)
+    }
+
+    @Test(arguments: [false, true])
+    func failedRecoveryBackupPreservesOriginalUntilExplicitReset(partiallyRecoverable: Bool) async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let original: Data
+        if partiallyRecoverable {
+            let good = makeProfile(name: "Surviving profile")
+            let invalid = makeProfile(name: "")
+            original = try ProfilePersistence.encoder.encode(
+                ProfileStore(profiles: [good, invalid], fallbackProfileID: good.id))
+        } else {
+            original = Data("invalid JSON".utf8)
+        }
+        let model = try loadWithReadOnlyDirectory(original, at: url)
+
+        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
+        #expect(await model.flushStoreBeforeQuit())
+        try #require(Data(contentsOf: url) == original)
+        #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
+
+        try await model.resetUnsupportedProfileStore()
+        #expect(!model.settingsSnapshot().profileStoreProtection.isProtected)
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil
+        )
+        .filter { $0.lastPathComponent.hasPrefix("Profiles.invalid-") }
+        #expect(backups.count == 1)
+        let backup = try #require(backups.first)
+        #expect(try Data(contentsOf: backup) == original)
+        #expect(try ProfilePersistence.decode(Data(contentsOf: url)).profiles == ProfileStore.defaultProfiles)
+        await model.cleanupForTerminationAndWait()
+    }
+
+    private func loadWithReadOnlyDirectory(_ original: Data, at url: URL) throws -> GlassEQAppModel {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try original.write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
         let model = GlassEQAppModel(
@@ -8813,12 +8853,7 @@ struct LibraryImportRegressionTests {
             installLifecycleObservers: false, registerAppDelegate: false,
             launchRecordsDirectory: directory.appendingPathComponent("records"))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
-        #expect(model.settingsSnapshot().profileStoreProtection.isProtected)
-        #expect(throws: SettingsCommandFailure.self) { try model.createProfile(kind: .parametric) }
-        #expect(await model.flushStoreBeforeQuit())
-        #expect(try Data(contentsOf: url) == original)
-        await model.cleanupForTerminationAndWait()
-        #expect(ProfilePersistence.load(from: url).store.schemaVersion == ProfileStore.currentSchemaVersion)
+        return model
     }
 
     @Test(arguments: ["merge", "backup", "save"])
