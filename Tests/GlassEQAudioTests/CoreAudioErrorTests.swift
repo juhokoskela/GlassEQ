@@ -21,9 +21,9 @@ struct CoreAudioErrorTests {
             "AudioHardwareCreateProcessTap",
             "AudioHardwareCreateProcessTap(main)",
             "AudioHardwareCreateProcessTap(system sounds)",
-            "AudioDeviceStart(capture tap)",
+            "AudioHardwareCreateProcessTap(processing mute)",
             "AudioDeviceStart(combined aggregate)",
-            "AudioDeviceStart(profile rebuild mute tap)",
+            "AudioDeviceStart(processing mute tap)",
         ]
         let statuses = [
             kAudioDevicePermissionsError,

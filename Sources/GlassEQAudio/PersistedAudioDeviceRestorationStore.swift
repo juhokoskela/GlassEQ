@@ -123,56 +123,46 @@ enum PersistedAudioDeviceRestorationStore {
         return data
     }
 
-    struct BufferFrameSizeRestoration: Equatable, Sendable {
-        var uid: String
-        var originalFrameSize: UInt32
-    }
-
-    struct SampleRateRestoration: Equatable, Sendable {
-        var uid: String
-        var originalSampleRate: Double
-    }
-
-    static func restoreSampleRateRestoration(
-        _ restoration: SampleRateRestoration,
+    static func restoreSampleRate(
+        uid: String, to originalSampleRate: Double,
         outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
         setSampleRate: (Double, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setNominalSampleRate(_:objectID:)
     ) -> Bool {
         do {
-            guard let output = try outputForUID(restoration.uid) else {
+            guard let output = try outputForUID(uid) else {
                 return false
             }
-            guard abs(output.nominalSampleRate - restoration.originalSampleRate) >= 1 else {
+            guard abs(output.nominalSampleRate - originalSampleRate) >= 1 else {
                 return true
             }
-            try setSampleRate(restoration.originalSampleRate, output.id)
-            guard let verifiedOutput = try outputForUID(restoration.uid) else {
+            try setSampleRate(originalSampleRate, output.id)
+            guard let verifiedOutput = try outputForUID(uid) else {
                 return false
             }
-            return abs(verifiedOutput.nominalSampleRate - restoration.originalSampleRate) < 1
+            return abs(verifiedOutput.nominalSampleRate - originalSampleRate) < 1
         } catch {
             return false
         }
     }
 
-    static func restoreBufferFrameSizeRestoration(
-        _ restoration: BufferFrameSizeRestoration,
+    static func restoreBufferFrameSize(
+        uid: String, to originalFrameSize: UInt32,
         outputForUID: (String) throws -> AudioOutputDevice? = CoreAudioDeviceQuery.outputDevice(uid:),
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
     ) -> Bool {
         do {
-            guard let output = try outputForUID(restoration.uid) else {
+            guard let output = try outputForUID(uid) else {
                 return false
             }
-            guard output.bufferFrameSize != restoration.originalFrameSize else {
+            guard output.bufferFrameSize != originalFrameSize else {
                 return true
             }
-            try setBufferFrameSize(restoration.originalFrameSize, output.id)
-            guard let verifiedOutput = try outputForUID(restoration.uid) else {
+            try setBufferFrameSize(originalFrameSize, output.id)
+            guard let verifiedOutput = try outputForUID(uid) else {
                 return false
             }
-            return verifiedOutput.bufferFrameSize == restoration.originalFrameSize
+            return verifiedOutput.bufferFrameSize == originalFrameSize
         } catch {
             return false
         }
@@ -185,7 +175,8 @@ enum PersistedAudioDeviceRestorationStore {
         setBufferFrameSize: (UInt32, AudioObjectID) throws -> Void = CoreAudioDeviceQuery.setBufferFrameSize(
             _:objectID:)
     ) {
-        var records = PersistedAudioDeviceRestorationStore.load(from: url)
+        let original = load(from: url)
+        var records = original
         guard !records.isEmpty else {
             return
         }
@@ -193,8 +184,8 @@ enum PersistedAudioDeviceRestorationStore {
         for (uid, record) in records {
             var updated = record
             if let originalSampleRate = record.originalSampleRate,
-                restoreSampleRateRestoration(
-                    SampleRateRestoration(uid: uid, originalSampleRate: originalSampleRate),
+                restoreSampleRate(
+                    uid: uid, to: originalSampleRate,
                     outputForUID: outputForUID,
                     setSampleRate: setSampleRate
                 )
@@ -202,8 +193,8 @@ enum PersistedAudioDeviceRestorationStore {
                 updated.originalSampleRate = nil
             }
             if let originalBufferFrameSize = record.originalBufferFrameSize,
-                restoreBufferFrameSizeRestoration(
-                    BufferFrameSizeRestoration(uid: uid, originalFrameSize: originalBufferFrameSize),
+                restoreBufferFrameSize(
+                    uid: uid, to: originalBufferFrameSize,
                     outputForUID: outputForUID,
                     setBufferFrameSize: setBufferFrameSize
                 )
@@ -213,6 +204,6 @@ enum PersistedAudioDeviceRestorationStore {
             records[uid] = updated.isEmpty ? nil : updated
         }
 
-        try? PersistedAudioDeviceRestorationStore.save(records, to: url)
+        if records != original { try? save(records, to: url) }
     }
 }

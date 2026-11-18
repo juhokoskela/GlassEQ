@@ -1600,7 +1600,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 + UInt64(max(timeout, 0) * 1_000_000_000)
             while callbackFrameExpectation.validCallbackStreak
                 < minimumConsecutiveCallbacks,
-                DispatchTime.now().uptimeNanoseconds < deadline
+                DispatchTime.now().uptimeNanoseconds < deadline, !Task.isCancelled
             {
                 Thread.sleep(forTimeInterval: 0.001)
             }
@@ -2148,7 +2148,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             if inputJump != nil, outputJump != nil {
                 outputDeclicker.markDiscontinuity()
                 recordPairedTimestampJump(inputTime: inputTime, outputTime: outputTime)
-                if inputJump?.precededByStableSlope == true,
+                if !outputMutedForTransition.load(ordering: .relaxed),
+                    inputJump?.precededByStableSlope == true,
                     outputJump?.precededByStableSlope == true
                 {
                     qualifyingPairedTimestampDiscontinuities.wrappingAdd(
@@ -2532,7 +2533,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
     public var state: AudioEngineState { control.withLock { $0.state } }
     public var status: AudioEngineStatus { control.withLock { $0.status } }
-    public var processingSampleRate: Double? { control.withLock { $0.runtime?.sampleRate } }
 
     public init(restorationStoreURL: URL? = nil) {
         PersistedAudioDeviceRestorationStore.restorePersistedDeviceSettings(
@@ -2559,7 +2559,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 output: output,
                 profile: profile,
                 targetFrameSize: targetFrameSize,
-                usePhysicalFirstOrdering: false
+                usePhysicalFirstOrdering: false, validateBeforeActivation: {}
             )
         }
     }
@@ -2627,7 +2627,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             try acquireProcessingMute()
             try requireCompletedCoreAudioCleanup(operation: "rebuild the protected output")
             try Self.validateDefaultOutput(output)
-            let headset = output.isBluetoothTransport && output.nominalSampleRate <= Self.lowRateHeadsetMaximum
+            let headset = output.requiresHeadsetClockQualification
             if headset {
                 stopCombinedResourcesSerialized()
             }
@@ -2715,7 +2715,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         description.muteBehavior = .mutedWhenTapped
 
         var tap = AudioObjectID(kAudioObjectUnknown)
-        try checkOSStatus(AudioHardwareCreateProcessTap(description, &tap), operation: "Create processing mute tap")
+        try checkOSStatus(
+            AudioHardwareCreateProcessTap(description, &tap),
+            operation: "AudioHardwareCreateProcessTap(processing mute)")
         var resources = CoreAudioResourceCleanupLedger.PendingResources(
             operation: "release processing mute", tapIDs: [tap])
         do {
@@ -2735,7 +2737,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             resources.aggregateDeviceIDs.append(device)
             let proc = try createSilentIOProc(on: device)
             resources.ioProcs.append(.init(deviceID: device, ioProcID: proc))
-            try checkOSStatus(AudioDeviceStart(device, proc), operation: "Start processing mute")
+            try checkOSStatus(AudioDeviceStart(device, proc), operation: "AudioDeviceStart(processing mute tap)")
             control.withLock { $0.processingMute = resources }
         } catch {
             cleanupLedger.dispose(resources)
@@ -2746,11 +2748,9 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     private func createSilentIOProc(on device: AudioObjectID) throws -> AudioDeviceIOProcID {
         var proc: AudioDeviceIOProcID?
         try checkOSStatus(
-            AudioDeviceCreateIOProcIDWithBlock(&proc, device, nil) { _, _, _, buffers, _ in
-                for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
-                    if let bytes = buffer.mData { memset(bytes, 0, Int(buffer.mDataByteSize)) }
-                }
-            }, operation: "Create silent IOProc"
+            // HAL supplies zero-filled PCM output. Keeping the callback empty also avoids reading any input.
+            AudioDeviceCreateIOProcIDWithBlock(&proc, device, nil) { _, _, _, _, _ in },
+            operation: "Create silent IOProc"
         )
         guard let proc else { throw AudioEngineInternalError(message: "Core Audio did not create the silent IOProc.") }
         return proc
@@ -2775,7 +2775,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         output: AudioOutputDevice,
         profile: EQProfile,
         usePhysicalFirstOrdering: Bool = false,
-        validateBeforeActivation: (() throws -> Void)? = nil
+        validateBeforeActivation: () throws -> Void
     ) throws {
         let requestedFrameSize = control.withLock { $0.preferredAggregateBufferFrameSize }
         let attemptFrameSizes = Self.startupAttemptFrameSizes(
@@ -2803,7 +2803,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         profile: EQProfile,
         targetFrameSize: UInt32,
         usePhysicalFirstOrdering: Bool,
-        validateBeforeActivation: (() throws -> Void)? = nil
+        validateBeforeActivation: () throws -> Void
     ) throws {
         traceDiagnostic {
             "combined attempt begin output=\(output.id) physicalBuffer=\(output.bufferFrameSize) targetAggregateBuffer=\(targetFrameSize) physicalFirst=\(usePhysicalFirstOrdering)"
@@ -2981,7 +2981,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private func qualifyAndActivate(
-        _ prepared: PreparedCombinedAggregate, validateBeforeActivation: (() throws -> Void)?
+        _ prepared: PreparedCombinedAggregate, validateBeforeActivation: () throws -> Void
     ) throws {
         let qualificationCallbacks = Self.startupQualificationCallbacks
         let qualificationTimeout = Self.startupQualificationTimeout(
@@ -3001,26 +3001,27 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         traceDiagnostic {
             "combined startup qualification validStreak=\(qualification.validCallbackStreak) observed=\(qualification.observedCallbacks) rejected=\(qualification.rejectedCallbacks)"
         }
+        try Task.checkCancellation()
         guard qualification.validCallbackStreak >= qualificationCallbacks else {
             throw AggregateStartupQualificationError(
                 expectedFrameCount: Int(prepared.output.bufferFrameSize),
                 snapshot: qualification
             )
         }
-        if validateBeforeActivation == nil { prepared.runtime.activate() }
         prepared.runtime.beginStartupProbation()
-        let probationCallbacks = Self.startupProbationCallbacks
+        let probationCallbacks = Self.probationCallbackCount(for: prepared.output)
         let probation = prepared.runtime.waitForQualifiedStartup(
             minimumConsecutiveCallbacks: probationCallbacks,
             timeout: Self.startupQualificationTimeout(
                 frameCount: Int(prepared.output.bufferFrameSize),
                 sampleRate: prepared.output.nominalSampleRate,
-                minimumConsecutiveCallbacks: Self.startupProbationCallbacks
+                minimumConsecutiveCallbacks: probationCallbacks
             )
         )
         traceDiagnostic {
             "combined startup probation validStreak=\(probation.validCallbackStreak) observed=\(probation.observedCallbacks) rejected=\(probation.rejectedCallbacks)"
         }
+        try Task.checkCancellation()
         guard probation.validCallbackStreak >= probationCallbacks else {
             throw AggregateStartupQualificationError(
                 expectedFrameCount: Int(prepared.output.bufferFrameSize),
@@ -3028,20 +3029,15 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             )
         }
 
-        if let validateBeforeActivation {
-            if prepared.output.isBluetoothTransport && prepared.output.nominalSampleRate <= Self.lowRateHeadsetMaximum {
-                let before = prepared.runtime.snapshotMetrics()
-                Thread.sleep(forTimeInterval: Self.headsetAggregateValidationDuration)
-                let after = prepared.runtime.snapshotMetrics()
-                guard after.playedFrames > before.playedFrames,
-                    after.pairedTimestampDiscontinuities == before.pairedTimestampDiscontinuities
-                else {
-                    throw AudioEngineInternalError(message: "The headset timeline changed during qualification.")
-                }
-            }
-            try validateBeforeActivation()
-            prepared.runtime.activate()
-        }
+        try validateBeforeActivation()
+        try Task.checkCancellation()
+        prepared.runtime.activate()
+    }
+
+    static func probationCallbackCount(for output: AudioOutputDevice) -> UInt64 {
+        guard output.requiresHeadsetClockQualification else { return startupProbationCallbacks }
+        let frames = output.nominalSampleRate * headsetAggregateValidationDuration
+        return max(startupProbationCallbacks, UInt64(ceil(frames / Double(output.bufferFrameSize))))
     }
 
     private func prepareCombinedRoute(output: AudioOutputDevice) throws -> CombinedRoutePreparation {
@@ -3332,9 +3328,6 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
 
             // The running physical-only IOProc keeps the hardware timebase stable. Its physical
             // input streams are disabled above; setSubtaps publishes only the tap inputs below.
-            // Activating the runtime now lets the first tapped samples replace the direct route
-            // as soon as HAL installs its muter, avoiding a deliberate qualification gap.
-            preparedRuntime.activate()
             let aggregateCreation = try attachTapsToRunningAggregate(
                 taps: taps,
                 aggregateDeviceID: aggregateDeviceID
@@ -4092,6 +4085,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(3)
         var lastError: Error?
         repeat {
+            try Task.checkCancellation()
             do {
                 if try CoreAudioDeviceQuery.isDeviceAlive(id: deviceID) {
                     traceDiagnostic { "wait aggregate alive end device=\(deviceID) alive=true" }
@@ -4123,6 +4117,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(3)
         var lastError: Error?
         repeat {
+            try Task.checkCancellation()
             do {
                 let tapIDs = try aggregate.subtaps.map(\.id)
                 if tapIDs == expectedTapIDs {
@@ -4722,29 +4717,23 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         attempt: (UInt32) throws -> Void,
         waitBeforeRetry: () -> Void
     ) throws {
-        var lastStartupError: (any Error)?
-
         for (index, frameSize) in frameSizes.enumerated() {
             do {
+                try Task.checkCancellation()
                 try attempt(frameSize)
                 return
             } catch {
-                let startupError = error
-                lastStartupError = startupError
                 let hasAnotherAttempt = index + 1 < frameSizes.count
 
-                guard Self.isRetryableCombinedStartupError(startupError),
+                guard Self.isRetryableCombinedStartupError(error),
                     hasAnotherAttempt
                 else {
-                    throw startupError
+                    throw error
                 }
                 waitBeforeRetry()
             }
         }
 
-        if let lastStartupError {
-            throw lastStartupError
-        }
     }
 
     static func isRetryableCombinedStartupError(_ error: any Error) -> Bool {
@@ -5389,12 +5378,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         ]
         try checkOSStatus(
             AudioDeviceGetCurrentTime(deviceID, &time),
-            operation: "AudioDeviceGetCurrentTime(headset promotion)"
+            operation: "AudioDeviceGetCurrentTime(headset qualification)"
         )
         return time
     }
-
-    private static let lowRateHeadsetMaximum: Double = 24_000
 
     private static func latencyMetadata(deviceID: AudioObjectID) -> AudioDeviceLatencyMetadata {
         AudioDeviceLatencyMetadata(

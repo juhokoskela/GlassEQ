@@ -28,6 +28,10 @@ public struct AudioOutputDevice: Equatable, Sendable {
         self.transportType = transportType
     }
 
+    public var requiresHeadsetClockQualification: Bool {
+        isBluetoothTransport && nominalSampleRate <= 24_000
+    }
+
     public var isBluetoothTransport: Bool {
         transportType == kAudioDeviceTransportTypeBluetooth
             || transportType == kAudioDeviceTransportTypeBluetoothLE

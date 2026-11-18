@@ -63,7 +63,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.
-- **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, latency, clock correction, and fallback buffering.
+- **Built-in diagnostics** for frame delivery, underruns, dropped input, callback sizes, saturation, missed render deadlines, and tap-to-output latency.
 
 ![GlassEQ Editor tab with a convolution response graph and collapsed response points](Docs/Screenshots/beta-0.9.3-editor.png)
 
@@ -79,7 +79,7 @@ During normal listening GlassEQ is just a menu bar app and the audio engine, con
 
 ## Known limitations
 
-- **AirPlay outputs are not yet supported.** The DSP engine currently fails to start on AirPlay receivers and GlassEQ stops processing that route; macOS keeps routing normal system audio to the AirPlay device. Switching to any other output (built-in, USB, Bluetooth, HDMI) restores processing cleanly.
+- **AirPlay outputs are not yet supported.** If the renderer cannot start on an AirPlay receiver, choose Disable for ordinary playback or switch to a supported output.
 - **Stereo processing.** GlassEQ processes a stereo stream. On multi-channel interfaces it plays to the device's preferred stereo pair (configurable in Audio MIDI Setup → Configure Speakers) and writes silence to the remaining channels — the same routing macOS uses for system audio. There is no surround/per-channel EQ, and preferred-pair changes apply on the next output switch.
 - **Bluetooth** call transitions can briefly interrupt playback while the headset clock settles. Unstable timing keeps the output muted until recovery or explicit handback.
 - **AirPods Pro 2 on macOS 27.0** can use a 256-frame audio buffer after playback even when 32 frames are selected. GlassEQ then reports “32 selected, 256 frames active.” This behavior was reproduced outside GlassEQ and on the same Mac after upgrading from macOS 26.6.2. Retrying the audio engine or quitting the player did not restore the smaller buffer in these tests. No reliable workaround is established. See the [measurements and Apple feedback reference](Docs/AggregateClockExperiment.md#macos-27-airpods-buffer-clamp).

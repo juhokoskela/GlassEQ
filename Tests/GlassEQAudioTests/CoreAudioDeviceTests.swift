@@ -571,7 +571,7 @@ struct CoreAudioDeviceTests {
     }
 
     @Test
-    func aggregateStartupProbationCountsOnlyPostActivationCallbacks() {
+    func aggregateStartupProbationCountsOnlyCallbacksFromTheNewGeneration() {
         let expectation = SystemTapAudioEngine.AggregateCallbackFrameExpectation(
             frameCount: 16
         )
@@ -924,15 +924,12 @@ struct CoreAudioDeviceTests {
     func sampleRateRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentSampleRate = 44_100.0
         var setCalls: [(sampleRate: Double, objectID: AudioObjectID)] = []
-        let restoration = PersistedAudioDeviceRestorationStore.SampleRateRestoration(
-            uid: "restored-output",
-            originalSampleRate: 48_000
-        )
+        let deviceUID = "restored-output"
 
-        let restored = PersistedAudioDeviceRestorationStore.restoreSampleRateRestoration(
-            restoration,
+        let restored = PersistedAudioDeviceRestorationStore.restoreSampleRate(
+            uid: deviceUID, to: 48_000,
             outputForUID: { uid in
-                #expect(uid == restoration.uid)
+                #expect(uid == deviceUID)
                 return output(
                     id: 9_001,
                     uid: uid,
@@ -955,13 +952,10 @@ struct CoreAudioDeviceTests {
     @Test
     func sampleRateRestorationIsRetainedWhenDeviceIsAbsentOrWriteCannotBeVerified() {
         var setCallCount = 0
-        let restoration = PersistedAudioDeviceRestorationStore.SampleRateRestoration(
-            uid: "missing-output",
-            originalSampleRate: 48_000
-        )
+        let deviceUID = "missing-output"
 
-        let absentRestored = PersistedAudioDeviceRestorationStore.restoreSampleRateRestoration(
-            restoration,
+        let absentRestored = PersistedAudioDeviceRestorationStore.restoreSampleRate(
+            uid: deviceUID, to: 48_000,
             outputForUID: { _ in nil },
             setSampleRate: { _, _ in setCallCount += 1 }
         )
@@ -969,8 +963,8 @@ struct CoreAudioDeviceTests {
         #expect(!absentRestored)
         #expect(setCallCount == 0)
 
-        let unverifiedRestored = PersistedAudioDeviceRestorationStore.restoreSampleRateRestoration(
-            restoration,
+        let unverifiedRestored = PersistedAudioDeviceRestorationStore.restoreSampleRate(
+            uid: deviceUID, to: 48_000,
             outputForUID: { uid in
                 output(id: 9_002, uid: uid, channelCount: 2, sampleRate: 44_100)
             },
@@ -985,15 +979,12 @@ struct CoreAudioDeviceTests {
     func bufferFrameSizeRestorationUsesFreshUIDDeviceAndVerifiesWrite() {
         var currentFrameSize: UInt32 = 512
         var setCalls: [(frameSize: UInt32, objectID: AudioObjectID)] = []
-        let restoration = PersistedAudioDeviceRestorationStore.BufferFrameSizeRestoration(
-            uid: "buffer-output",
-            originalFrameSize: 256
-        )
+        let deviceUID = "buffer-output"
 
-        let restored = PersistedAudioDeviceRestorationStore.restoreBufferFrameSizeRestoration(
-            restoration,
+        let restored = PersistedAudioDeviceRestorationStore.restoreBufferFrameSize(
+            uid: deviceUID, to: 256,
             outputForUID: { uid in
-                #expect(uid == restoration.uid)
+                #expect(uid == deviceUID)
                 return output(
                     id: 9_003,
                     uid: uid,
@@ -1016,13 +1007,10 @@ struct CoreAudioDeviceTests {
     @Test
     func bufferFrameSizeRestorationSkipsAlreadyRestoredDevice() {
         var didSet = false
-        let restoration = PersistedAudioDeviceRestorationStore.BufferFrameSizeRestoration(
-            uid: "already-restored-buffer-output",
-            originalFrameSize: 256
-        )
+        let deviceUID = "already-restored-buffer-output"
 
-        let restored = PersistedAudioDeviceRestorationStore.restoreBufferFrameSizeRestoration(
-            restoration,
+        let restored = PersistedAudioDeviceRestorationStore.restoreBufferFrameSize(
+            uid: deviceUID, to: 256,
             outputForUID: { uid in
                 output(id: 9_004, uid: uid, channelCount: 2, bufferFrameSize: 256)
             },
@@ -1314,6 +1302,20 @@ struct CoreAudioDeviceTests {
                 rateScalar: 1.02,
                 rateScalarIsValid: true
             ))
+    }
+
+    @Test
+    func headsetProbationCoversThreeQuartersOfASecondAtTheAppliedBufferSize() {
+        func callbacks(at rate: Double, frames: UInt32) -> UInt64 {
+            SystemTapAudioEngine.probationCallbackCount(
+                for: output(
+                    channelCount: 1, sampleRate: rate, bufferFrameSize: frames,
+                    transportType: kAudioDeviceTransportTypeBluetooth
+                ))
+        }
+        #expect(callbacks(at: 24_000, frames: 480) == 38)
+        #expect(callbacks(at: 16_000, frames: 64) == 188)
+        #expect(callbacks(at: 48_000, frames: 64) == 8)
     }
 
     @Test
