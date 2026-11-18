@@ -19,7 +19,7 @@ SETTINGS_MACOS_DIR="$SETTINGS_CONTENTS_DIR/MacOS"
 SETTINGS_RESOURCES_DIR="$SETTINGS_CONTENTS_DIR/Resources"
 SETTINGS_INFO_PLIST="$SETTINGS_CONTENTS_DIR/Info.plist"
 ICON_FILE="$ROOT_DIR/Sources/GlassEQApp/Resources/GlassEQ.icns"
-MIGRATION_PLIST="$ROOT_DIR/Sources/GlassEQApp/Resources/container-migration.plist"
+DEBUG_BUNDLE_ID="com.glasseq.app.debug"
 
 fail() {
     echo "error: $*" >&2
@@ -70,7 +70,10 @@ cp "$EXECUTABLE_SOURCE" "$MACOS_DIR/$APP_NAME"
 cp "$SETTINGS_EXECUTABLE_SOURCE" "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
 cp "$ROOT_DIR/Sources/GlassEQApp/Info.plist" "$INFO_PLIST"
 cp "$ROOT_DIR/Sources/GlassEQSettings/Info.plist" "$SETTINGS_INFO_PLIST"
-cp "$MIGRATION_PLIST" "$RESOURCES_DIR/container-migration.plist"
+# Keep qualification profiles, capture permission and restoration records in a separate sandbox.
+plutil -replace CFBundleIdentifier -string "$DEBUG_BUNDLE_ID" "$INFO_PLIST"
+plutil -replace CFBundleDisplayName -string "GlassEQ Debug" "$INFO_PLIST"
+plutil -replace CFBundleIdentifier -string "$DEBUG_BUNDLE_ID.settings" "$SETTINGS_INFO_PLIST"
 if [[ -f "$ICON_FILE" ]]; then
     cp "$ICON_FILE" "$RESOURCES_DIR/GlassEQ.icns"
     cp "$ICON_FILE" "$SETTINGS_RESOURCES_DIR/GlassEQ.icns"
@@ -86,7 +89,7 @@ verify_no_unresolved_plist_tokens "$INFO_PLIST" "$SETTINGS_INFO_PLIST"
 chmod +x "$MACOS_DIR/$APP_NAME"
 chmod +x "$SETTINGS_MACOS_DIR/$SETTINGS_APP_NAME"
 
-codesign --force --sign - --identifier com.glasseq.app.settings --entitlements "$ROOT_DIR/GlassEQSettings.entitlements" "$SETTINGS_APP_DIR" >/dev/null
+codesign --force --sign - --identifier "$DEBUG_BUNDLE_ID.settings" --entitlements "$ROOT_DIR/GlassEQSettings.entitlements" "$SETTINGS_APP_DIR" >/dev/null
 codesign --force --sign - --entitlements "$ROOT_DIR/GlassEQ.entitlements" "$APP_DIR" >/dev/null
 codesign --verify --strict --verbose=2 "$SETTINGS_APP_DIR" >/dev/null
 codesign --verify --strict --verbose=2 "$APP_DIR" >/dev/null

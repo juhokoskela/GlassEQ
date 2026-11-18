@@ -560,7 +560,7 @@ protocol SettingsHostProcessResolving {
 }
 
 enum SettingsHostValidator {
-    static let hostBundleIdentifier = "com.glasseq.app"
+    static let hostBundleIdentifier = SettingsBundleIdentity.host
 
     static func validate(
         launchInfo: SettingsLaunchInfo,

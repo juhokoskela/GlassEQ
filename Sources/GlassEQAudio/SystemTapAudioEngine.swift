@@ -1130,6 +1130,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
     }
 
     private struct ControlState {
+        var processingMuteGuard: (any TopologyRebuildMuteGuarding & Sendable)?
         var state: AudioEngineState = .stopped
         var status: AudioEngineStatus = .stopped
         var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -2816,11 +2817,131 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         )
     }
 
+    public var holdsProcessingMute: Bool {
+        control.withLock { $0.processingMuteGuard != nil }
+    }
+
     public func start(output: AudioOutputDevice, profile: EQProfile) throws {
         try topologyOperation.withLock { _ in
-            try startSerialized(output: output, profile: profile)
+            try startProtectedAggregate(output: output, profile: profile)
         }
     }
+
+    private func startProtectedAggregate(output: AudioOutputDevice, profile: EQProfile) throws {
+        try Task.checkCancellation()
+        let coldStart = control.withLock { $0.runtime == nil }
+        do {
+            try acquireProcessingMute()
+            try requireCompletedCoreAudioCleanup(operation: "rebuild the protected output")
+            try Self.validateDefaultOutput(output)
+            let headset = output.isBluetoothTransport && output.nominalSampleRate <= Self.lowRateHeadsetMaximum
+            if headset {
+                stopCombinedResourcesSerialized()
+            }
+            let start = {
+                try self.startCombinedAggregate(
+                    output: output, profile: profile, usePhysicalFirstOrdering: coldStart && !headset,
+                    validateBeforeActivation: {
+                        try Self.validateDefaultOutput(output)
+                        #if DEBUG
+                            if self.rejectProtectedStartup.load(ordering: .acquiring) {
+                                throw AudioEngineInternalError(message: "Startup rejected by the debug test.")
+                            }
+                        #endif
+                    }
+                )
+            }
+            if headset {
+                try withQualifiedHeadsetClock(output, start: start)
+            } else {
+                try start()
+            }
+        } catch {
+            stopCombinedResourcesSerialized()
+            let failure = audioEngineFailure(from: error)
+            control.withLock { state in
+                state.state = .failed(failure.description)
+                state.status =
+                    failure.category == .systemAudioCapturePermission
+                    ? .permissionRequired(failure) : .failed(failure)
+            }
+            throw error
+        }
+    }
+
+    static func validateDefaultOutput(
+        _ expected: AudioOutputDevice,
+        lookup: () throws -> AudioOutputDevice = CoreAudioDeviceQuery.defaultOutputDevice
+    ) throws {
+        try Task.checkCancellation()
+        let current = try lookup()
+        guard current.id == expected.id, current.uid == expected.uid,
+            current.nominalSampleRate == expected.nominalSampleRate,
+            current.outputChannelCount == expected.outputChannelCount
+        else {
+            throw AudioEngineInternalError(message: "The default output changed during startup.")
+        }
+    }
+
+    // The headset may advertise its new rate while its sample counter still advances
+    // at the previous rate. Keep its clock running through aggregate qualification.
+    private func withQualifiedHeadsetClock(_ output: AudioOutputDevice, start: () throws -> Void) throws {
+        var observer: AudioDeviceIOProcID?
+        try checkOSStatus(
+            AudioDeviceCreateIOProcIDWithBlock(&observer, output.id, nil) { _, _, _, buffers, _ in
+                for buffer in UnsafeMutableAudioBufferListPointer(buffers) {
+                    if let bytes = buffer.mData { memset(bytes, 0, Int(buffer.mDataByteSize)) }
+                }
+            }, operation: "Create headset clock observer"
+        )
+        guard let observer else { throw AudioEngineInternalError(message: "Missing headset clock observer.") }
+        defer {
+            cleanupLedger.dispose(
+                .init(
+                    operation: "remove headset clock observer",
+                    ioProcs: [
+                        .init(deviceID: output.id, ioProcID: observer)
+                    ]))
+        }
+        try disableAllInputStreams(deviceID: output.id, ioProcID: observer)
+        try checkOSStatus(AudioDeviceStart(output.id, observer), operation: "Start headset clock observer")
+        let deadline = ContinuousClock.now + .seconds(8)
+        repeat {
+            try Self.validateDefaultOutput(output)
+            if (try? Self.deviceClockSlopeIsStable(
+                deviceID: output.id, nominalSampleRate: output.nominalSampleRate,
+                observationDuration: Self.headsetClockProbeDuration
+            )) == true {
+                try Self.validateDefaultOutput(output)
+                try start()
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        } while ContinuousClock.now < deadline
+        throw AudioEngineInternalError(message: "The headset clock did not settle at its advertised sample rate.")
+    }
+
+    private func acquireProcessingMute() throws {
+        if !holdsProcessingMute {
+            let guardTap = try separateClockBackend.createTopologyRebuildMuteGuard()
+            control.withLock { $0.processingMuteGuard = guardTap }
+        }
+    }
+
+    public func suspendRenderer() throws {
+        try topologyOperation.withLock { _ in
+            try acquireProcessingMute()
+            stopCombinedResourcesSerialized()
+        }
+    }
+
+    #if DEBUG
+        private let rejectProtectedStartup = Atomic<Bool>(false)
+
+        public func setRejectProtectedStartupForTesting(_ reject: Bool) {
+            rejectProtectedStartup.store(reject, ordering: .releasing)
+        }
+    #endif
 
     private func startSerialized(output: AudioOutputDevice, profile: EQProfile) throws {
         try requireCompletedCoreAudioCleanup(operation: "start a new audio route")
@@ -2963,7 +3084,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         output: AudioOutputDevice,
         profile: EQProfile,
         preserveStagingOutputBuffer: Bool = false,
-        usePhysicalFirstOrdering: Bool = false
+        usePhysicalFirstOrdering: Bool = false,
+        validateBeforeActivation: (() throws -> Void)? = nil
     ) throws {
         let isSeparateClockHandoff = activeBackend.withLock { $0 } == .separateClock
         let requestedFrameSize = control.withLock { $0.preferredAggregateBufferFrameSize }
@@ -2979,7 +3101,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     profile: profile,
                     targetFrameSize: frameSize,
                     isSeparateClockHandoff: isSeparateClockHandoff,
-                    usePhysicalFirstOrdering: usePhysicalFirstOrdering
+                    usePhysicalFirstOrdering: usePhysicalFirstOrdering,
+                    validateBeforeActivation: validateBeforeActivation
                 )
             },
             restoreSeparateClockOutput: {
@@ -3033,7 +3156,8 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         profile: EQProfile,
         targetFrameSize: UInt32,
         isSeparateClockHandoff: Bool,
-        usePhysicalFirstOrdering: Bool
+        usePhysicalFirstOrdering: Bool,
+        validateBeforeActivation: (() throws -> Void)? = nil
     ) throws {
         traceDiagnostic {
             "combined attempt begin output=\(output.id) physicalBuffer=\(output.bufferFrameSize) targetAggregateBuffer=\(targetFrameSize) handoff=\(isSeparateClockHandoff) physicalFirst=\(usePhysicalFirstOrdering)"
@@ -3146,50 +3270,7 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                     operation: "AudioDeviceStart(combined aggregate)"
                 )
             }
-            let qualificationCallbacks = Self.startupQualificationCallbacks
-            let qualificationTimeout = Self.startupQualificationTimeout(
-                frameCount: Int(prepared.output.bufferFrameSize),
-                sampleRate: prepared.output.nominalSampleRate,
-                minimumConsecutiveCallbacks: qualificationCallbacks
-            )
-            let qualification = prepared.runtime.waitForQualifiedStartup(
-                minimumConsecutiveCallbacks: qualificationCallbacks,
-                timeout: qualificationTimeout
-            )
-            if let firstCallbackHostTime = prepared.runtime.firstRenderCallbackHostTime() {
-                traceDiagnostic(hostTimeNanoseconds: firstCallbackHostTime) {
-                    "combined first callback device=\(prepared.deviceID)"
-                }
-            }
-            traceDiagnostic {
-                "combined startup qualification validStreak=\(qualification.validCallbackStreak) observed=\(qualification.observedCallbacks) rejected=\(qualification.rejectedCallbacks)"
-            }
-            guard qualification.validCallbackStreak >= qualificationCallbacks else {
-                throw AggregateStartupQualificationError(
-                    expectedFrameCount: Int(prepared.output.bufferFrameSize),
-                    snapshot: qualification
-                )
-            }
-            prepared.runtime.activate()
-            prepared.runtime.beginStartupProbation()
-            let probationCallbacks = Self.startupProbationCallbacks
-            let probation = prepared.runtime.waitForQualifiedStartup(
-                minimumConsecutiveCallbacks: probationCallbacks,
-                timeout: Self.startupQualificationTimeout(
-                    frameCount: Int(prepared.output.bufferFrameSize),
-                    sampleRate: prepared.output.nominalSampleRate,
-                    minimumConsecutiveCallbacks: Self.startupProbationCallbacks
-                )
-            )
-            traceDiagnostic {
-                "combined startup probation validStreak=\(probation.validCallbackStreak) observed=\(probation.observedCallbacks) rejected=\(probation.rejectedCallbacks)"
-            }
-            guard probation.validCallbackStreak >= probationCallbacks else {
-                throw AggregateStartupQualificationError(
-                    expectedFrameCount: Int(prepared.output.bufferFrameSize),
-                    snapshot: probation
-                )
-            }
+            try qualifyAndActivate(prepared, validateBeforeActivation: validateBeforeActivation)
 
             control.withLock { state in
                 state.tapID = prepared.taps.main
@@ -3258,6 +3339,70 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
                 destroyTapSet(taps)
             }
             throw error
+        }
+    }
+
+    private func qualifyAndActivate(
+        _ prepared: PreparedCombinedAggregate, validateBeforeActivation: (() throws -> Void)?
+    ) throws {
+        let qualificationCallbacks = Self.startupQualificationCallbacks
+        let qualificationTimeout = Self.startupQualificationTimeout(
+            frameCount: Int(prepared.output.bufferFrameSize),
+            sampleRate: prepared.output.nominalSampleRate,
+            minimumConsecutiveCallbacks: qualificationCallbacks
+        )
+        let qualification = prepared.runtime.waitForQualifiedStartup(
+            minimumConsecutiveCallbacks: qualificationCallbacks,
+            timeout: qualificationTimeout
+        )
+        if let firstCallbackHostTime = prepared.runtime.firstRenderCallbackHostTime() {
+            traceDiagnostic(hostTimeNanoseconds: firstCallbackHostTime) {
+                "combined first callback device=\(prepared.deviceID)"
+            }
+        }
+        traceDiagnostic {
+            "combined startup qualification validStreak=\(qualification.validCallbackStreak) observed=\(qualification.observedCallbacks) rejected=\(qualification.rejectedCallbacks)"
+        }
+        guard qualification.validCallbackStreak >= qualificationCallbacks else {
+            throw AggregateStartupQualificationError(
+                expectedFrameCount: Int(prepared.output.bufferFrameSize),
+                snapshot: qualification
+            )
+        }
+        if validateBeforeActivation == nil { prepared.runtime.activate() }
+        prepared.runtime.beginStartupProbation()
+        let probationCallbacks = Self.startupProbationCallbacks
+        let probation = prepared.runtime.waitForQualifiedStartup(
+            minimumConsecutiveCallbacks: probationCallbacks,
+            timeout: Self.startupQualificationTimeout(
+                frameCount: Int(prepared.output.bufferFrameSize),
+                sampleRate: prepared.output.nominalSampleRate,
+                minimumConsecutiveCallbacks: Self.startupProbationCallbacks
+            )
+        )
+        traceDiagnostic {
+            "combined startup probation validStreak=\(probation.validCallbackStreak) observed=\(probation.observedCallbacks) rejected=\(probation.rejectedCallbacks)"
+        }
+        guard probation.validCallbackStreak >= probationCallbacks else {
+            throw AggregateStartupQualificationError(
+                expectedFrameCount: Int(prepared.output.bufferFrameSize),
+                snapshot: probation
+            )
+        }
+
+        if let validateBeforeActivation {
+            if prepared.output.isBluetoothTransport && prepared.output.nominalSampleRate <= Self.lowRateHeadsetMaximum {
+                let before = prepared.runtime.snapshotMetrics()
+                Thread.sleep(forTimeInterval: Self.headsetAggregateValidationDuration)
+                let after = prepared.runtime.snapshotMetrics()
+                guard after.playedFrames > before.playedFrames,
+                    after.pairedTimestampDiscontinuities == before.pairedTimestampDiscontinuities
+                else {
+                    throw AudioEngineInternalError(message: "The headset timeline changed during qualification.")
+                }
+            }
+            try validateBeforeActivation()
+            prepared.runtime.activate()
         }
     }
 
@@ -3882,6 +4027,10 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
             let output = try Self.profileUpdateOutput(
                 control.withLock { $0.activeOutput }
             )
+            if holdsProcessingMute {
+                try startProtectedAggregate(output: output, profile: profile)
+                return
+            }
             try startSerialized(
                 output: CoreAudioDeviceQuery.outputDevice(id: output.id),
                 profile: profile
@@ -4064,8 +4213,14 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         topologyOperation.withLock { _ in
             promotedHeadsetRoute.withLock { $0 = nil }
             deferredColdStartupRoute.withLock { $0 = nil }
-            separateClockBackend.stop()
             stopCombinedResourcesSerialized(restoringDirectPlayback: true)
+            let guardTap = control.withLock { state in
+                let guardTap = state.processingMuteGuard
+                state.processingMuteGuard = nil
+                return guardTap
+            }
+            guardTap?.release()
+            separateClockBackend.stop()
             retryCoreAudioCleanup()
             activeBackend.withLock { $0 = .combinedAggregate }
         }
@@ -5936,11 +6091,13 @@ public final class SystemTapAudioEngine: @unchecked Sendable {
         return time
     }
 
+    private static let lowRateHeadsetMaximum: Double = 24_000
+
     public static func shouldUseSeparateClockBackend(for output: AudioOutputDevice) -> Bool {
         #if GLASSEQ_FORCE_COMBINED_HEADSET
             false
         #else
-            output.isBluetoothTransport && output.nominalSampleRate <= 24_000
+            output.isBluetoothTransport && output.nominalSampleRate <= Self.lowRateHeadsetMaximum
         #endif
     }
 

@@ -46,9 +46,9 @@ Respect these module boundaries. In particular, UI code must not own audio resou
 
 - macOS owns output selection. GlassEQ observes the default route and follows it; it does not present a competing physical-output selector.
 - Normal-rate routes use one private aggregate joining a device-scoped process tap to the physical output. The physical device remains the timebase.
-- The separate-clock backend is a narrow compatibility path for unsettled low-rate routes and failed aggregate qualification. It is not a second general-purpose architecture.
+- The app retains a global mute tap while qualifying the combined renderer. Low-rate headset clocks require explicit qualification. Keep the separate-clock renderer available for diagnostic comparisons during hardware qualification.
 - Disable and verify all physical input streams before starting output. After tap attachment, enable only the process-tap input streams. If the microphone path cannot be isolated, startup must fail safely.
-- A failed start, rebuild, watchdog recovery, or teardown must return the user to normal dry system playback. Never leave another process muted behind a tap that GlassEQ is not reading.
+- Hold direct playback muted during a requested rebuild or recoverable processing failure. Expose retry and explicit handback. Bypass, stop and quit must release capture so normal playback resumes.
 - Do not mutate shared physical-device settings when a private aggregate setting will do. Any unavoidable shared-device mutation needs explicit ownership, persistence, restoration, and crash recovery.
 - Treat callback size as variable input. Scheduling and buffering must be based on frames and deadlines, not assumptions about callback count.
 - Build, validate, and prewarm complete DSP banks outside the render callback. Publish them as ready-to-render state, transition them without a discontinuity, and reclaim retired state outside the callback.

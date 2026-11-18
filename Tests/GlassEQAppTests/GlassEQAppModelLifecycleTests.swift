@@ -1959,7 +1959,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func routeStartFailureAfterPendingInitialStartRestoresItsProfile() async {
+    func routeReversalDuringStartupKeepsDestinationMappingAndMuteOnFailure() async {
         let firstOutput = makeOutput(uid: "pending-rollback-first", name: "Pending Rollback First", id: 200)
         let secondOutput = makeOutput(uid: "pending-rollback-second", name: "Pending Rollback Second", id: 300)
         let firstProfile = makeProfile(name: "Pending First Profile")
@@ -2005,20 +2005,24 @@ struct GlassEQAppModelLifecycleTests {
 
         await waitUntil {
             engine.startCalls.count == 2
-                && model.lifecycleState == .running
-                && model.statusMessage.contains("not applied")
+                && model.lifecycleState == .stopped
+                && engine.holdsProcessingMute
         }
 
-        #expect(engine.state == .running(output: firstOutput))
-        #expect(model.currentOutputUID == firstOutput.uid)
-        #expect(model.activeProfile == firstProfile)
-        #expect(model.selectedProfileID == firstProfile.id)
-        #expect(model.draftProfile == firstProfile)
+        #expect(!model.isRunning)
+        #expect(engine.holdsProcessingMute)
+        #expect(model.currentOutputUID == secondOutput.uid)
+        #expect(model.activeProfile == secondProfile)
+        #expect(model.selectedProfileID == secondProfile.id)
+        #expect(model.draftProfile == secondProfile)
         #expect(model.profileStore == store)
+        model.stop()
+        await waitUntil { !engine.holdsProcessingMute }
+        #expect(!engine.holdsProcessingMute)
     }
 
     @Test
-    func chainedProfileAndRouteFailuresRestoreTheLastConfirmedProfile() async throws {
+    func routeChangeDuringProfileUpdateKeepsSavedWorkAndSuspendsOnDestinationFailure() async throws {
         let firstOutput = makeOutput(uid: "confirmed-first", name: "Confirmed First", id: 200)
         let secondOutput = makeOutput(uid: "confirmed-second", name: "Confirmed Second", id: 300)
         let confirmedProfile = makeProfile(name: "Confirmed Profile")
@@ -2076,15 +2080,15 @@ struct GlassEQAppModelLifecycleTests {
 
         await waitUntil {
             engine.startCalls.count == 2
-                && model.lifecycleState == .running
-                && model.statusMessage.contains("not applied")
+                && model.lifecycleState == .stopped && engine.holdsProcessingMute
         }
 
-        #expect(engine.state == .running(output: firstOutput))
-        #expect(model.currentOutputUID == firstOutput.uid)
-        #expect(model.activeProfile == confirmedProfile)
-        #expect(model.selectedProfileID == createdProfile.id)
-        #expect(model.draftProfile == createdProfile)
+        #expect(engine.holdsProcessingMute)
+        #expect(!model.isRunning)
+        #expect(model.currentOutputUID == secondOutput.uid)
+        #expect(model.activeProfile == routeProfile)
+        #expect(model.selectedProfileID == routeProfile.id)
+        #expect(model.draftProfile == routeProfile)
         #expect(model.profileStore.profiles.contains(createdProfile))
         #expect(model.profileStore.profiles.count == store.profiles.count + 1)
         #expect(model.profileStore.outputMappings == store.outputMappings)
@@ -2699,7 +2703,9 @@ struct GlassEQAppModelLifecycleTests {
             #expect(model.activeProfile.isBypassed)
             #expect(model.lifecycleState == .stopped)
             #expect(engine.startCalls.map(\.output) == [initialOutput])
-            #expect(engine.events == ["start:\(initialOutput.uid)", "stop"])
+            await waitUntil { !engine.holdsProcessingMute }
+            #expect(!engine.holdsProcessingMute)
+            #expect(engine.stopCallCount == 2)
         }
         #expect(model.currentOutputBufferFrameSize == changedOutput.bufferFrameSize)
     }
@@ -3189,7 +3195,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func unknownSeparateClockImpulseResponseStaysDryAcrossRetries() async throws {
+    func mismatchedHeadsetImpulseResponseRemainsMutedAcrossRetries() async throws {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "Cold Route IR", sampleRate: 48_000)
         let output = makeOutput(
@@ -3226,17 +3232,19 @@ struct GlassEQAppModelLifecycleTests {
                 && model.statusMessage.contains(impulse.name)
         }
 
+        await waitUntil { engine.holdsProcessingMute }
+        #expect(engine.holdsProcessingMute)
         #expect(!model.isRunning)
         #expect(engine.startCalls.isEmpty)
         #expect(model.profileStore.outputMappings == store.outputMappings)
-        #expect(model.statusMessage.contains("not measured"))
+        #expect(model.statusMessage.contains("24"))
 
         model.retryAudioEngine()
         await settleAsyncWork()
 
         #expect(engine.startCalls.isEmpty)
         #expect(model.lifecycleState == .stopped)
-        #expect(model.statusMessage.contains("not measured"))
+        #expect(model.statusMessage.contains("24"))
 
         try model.apply(profile: fallback)
         await waitUntil {
@@ -3322,7 +3330,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.currentOutputUID == secondOutput.uid)
         #expect(model.currentOutputName == secondOutput.name)
         #expect(model.statusMessage == localized("Processing \(secondOutput.name) with \(model.activeProfile.name)"))
-        #expect(engine.stopCallCount == 0)
+        #expect(engine.handbackCount == 0)
 
         try? await Task.sleep(for: .milliseconds(120))
         #expect(engine.state == .running(output: secondOutput))
@@ -4564,7 +4572,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func incompatibleMappedImpulseResponseStaysDryUntilTheRouteMatches() async {
+    func incompatibleMappedImpulseResponseRemainsMutedUntilTheRouteMatches() async {
         let fallback = makeProfile(name: "Fallback")
         let impulse = makeImpulseResponseProfile(name: "Mapped IR", sampleRate: 48_000)
         let incompatibleOutput = makeOutput(
@@ -6852,6 +6860,15 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
         blocker?.unblock()
     }
 
+    private var _holdsProcessingMute = false
+    private var _handbackCount = 0
+    var holdsProcessingMute: Bool { withLock { _holdsProcessingMute } }
+    var handbackCount: Int { withLock { _handbackCount } }
+
+    func suspendRenderer() {
+        tearDownRenderer(keepingMute: true)
+    }
+
     func start(output: AudioOutputDevice, profile: EQProfile) throws {
         let startControl = withLock {
             _events.append("start:\(output.uid)")
@@ -7125,7 +7142,13 @@ private final class FakeAudioEngine: AudioEngineControlling, @unchecked Sendable
     }
 
     func stop() {
+        tearDownRenderer(keepingMute: false)
+    }
+
+    private func tearDownRenderer(keepingMute: Bool) {
         withLock {
+            _holdsProcessingMute = keepingMute
+            if !keepingMute { _handbackCount += 1 }
             _events.append("stop")
             _stopCallCount += 1
             _state = .stopped

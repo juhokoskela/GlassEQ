@@ -2,6 +2,19 @@ import Darwin
 import Foundation
 import GlassEQCore
 
+package enum SettingsBundleIdentity {
+    package static let host: String = {
+        #if DEBUG
+            let debugHost = "com.glasseq.app.debug"
+            if Bundle.main.bundleIdentifier == debugHost || Bundle.main.bundleIdentifier == debugHost + ".settings" {
+                return debugHost
+            }
+        #endif
+        return "com.glasseq.app"
+    }()
+    package static let helper = host + ".settings"
+}
+
 private struct UncheckedSendable<Value>: @unchecked Sendable {
     let value: Value
 }

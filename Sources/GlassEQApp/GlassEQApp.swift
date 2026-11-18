@@ -245,7 +245,9 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     var isUsingPromotedHeadsetAggregate: Bool { get }
     var isDeferringColdStartupAggregate: Bool { get }
 
+    var holdsProcessingMute: Bool { get }
     func start(output: AudioOutputDevice, profile: EQProfile) throws
+    func suspendRenderer() throws
     func attemptColdStartupAggregatePromotion() throws
         -> ColdStartupAggregatePromotionResult
     func attemptHeadsetAggregatePromotion() throws -> HeadsetAggregatePromotionResult
@@ -271,11 +273,13 @@ protocol AudioEngineControlling: AnyObject, Sendable {
     )
     func setRuntimeFailureHandler(_ handler: (@Sendable (AudioEngineFailure) -> Void)?)
     #if DEBUG
+        func setRejectProtectedStartupForTesting(_ reject: Bool)
         func simulateRenderStallForTesting()
     #endif
 }
 
 extension AudioEngineControlling {
+
     var isUsingSeparateClockBackend: Bool { false }
 
     func beginProgrammeComparison(profile _: EQProfile, reference _: EQProfile) -> Bool { false }
@@ -297,6 +301,7 @@ extension AudioEngineControlling {
     ) {}
 
     #if DEBUG
+        func setRejectProtectedStartupForTesting(_: Bool) {}
         func simulateRenderStallForTesting() {}
     #endif
 }
@@ -686,6 +691,7 @@ final class GlassEQAppModel {
     private var hasStartedAudio = false
     /// The user's current processing intent. Unlike `hasStartedAudio`, an explicit stop clears it,
     /// so a later license renewal does not reverse the user's last action.
+    private var pendingRendererSuspensions = 0
     private var processingRequested = false
     private(set) var onboardingAudioCaptureState = OnboardingAudioCaptureState.idle
     private let licensing: LicensingSource
@@ -951,6 +957,7 @@ final class GlassEQAppModel {
     private enum EngineWorkResult: Sendable {
         case success(AudioOutputDevice, AudioEngineLatencyMetadata?)
         case profileChangeNotApplied(any Error, AudioOutputDevice, EngineProfileReconciliation?)
+        case routeChanged(AudioOutputDevice)
         case failure(any Error, AudioOutputDevice?)
         case cancelled
     }
@@ -1210,18 +1217,7 @@ final class GlassEQAppModel {
         else {
             return 0
         }
-        let output = AudioOutputDevice(
-            id: configuration.id,
-            uid: configuration.uid,
-            name: currentOutputName,
-            nominalSampleRate: configuration.nominalSampleRate,
-            outputChannelCount: configuration.outputChannelCount,
-            bufferFrameSize: configuration.bufferFrameSize,
-            transportType: configuration.transportType
-        )
-        return SystemTapAudioEngine.shouldUseSeparateClockBackend(for: output)
-            ? 0
-            : currentOutputSampleRate
+        return currentOutputSampleRate
     }
 
     private func aggregateBufferSnapshot() -> SettingsAggregateBufferDTO {
@@ -1516,9 +1512,15 @@ final class GlassEQAppModel {
             } else {
                 notifyModelDidChange()
             }
+        } else if lifecycleState == .sleeping {
+            if engine.holdsProcessingMute || pendingRendererSuspensions > 0 {
+                scheduleEngineStop(updateMetrics: false)
+            }
+            notifyModelDidChange()
         } else if licenseStopTask != nil {
             notifyModelDidChange()
         } else if isRunning
+            || pendingRendererSuspensions > 0
             || engineStartTask != nil
             || lifecycleState == .waking
             || engineStateNeedsStop
@@ -2240,6 +2242,10 @@ final class GlassEQAppModel {
     }
 
     #if DEBUG
+        var rejectStartupForTesting = false {
+            didSet { engine.setRejectProtectedStartupForTesting(rejectStartupForTesting) }
+        }
+
         func simulateRenderStallForTesting() {
             guard lifecycleState == .running,
                 isRunning,
@@ -2547,7 +2553,7 @@ final class GlassEQAppModel {
             isRunning = false
             onboardingAudioCaptureState = .pending
             invalidatePendingEngineStart()
-            scheduleEngineStop(updateMetrics: false)
+            scheduleRendererSuspension()
         } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
             pendingOutputTransitionAction = .muted
             onboardingAudioCaptureState = .pending
@@ -2595,6 +2601,14 @@ final class GlassEQAppModel {
         let hasOwnedGraph = isRunning || engineStartTask != nil || engineStateNeedsStop
         guard hasOwnedGraph else {
             return false
+        }
+        if engineStartTask != nil {
+            if case .failure = result { return true }
+            if case .success(let next) = result {
+                let uid = pendingEngineStartOutput?.uid ?? currentOutputUID
+                let rate = pendingEngineStartOutput?.nominalSampleRate ?? currentOutputSampleRate
+                if next.uid != uid || next.nominalSampleRate != rate { return true }
+            }
         }
         if reason.requiresFreshAudioGraph {
             return true
@@ -2710,7 +2724,7 @@ final class GlassEQAppModel {
                 return
             }
             invalidatePendingEngineStart()
-            scheduleEngineStop(updateMetrics: false)
+            if !activeProfile.isBypassed { scheduleRendererSuspension() }
             lifecycleState = .stopped
             isRunning = false
             statusMessage = localized("Default output unavailable: \(error.localizedDescription)")
@@ -2757,6 +2771,7 @@ final class GlassEQAppModel {
             attempted: attemptedRollback
         )
         let confirmedEngineProfileState = confirmedEngineProfileState
+        let expectedOutputUID = currentOutputUID
         let bufferSelections = aggregateBufferPolicyStore.selectionSnapshot()
         let workTask = engineWorkExecutor.enqueue(priority: .userInitiated) {
             Self.performEngineWork(
@@ -2766,6 +2781,7 @@ final class GlassEQAppModel {
                 confirmedState: confirmedEngineProfileState,
                 engine: engine,
                 defaultOutputLookup: defaultOutputLookup,
+                expectedOutputUID: expectedOutputUID,
                 bufferSelections: bufferSelections
             )
         }
@@ -2926,11 +2942,13 @@ final class GlassEQAppModel {
         onboardingState: OnboardingAudioCaptureState
     ) {
         clearProgrammeComparisonSession()
-        let shouldStopEngine = isRunning || engineStartTask != nil || engineStateNeedsStop
+        let shouldStop = isRunning || engineStartTask != nil || pendingRendererSuspensions > 0 || engineStateNeedsStop
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
         renderWatchdog.reset()
-        if shouldStopEngine {
+        if case .failed = onboardingState {
+            scheduleRendererSuspension()
+        } else if shouldStop {
             scheduleEngineStop(updateMetrics: updateMetrics)
         }
         lifecycleState = .stopped
@@ -2941,12 +2959,49 @@ final class GlassEQAppModel {
         statusMessage = disabledStatus(outputName: currentOutputName)
     }
 
+    var engineIsHoldingMute: Bool { engine.holdsProcessingMute }
+    var processingWasStopped: Bool { hasStartedAudio && !processingRequested }
+
+    func toggleMenuProcessing() {
+        if processingWasStopped {
+            if activeProfile.isBypassed { setBypass(false) }
+            start()
+        } else if engine.holdsProcessingMute && !isRunning {
+            stop()
+        } else {
+            setBypass(!activeProfileIsBypassed)
+        }
+    }
+
     private var engineStateNeedsStop: Bool {
         switch engine.state {
         case .running, .failed:
             return true
         case .stopped:
-            return false
+            return engine.holdsProcessingMute
+        }
+    }
+
+    private func scheduleRendererSuspension() {
+        guard processingIsLicensed else { return }
+        pendingRendererSuspensions += 1
+        recordDiagnosticsRuntimeStop()
+        let engine = engine
+        let generation = engineStartGeneration
+        let confirmedState = confirmedEngineProfileState
+        let task = engineWorkExecutor.enqueue(priority: .userInitiated) {
+            confirmedState.clear()
+            return Result { try engine.suspendRenderer() }
+        }
+        Task { @MainActor [weak self] in
+            let result = await task.value
+            guard let self else { return }
+            self.pendingRendererSuspensions -= 1
+            guard self.engineStartGeneration == generation else { return }
+            if case .failure(let error) = result {
+                self.statusMessage = self.audioEngineStatusMessage(error)
+            }
+            self.notifyModelDidChange()
         }
     }
 
@@ -3013,6 +3068,7 @@ final class GlassEQAppModel {
         confirmedState: ConfirmedEngineProfileState,
         engine: any AudioEngineControlling,
         defaultOutputLookup: any DefaultOutputLookingUp,
+        expectedOutputUID: String,
         bufferSelections: [AggregateAudioRouteFingerprint: AggregateBufferSelection]
     ) -> EngineWorkResult {
         var attemptedOutput: AudioOutputDevice?
@@ -3037,7 +3093,7 @@ final class GlassEQAppModel {
                 } catch {
                     if case .running(let activeOutput) = engine.state {
                         if failurePolicy == .stopRunningGraph {
-                            engine.stop()
+                            try engine.suspendRenderer()
                             confirmedState.clear()
                             throw error
                         }
@@ -3089,6 +3145,9 @@ final class GlassEQAppModel {
                     output = activeOutput
                 case .stopped, .failed:
                     let defaultOutput = try defaultOutputLookup.defaultOutputDevice()
+                    guard expectedOutputUID == defaultOutput.uid else {
+                        return .routeChanged(defaultOutput)
+                    }
                     attemptedOutput = defaultOutput
                     if Task.isCancelled {
                         confirmedState.recordCancelledAttempt(failedAttempt)
@@ -3117,7 +3176,7 @@ final class GlassEQAppModel {
                 let aggregateBufferFrameSize
             ):
                 attemptedOutput = requestedOutput
-                engine.stop()
+                try engine.suspendRenderer()
                 confirmedState.clear()
                 guard !Task.isCancelled else {
                     confirmedState.recordCancelledAttempt(failedAttempt)
@@ -3165,7 +3224,11 @@ final class GlassEQAppModel {
         else {
             return
         }
-        scheduleEngineStop(updateMetrics: lifecycleState == .stopped)
+        if lifecycleState == .stopped, processingRequested, !activeProfile.isBypassed, processingIsLicensed {
+            scheduleRendererSuspension()
+        } else {
+            scheduleEngineStop(updateMetrics: lifecycleState == .stopped)
+        }
     }
 
     private func notifyBluetoothBufferDefaultIfNeeded() {
@@ -3206,6 +3269,9 @@ final class GlassEQAppModel {
             startAggregateStabilityMonitoring()
             startColdStartupAggregatePromotionIfNeeded()
             startHeadsetAggregatePromotionIfNeeded()
+        case .routeChanged(let output):
+            handleDefaultOutputChange(.success(output))
+            return
         case .profileChangeNotApplied(_, let output, let reconciliation):
             refreshCurrentOutputMetadata(from: output)
             activeAggregateRoute = activeAggregateRouteFingerprint(for: output)
@@ -3322,7 +3388,10 @@ final class GlassEQAppModel {
                 return
             }
             let initialMetrics = self.engine.snapshotMetrics()
-            var qualifyingBaseline = initialMetrics.qualifyingPairedTimestampDiscontinuities
+            let protectedHeadset =
+                self.engine.holdsProcessingMute && self.currentOutputIsBluetooth
+                && self.currentOutputSampleRate <= 24_000
+            var qualifyingBaseline = protectedHeadset ? 0 : initialMetrics.qualifyingPairedTimestampDiscontinuities
             var deadlineBaseline = initialMetrics.renderDeadlineMisses
             var deadlineBurstDetector = AudioRenderDeadlineBurstDetector()
             var sessionHadQualifyingInterruption = false
@@ -3347,6 +3416,16 @@ final class GlassEQAppModel {
                     let occurrenceCount = nextCount - qualifyingBaseline
                     qualifyingBaseline = nextCount
                     sessionHadQualifyingInterruption = true
+                    if protectedHeadset {
+                        self.invalidatePendingEngineStart()
+                        self.scheduleRendererSuspension()
+                        self.isRunning = false
+                        self.lifecycleState = .stopped
+                        self.statusMessage = localized("Headset timing changed. Retry when the call route has settled.")
+                        self.onboardingAudioCaptureState = .failed(message: self.statusMessage)
+                        self.notifyModelDidChange()
+                        return
+                    }
                     if self.engine.isUsingPromotedHeadsetAggregate
                         || selection.mode == .automatic
                     {
@@ -3725,7 +3804,7 @@ final class GlassEQAppModel {
         case .stop:
             pendingAggregateBufferIncrease = nil
             invalidatePendingEngineStart()
-            scheduleEngineStop(updateMetrics: true)
+            scheduleRendererSuspension()
             lifecycleState = .stopped
             isRunning = false
             renderWatchdog.pause()
@@ -3981,7 +4060,7 @@ final class GlassEQAppModel {
         }
         guard wakeReconnectAttempts < WakeReconnectPolicy.maximumAttempts else {
             invalidatePendingEngineStart()
-            scheduleEngineStop(updateMetrics: false)
+            scheduleRendererSuspension()
             lifecycleState = .stopped
             isRunning = false
             statusMessage = status
@@ -4408,7 +4487,7 @@ final class GlassEQAppModel {
                 ))
         case .stop:
             invalidatePendingEngineStart()
-            scheduleEngineStop(updateMetrics: true)
+            scheduleRendererSuspension()
             lifecycleState = .stopped
             isRunning = false
             statusMessage = localized(
@@ -4509,11 +4588,16 @@ final class GlassEQAppModel {
             return
         }
 
-        wasRunningBeforeSleep = isRunning || wasRunningBeforeSleep
+        wasRunningBeforeSleep =
+            isRunning || engineStartTask != nil || engine.holdsProcessingMute || wasRunningBeforeSleep
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
         stopObserver()
-        scheduleEngineStop(updateMetrics: false)
+        if wasRunningBeforeSleep && processingIsLicensed && !activeProfile.isBypassed {
+            scheduleRendererSuspension()
+        } else {
+            scheduleEngineStop(updateMetrics: false)
+        }
         clearProgrammeComparisonSession()
         lifecycleState = .sleeping
         isRunning = false
@@ -4771,6 +4855,8 @@ private struct MenuBarView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.controlActiveState) private var controlActiveState
 
+    private var enableAction: Bool { model.processingWasStopped || model.activeProfileIsBypassed }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
@@ -4795,11 +4881,11 @@ private struct MenuBarView: View {
 
             HStack(spacing: 10) {
                 Button {
-                    model.setBypass(!model.activeProfileIsBypassed)
+                    model.toggleMenuProcessing()
                 } label: {
                     Label(
-                        model.activeProfileIsBypassed ? localized("Enable") : localized("Disable"),
-                        systemImage: model.activeProfileIsBypassed ? "speaker.wave.2" : "speaker.slash"
+                        enableAction ? localized("Enable") : localized("Disable"),
+                        systemImage: enableAction ? "speaker.wave.2" : "speaker.slash"
                     )
                     .frame(minWidth: 82, minHeight: 28)
                     .contentShape(.rect)
@@ -4808,7 +4894,7 @@ private struct MenuBarView: View {
                 .buttonStyle(.glass)
                 .tint(popoverControlsAreActive ? enableButtonTint : nil)
                 .accessibilityLabel(
-                    Text(model.activeProfileIsBypassed ? localized("Enable equalizer") : localized("Disable equalizer"))
+                    Text(enableAction ? localized("Enable equalizer") : localized("Disable equalizer"))
                 )
                 .accessibilityValue(Text(statusBadgeTitle))
                 .accessibilityHint(Text(localized("Starts or stops system audio processing for the active profile")))
@@ -4837,12 +4923,19 @@ private struct MenuBarView: View {
             }
 
             #if DEBUG
+                Toggle(localized("Reject audio startup for testing"), isOn: $model.rejectStartupForTesting)
                 Button(localized("Test render watchdog")) {
                     model.simulateRenderStallForTesting()
                 }
                 .disabled(!model.isRunning || model.activeProfileIsBypassed)
                 .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
             #endif
+
+            if !model.isRunning && model.engineIsHoldingMute {
+                Button(localized("Retry audio engine")) { model.retryAudioEngine() }
+                Text(localized("Output is muted. Retry or choose Disable to restore normal playback."))
+                    .font(.caption)
+            }
 
             Text(model.statusMessage)
                 .font(.caption.weight(.medium))
@@ -4896,11 +4989,11 @@ private struct MenuBarView: View {
     }
 
     private var statusBadgeColor: Color {
-        model.isRunning && !model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemRed
+        model.isRunning && !enableAction ? .macOSSystemGreen : .macOSSystemRed
     }
 
     private var enableButtonTint: Color {
-        model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemYellow
+        enableAction ? .macOSSystemGreen : .macOSSystemYellow
     }
 
     private var popoverControlsAreActive: Bool {

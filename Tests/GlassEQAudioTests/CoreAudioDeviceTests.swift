@@ -8,6 +8,32 @@ import Testing
 @Suite
 struct CoreAudioDeviceTests {
     @Test
+    func protectedStartupChecksTheLiveRouteBeforeActivation() throws {
+        let expected = output(channelCount: 2)
+        try SystemTapAudioEngine.validateDefaultOutput(expected) { output(channelCount: 2, bufferFrameSize: 512) }
+        for changed in [
+            output(id: 43, channelCount: 2),
+            output(uid: "another-output", channelCount: 2),
+            output(channelCount: 1),
+            output(channelCount: 2, sampleRate: 24_000),
+        ] {
+            #expect(throws: (any Error).self) {
+                try SystemTapAudioEngine.validateDefaultOutput(expected) { changed }
+            }
+        }
+    }
+
+    @Test
+    func cancelledStartupCannotActivateEvenIfTheOriginalRouteHasReturned() async {
+        let expected = output(channelCount: 2)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try SystemTapAudioEngine.validateDefaultOutput(expected) { expected }
+        }
+        await #expect(throws: CancellationError.self) { try await task.value }
+    }
+
+    @Test
     func coreAudioCleanupRetainsFailedResourcesForRetry() {
         let counts = Mutex((aggregateDestroyAttempts: 0, tapDestroyAttempts: 0, completionCount: 0))
         let operations = CoreAudioResourceCleanupLedger.Operations(

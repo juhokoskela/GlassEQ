@@ -4214,7 +4214,7 @@ public final class SeparateClockAudioBackend: @unchecked Sendable {
         isLowSampleRate(tapSampleRate) || isLowSampleRateRoute(output)
     }
 
-    private func createTopologyRebuildMuteGuard() throws -> any TopologyRebuildMuteGuarding {
+    func createTopologyRebuildMuteGuard() throws -> any TopologyRebuildMuteGuarding & Sendable {
         let tapID = try createSystemTap(name: "GlassEQ Profile Rebuild Mute Tap")
         var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
         var ioProcID: AudioDeviceIOProcID?

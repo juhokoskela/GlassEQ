@@ -911,3 +911,21 @@ The isolated optimized package passed 23 tests covering 51 parameter cases acros
 Logs, the isolated package path, and disassembly are retained in `.build/ring-review-validation/`. No physical audio, AirPods transition, or HAL failure-recovery trial was performed during this follow-up.
 
 The temporary converter fault-injection hooks and their two debug-only tests were subsequently removed. The retained stall and overflow regressions are now named `SeparateClockPlaybackRecoveryTests`, with no experiment reporting or converter error injection in production sources.
+
+### Guard lifetime and a single playback renderer
+
+A sandboxed prototype at `03ea7fc` kept a silent global tap active while replacing the combined renderer. A UMIK-1 at one AirPod measured a 1.5 kHz pilot with a −12 dB preamp. On a Scarlett-to-48 kHz AirPods return, the first sustained protected level arrived at 690 ms. Direct-level playback was not detected. Rejecting a qualified startup left the pilot at the noise floor through a 2.12 s wait for retry. This run used identical preamps on both outputs and measured the AirPod only.
+
+On an M5 Pro, four paired eight-second silent observations with the combined renderer active measured an extra 0.059 percentage points of app CPU, 0.81 MiB of physical footprint and 94 context switches per second with the guard. A continuous player and seven alternating guard states produced 65 measurable acoustic pulses. The three paired shifts were within 0.44 ms in either direction, below the 2 ms meter window. HAL reported 10.667 ms tap-to-output timing in both states. These prototype observations do not qualify the packaged app, establish battery life or bound peak gain.
+
+### Packaged single-renderer acceptance, 18 November 2026
+
+Juho reported that all three manual hardware checks passed with the sandboxed Apple Silicon debug build based on `03ea7fc`. The delivered `GlassEQ-Protected-Debug.zip` had SHA-256 `63dcd2b19a60e13decc9c8786ec30921fb31c67ca7bd23d259cb3b6d9a707577`.
+
+| Check | Sequence covered |
+| --- | --- |
+| Destination preamp | Switch between Scarlett Solo USB at −6 dB and AirPods at −18 dB with audio playing, then reverse during a rebuild. |
+| Cold enable with Firefox | Open GlassEQ with Firefox playing through the Scarlett, repeat with Firefox paused, check the microphone indicator and disable processing to return to ordinary playback. |
+| Headset reversal and rejected startup | Leave a call while the AirPods route settles. Force startup rejection, exercise retry while muted, then recover by clearing the fault and retrying or by disabling processing. |
+
+This sign-off qualifies the three sequences on Juho’s setup. The packaged run supplied a pass result for each check. The numerical timing and level traces above came from the earlier instrumented prototype.
