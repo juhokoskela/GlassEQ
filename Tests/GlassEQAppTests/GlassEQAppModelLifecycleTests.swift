@@ -8841,15 +8841,54 @@ struct LibraryImportRegressionTests {
         await model.cleanupForTerminationAndWait()
     }
 
-    private func loadWithReadOnlyDirectory(_ original: Data, at url: URL) throws -> GlassEQAppModel {
+    @Test
+    func protectedLibraryMenuHandsBackAndRestartsAudioWithoutSaving() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let original = Data("invalid JSON".utf8)
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = try loadWithReadOnlyDirectory(original, at: url, engine: engine, observers: observers)
+        try #require(model.settingsSnapshot().profileStoreProtection.isProtected)
+        try #require(!model.activeProfileIsBypassed)
+        let profile = model.activeProfile
+
+        model.start()
+        let observer = try #require(observers.observers.last)
+        observer.emit(.success(makeOutput()))
+        try #require(await waitUntil { model.isRunning })
+        #expect(!model.menuOffersEnable)
+        model.toggleMenuProcessing()
+        try #require(await waitUntil { engine.stopCallCount == 1 && observer.stopCallCount == 1 })
+        #expect(!model.isRunning)
+        #expect(model.menuOffersEnable)
+        #expect(model.activeProfile == profile)
+
+        model.toggleMenuProcessing()
+        let replacement = try #require(observers.observers.last)
+        #expect(replacement !== observer)
+        replacement.emit(.success(makeOutput()))
+        try #require(await waitUntil { model.isRunning && engine.startCalls.count == 2 })
+        #expect(!model.menuOffersEnable)
+        #expect(model.activeProfile == profile)
+        #expect(engine.startCalls.map(\.profile) == [profile, profile])
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(try Data(contentsOf: url) == original)
+        await model.cleanupForTerminationAndWait()
+    }
+
+    private func loadWithReadOnlyDirectory(
+        _ original: Data, at url: URL, engine: FakeAudioEngine = FakeAudioEngine(),
+        observers: FakeDefaultOutputObserverFactory = FakeDefaultOutputObserverFactory()
+    ) throws -> GlassEQAppModel {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try original.write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
         let model = GlassEQAppModel(
-            storeURL: url, engine: FakeAudioEngine(),
+            storeURL: url, engine: engine,
             defaultOutputLookup: FakeDefaultOutputLookup(.success(makeOutput())),
-            observerFactory: FakeDefaultOutputObserverFactory(), autoStart: false,
+            observerFactory: observers, autoStart: false,
             installLifecycleObservers: false, registerAppDelegate: false,
             launchRecordsDirectory: directory.appendingPathComponent("records"))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)

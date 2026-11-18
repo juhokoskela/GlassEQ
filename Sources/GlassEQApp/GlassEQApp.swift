@@ -2262,6 +2262,22 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
+    var menuOffersEnable: Bool {
+        profilePersistenceMode.isProtected ? !processingRequested : activeProfileIsBypassed
+    }
+
+    func toggleMenuProcessing() {
+        guard profilePersistenceMode.isProtected else {
+            setBypass(!activeProfileIsBypassed)
+            return
+        }
+        if processingRequested {
+            stop()
+        } else {
+            start()
+        }
+    }
+
     func setBypass(_ isBypassed: Bool) {
         do {
             try ensureProfileStoreWritable()
@@ -5251,11 +5267,11 @@ private struct MenuBarView: View {
 
             HStack(spacing: 10) {
                 Button {
-                    model.setBypass(!model.activeProfileIsBypassed)
+                    model.toggleMenuProcessing()
                 } label: {
                     Label(
-                        model.activeProfileIsBypassed ? localized("Enable") : localized("Disable"),
-                        systemImage: model.activeProfileIsBypassed ? "speaker.wave.2" : "speaker.slash"
+                        model.menuOffersEnable ? localized("Enable") : localized("Disable"),
+                        systemImage: model.menuOffersEnable ? "speaker.wave.2" : "speaker.slash"
                     )
                     .frame(minWidth: 82, minHeight: 28)
                     .contentShape(.rect)
@@ -5264,7 +5280,7 @@ private struct MenuBarView: View {
                 .buttonStyle(.glass)
                 .tint(popoverControlsAreActive ? enableButtonTint : nil)
                 .accessibilityLabel(
-                    Text(model.activeProfileIsBypassed ? localized("Enable equalizer") : localized("Disable equalizer"))
+                    Text(model.menuOffersEnable ? localized("Enable equalizer") : localized("Disable equalizer"))
                 )
                 .accessibilityValue(Text(statusBadgeTitle))
                 .accessibilityHint(Text(localized("Starts or stops system audio processing for the active profile")))
@@ -5390,7 +5406,7 @@ private struct MenuBarView: View {
     }
 
     private var enableButtonTint: Color {
-        model.activeProfileIsBypassed ? .macOSSystemGreen : .macOSSystemYellow
+        model.menuOffersEnable ? .macOSSystemGreen : .macOSSystemYellow
     }
 
     private var popoverControlsAreActive: Bool {
