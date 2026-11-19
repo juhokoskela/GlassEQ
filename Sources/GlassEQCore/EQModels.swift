@@ -335,10 +335,12 @@ public struct ProfileStoreRepairSummary: Equatable, Sendable {
 
 public struct ProfileStore: Codable, Equatable, Sendable {
     static let initialSchemaVersion = 1
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
     public static let defaultProfiles: [EQProfile] = [.flatGraphic31, .flatGraphic10, .flatParametric]
 
-    public var schemaVersion: Int
+    public private(set) var schemaVersion: Int
+    // A missing list is migrated from the older per-device policy file by the app.
+    public var fixedBuffers: [OutputBufferPreference]?
     public var profiles: [EQProfile]
     public var outputMappings: [OutputDeviceProfileMapping]
     public var fallbackProfileID: UUID
@@ -357,6 +359,7 @@ public struct ProfileStore: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
+        case fixedBuffers
         case profiles
         case outputMappings
         case fallbackProfileID
@@ -365,6 +368,7 @@ public struct ProfileStore: Codable, Equatable, Sendable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? Self.initialSchemaVersion
+        fixedBuffers = try container.decodeIfPresent([OutputBufferPreference].self, forKey: .fixedBuffers)
         profiles = try container.decode([EQProfile].self, forKey: .profiles)
         outputMappings = try container.decode([OutputDeviceProfileMapping].self, forKey: .outputMappings)
         fallbackProfileID = try container.decode(UUID.self, forKey: .fallbackProfileID)
@@ -372,6 +376,7 @@ public struct ProfileStore: Codable, Equatable, Sendable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(fixedBuffers, forKey: .fixedBuffers)
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(profiles, forKey: .profiles)
         try container.encode(outputMappings, forKey: .outputMappings)
@@ -411,6 +416,10 @@ public struct ProfileStore: Codable, Equatable, Sendable {
         outputMappings = dedupedReversed.reversed()
 
         return summary
+    }
+
+    mutating func upgradeSchema() {
+        schemaVersion = Self.currentSchemaVersion
     }
 
     public func profile(forOutputUID uid: String?) -> EQProfile {

@@ -11,6 +11,189 @@ import Testing
 @MainActor
 @Suite
 struct GlassEQAppModelLifecycleTests {
+    @Test
+    func replaceBacksUpTheOutgoingLibraryAndPreservesStop() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(storeURL: url, engine: engine, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(makeOutput()))
+        try #require(await waitUntil { model.isRunning })
+        model.stop()
+        try #require(await waitUntil { model.processingWasStopped && !model.isRunning })
+        let previous = try model.makeLibraryBackup()
+        var incoming = previous
+        incoming.profileStore = ProfileStore(profiles: [makeProfile(name: "Restored")])
+        let route = AggregateAudioRouteFingerprint(
+            outputDeviceUID: "usb", nativeOutputStreamIndex: 0, nominalSampleRate: 48000)
+        incoming.profileStore.fixedBuffers = [OutputBufferPreference(route: route, mode: .frames64)]
+        _ = try await model.stageLibraryImport(incoming, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        #expect(model.processingWasStopped)
+        #expect(engine.startCalls.count == 1)
+        #expect(ProfilePersistence.load(from: url).store == incoming.profileStore)
+        #expect(try model.makeLibraryBackup().profileStore == incoming.profileStore)
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: url)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let backup = try #require(files.first)
+        #expect(try ProfileLibraryBackupCodec.read(from: backup).profileStore == previous.profileStore)
+    }
+
+    @Test
+    func rejectedAudioUpdateDoesNotUndoLibraryReplacement() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(storeURL: url, engine: engine, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(makeOutput()))
+        try #require(await waitUntil { model.isRunning })
+        let playing = model.activeProfile
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore = ProfileStore(profiles: [makeProfile(name: "Restored")])
+        _ = try await model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        try #require(await waitUntil { model.statusMessage.contains("not applied") })
+        #expect(model.activeProfile == playing)
+        #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
+        #expect(ProfilePersistence.load(from: url).store.profiles == backup.profileStore.profiles)
+        model.stop()
+    }
+
+    @Test
+    func olderEngineFailureCannotRevertRestoredProfile() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let model = makeModel(storeURL: url, engine: engine)
+        model.retryAudioEngine()
+        try #require(await waitUntil { model.isRunning })
+        var edited = model.activeProfile
+        edited.preampDB = -5
+        engine.updateDSPResult = false
+        engine.updateError = TestAudioError.updateFailed
+        engine.updateErrorPreservesRunningState = true
+        engine.blockUpdate(for: edited.id)
+        defer { engine.unblockUpdate(for: edited.id) }
+        try model.apply(profile: edited)
+        try #require(await waitUntil { engine.updateCalls.count == 1 })
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore.profiles.append(makeProfile(name: "Imported"))
+        _ = try await model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        engine.unblockUpdate(for: edited.id)
+        try #require(await waitUntil { model.statusMessage.contains("not applied") })
+        #expect(model.activeProfile.preampDB != edited.preampDB)
+        #expect(model.profileStore.profiles == backup.profileStore.profiles)
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(ProfilePersistence.load(from: url).store.profiles == backup.profileStore.profiles)
+        model.stop()
+    }
+
+    @Test(arguments: [SettingsAggregateBufferMode.frames16, .frames64])
+    func addingFixedChoiceRebuildsOnlyForADifferentFrameSize(mode: SettingsAggregateBufferMode) async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(storeURL: url, engine: engine, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning && model.currentOutputBufferFrameSize == 16 })
+        let route = try #require(try engine.aggregateRouteFingerprint(for: output))
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore.fixedBuffers = [OutputBufferPreference(route: route, mode: mode)]
+        _ = try await model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .merge)
+        if mode == .frames64 {
+            try #require(await waitUntil { model.currentOutputBufferFrameSize == 64 })
+        }
+        #expect(engine.startCalls.count == (mode == .frames64 ? 2 : 1))
+        #expect(model.settingsSnapshot().aggregateBuffer.mode == mode)
+        model.stop()
+    }
+
+    @Test
+    func importedBufferChoiceSupersedesAPendingProfileUpdate() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        engine.reflectPreferredAggregateBufferFrameSize = true
+        let model = makeModel(storeURL: url, engine: engine)
+        model.retryAudioEngine()
+        try #require(await waitUntil { model.isRunning })
+        var edited = model.activeProfile
+        edited.preampDB = -3
+        engine.updateDSPResult = false
+        engine.blockUpdate(for: edited.id)
+        defer { engine.unblockUpdate(for: edited.id) }
+        try model.apply(profile: edited)
+        try #require(await waitUntil { engine.updateCalls.count == 1 })
+        let route = try #require(try engine.aggregateRouteFingerprint(for: output))
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore.fixedBuffers = [OutputBufferPreference(route: route, mode: .frames64)]
+        _ = try await model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .merge)
+        engine.unblockUpdate(for: edited.id)
+        try #require(await waitUntil { model.currentOutputBufferFrameSize == 64 })
+        #expect(engine.startCalls.count == 2)
+        model.stop()
+    }
+
+    @Test
+    func restoringBeforeAudioSetupDoesNotStartCapture() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let engine = FakeAudioEngine()
+        let model = makeModel(storeURL: url, engine: engine)
+        var backup = try model.makeLibraryBackup()
+        backup.profileStore = ProfileStore(profiles: [makeProfile(name: "Restored")])
+        _ = try await model.stageLibraryImport(backup, filename: "Library.json")
+        _ = try await model.applyLibraryImport(mode: .replace)
+        #expect(model.onboardingAudioCaptureState == .idle)
+        #expect(engine.startCalls.isEmpty)
+    }
+
+    @Test
+    func failedLibraryReplacementKeepsOutgoingLibrary() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let model = makeModel(storeURL: url)
+        let previous = try model.makeLibraryBackup()
+        var incoming = previous
+        incoming.profileStore = ProfileStore(profiles: [makeProfile(name: "Incoming")])
+        _ = try await model.stageLibraryImport(incoming, filename: "Library.json")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        await #expect(throws: POSIXError.self) { try await model.applyLibraryImport(mode: .replace) }
+        #expect(try model.makeLibraryBackup().profileStore == previous.profileStore)
+        let directory = LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: url)
+        let copies = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        #expect(copies.isEmpty)
+    }
+
+    @Test
+    func staleLibraryPreviewPreservesLaterEdits() async throws {
+        let url = temporaryAppStoreURL()
+        defer { removeTemporaryStoreDirectory(for: url) }
+        let model = makeModel(storeURL: url)
+        let backup = try model.makeLibraryBackup()
+        _ = try await model.stageLibraryImport(backup, filename: "Library.json")
+        try model.duplicateProfile(id: model.activeProfile.id)
+        await #expect(throws: SettingsCommandFailure.self) { try await model.applyLibraryImport(mode: .replace) }
+        #expect(model.profileStore.profiles.count == 2)
+        #expect(await model.flushStoreBeforeQuit())
+        #expect(ProfilePersistence.load(from: url).store.profiles.count == 2)
+    }
+
     @Test(arguments: [
         kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE, kAudioDeviceTransportTypeUSB,
     ])

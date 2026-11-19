@@ -132,37 +132,7 @@ public struct AudioCallbackSizeObservation: Equatable, Sendable {
     }
 }
 
-public struct AggregateAudioRouteFingerprint: Codable, Equatable, Hashable, Sendable {
-    public var outputDeviceUID: String
-    public var nativeOutputStreamIndex: Int
-    public var nominalSampleRate: Int64
-
-    public init(
-        outputDeviceUID: String,
-        nativeOutputStreamIndex: Int,
-        nominalSampleRate: Double
-    ) {
-        self.outputDeviceUID = outputDeviceUID
-        self.nativeOutputStreamIndex = nativeOutputStreamIndex
-        if nominalSampleRate.isFinite,
-            nominalSampleRate > 0,
-            nominalSampleRate <= CoreAudioDeviceQuery.maxSampleRate
-        {
-            self.nominalSampleRate = Int64(nominalSampleRate.rounded())
-        } else {
-            self.nominalSampleRate = 0
-        }
-    }
-
-    public var isValid: Bool {
-        !outputDeviceUID.isEmpty
-            && outputDeviceUID.utf8.count <= 512
-            && nativeOutputStreamIndex >= 0
-            && nativeOutputStreamIndex < CoreAudioDeviceQuery.maxChannelCount
-            && nominalSampleRate > 0
-            && nominalSampleRate <= Int64(CoreAudioDeviceQuery.maxSampleRate)
-    }
-}
+public typealias AggregateAudioRouteFingerprint = GlassEQCore.AggregateAudioRouteFingerprint
 
 /// Identifies the latest published and completed DSP banks. The target returned by publication is
 /// stored in that exact prepared bank, so an older in-flight transition cannot satisfy its wait.

@@ -502,6 +502,10 @@ private actor ProfileStoreWriter {
         savedGeneration = generation
     }
 
+    func recordLibraryCommit(generation: Int) {
+        savedGeneration = max(savedGeneration ?? generation, generation)
+    }
+
     func saveAndSynchronize(_ store: ProfileStore, prepared: ProfilePersistence.PreparedSave?, generation: Int) throws {
         try save(store, prepared: prepared, generation: generation)
         let handle = try FileHandle(forReadingFrom: url)
@@ -567,7 +571,13 @@ final class GlassEQAppModel {
         get { activeProfile.id }
         set { activateProfile(newValue) }
     }
-    private(set) var profileStore: ProfileStore
+    private(set) var profileStore: ProfileStore {
+        didSet {
+            if oldValue.fixedBuffers != profileStore.fixedBuffers {
+                aggregateBufferPolicyStore.libraryChoices = profileStore.fixedBuffers
+            }
+        }
+    }
     var selectedProfileID: UUID
     var draftProfile: EQProfile
     var engineMetrics = AudioEngineMetrics()
@@ -626,6 +636,9 @@ final class GlassEQAppModel {
     private var diagnosticsObservedDeviceSampleRate = 0.0
     private var diagnosticsTransportType: UInt32?
     private var diagnosticsLatencyMetadata: AudioEngineLatencyMetadata?
+    private let storeURL: URL
+    private var lastLibraryImportGeneration = 0
+    private(set) var pendingLibraryImport: PendingLibraryImport?
     private let storeWriter: ProfileStoreWriter
     private var profilePersistenceMode: ProfilePersistenceMode = .normal
     @ObservationIgnored private let engineWorkExecutor = EngineWorkExecutor()
@@ -685,6 +698,7 @@ final class GlassEQAppModel {
     private enum ProfilePersistenceMode: Equatable, Sendable {
         case normal
         case recoveryBackupFailed
+        case migrationBackupFailed
         case unsupportedSchema(version: Int, maximumSupported: Int)
         case oversizedStore(byteCount: Int, maximum: Int)
 
@@ -692,7 +706,7 @@ final class GlassEQAppModel {
             switch self {
             case .normal:
                 return false
-            case .unsupportedSchema, .oversizedStore, .recoveryBackupFailed:
+            case .unsupportedSchema, .oversizedStore, .recoveryBackupFailed, .migrationBackupFailed:
                 return true
             }
         }
@@ -742,6 +756,7 @@ final class GlassEQAppModel {
         }
 
         var id = UUID()
+        let generation: Int
         var profileID: UUID
         var previousProfile: EQProfile?
         var previousProfileIndex: Int?
@@ -752,7 +767,8 @@ final class GlassEQAppModel {
         var attemptedDraftProfile: EQProfile
         var mappingChanges: [MappingChange]
 
-        init(profileID: UUID, previous: ProfileRollback?, attempted: ProfileRollback) {
+        init(profileID: UUID, previous: ProfileRollback?, attempted: ProfileRollback, generation: Int) {
+            self.generation = generation
             self.profileID = profileID
             attemptedProfile = attempted.profileStore.profiles.first { $0.id == profileID }
             attemptedSelectedProfileID = attempted.selectedProfileID
@@ -957,6 +973,8 @@ final class GlassEQAppModel {
             persistenceMode = .unsupportedSchema(version: version, maximumSupported: maximumSupported)
         case let .oversizedStore(byteCount, maximum):
             persistenceMode = .oversizedStore(byteCount: byteCount, maximum: maximum)
+        case .migrationBackupFailed:
+            persistenceMode = .migrationBackupFailed
         case .backupFailed:
             persistenceMode = .recoveryBackupFailed
         case nil, .missingStore, .loaded, .repairedReferences, .repairedInvalidStore, .recoveredDefaults:
@@ -990,10 +1008,12 @@ final class GlassEQAppModel {
         self.outputChangeSettlingDelayOverride = outputChangeSettlingDelayOverride
         self.outputChangeSleep = outputChangeSleep
         self.wakeReconnectDelayOverride = wakeReconnectDelayOverride
+        self.storeURL = storeURL
         self.storeWriter = ProfileStoreWriter(url: storeURL)
         self.aggregateBufferPolicyStore = AggregateBufferPolicyStore(
             url: aggregateBufferPolicyURL ?? AggregateBufferPolicyStore.defaultURL()
         )
+        self.aggregateBufferPolicyStore.libraryChoices = loadedStore.fixedBuffers
         self.aggregateStabilitySettlingDelay = aggregateStabilitySettlingDelay
         self.aggregateCleanSessionDuration = aggregateCleanSessionDuration
         self.renderWatchdog = AudioRenderWatchdog(
@@ -1298,6 +1318,9 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return .unprotected
+        case .migrationBackupFailed:
+            return SettingsProfileStoreProtectionDTO(
+                isProtected: true, message: Self.migrationFailureMessage, canExportLibrary: true)
         case .recoveryBackupFailed:
             return SettingsProfileStoreProtectionDTO(
                 isProtected: true,
@@ -1333,6 +1356,8 @@ final class GlassEQAppModel {
         switch profilePersistenceMode {
         case .normal:
             return ""
+        case .migrationBackupFailed:
+            return Self.migrationFailureMessage
         case .recoveryBackupFailed:
             return Self.profileRecoveryFailureMessage
         case .unsupportedSchema, .oversizedStore:
@@ -2670,7 +2695,7 @@ final class GlassEQAppModel {
         let failedAttempt = FailedEngineProfileAttempt(
             profileID: work.profile.id,
             previous: work.rollback,
-            attempted: attemptedRollback
+            attempted: attemptedRollback, generation: saveGeneration
         )
         let confirmedEngineProfileState = confirmedEngineProfileState
         let expectedOutput = lastHandledDefaultOutput
@@ -2770,7 +2795,13 @@ final class GlassEQAppModel {
         }
     }
 
-    private func synchronizeActiveProfileProcessing(rollback: ProfileRollback? = nil) {
+    private var outputForBufferRebuild: AudioOutputDevice? {
+        if let pendingEngineStartOutput { return pendingEngineStartOutput }
+        if case .running(let output) = engine.state { return output }
+        return lastHandledDefaultOutput
+    }
+
+    private func synchronizeActiveProfileProcessing(rollback: ProfileRollback? = nil, rebuildBuffer: Bool = false) {
         // A new active profile replaces whatever the comparison was returning to.
         clearProgrammeComparisonSession(restoringEqualizedRendererIfRunning: true)
         guard lifecycleState != .terminating,
@@ -2816,6 +2847,12 @@ final class GlassEQAppModel {
             return
         }
 
+        if rebuildBuffer, let output = outputForBufferRebuild {
+            fixedBufferRecovery = nil
+            pendingAggregateBufferIncrease = nil
+            scheduleEngineStart(output: output, profile: activeProfile, rollback: rollback)
+            return
+        }
         if hasPendingProfileReplacingEngineWork {
             reschedulePendingEngineStartWithActiveProfile(rollback: rollback)
             return
@@ -3594,7 +3631,8 @@ final class GlassEQAppModel {
         _ reconciliation: EngineProfileReconciliation,
         persist: Bool
     ) {
-        for failedAttempt in reconciliation.failedAttempts.reversed() {
+        for failedAttempt in reconciliation.failedAttempts.reversed()
+        where failedAttempt.generation >= lastLibraryImportGeneration {
             if failedAttempt.previousProfile != failedAttempt.attemptedProfile,
                 profileStore.profiles.first(where: { $0.id == failedAttempt.profileID })
                     == failedAttempt.attemptedProfile
@@ -3704,6 +3742,120 @@ final class GlassEQAppModel {
         }
     }
 
+    func makeLibraryBackup() throws -> ProfileLibraryBackup {
+        if profilePersistenceMode != .migrationBackupFailed { try ensureProfileStoreWritable() }
+        var store = profileStore
+        store.fixedBuffers = aggregateBufferPolicyStore.fixedChoices
+        return ProfileLibraryBackup(
+            createdAt: Date(),
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            profileStore: store)
+    }
+
+    func stageLibraryImport(_ backup: ProfileLibraryBackup, filename: String) async throws
+        -> SettingsLibraryImportPreviewDTO
+    {
+        try ensureProfileStoreWritable()
+        let pending = try await PendingLibraryImport.prepare(
+            backup, filename: filename, current: makeLibraryBackup().profileStore, generation: saveGeneration)
+        try Task.checkCancellation()
+        guard pending.generation == saveGeneration else { throw Self.libraryPreviewChanged }
+        pendingLibraryImport = pending
+        return pending.preview
+    }
+
+    private static var libraryPreviewChanged: SettingsCommandFailure {
+        SettingsCommandFailure(message: localized("The library changed after the preview. Open the file again."))
+    }
+
+    func cancelLibraryImport() { pendingLibraryImport = nil }
+
+    private var backupsDirectory: URL { LibraryBackupFile.automaticBackupsDirectory(besideStoreAt: storeURL) }
+
+    func showLibraryBackups() throws {
+        try FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+        guard workspaceOpener.open(backupsDirectory) else {
+            throw SettingsCommandFailure(message: localized("Finder could not open the backups folder."))
+        }
+    }
+
+    func applyLibraryImport(mode: SettingsLibraryImportMode) async throws -> String {
+        guard let pending = pendingLibraryImport else {
+            throw SettingsCommandFailure(message: localized("Choose a library file first."))
+        }
+        pendingLibraryImport = nil
+        let previous = try makeLibraryBackup()
+        guard pending.generation == saveGeneration else { throw Self.libraryPreviewChanged }
+        guard let chosen = mode == .replace ? pending.replacement : pending.addition else {
+            throw SettingsCommandFailure(
+                message: (mode == .replace ? pending.preview.replaceFailure : pending.preview.mergeFailure)
+                    ?? localized("This library cannot be imported."))
+        }
+        let candidate = chosen.store
+        if candidate == previous.profileStore && !(mode == .replace && hasPendingProfileReplacingEngineWork) {
+            return localized("The library is already up to date.")
+        }
+
+        let staged = try await LibraryBackupIO.stage(chosen.prepared, beside: storeURL)
+        defer { try? FileManager.default.removeItem(at: staged) }
+        var uncommittedBackup: URL?
+        defer { if let uncommittedBackup { try? FileManager.default.removeItem(at: uncommittedBackup) } }
+        if mode == .replace {
+            try FileManager.default.createDirectory(at: backupsDirectory, withIntermediateDirectories: true)
+            let file = backupsDirectory.appending(
+                path: LibraryBackupFile.suggestedFilename(createdAt: previous.createdAt, identifier: UUID()))
+            try await LibraryBackupIO.saveBackup(previous, to: file)
+            uncommittedBackup = file
+        }
+        // Let every earlier disk write finish before the one final rename. No suspension between
+        // the revision check, atomic replacement and publication to other Settings commands.
+        await pendingSaveTask?.value
+        try Task.checkCancellation()
+        guard pending.generation == saveGeneration else { throw Self.libraryPreviewChanged }
+        guard rename(staged.path, storeURL.path) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+        uncommittedBackup = nil
+        let choicesChanged = previous.profileStore.fixedBuffers != candidate.fixedBuffers
+        let targetOutput = choicesChanged ? outputForBufferRebuild : nil
+        let targetRoute = targetOutput.flatMap(activeAggregateRouteFingerprint) ?? activeAggregateRoute
+        let bluetooth = targetOutput?.isBluetoothTransport ?? currentOutputIsBluetooth
+        let oldFrameSize = targetRoute.map { aggregateBufferFrameSize(for: $0, isBluetooth: bluetooth) }
+        let oldProfile = previous.profileStore.profile(forOutputUID: currentOutputUID)
+        let nextProfile = candidate.profile(forOutputUID: currentOutputUID)
+        saveGeneration += 1
+        let committedGeneration = saveGeneration
+        lastLibraryImportGeneration = committedGeneration
+        pendingPreparedSave = nil
+        profileStore = candidate
+        let changeProfile = mode == .replace || oldProfile != nextProfile
+        if let recovery = fixedBufferRecovery {
+            let selection = aggregateBufferSelection(for: recovery.route)
+            if selection.mode == .automatic || selection.frameSize != recovery.preferredFrameSize {
+                fixedBufferRecovery = nil
+            }
+        }
+        let rebuild =
+            oldFrameSize != targetRoute.map { aggregateBufferFrameSize(for: $0, isBluetooth: bluetooth) }
+            || (targetRoute == nil && hasPendingProfileReplacingEngineWork && choicesChanged)
+        let previousActive = activeProfile
+        if changeProfile {
+            activeProfile = nextProfile
+            if mode == .replace {
+                selectedProfileID = nextProfile.id
+                draftProfile = nextProfile
+            }
+        }
+        if processingIntent == .requested && ((changeProfile && previousActive != nextProfile) || rebuild) {
+            synchronizeActiveProfileProcessing(rebuildBuffer: rebuild)
+        }
+        notifyModelDidChange()
+        await storeWriter.recordLibraryCommit(generation: committedGeneration)
+        if mode == .replace {
+            await LibraryBackupFile.pruneAutomaticBackups(in: backupsDirectory)
+            return localized("Library replaced. Find the previous library in Show Backups in Finder.")
+        }
+        return localized("Library added.")
+    }
+
     private func commitProfileStore(_ store: ProfileStore) throws {
         let prepared = try ProfilePersistence.PreparedSave(store)
         profileStore = store
@@ -3806,6 +3958,9 @@ final class GlassEQAppModel {
     }
 
     func resetUnsupportedProfileStore() async throws {
+        if profilePersistenceMode == .migrationBackupFailed {
+            throw SettingsCommandFailure(message: Self.migrationFailureMessage)
+        }
         guard profilePersistenceMode.isProtected else {
             throw SettingsCommandFailure(
                 message: localized("Profile store reset is only available while the current store is protected."))
@@ -3897,59 +4052,44 @@ final class GlassEQAppModel {
         restartEngineWithActiveProfile()
     }
 
-    func setAggregateBufferMode(_ mode: SettingsAggregateBufferMode) throws {
-        guard let activeAggregateRoute,
-            isRunning,
-            engineStartTask == nil,
-            case .running(let output) = engine.state
-        else {
-            throw SettingsCommandFailure(
-                message: localized("Automatic buffer tuning is unavailable on this output route.")
-            )
-        }
-        fixedBufferRecovery = nil
-        try aggregateBufferPolicyStore.setMode(mode, for: activeAggregateRoute)
-        let selection = aggregateBufferSelection(for: activeAggregateRoute)
-        pendingAggregateBufferIncrease = nil
-        statusMessage = localized(
-            "Rebuilding \(output.name) with \(selection.frameSize)-frame buffers..."
-        )
-        notifyModelDidChange()
-        scheduleEngineStart(
-            output: output,
-            profile: activeProfile,
-            rollback: nil,
-            aggregateBufferFrameSize: selection.frameSize
-        )
+    func retryAutomaticAggregateBuffer() throws {
+        try setAggregateBufferMode(.automatic, retryAutomatic: true)
     }
 
-    func retryAutomaticAggregateBuffer() throws {
-        guard let activeAggregateRoute,
-            isRunning,
-            engineStartTask == nil,
+    func setAggregateBufferMode(_ mode: SettingsAggregateBufferMode, retryAutomatic: Bool = false) throws {
+        guard let route = activeAggregateRoute, isRunning, engineStartTask == nil,
             case .running(let output) = engine.state
         else {
             throw SettingsCommandFailure(
-                message: localized("Automatic buffer tuning is unavailable on this output route.")
-            )
+                message: localized("Automatic buffer tuning is unavailable on this output route."))
+        }
+        if profilePersistenceMode.isProtected && profileStore.fixedBuffers != nil { try ensureProfileStoreWritable() }
+        var store = profileStore
+        var prepared: ProfilePersistence.PreparedSave?
+        if !profilePersistenceMode.isProtected && aggregateBufferSelection(for: route).mode != mode {
+            var choices = aggregateBufferPolicyStore.fixedChoices.filter { $0.route != route }
+            if mode != .automatic { choices.append(OutputBufferPreference(route: route, mode: mode)) }
+            store.fixedBuffers = choices
+            prepared = try ProfilePersistence.PreparedSave(store)
+        }
+        if retryAutomatic {
+            try aggregateBufferPolicyStore.retryAutomaticBuffer(for: route, isBluetooth: output.isBluetoothTransport)
+        } else {
+            try aggregateBufferPolicyStore.setMode(mode, for: route)
+        }
+        if let prepared {
+            profileStore = store
+            saveStore(prepared: prepared)
         }
         fixedBufferRecovery = nil
-        try aggregateBufferPolicyStore.retryAutomaticBuffer(
-            for: activeAggregateRoute,
-            isBluetooth: output.isBluetoothTransport
-        )
-        let frameSize = aggregateBufferSelection(for: activeAggregateRoute).frameSize
         pendingAggregateBufferIncrease = nil
-        statusMessage = localized(
-            "Retrying \(frameSize)-frame buffers on \(output.name)..."
-        )
+        let frameSize = aggregateBufferSelection(for: route).frameSize
+        statusMessage =
+            retryAutomatic
+            ? localized("Retrying \(frameSize)-frame buffers on \(output.name)...")
+            : localized("Rebuilding \(output.name) with \(frameSize)-frame buffers...")
         notifyModelDidChange()
-        scheduleEngineStart(
-            output: output,
-            profile: activeProfile,
-            rollback: nil,
-            aggregateBufferFrameSize: frameSize
-        )
+        scheduleEngineStart(output: output, profile: activeProfile, rollback: nil, aggregateBufferFrameSize: frameSize)
     }
 
     func openPrivacySettings() throws {
@@ -4403,6 +4543,12 @@ final class GlassEQAppModel {
         }
     }
 
+    private static var migrationFailureMessage: String {
+        localized(
+            "Your library is read-only because GlassEQ could not safely upgrade it. You can export the library or relaunch to try again."
+        )
+    }
+
     private static var profileRecoveryFailureMessage: String {
         localized(
             "Your profile library is read-only because its backup or repair failed. Relaunch GlassEQ to try again.")
@@ -4418,6 +4564,8 @@ final class GlassEQAppModel {
             return localized("Profile store was invalid; backed it up and repaired valid profiles")
         case .recoveredDefaults:
             return localized("Profile store was invalid; backed it up and restored defaults")
+        case .migrationBackupFailed:
+            return migrationFailureMessage
         case .backupFailed:
             return profileRecoveryFailureMessage
         case let .unsupportedSchemaVersion(version, maximumSupported):

@@ -60,6 +60,7 @@ The current low-latency path requires the output's preferred pair to occupy one 
 - **Linked or independent stereo** channels, with a per-profile preamp and a headroom indicator.
 - **Live frequency-response graph** while you edit. Click **Compare** to switch between **Filters off** and **Filters on**, with their volumes matched.
 - **Guided profile import** from pasted or saved EqualizerAPO, AutoEq, and REW settings, plus mono or stereo WAV impulse responses. Separate left and right text or mono WAV files can be combined into one stereo profile.
+- **Library backup and restore** in Settings → Output. Export profiles, impulse responses, output assignments and fixed buffer choices. Add keeps your current profiles. Replace saves the outgoing library, available under Show Backups in Finder.
 - **Built-in AutoEq search** that imports a recommended headphone result as either a convolution profile or editable parametric filters.
 - **Per-output profile mapping** by Core Audio device UID, with a fallback profile for unmapped devices.
 - **Soft-clip saturation** that tames overshoot instead of hard-clipping.

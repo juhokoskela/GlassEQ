@@ -88,9 +88,9 @@ public enum AudioDeviceAvailabilityError: Error, Equatable, LocalizedError, Cust
 
 public enum CoreAudioDeviceQuery {
     static let maxStreamConfigurationBytes: UInt32 = 1_048_576
-    static let maxSampleRate = 768_000.0
+    static let maxSampleRate = AggregateAudioRouteFingerprint.maximumSampleRate
     static let maxBufferFrameSize: UInt32 = 1_048_576
-    static let maxChannelCount = 256
+    static let maxChannelCount = AggregateAudioRouteFingerprint.maximumChannelCount
 
     public static func defaultOutputDevice() throws -> AudioOutputDevice {
         let deviceID = try getAudioObjectIDProperty(

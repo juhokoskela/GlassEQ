@@ -116,6 +116,21 @@ struct OutputTab: View {
             }
 
             Section {
+                HStack {
+                    Button(localized("Export…")) { controller.exportLibrary() }
+                        .disabled(!snapshot.profileStoreProtection.canExportLibrary)
+                    Button(localized("Import…")) { controller.chooseLibraryBackup() }
+                        .disabled(controller.isEditingLocked)
+                    Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }
+                }
+                .disabled(controller.isLibraryTransferInProgress)
+            } header: {
+                Text(localized("Profile Library"))
+            } footer: {
+                if let message = controller.libraryMessage { Text(message) }
+            }
+
+            Section {
                 LabeledContent(localized("Status"), value: statusSummary)
                 LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
                 LabeledContent(localized("Buffer"), value: bufferSummary)
@@ -175,6 +190,26 @@ struct OutputTab: View {
                 report: OutputDiagnosticsReport(snapshot: snapshot),
                 onReset: controller.resetDiagnostics
             )
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { controller.libraryImportPreview != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        controller.cancelLibraryImport()
+                    }
+                }
+            )
+        ) {
+            if let preview = controller.libraryImportPreview {
+                LibraryImportSheet(
+                    preview: preview,
+                    hasUnsavedDraft: controller.hasUnsavedDraft,
+                    onMerge: { controller.applyLibraryImport(.merge) },
+                    onReplace: { controller.applyLibraryImport(.replace) },
+                    onCancel: controller.cancelLibraryImport
+                )
+            }
         }
     }
 

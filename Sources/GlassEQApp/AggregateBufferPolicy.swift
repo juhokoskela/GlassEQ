@@ -1,5 +1,6 @@
 import Foundation
 import GlassEQAudio
+import GlassEQCore
 import GlassEQSettingsIPC
 
 struct AggregateBufferSelection: Equatable, Sendable {
@@ -11,7 +12,7 @@ struct AggregateBufferSelection: Equatable, Sendable {
 @MainActor
 final class AggregateBufferPolicyStore {
     static let maximumStoreBytes = 262_144
-    static let maximumRecordCount = 256
+    static let maximumRecordCount = ProfilePersistence.maxBufferPreferenceCount
 
     private enum PersistenceError: Error {
         case storeTooLarge
@@ -79,6 +80,24 @@ final class AggregateBufferPolicyStore {
         var records: [Record]
     }
 
+    var libraryChoices: [OutputBufferPreference]? {
+        didSet {
+            libraryModes = libraryChoices.map {
+                Dictionary($0.map { ($0.route, $0.mode) }, uniquingKeysWith: { first, _ in first })
+            }
+        }
+    }
+    private var libraryModes: [AggregateAudioRouteFingerprint: AggregateBufferMode]?
+
+    var fixedChoices: [OutputBufferPreference] {
+        if let libraryChoices { return libraryChoices }
+        var seen = Set<AggregateAudioRouteFingerprint>()
+        return records.compactMap { record in
+            guard seen.insert(record.route).inserted, record.mode != .automatic else { return nil }
+            return OutputBufferPreference(route: record.route, mode: record.mode)
+        }
+    }
+
     private let url: URL
     private var records: [Record]
 
@@ -107,7 +126,7 @@ final class AggregateBufferPolicyStore {
         isBluetooth: Bool = false
     ) -> AggregateBufferSelection {
         let record = record(for: route)
-        let mode = record?.mode ?? .automatic
+        let mode = libraryModes.map { $0[route] ?? .automatic } ?? record?.mode ?? .automatic
         let automaticFrameSize = max(
             Self.validatedAutomaticFrameSize(record?.automaticFrameSize ?? 16),
             Self.defaultFrameSize(isBluetooth: isBluetooth)
@@ -134,8 +153,8 @@ final class AggregateBufferPolicyStore {
 
     func selectionSnapshot() -> [AggregateAudioRouteFingerprint: AggregateBufferSelection] {
         var snapshot: [AggregateAudioRouteFingerprint: AggregateBufferSelection] = [:]
-        for record in records {
-            snapshot[record.route] = selection(for: record.route)
+        for route in Set(records.map(\.route) + (libraryChoices ?? []).map(\.route)) {
+            snapshot[route] = selection(for: route)
         }
         return snapshot
     }
@@ -144,8 +163,9 @@ final class AggregateBufferPolicyStore {
         _ mode: SettingsAggregateBufferMode,
         for route: AggregateAudioRouteFingerprint
     ) throws {
+        let effectiveMode = selection(for: route).mode
         try update(route: route) { record in
-            guard record.mode != mode else {
+            guard record.mode != mode || effectiveMode != mode else {
                 return
             }
             record.mode = mode
