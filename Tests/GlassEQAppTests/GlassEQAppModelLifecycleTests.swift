@@ -3346,10 +3346,13 @@ struct GlassEQAppModelLifecycleTests {
         model.start()
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.isRunning })
-        model.toggleMenuProcessing()
+        #expect(model.canControlMenuProcessing)
+        #expect(model.menuProcessingEnabled)
+        model.menuProcessingEnabled = false
         try #require(await waitUntil { model.processingWasStopped && engine.handbackCount > 0 })
+        #expect(!model.menuProcessingEnabled)
         #expect(!engine.holdsProcessingMute)
-        model.toggleMenuProcessing()
+        model.menuProcessingEnabled = true
         observers.observers.last?.emit(.success(output))
         try #require(await waitUntil { model.isRunning })
         #expect(await model.flushStoreBeforeQuit())
@@ -6873,6 +6876,8 @@ struct LicenseEnforcementTests {
         model.start()
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.retryPlayback == .muted && engine.state == .stopped })
+        #expect(model.settingsMetricsSnapshot().diagnostics.status.health == .needsAttention)
+        #expect(model.menuStatusDetail == model.statusMessage)
         let terminalReason = model.statusMessage
         let gate = FakeStartBlocker()
         defer { gate.unblock() }

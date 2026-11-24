@@ -330,6 +330,31 @@ struct SettingsIPCTests {
         #expect(!controller.canApplyDraft)
     }
 
+    @Test
+    @MainActor
+    func outputAssignmentRemainsAvailableForEditedOrInactiveProfiles() {
+        let profile = EQProfile.flatParametric
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [profile]
+        snapshot.currentOutputUID = "speakers"
+        snapshot.selectedProfileID = profile.id
+        snapshot.draftProfile = profile
+        snapshot.activeProfileID = profile.id
+        snapshot.currentOutputMappedProfileID = profile.id
+        let model = GlassEQSettingsViewModel(snapshot: snapshot)
+        let controller = SettingsController(model: model)
+        #expect(!controller.canAssignDraftToOutput)
+        controller.draftProfile.preampDB = -3
+        #expect(controller.canAssignDraftToOutput)
+        controller.revertDraft()
+        snapshot.activeProfileID = UUID()
+        model.accept(snapshot: snapshot)
+        #expect(controller.canAssignDraftToOutput)
+        snapshot.currentOutputUID = ""
+        model.accept(snapshot: snapshot)
+        #expect(!controller.canAssignDraftToOutput)
+    }
+
     @Test(arguments: [false, true])
     @MainActor
     func compareLocksTheCurrentDraftBeforeDispatching(comparisonStarted: Bool) async {

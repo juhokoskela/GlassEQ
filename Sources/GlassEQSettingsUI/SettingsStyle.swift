@@ -13,12 +13,16 @@ public extension Color {
 struct GraphLegendItem: View {
     var color: Color
     var title: String
+    var dashed = false
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
+            Path { path in
+                path.move(to: CGPoint(x: 0, y: 2))
+                path.addLine(to: CGPoint(x: 18, y: 2))
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 2.5, dash: dashed ? [6, 3] : []))
+            .frame(width: 18, height: 4)
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)

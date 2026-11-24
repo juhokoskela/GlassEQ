@@ -13,8 +13,11 @@ struct ProfileDetail: View {
             switch controller.tab {
             case .editor:
                 EditorTab(controller: controller)
+                    .navigationTitle($controller.draftName)
+                    .navigationSubtitle(subtitle)
             case .output:
                 OutputTab(controller: controller)
+                    .navigationTitle(localized("Output"))
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity)
@@ -27,12 +30,10 @@ struct ProfileDetail: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if controller.tab == .editor {
+            if controller.tab == .editor || controller.hasUnsavedDraft || controller.isComparisonInProgress {
                 ApplyBar(controller: controller)
             }
         }
-        .navigationTitle($controller.draftName)
-        .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker(localized("Section"), selection: $controller.tab) {
@@ -44,10 +45,11 @@ struct ProfileDetail: View {
                 .accessibilityHint(Text(localized("Switches between editor and output details")))
             }
             ToolbarItem {
-                Button(localized("Import"), systemImage: "square.and.arrow.down") {
+                Button(localized("Import Profile"), systemImage: "square.and.arrow.down") {
                     controller.presentImport(.text)
                 }
                 .disabled(isReadOnly)
+                .help(localized("Import Profile"))
                 .accessibilityHint(Text(localized("Opens guided profile import")))
             }
         }

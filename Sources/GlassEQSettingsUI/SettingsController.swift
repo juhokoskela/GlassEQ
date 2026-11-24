@@ -74,6 +74,10 @@ final class SettingsController {
         draftProfile != storedProfile
     }
 
+    var canAssignDraftToOutput: Bool {
+        hasCurrentOutput && (draftProfile.id != snapshot.currentOutputMappedProfileID || canApplyDraft)
+    }
+
     var canApplyDraft: Bool {
         !isProfileStoreProtected && !isStartingProgrammeComparison
             && (hasUnsavedDraft || draftProfile.id != snapshot.activeProfileID || !snapshot.activeProfileMatchesLibrary)

@@ -3,32 +3,47 @@ import SwiftUI
 
 struct ProfileSidebar: View {
     var controller: SettingsController
+    @State private var pendingSelection: UUID?
 
     var body: some View {
         let isReadOnly = controller.isEditingLocked
         let selectedProfileID = controller.selectedProfileID
         let canDeleteSelectedProfile = controller.canDeleteProfile(selectedProfileID)
-        List(controller.snapshot.profiles, selection: selection) { profile in
-            ProfileRow(
-                profile: profile,
-                isSelected: profile.id == selectedProfileID,
-                isActive: profile.id == controller.snapshot.activeProfileID
-            )
-            .contextMenu {
-                Button(localized("Duplicate")) {
-                    controller.duplicateProfile(profile.id)
+        List(selection: selection) {
+            Section(localized("Profiles")) {
+                ForEach(controller.snapshot.profiles) { profile in
+                    ProfileRow(
+                        profile: profile,
+                        isSelected: profile.id == selectedProfileID,
+                        isActive: profile.id == controller.snapshot.activeProfileID
+                    )
+                    .tag(profile.id)
+                    .contextMenu {
+                        Button(localized("Duplicate")) {
+                            controller.duplicateProfile(profile.id)
+                        }
+                        .disabled(isReadOnly)
+                        Button(localized("Use for This Output")) {
+                            controller.assignProfileToCurrentOutput(profile.id)
+                        }
+                        .disabled(isReadOnly || !controller.hasCurrentOutput)
+                        Divider()
+                        Button(localized("Delete…"), role: .destructive) {
+                            controller.requestProfileDeletion(profile.id)
+                        }
+                        .disabled(!controller.canDeleteProfile(profile.id))
+                    }
                 }
-                .disabled(isReadOnly)
-                Button(localized("Use for This Output")) {
-                    controller.assignProfileToCurrentOutput(profile.id)
-                }
-                .disabled(isReadOnly || !controller.hasCurrentOutput)
-                Divider()
-                Button(localized("Delete…"), role: .destructive) {
-                    controller.requestProfileDeletion(profile.id)
-                }
-                .disabled(!controller.canDeleteProfile(profile.id))
             }
+        }
+        .alert(
+            localized("Discard unapplied changes?"),
+            isPresented: Binding(
+                get: { pendingSelection != nil }, set: { if !$0 { pendingSelection = nil } }
+            ), presenting: pendingSelection
+        ) { id in
+            Button(localized("Keep Editing"), role: .cancel) {}
+            Button(localized("Discard Changes"), role: .destructive) { controller.selectProfile(id) }
         }
         .listStyle(.sidebar)
         .disabled(controller.isComparisonInProgress)
@@ -89,7 +104,10 @@ struct ProfileSidebar: View {
         Binding(
             get: { controller.selectedProfileID },
             set: { id in
-                if let id {
+                guard let id, id != controller.selectedProfileID else { return }
+                if controller.hasUnsavedDraft {
+                    pendingSelection = id
+                } else {
                     controller.selectProfile(id)
                 }
             }

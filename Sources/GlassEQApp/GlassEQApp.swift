@@ -1095,6 +1095,25 @@ final class GlassEQAppModel {
         return isRunning ? localized("GlassEQ active") : localized("GlassEQ stopped")
     }
 
+    var canControlMenuProcessing: Bool { hasStartedAudio && processingIsLicensed }
+
+    var menuProcessingEnabled: Bool {
+        get { processingIntent != .stopped && !activeProfileIsBypassed }
+        set {
+            guard newValue != menuProcessingEnabled else { return }
+            toggleMenuProcessing()
+        }
+    }
+
+    var menuStatusDetail: String? {
+        if isRunning
+            && statusMessage == processingStatus(outputName: currentOutputName, profileName: activeProfile.name)
+        {
+            return nil
+        }
+        return statusMessage
+    }
+
     var currentOutputMappedProfileID: UUID? {
         profileStore.outputMappings.first(where: { $0.outputDeviceUID == currentOutputUID })?.profileID
     }
@@ -1210,12 +1229,13 @@ final class GlassEQAppModel {
             health = .recovering
         } else if isRunning {
             health = .stable
-        } else if lifecycleState == .stopped || lifecycleState == .sleeping
-            || lifecycleState == .terminating || activeProfile.isBypassed
-        {
-            health = .stopped
-        } else {
+        } else if retryPlayback != nil {
             health = .needsAttention
+        } else {
+            switch onboardingAudioCaptureState {
+            case .failed, .permissionDenied: health = .needsAttention
+            default: health = .stopped
+            }
         }
         let latency = diagnosticsLatencyMetadata
         let processingSampleRate = processingSampleRateForSettings()
@@ -4599,73 +4619,79 @@ final class GlassEQAppModel {
 private struct MenuBarView: View {
     @Bindable var model: GlassEQAppModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.controlActiveState) private var controlActiveState
-
-    private var enableAction: Bool { model.processingWasStopped || model.activeProfileIsBypassed }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            Divider()
-
-            popoverValue(title: localized("Output"), value: model.currentOutputName)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(localized("Profile"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Picker(localized("Profile"), selection: $model.activeProfileID) {
-                    ForEach(model.profileStore.profiles) { profile in
-                        Text(profile.name).tag(profile.id)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(localized("GlassEQ"))
+                    .font(.headline)
+                Spacer()
+                if model.canControlMenuProcessing {
+                    if model.retryPlayback != nil {
+                        Label(localized("Needs attention"), systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Toggle(localized("Equalizer"), isOn: $model.menuProcessingEnabled)
+                            .toggleStyle(.switch)
+                            .accessibilityHint(
+                                Text(localized("Starts or stops system audio processing for the active profile")))
+                    }
+                } else {
+                    Button(localized("Open Setup Guide")) {
+                        dismiss()
+                        model.requestOnboardingPresentation()
                     }
                 }
-                .labelsHidden()
-                .accessibilityLabel(Text(localized("Profile")))
-                .accessibilityValue(Text(model.activeProfileName))
-                .accessibilityHint(Text(localized("Switches the profile that is processing audio")))
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    model.toggleMenuProcessing()
-                } label: {
-                    Label(
-                        enableAction ? localized("Enable") : localized("Disable"),
-                        systemImage: enableAction ? "speaker.wave.2" : "speaker.slash"
-                    )
-                    .frame(minWidth: 82, minHeight: 28)
-                    .contentShape(.rect)
-                }
-                .controlSize(.large)
-                .buttonStyle(.glass)
-                .tint(popoverControlsAreActive ? enableButtonTint : nil)
-                .accessibilityLabel(
-                    Text(enableAction ? localized("Enable equalizer") : localized("Disable equalizer"))
-                )
-                .accessibilityValue(Text(statusBadgeTitle))
-                .accessibilityHint(Text(localized("Starts or stops system audio processing for the active profile")))
+            Divider()
 
-                Button {
-                    dismiss()
-                    model.openSettings()
-                } label: {
-                    Label(localized("Settings"), systemImage: "slider.horizontal.3")
-                        .frame(minWidth: 86, minHeight: 28)
-                        .contentShape(.rect)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                GridRow {
+                    Text(localized("Output"))
+                        .foregroundStyle(.secondary)
+                    Text(model.currentOutputName)
+                        .lineLimit(2)
                 }
-                .controlSize(.large)
-                .buttonStyle(.glass)
+                .accessibilityElement(children: .combine)
+                GridRow {
+                    Text(localized("Profile"))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Picker(localized("Profile"), selection: $model.activeProfileID) {
+                        ForEach(model.profileStore.profiles) { profile in
+                            Text(profile.name).tag(profile.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityHint(Text(localized("Switches the profile that is processing audio")))
+                }
+            }
 
-                Button(role: .destructive) {
-                    model.requestQuit()
-                } label: {
-                    Label(localized("Quit"), systemImage: "power")
-                        .frame(minWidth: 58, minHeight: 28)
-                        .contentShape(.rect)
+            if let detail = model.menuStatusDetail {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let playback = model.retryPlayback {
+                if playback == .muted {
+                    Label(localized("Output is muted"), systemImage: "speaker.slash")
+                        .font(.headline)
                 }
-                .controlSize(.large)
-                .buttonStyle(.glass)
-                .tint(popoverControlsAreActive ? .macOSSystemRed : nil)
+                HStack {
+                    Button(localized("Retry Audio Engine")) { model.retryAudioEngine() }
+                    Button(playback == .muted ? localized("Restore Playback") : localized("Turn Off Equalizer")) {
+                        model.stop()
+                    }
+                }
+            }
+
+            if let message = model.licenseStatusMessage {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
 
             #if DEBUG
@@ -4677,131 +4703,32 @@ private struct MenuBarView: View {
                 .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
             #endif
 
-            if let playback = model.retryPlayback {
-                Button(localized("Retry audio engine")) { model.retryAudioEngine() }
-                if playback == .muted {
-                    Text(localized("Output is muted. Retry or choose Disable to restore normal playback."))
-                        .font(.caption)
+            Divider()
+
+            HStack {
+                Button(localized("Settings…"), systemImage: "gearshape") {
+                    dismiss()
+                    model.openSettings()
                 }
+                .keyboardShortcut(",", modifiers: .command)
+                Spacer()
+                Menu {
+                    Button(localized("About GlassEQ")) {
+                        dismiss()
+                        model.requestAboutPresentation()
+                    }
+                    Divider()
+                    Button(localized("Quit GlassEQ")) { model.requestQuit() }
+                } label: {
+                    Label(localized("More Options"), systemImage: "ellipsis.circle")
+                }
+                .labelStyle(.iconOnly)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel(Text(localized("More Options")))
+                .help(localized("More Options"))
             }
-
-            Text(model.statusMessage)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(model.isRunning ? Color.secondary : Color.macOSSystemRed)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityLabel(Text(localized("Status")))
-                .accessibilityValue(Text(model.statusMessage))
-
-            if let licenseStatusMessage = model.licenseStatusMessage {
-                Text(licenseStatusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel(Text(localized("License")))
-                    .accessibilityValue(Text(licenseStatusMessage))
-            }
         }
-        .padding()
-        .background { PopoverGlassConfigurator() }
+        .padding(16)
     }
-
-    private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(localized("GlassEQ"))
-                    .font(.title3.weight(.semibold))
-                Text(AppBuildInfo.current.displayVersion)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                dismiss()
-                model.requestAboutPresentation()
-            } label: {
-                Image(systemName: "info.circle")
-            }
-            .accessibilityLabel(Text(localized("About GlassEQ")))
-            Text(statusBadgeTitle)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(statusBadgeColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    statusBadgeColor.opacity(0.12),
-                    in: .capsule
-                )
-                .accessibilityLabel(Text(localized("Menu bar state")))
-                .accessibilityValue(Text(statusBadgeTitle))
-        }
-    }
-
-    private var statusBadgeTitle: String {
-        if model.activeProfileIsBypassed {
-            return localized("Disabled")
-        }
-        return model.isRunning ? localized("Active") : localized("Stopped")
-    }
-
-    private var statusBadgeColor: Color {
-        model.isRunning && !enableAction ? .macOSSystemGreen : .macOSSystemRed
-    }
-
-    private var enableButtonTint: Color {
-        enableAction ? .macOSSystemGreen : .macOSSystemYellow
-    }
-
-    private var popoverControlsAreActive: Bool {
-        controlActiveState != .inactive
-    }
-
-    private func popoverValue(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.headline)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(title))
-        .accessibilityValue(Text(value))
-    }
-}
-
-private enum PopoverGlassAppearance {
-    /// Opacity applied to the popover's system Liquid Glass backing (NSGlassView).
-    /// 1.0 keeps the full system frost; lower values thin it so more of the desktop shows
-    /// through. Our content is a sibling of the backing, so it stays fully opaque regardless.
-    static let backingAlpha: CGFloat = 0.2
-}
-
-private final class PopoverGlassConfiguringView: NSView {
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        guard let window else {
-            return
-        }
-        let root = window.contentView?.superview ?? window.contentView
-        root.map(Self.dimGlassBacking)
-    }
-
-    private static func dimGlassBacking(_ view: NSView) {
-        if String(describing: type(of: view)) == "NSGlassView" {
-            view.alphaValue = PopoverGlassAppearance.backingAlpha
-        }
-        for subview in view.subviews {
-            dimGlassBacking(subview)
-        }
-    }
-}
-
-private struct PopoverGlassConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> PopoverGlassConfiguringView {
-        PopoverGlassConfiguringView()
-    }
-
-    func updateNSView(_ nsView: PopoverGlassConfiguringView, context: Context) {}
 }

@@ -201,6 +201,7 @@ private extension EQChannelMode {
 
 struct EditorTab: View {
     @Bindable var controller: SettingsController
+    @State private var confirmsLink = false
 
     var body: some View {
         let draftProfile = controller.draftProfile
@@ -212,32 +213,19 @@ struct EditorTab: View {
                 if controller.snapshot.profiles.allSatisfy(\.isNeutral) {
                     Section {
                         StartingPointHint(
-                            onImport: { controller.presentImport(.text) },
+                            onImport: { controller.presentImport(.autoEQ) },
                             onCreate: { controller.isNewProfileSheetPresented = true }
                         )
                     }
                 }
 
                 Section {
-                    Picker(localized("Channels"), selection: $controller.draftChannelMode) {
-                        Text(localized("Linked")).tag(EQChannelMode.linked)
-                        Text(localized("Separate L/R")).tag(EQChannelMode.stereo)
+                    HStack {
+                        Text(localized("Channels"))
+                        Spacer()
+                        channelPickers
                     }
-                    .pickerStyle(.segmented)
-                    .accessibilityValue(Text(draftProfile.channelMode.accessibilityTitle))
-                    .accessibilityHint(
-                        Text(localized("Chooses whether channels share one EQ or use separate left and right settings"))
-                    )
-
-                    if draftProfile.channelMode == .stereo {
-                        Picker(localized("Editing"), selection: $controller.editChannel) {
-                            ForEach(EQEditChannel.allCases) { editChannel in
-                                Text(editChannel.title).tag(editChannel)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .accessibilityHint(Text(localized("Chooses which stereo channel is being edited")))
-                    }
+                    .accessibilityElement(children: .contain)
 
                     SliderRow(
                         title: localized("Preamp"),
@@ -280,6 +268,55 @@ struct EditorTab: View {
         }
         .formStyle(.grouped)
         .environment(\.editorContext, controller.editorContextID)
+        .alert(localized("Link left and right channels?"), isPresented: $confirmsLink) {
+            Button(localized("Cancel"), role: .cancel) {}
+            Button(localized("Link Channels"), role: .destructive) { controller.draftChannelMode = .linked }
+        } message: {
+            Text(
+                controller.editChannel == .left
+                    ? localized("Both channels will use the left channel’s settings.")
+                    : localized("Both channels will use the right channel’s settings."))
+        }
+    }
+
+    @ViewBuilder
+    private var channelPickers: some View {
+        Picker(
+            localized("Channels"),
+            selection: Binding(
+                get: { controller.draftChannelMode },
+                set: { mode in
+                    if mode == .linked
+                        && controller.draftProfile[channel: .left] != controller.draftProfile[channel: .right]
+                    {
+                        confirmsLink = true
+                    } else {
+                        controller.draftChannelMode = mode
+                    }
+                }
+            )
+        ) {
+            Text(localized("Linked")).tag(EQChannelMode.linked)
+            Text(localized("Separate L/R")).tag(EQChannelMode.stereo)
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .fixedSize()
+        .accessibilityValue(Text(controller.draftChannelMode.accessibilityTitle))
+        if controller.draftChannelMode == .stereo {
+            Text(localized("Edit"))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Picker(localized("Edit"), selection: $controller.editChannel) {
+                ForEach(EQEditChannel.allCases) { channel in
+                    Text(channel.title).tag(channel)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .accessibilityHint(Text(localized("Chooses which stereo channel is being edited")))
+        }
     }
 }
 
@@ -309,7 +346,7 @@ private struct EditorResponseSection: View {
             // in a placeholder on every slider tick would flicker and break the curve animation.
             if let analysis {
                 FrequencyResponseGraph(analysis: analysis)
-                    .frame(height: 165)
+                    .frame(height: 140)
                     .accessibilityLabel(Text(localized("Frequency response graph")))
                     .accessibilityValue(Text(analysis.accessibilitySummary))
                     .accessibilityHint(
@@ -330,16 +367,16 @@ private struct EditorResponseSection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 165)
+                .frame(maxWidth: .infinity, minHeight: 140)
                 .accessibilityElement(children: .combine)
             }
         } header: {
             HStack {
-                Text(localized("Frequency Response"))
+                Text(localized("Frequency Response (dB)"))
                 Spacer()
                 if profile.channelMode == .stereo {
                     GraphLegendItem(color: .blue, title: localized("Left"))
-                    GraphLegendItem(color: .orange, title: localized("Right"))
+                    GraphLegendItem(color: .orange, title: localized("Right"), dashed: true)
                 }
             }
         }
@@ -355,7 +392,7 @@ struct HeadroomRow: View {
         let attenuation = profile.headroomAttenuation(toReach: recommendedPreampDB)
         let status =
             if !needsHeadroom {
-                localized("OK")
+                localized("No clipping expected")
             } else if attenuation == nil {
                 localized("Required headroom exceeds the profile limit")
             } else {
@@ -367,14 +404,16 @@ struct HeadroomRow: View {
                 .foregroundStyle(needsHeadroom ? Color.orange : Color.secondary)
                 .accessibilityLabel(Text(localized("Headroom")))
                 .accessibilityValue(Text(status))
-            Button(localized("Use Recommended")) {
-                if let adjusted = profileApplyingRecommendedHeadroom(profile, recommendedPreampDB: recommendedPreampDB)
-                {
-                    profile = adjusted
+            if needsHeadroom, attenuation != nil {
+                Button(localized("Use Recommended")) {
+                    if let adjusted = profileApplyingRecommendedHeadroom(
+                        profile, recommendedPreampDB: recommendedPreampDB)
+                    {
+                        profile = adjusted
+                    }
                 }
+                .accessibilityHint(Text(localized("Applies the recommended preamp to avoid clipping")))
             }
-            .disabled(!needsHeadroom || attenuation == nil)
-            .accessibilityHint(Text(localized("Applies the recommended preamp to avoid clipping")))
         }
     }
 }

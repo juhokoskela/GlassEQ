@@ -93,41 +93,29 @@ struct OutputTab: View {
                     }
                 }
             } footer: {
-                Text(
-                    outputBufferExplanation(
-                        aggregateBuffer: snapshot.aggregateBuffer,
-                        currentFrameSize: snapshot.currentOutputBufferFrameSize
-                    ))
-            }
-
-            Section(localized("Profile Mapping")) {
-                LabeledContent(localized("Mapped Profile"), value: mappedProfileName)
-                LabeledContent(controller.draftProfile.name) {
-                    Button(localized("Use for This Output")) {
-                        controller.useDraftForCurrentOutput()
-                    }
-                    .disabled(controller.isProfileStoreProtected || !controller.hasCurrentOutput)
-
-                    Button(localized("Set as Fallback")) {
-                        controller.setFallbackToDraft()
-                    }
-                    .disabled(controller.isProfileStoreProtected)
+                if snapshot.isRunning || snapshot.aggregateBuffer.isAvailable {
+                    Text(
+                        outputBufferExplanation(
+                            aggregateBuffer: snapshot.aggregateBuffer,
+                            currentFrameSize: snapshot.currentOutputBufferFrameSize
+                        ))
                 }
             }
 
-            Section {
-                HStack {
-                    Button(localized("Export…")) { controller.exportLibrary() }
-                        .disabled(!snapshot.profileStoreProtection.canExportLibrary)
-                    Button(localized("Import…")) { controller.chooseLibraryBackup() }
-                        .disabled(controller.isEditingLocked)
-                    Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }
+            Section(localized("Profiles")) {
+                LabeledContent(localized("Assigned to This Output"), value: mappedProfileName)
+                LabeledContent(localized("Fallback Profile"), value: fallbackProfileName)
+                if controller.canAssignDraftToOutput || canSetFallback {
+                    LabeledContent(controller.draftProfile.name) {
+                        if controller.canAssignDraftToOutput {
+                            Button(localized("Use for This Output")) { controller.useDraftForCurrentOutput() }
+                        }
+                        if canSetFallback {
+                            Button(localized("Set as Fallback")) { controller.setFallbackToDraft() }
+                        }
+                    }
+                    .disabled(controller.isEditingLocked)
                 }
-                .disabled(controller.isLibraryTransferInProgress)
-            } header: {
-                Text(localized("Profile Library"))
-            } footer: {
-                if let message = controller.libraryMessage { Text(message) }
             }
 
             Section {
@@ -141,18 +129,30 @@ struct OutputTab: View {
                         ? localized("None")
                         : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
                 )
-                HStack {
-                    Button(localized("Retry Audio Engine")) {
-                        controller.retryAudioEngine()
-                    }
-                    Button(localized("Open Privacy Settings")) {
-                        controller.openPrivacySettings()
-                    }
+                if !snapshot.isRunning {
+                    recoveryActions
+                } else {
+                    DisclosureGroup(localized("Troubleshooting")) { recoveryActions }
                 }
             } header: {
                 Text(localized("Engine Status"))
             } footer: {
                 Text(snapshot.statusMessage)
+            }
+
+            Section {
+                HStack {
+                    Button(localized("Export Library…")) { controller.exportLibrary() }
+                        .disabled(!snapshot.profileStoreProtection.canExportLibrary)
+                    Button(localized("Import Backup…")) { controller.chooseLibraryBackup() }
+                        .disabled(controller.isEditingLocked)
+                    Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }
+                }
+                .disabled(controller.isLibraryTransferInProgress)
+            } header: {
+                Text(localized("Profile Library"))
+            } footer: {
+                if let message = controller.libraryMessage { Text(message) }
             }
 
             Section {
@@ -213,11 +213,26 @@ struct OutputTab: View {
         }
     }
 
+    private var recoveryActions: some View {
+        HStack {
+            Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
+            Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+        }
+    }
+
+    private var canSetFallback: Bool {
+        controller.draftProfile.id != snapshot.fallbackProfileID || controller.hasUnsavedDraft
+    }
+
+    private var fallbackProfileName: String {
+        snapshot.profiles.first { $0.id == snapshot.fallbackProfileID }?.name ?? localized("Unavailable")
+    }
+
     private var mappedProfileName: String {
         guard let profileID = snapshot.currentOutputMappedProfileID,
             let profile = snapshot.profiles.first(where: { $0.id == profileID })
         else {
-            return localized("Fallback")
+            return localized("Use Fallback")
         }
         return profile.name
     }

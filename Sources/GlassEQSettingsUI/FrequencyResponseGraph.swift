@@ -36,13 +36,13 @@ struct PlotScale {
 }
 
 struct FrequencyResponseGraph: View {
+    private static let magnitudeTicks = [-24.0, -18, -12, -6, 0, 6, 12]
     var analysis: EQAnalysisSnapshot
 
     var body: some View {
         Canvas { context, size in
             let bounds = CGRect(origin: .zero, size: size)
             let scale = PlotScale(bounds: bounds, maximumFrequency: analysis.maximumUsableFrequency)
-            context.fill(Path(bounds), with: .color(Color(nsColor: .controlBackgroundColor).opacity(0.55)))
             drawGrid(context: context, scale: scale)
             drawAxisLabels(context: context, scale: scale, bounds: bounds)
         }
@@ -53,7 +53,7 @@ struct FrequencyResponseGraph: View {
                     curve(analysis.linkedPoints, color: .accentColor)
                 case .stereo:
                     curve(analysis.leftPoints, color: .blue)
-                    curve(analysis.rightPoints, color: .orange)
+                    curve(analysis.rightPoints, color: .orange, dashed: true)
                 }
             }
         }
@@ -61,19 +61,19 @@ struct FrequencyResponseGraph: View {
         .accessibilityElement(children: .ignore)
     }
 
-    private func curve(_ points: [FrequencyResponsePoint], color: Color) -> some View {
+    private func curve(_ points: [FrequencyResponsePoint], color: Color, dashed: Bool = false) -> some View {
         ResponseCurveShape(
             frequencies: points.map(\.frequency),
             magnitudes: points.map(\.magnitudeDB),
             maximumFrequency: analysis.maximumUsableFrequency
         )
-        .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+        .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineJoin: .round, dash: dashed ? [6, 3] : []))
     }
 
     private func drawGrid(context: GraphicsContext, scale: PlotScale) {
         let rect = scale.rect
         var path = Path()
-        for db in [-24.0, -12.0, -6.0, 0.0, 6.0, 12.0] {
+        for db in Self.magnitudeTicks {
             let y = scale.y(for: db)
             path.move(to: CGPoint(x: rect.minX, y: y))
             path.addLine(to: CGPoint(x: rect.maxX, y: y))
@@ -93,7 +93,7 @@ struct FrequencyResponseGraph: View {
     }
 
     private func drawAxisLabels(context: GraphicsContext, scale: PlotScale, bounds: CGRect) {
-        for db in [12.0, 6.0, 0.0, -6.0, -12.0, -24.0] {
+        for db in Self.magnitudeTicks {
             context.draw(
                 Text(db.dbAxisLabel)
                     .font(.caption2.monospacedDigit())
