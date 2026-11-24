@@ -187,7 +187,9 @@ final class SettingsController {
     }
 
     func requestSelection(_ id: UUID) {
-        guard selectedProfileID != id, !isComparisonInProgress else { return }
+        guard !isComparisonInProgress else { return }
+        tab = .editor
+        guard selectedProfileID != id else { return }
         if hasUnsavedDraft {
             pendingSelection = id
         } else {
@@ -225,7 +227,7 @@ final class SettingsController {
     }
 
     func useDraftForCurrentOutput() {
-        perform(.useProfileForCurrentOutput(draftProfile))
+        perform(.useProfileForCurrentOutput(draftProfile, outputUID: snapshot.currentOutputUID))
     }
 
     func setOutputAssignment(outputUID: String, profileID: UUID?) {
@@ -260,6 +262,8 @@ final class SettingsController {
     func retryAutomaticAggregateBuffer() {
         perform(.retryAutomaticAggregateBuffer)
     }
+
+    func playWithoutEQ() { perform(.playWithoutEQ) }
 
     func retryAudioEngine() {
         perform(.retryAudioEngine)
@@ -480,6 +484,8 @@ final class SettingsController {
             return nil
         }
         switch command {
+        case .deleteProfile(let id) where id != dispatchedSelection:
+            reconcileWithSnapshot()
         case .createProfile, .duplicateProfile, .deleteProfile,
             .applyProfile, .useProfileForCurrentOutput,
             .importProfile, .importParsedProfile, .resetUnsupportedProfileStore, .applyLibraryImport(.replace):

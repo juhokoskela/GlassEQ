@@ -238,7 +238,7 @@ struct EditorTab: View {
                         suffix: "dB"
                     )
 
-                    Toggle(localized("Bypass Profile"), isOn: $controller.draftProfile.isBypassed)
+                    Toggle(localized("Bypass When Applied"), isOn: $controller.draftProfile.isBypassed)
                         .toggleStyle(.switch)
                         .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
 
@@ -356,6 +356,11 @@ private struct EditorResponseSection: View {
                             localized(
                                 "Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))"
                             )))
+                if analysis.hasOffScaleResponse {
+                    Text(localized("Part of the response is outside the displayed dB range."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if let inactiveFilterSummary = analysis.inactiveFilterSummary {
                     Label(inactiveFilterSummary, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -397,6 +402,8 @@ struct HeadroomRow: View {
                 localized("No clipping expected")
             } else if attenuation == nil {
                 localized("Required headroom exceeds the profile limit")
+            } else if profile.channelMode == .stereo, let attenuation {
+                localized("Reduce both channels by \(localizedDecibels(attenuation))")
             } else {
                 localized("Recommend \(localizedDecibels(recommendedPreampDB))")
             }

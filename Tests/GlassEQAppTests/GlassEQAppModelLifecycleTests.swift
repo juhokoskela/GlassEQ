@@ -3160,6 +3160,23 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func settingsCanRestoreDirectPlaybackAfterMutedFailure() async throws {
+        let output = makeOutput()
+        let engine = FakeAudioEngine()
+        engine.startError = TestAudioError.startFailed
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.settingsSnapshot().offersPlaybackHandback })
+        _ = try await model.performSettingsCommand(.playWithoutEQ)
+        try #require(await waitUntil { !engine.holdsProcessingMute })
+        #expect(model.processingWasStopped)
+        #expect(!model.settingsSnapshot().offersPlaybackHandback)
+    }
+
+    @Test
     func outputAssignmentUsesSavedProfilesAndCanReturnToFallback() async throws {
         let first = makeProfile(name: "First")
         let second = makeProfile(name: "Second")
@@ -3188,6 +3205,12 @@ struct GlassEQAppModelLifecycleTests {
         _ = try await model.performSettingsCommand(.setFallbackProfile(second.id))
         #expect(model.profileStore.fallbackProfileID == second.id)
         #expect(model.profileStore.profiles == store.profiles)
+        model.stop()
+        #expect(model.settingsSnapshot().currentOutputUID.isEmpty)
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: first.id))
+        }
+        #expect(model.currentOutputMappedProfileID == nil)
     }
 
     @Test
@@ -4086,6 +4109,7 @@ struct GlassEQAppModelLifecycleTests {
             return
         }
         #expect(message.contains("Default output unavailable"))
+        #expect(model.needsMenuRecovery)
     }
 
     @Test
@@ -6858,6 +6882,7 @@ struct LicenseEnforcementTests {
         model.start()
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.retryPlayback == .muted })
+        #expect(model.settingsSnapshot().offersPlaybackHandback)
         #expect(model.supportPlaybackDescription == "Output muted by GlassEQ")
         let failure = model.statusMessage
         if sleepBeforeExpiry { model.handleWillSleep() }

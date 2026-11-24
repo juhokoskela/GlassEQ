@@ -300,6 +300,12 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         return points
     }
 
+    var hasOffScaleResponse: Bool {
+        [linkedPoints, leftPoints, rightPoints].contains { points in
+            points.contains { !PlotScale.magnitudeRange.contains($0.magnitudeDB) }
+        }
+    }
+
     var accessibilitySummary: String {
         let preamp = recommendedPreampDB.map { localizedDecibels($0) } ?? localized("Analyzing…")
         let curveSummary: String

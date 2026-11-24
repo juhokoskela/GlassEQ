@@ -527,6 +527,10 @@ final class SettingsCoordinator: NSObject {
             patch.statusMessage = snapshot.statusMessage
             didPatch = true
         }
+        if previous.offersPlaybackHandback != snapshot.offersPlaybackHandback {
+            patch.offersPlaybackHandback = snapshot.offersPlaybackHandback
+            didPatch = true
+        }
         if previous.isRunning != snapshot.isRunning {
             patch.isRunning = snapshot.isRunning
             didPatch = true
@@ -1121,7 +1125,8 @@ extension GlassEQAppModel {
         case .applyProfile(let profile):
             try apply(profile: profile)
 
-        case .useProfileForCurrentOutput(let profile):
+        case let .useProfileForCurrentOutput(profile, outputUID):
+            try validateAssignmentOutput(outputUID)
             try useForCurrentOutput(profile: profile)
 
         case let .setOutputAssignment(outputUID, profileID):
@@ -1180,6 +1185,9 @@ extension GlassEQAppModel {
 
         case .retryAutomaticAggregateBuffer:
             try retryAutomaticAggregateBuffer()
+
+        case .playWithoutEQ:
+            if retryPlayback == .muted { stop() }
 
         case .retryAudioEngine:
             retryAudioEngine()

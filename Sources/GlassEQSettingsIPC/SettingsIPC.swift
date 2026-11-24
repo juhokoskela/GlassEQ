@@ -751,6 +751,7 @@ public struct SettingsProfileStoreProtectionDTO: Codable, Equatable, Sendable {
 public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var isRunning: Bool?
+    public var offersPlaybackHandback: Bool?
     public var programmeComparison: EQProgrammeComparisonSnapshot?
     public var selectedProfileID: UUID?
     public var draftProfile: EQProfile?
@@ -816,6 +817,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var statusMessage: String
     public var metrics: SettingsAudioMetricsDTO
     public var isRunning: Bool
+    public var offersPlaybackHandback: Bool
     public var programmeComparison: EQProgrammeComparisonSnapshot
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO
 
@@ -838,6 +840,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case statusMessage
         case metrics
         case isRunning
+        case offersPlaybackHandback
         case programmeComparison
         case profileStoreProtection
     }
@@ -861,6 +864,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         statusMessage: String,
         metrics: SettingsAudioMetricsDTO,
         isRunning: Bool,
+        offersPlaybackHandback: Bool = false,
         programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
         profileStoreProtection: SettingsProfileStoreProtectionDTO = .unprotected
     ) {
@@ -882,6 +886,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.statusMessage = statusMessage
         self.metrics = metrics
         self.isRunning = isRunning
+        self.offersPlaybackHandback = offersPlaybackHandback
         self.programmeComparison = programmeComparison
         self.profileStoreProtection = profileStoreProtection
     }
@@ -919,6 +924,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             statusMessage: try container.decode(String.self, forKey: .statusMessage),
             metrics: try container.decode(SettingsAudioMetricsDTO.self, forKey: .metrics),
             isRunning: try container.decodeIfPresent(Bool.self, forKey: .isRunning) ?? false,
+            offersPlaybackHandback: try container.decodeIfPresent(Bool.self, forKey: .offersPlaybackHandback) ?? false,
             programmeComparison: try container.decodeIfPresent(
                 EQProgrammeComparisonSnapshot.self,
                 forKey: .programmeComparison
@@ -1022,7 +1028,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case duplicateProfile(UUID)
     case deleteProfile(UUID)
     case applyProfile(EQProfile)
-    case useProfileForCurrentOutput(EQProfile)
+    case useProfileForCurrentOutput(EQProfile, outputUID: String)
     case setOutputAssignment(outputUID: String, profileID: UUID?)
     case setFallbackProfile(UUID)
     case importProfile(format: SettingsImportFormat, name: String, text: String)
@@ -1035,6 +1041,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case setAggregateBufferMode(SettingsAggregateBufferMode)
     case retryAutomaticAggregateBuffer
     case retryAudioEngine
+    case playWithoutEQ
     case openPrivacySettings
     case startMetricsPolling
     case stopMetricsPolling

@@ -1,4 +1,3 @@
-import AppKit
 import GlassEQSettingsIPC
 import SwiftUI
 

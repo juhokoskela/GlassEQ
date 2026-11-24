@@ -1106,6 +1106,15 @@ final class GlassEQAppModel {
         }
     }
 
+    var needsMenuRecovery: Bool {
+        if retryPlayback != nil { return true }
+        guard lifecycleState == .stopped, processingIntent == .requested else { return false }
+        switch onboardingAudioCaptureState {
+        case .failed, .permissionDenied: return true
+        default: return false
+        }
+    }
+
     var menuStatusDetail: String? {
         if isRunning
             && statusMessage == processingStatus(outputName: currentOutputName, profileName: activeProfile.name)
@@ -1139,7 +1148,7 @@ final class GlassEQAppModel {
             activeProfileMatchesLibrary: profileStore.profiles.contains(activeProfile),
             activeProfileName: activeProfile.name,
             currentOutputName: currentOutputName,
-            currentOutputUID: currentOutputUID,
+            currentOutputUID: processingWasStopped ? "" : currentOutputUID,
             currentOutputSampleRate: currentOutputSampleRate,
             currentProcessingSampleRate: processingSampleRateForSettings(),
             currentOutputChannelCount: currentOutputChannelCount,
@@ -1150,6 +1159,7 @@ final class GlassEQAppModel {
             statusMessage: statusMessage,
             metrics: settingsMetricsSnapshot(),
             isRunning: isRunning,
+            offersPlaybackHandback: retryPlayback == .muted,
             programmeComparison: programmeComparison,
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
@@ -1943,11 +1953,17 @@ final class GlassEQAppModel {
         return profile
     }
 
-    func setOutputAssignment(outputUID: String, profileID: UUID?) throws {
-        guard !outputUID.isEmpty, outputUID == currentOutputUID else {
+    func validateAssignmentOutput(_ outputUID: String) throws {
+        guard !processingWasStopped, !outputUID.isEmpty, outputUID == currentOutputUID,
+            try defaultOutputLookup.defaultOutputDevice().uid == outputUID
+        else {
             throw SettingsCommandFailure(
                 message: localized("The output changed. Choose a profile for the current output."))
         }
+    }
+
+    func setOutputAssignment(outputUID: String, profileID: UUID?) throws {
+        try validateAssignmentOutput(outputUID)
         let profile = try savedProfile(profileID ?? profileStore.fallbackProfileID)
         try useForCurrentOutput(profile: profile, useFallback: profileID == nil)
     }
@@ -4646,7 +4662,7 @@ private struct MenuBarView: View {
                     .font(.headline)
                 Spacer()
                 if model.canControlMenuProcessing {
-                    if model.retryPlayback != nil {
+                    if model.needsMenuRecovery {
                         Label(localized("Needs attention"), systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
                     } else {
@@ -4663,11 +4679,14 @@ private struct MenuBarView: View {
                 }
             }
 
+            if model.retryPlayback == .muted {
+                Label(localized("Output is muted"), systemImage: "speaker.slash").font(.headline)
+            }
             Divider()
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
-                    Text(localized("Output"))
+                    Text(model.processingWasStopped ? localized("Last Output") : localized("Output"))
                         .foregroundStyle(.secondary)
                     Text(model.currentOutputName)
                         .lineLimit(2)
@@ -4679,7 +4698,8 @@ private struct MenuBarView: View {
                         .accessibilityHidden(true)
                     Picker(localized("Active Profile"), selection: $model.activeProfileID) {
                         ForEach(model.profileStore.profiles) { profile in
-                            Text(profile.name).tag(profile.id)
+                            Text(profile.isBypassed ? localized("\(profile.name) (bypassed)") : profile.name).tag(
+                                profile.id)
                         }
                     }
                     .labelsHidden()
@@ -4698,14 +4718,12 @@ private struct MenuBarView: View {
                 Button(localized("Open Privacy Settings")) { model.openPrivacySettingsForOnboarding() }
                 if let settingsError { Text(settingsError).font(.callout) }
             }
-            if let playback = model.retryPlayback {
-                if playback == .muted {
-                    Label(localized("Output is muted"), systemImage: "speaker.slash")
-                        .font(.headline)
-                }
+            if model.needsMenuRecovery {
                 HStack {
                     Button(localized("Retry Audio Engine")) { model.retryAudioEngine() }
-                    Button(playback == .muted ? localized("Play Without EQ") : localized("Turn Off Equalizer")) {
+                    Button(
+                        model.retryPlayback == .muted ? localized("Play Without EQ") : localized("Turn Off Equalizer")
+                    ) {
                         model.stop()
                     }
                     .buttonStyle(.borderedProminent)

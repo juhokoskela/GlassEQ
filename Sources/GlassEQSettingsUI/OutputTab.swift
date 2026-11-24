@@ -29,7 +29,9 @@ struct OutputTab: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent(localized("Current Output"), value: snapshot.currentOutputName)
+                LabeledContent(
+                    snapshot.currentOutputUID.isEmpty ? localized("Last Known Output") : localized("Current Output"),
+                    value: snapshot.currentOutputName)
 
                 LabeledContent(localized("Audio Buffer")) {
                     Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
@@ -227,9 +229,15 @@ struct OutputTab: View {
     }
 
     private var recoveryActions: some View {
-        HStack {
-            Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
-            Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+        VStack(alignment: .leading, spacing: 8) {
+            if snapshot.offersPlaybackHandback {
+                Label(localized("Output is muted"), systemImage: "speaker.slash")
+                Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
+            }
+            HStack {
+                Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
+                Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+            }
         }
     }
 
