@@ -38,6 +38,7 @@ struct SliderRow: View {
                 valueID: valueID
             )
         }
+        .accessibilityElement(children: .contain)
     }
 
     private var sliderValue: Binding<Double> {

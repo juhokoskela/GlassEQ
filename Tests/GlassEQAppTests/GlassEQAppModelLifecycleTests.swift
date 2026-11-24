@@ -3160,6 +3160,37 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func outputAssignmentUsesSavedProfilesAndCanReturnToFallback() async throws {
+        let first = makeProfile(name: "First")
+        let second = makeProfile(name: "Second")
+        let output = makeOutput()
+        let observers = FakeDefaultOutputObserverFactory()
+        let store = ProfileStore(profiles: [first, second], fallbackProfileID: first.id)
+        let model = makeModel(
+            store: store, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
+        model.start()
+        defer { model.stop() }
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: second.id))
+        #expect(model.currentOutputMappedProfileID == second.id)
+        #expect(model.activeProfile == second)
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: "previous", profileID: nil))
+        }
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await model.performSettingsCommand(.setFallbackProfile(UUID()))
+        }
+        #expect(model.currentOutputMappedProfileID == second.id)
+        _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: nil))
+        #expect(model.currentOutputMappedProfileID == nil)
+        #expect(model.activeProfile == first)
+        _ = try await model.performSettingsCommand(.setFallbackProfile(second.id))
+        #expect(model.profileStore.fallbackProfileID == second.id)
+        #expect(model.profileStore.profiles == store.profiles)
+    }
+
+    @Test
     func settingsDuplicateUsesExplicitProfileID() async throws {
         let first = makeProfile(name: "First")
         let second = makeProfile(name: "Second")

@@ -1124,8 +1124,11 @@ extension GlassEQAppModel {
         case .useProfileForCurrentOutput(let profile):
             try useForCurrentOutput(profile: profile)
 
-        case .setFallback(let profile):
-            try setFallback(profile: profile)
+        case let .setOutputAssignment(outputUID, profileID):
+            try setOutputAssignment(outputUID: outputUID, profileID: profileID)
+
+        case .setFallbackProfile(let id):
+            try setFallback(profile: savedProfile(id))
 
         case let .importProfile(format, name, text):
             let imported = try await importProfile(format: format, name: name, text: text)

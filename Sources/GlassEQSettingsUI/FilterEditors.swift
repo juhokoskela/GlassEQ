@@ -163,41 +163,33 @@ struct ParametricFilterEditor: View {
             showsColumns
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
             : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
-        Section(localized("Filters")) {
+        Section {
             layout {
-                VStack(alignment: .leading, spacing: 8) {
-                    Table(
-                        filters, selection: Binding(get: { effectiveSelectedFilterID }, set: { selectedFilterID = $0 })
-                    ) {
-                        TableColumn(localized("Type")) { filter in
-                            Text(filter.kind.title)
-                                .foregroundStyle(filter.isEnabled ? .primary : .secondary)
-                                .strikethrough(!filter.isEnabled)
-                                .accessibilityValue(
-                                    Text(filter.isEnabled ? localized("Enabled") : localized("Disabled")))
-                        }
-                        .width(min: 63, ideal: 77)
-                        TableColumn(localized("Freq")) { Text($0.frequency.frequencyLabel) }
-                            .width(min: 48, ideal: 58)
-                        TableColumn(localized("Gain")) { filter in
-                            Text(filter.kind.usesGain ? filter.gainDB.dbLabel : "—")
-                        }
+                Table(
+                    filters, selection: Binding(get: { effectiveSelectedFilterID }, set: { selectedFilterID = $0 })
+                ) {
+                    TableColumn(localized("Type")) { filter in
+                        Text(filter.kind.title)
+                            .foregroundStyle(filter.isEnabled ? .primary : .secondary)
+                            .strikethrough(!filter.isEnabled)
+                            .accessibilityValue(
+                                Text(filter.isEnabled ? localized("Enabled") : localized("Disabled")))
+                    }
+                    .width(min: 63, ideal: 77)
+                    TableColumn(localized("Freq")) { Text($0.frequency.frequencyLabel) }
                         .width(min: 48, ideal: 58)
-                        TableColumn(localized("Q")) { filter in
-                            Text(localizedDecimal(filter.q, minimumFractionDigits: 2, maximumFractionDigits: 2))
-                        }
-                        .width(min: 30, ideal: 36)
+                    TableColumn(localized("Gain")) { filter in
+                        Text(filter.kind.usesGain ? filter.gainDB.dbLabel : "—")
                     }
-                    .monospacedDigit()
-                    .accessibilityLabel(Text(localized("Filters")))
-                    .frame(height: min(210, CGFloat(filters.count) * 26 + 34))
-                    Button(localized("Add Filter"), systemImage: "plus") {
-                        let filter = EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)
-                        filters.append(filter)
-                        selectedFilterID = filter.id
+                    .width(min: 48, ideal: 58)
+                    TableColumn(localized("Q")) { filter in
+                        Text(localizedDecimal(filter.q, minimumFractionDigits: 2, maximumFractionDigits: 2))
                     }
-                    .accessibilityHint(Text(localized("Adds a new parametric filter and selects it")))
+                    .width(min: 30, ideal: 36)
                 }
+                .monospacedDigit()
+                .accessibilityLabel(Text(localized("Filters")))
+                .frame(height: min(210, CGFloat(filters.count) * 26 + 34))
                 .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
 
                 if let index = selectedFilterIndex {
@@ -222,6 +214,17 @@ struct ParametricFilterEditor: View {
                 showsColumns = $0
             }
             .padding(.vertical, 4)
+        } header: {
+            HStack {
+                Text(localized("Filters"))
+                Spacer()
+                Button(localized("Add Filter"), systemImage: "plus") {
+                    let filter = EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)
+                    filters.append(filter)
+                    selectedFilterID = filter.id
+                }
+                .accessibilityHint(Text(localized("Adds a new parametric filter and selects it")))
+            }
         }
     }
 

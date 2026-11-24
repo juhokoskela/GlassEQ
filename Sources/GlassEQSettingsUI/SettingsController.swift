@@ -39,6 +39,7 @@ final class SettingsController {
         didSet { refreshAnalyses() }
     }
     var selectedProfileID: UUID
+    var pendingSelection: UUID?
     var tab = EditorSection.editor
     var editChannel = EQEditChannel.left
     var isImportSheetPresented = false
@@ -185,6 +186,15 @@ final class SettingsController {
         !isStartingProgrammeComparison && settingsCanDeleteProfile(snapshot, id: id)
     }
 
+    func requestSelection(_ id: UUID) {
+        guard selectedProfileID != id, !isComparisonInProgress else { return }
+        if hasUnsavedDraft {
+            pendingSelection = id
+        } else {
+            selectProfile(id)
+        }
+    }
+
     func selectProfile(_ id: UUID) {
         guard !isComparisonInProgress,
             let profile = snapshot.profiles.first(where: { $0.id == id })
@@ -218,8 +228,12 @@ final class SettingsController {
         perform(.useProfileForCurrentOutput(draftProfile))
     }
 
-    func setFallbackToDraft() {
-        perform(.setFallback(draftProfile))
+    func setOutputAssignment(outputUID: String, profileID: UUID?) {
+        perform(.setOutputAssignment(outputUID: outputUID, profileID: profileID))
+    }
+
+    func setFallbackProfile(_ id: UUID) {
+        perform(.setFallbackProfile(id))
     }
 
     func startProgrammeComparison() {
@@ -282,10 +296,7 @@ final class SettingsController {
     }
 
     func assignProfileToCurrentOutput(_ id: UUID) {
-        guard let profile = snapshot.profiles.first(where: { $0.id == id }) else {
-            return
-        }
-        perform(.useProfileForCurrentOutput(profile))
+        setOutputAssignment(outputUID: snapshot.currentOutputUID, profileID: id)
     }
 
     func presentImport(_ route: ProfileImportRoute) {
@@ -417,6 +428,10 @@ final class SettingsController {
         }
         if !hasUnsavedDraft {
             draftProfile = latestStored
+        } else if draftProfile.isBypassed == storedProfile.isBypassed
+            && draftProfile.isBypassed != latestStored.isBypassed
+        {
+            draftProfile.isBypassed = latestStored.isBypassed
         } else {
             refreshAnalyses()
         }
@@ -435,9 +450,16 @@ final class SettingsController {
     // A command the user dispatched may intentionally move the selection (create, duplicate,
     // delete). That is adopted unless the user changed the selection or draft while the command
     // was in flight, in which case the local state wins as with any other snapshot.
-    private func reconcileAfterCommand(dispatchedSelection: UUID, dispatchedDraft: EQProfile) {
+    private func reconcileAfterCommand(dispatchedSelection: UUID, dispatchedDraft: EQProfile, replacingLibrary: Bool) {
         guard selectedProfileID == dispatchedSelection, draftProfile == dispatchedDraft else {
             reconcileWithSnapshot()
+            return
+        }
+        if !replacingLibrary, hasUnsavedDraft,
+            let saved = snapshot.profiles.first(where: { $0.id == selectedProfileID }), saved != dispatchedDraft
+        {
+            reconcileWithSnapshot()
+            requestSelection(snapshot.selectedProfileID)
             return
         }
         adoptSnapshotSelection()
@@ -459,11 +481,11 @@ final class SettingsController {
         }
         switch command {
         case .createProfile, .duplicateProfile, .deleteProfile,
-            .applyProfile, .useProfileForCurrentOutput, .setFallback,
+            .applyProfile, .useProfileForCurrentOutput,
             .importProfile, .importParsedProfile, .resetUnsupportedProfileStore, .applyLibraryImport(.replace):
             reconcileAfterCommand(
                 dispatchedSelection: dispatchedSelection,
-                dispatchedDraft: dispatchedDraft
+                dispatchedDraft: dispatchedDraft, replacingLibrary: command == .applyLibraryImport(.replace)
             )
         default:
             break

@@ -228,7 +228,9 @@ struct EditorTab: View {
                     .accessibilityElement(children: .contain)
 
                     SliderRow(
-                        title: localized("Preamp"),
+                        title: draftProfile.channelMode == .linked
+                            ? localized("Preamp")
+                            : (controller.editChannel == .left ? localized("Left Preamp") : localized("Right Preamp")),
                         value: $controller.draftProfile[channel: channel].preampDB,
                         range: -24...12,
                         validationRange: ProfilePersistence.preampRange,
@@ -236,7 +238,7 @@ struct EditorTab: View {
                         suffix: "dB"
                     )
 
-                    Toggle(localized("Bypass"), isOn: $controller.draftProfile.isBypassed)
+                    Toggle(localized("Bypass Profile"), isOn: $controller.draftProfile.isBypassed)
                         .toggleStyle(.switch)
                         .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
 
@@ -402,8 +404,7 @@ struct HeadroomRow: View {
             Text(status)
                 .monospacedDigit()
                 .foregroundStyle(needsHeadroom ? Color.orange : Color.secondary)
-                .accessibilityLabel(Text(localized("Headroom")))
-                .accessibilityValue(Text(status))
+
             if needsHeadroom, attenuation != nil {
                 Button(localized("Use Recommended")) {
                     if let adjusted = profileApplyingRecommendedHeadroom(

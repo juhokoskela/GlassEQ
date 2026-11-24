@@ -3,7 +3,6 @@ import SwiftUI
 
 struct ProfileSidebar: View {
     var controller: SettingsController
-    @State private var pendingSelection: UUID?
 
     var body: some View {
         let isReadOnly = controller.isEditingLocked
@@ -19,7 +18,7 @@ struct ProfileSidebar: View {
                     )
                     .tag(profile.id)
                     .contextMenu {
-                        Button(localized("Duplicate")) {
+                        Button(localized("Duplicate Saved Profile")) {
                             controller.duplicateProfile(profile.id)
                         }
                         .disabled(isReadOnly)
@@ -39,8 +38,8 @@ struct ProfileSidebar: View {
         .alert(
             localized("Discard unapplied changes?"),
             isPresented: Binding(
-                get: { pendingSelection != nil }, set: { if !$0 { pendingSelection = nil } }
-            ), presenting: pendingSelection
+                get: { controller.pendingSelection != nil }, set: { if !$0 { controller.pendingSelection = nil } }
+            ), presenting: controller.pendingSelection
         ) { id in
             Button(localized("Keep Editing"), role: .cancel) {}
             Button(localized("Discard Changes"), role: .destructive) { controller.selectProfile(id) }
@@ -67,10 +66,10 @@ struct ProfileSidebar: View {
                     IconButtonLabel(systemImage: "plus.square.on.square")
                 }
                 .buttonStyle(.borderless)
-                .help(localized("Duplicate profile"))
+                .help(localized("Duplicate Saved Profile"))
                 .disabled(isReadOnly)
-                .accessibilityLabel(Text(localized("Duplicate profile")))
-                .accessibilityHint(Text(localized("Copies the selected profile")))
+                .accessibilityLabel(Text(localized("Duplicate Saved Profile")))
+                .accessibilityHint(Text(localized("Copies the saved version of the selected profile")))
 
                 Button(role: .destructive) {
                     controller.requestProfileDeletion(selectedProfileID)
@@ -104,12 +103,7 @@ struct ProfileSidebar: View {
         Binding(
             get: { controller.selectedProfileID },
             set: { id in
-                guard let id, id != controller.selectedProfileID else { return }
-                if controller.hasUnsavedDraft {
-                    pendingSelection = id
-                } else {
-                    controller.selectProfile(id)
-                }
+                if let id { controller.requestSelection(id) }
             }
         )
     }

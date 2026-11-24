@@ -48,7 +48,9 @@ struct ApplyBar: View {
                     }
 
                     if controller.canAssignDraftToOutput {
-                        Button(localized("Use for This Output")) {
+                        Button(
+                            hasUnsavedDraft ? localized("Save and Assign to Output") : localized("Use for This Output")
+                        ) {
                             controller.useDraftForCurrentOutput()
                         }
                         .disabled(isReadOnly)
@@ -58,7 +60,10 @@ struct ApplyBar: View {
 
                 Spacer(minLength: 0)
 
-                Button(localized("Apply")) {
+                Button(
+                    !hasUnsavedDraft && controller.draftProfile.id != controller.snapshot.activeProfileID
+                        ? localized("Activate Profile") : localized("Apply")
+                ) {
                     controller.applyDraft()
                 }
                 .keyboardShortcut(.return, modifiers: .command)

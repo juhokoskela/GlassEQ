@@ -525,6 +525,52 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
+    func duplicatingASavedProfileKeepsUnappliedEditsUntilTheUserSwitches() async {
+        let original = EQProfile.flatParametric
+        let copy = EQProfile(name: "Saved Copy", mode: .parametric, filters: [])
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [original]
+        initial.selectedProfileID = original.id
+        initial.draftProfile = original
+        var reply = initial
+        reply.profiles.append(copy)
+        reply.selectedProfileID = copy.id
+        reply.draftProfile = copy
+        let client = ScriptedSettingsCommandClient(publishing: reply)
+        let controller = SettingsController(model: client.makeModel(snapshot: initial))
+        controller.draftProfile.preampDB = -4
+
+        await controller.dispatch(.duplicateProfile(original.id))
+
+        #expect(controller.pendingSelection == copy.id)
+        #expect(controller.draftProfile.id == original.id)
+        #expect(controller.draftProfile.preampDB == -4)
+        controller.pendingSelection = nil
+        #expect(controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
+    func externalBypassChangePreservesLocalFilterEdits() {
+        let profile = EQProfile.flatParametric
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let model = GlassEQSettingsViewModel(snapshot: initial)
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4
+        initial.profiles[0].isBypassed = true
+        model.accept(snapshot: initial)
+        controller.reconcileWithSnapshot()
+
+        #expect(controller.draftProfile.isBypassed)
+        #expect(controller.draftProfile.preampDB == -4)
+        #expect(controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
     func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() async {
         let original = EQProfile(name: "Original", mode: .parametric, filters: [])
         let duplicate = EQProfile(name: "Duplicate", mode: .parametric, filters: [])

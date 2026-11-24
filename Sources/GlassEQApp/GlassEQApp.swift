@@ -1089,6 +1089,7 @@ final class GlassEQAppModel {
     }
 
     var menuBarAccessibilityLabel: String {
+        if retryPlayback == .muted { return localized("GlassEQ, output is muted") }
         if activeProfile.isBypassed {
             return localized("GlassEQ disabled")
         }
@@ -1935,7 +1936,23 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func useForCurrentOutput(profile: EQProfile) throws {
+    func savedProfile(_ id: UUID) throws -> EQProfile {
+        guard let profile = profileStore.profiles.first(where: { $0.id == id }) else {
+            throw SettingsCommandFailure(message: localized("This profile is no longer in the library."))
+        }
+        return profile
+    }
+
+    func setOutputAssignment(outputUID: String, profileID: UUID?) throws {
+        guard !outputUID.isEmpty, outputUID == currentOutputUID else {
+            throw SettingsCommandFailure(
+                message: localized("The output changed. Choose a profile for the current output."))
+        }
+        let profile = try savedProfile(profileID ?? profileStore.fallbackProfileID)
+        try useForCurrentOutput(profile: profile, useFallback: profileID == nil)
+    }
+
+    func useForCurrentOutput(profile: EQProfile, useFallback: Bool = false) throws {
         try ensureProfileStoreWritable()
         try ensureCompatibleWithCurrentOutput(profile)
         var store = profileStore
@@ -1947,9 +1964,11 @@ final class GlassEQAppModel {
 
         let rollback = profileRollback()
         store.outputMappings.removeAll { $0.outputDeviceUID == currentOutputUID }
-        store.outputMappings.append(
-            OutputDeviceProfileMapping(outputDeviceUID: currentOutputUID, profileID: profile.id)
-        )
+        if !useFallback {
+            store.outputMappings.append(
+                OutputDeviceProfileMapping(outputDeviceUID: currentOutputUID, profileID: profile.id)
+            )
+        }
         try commitProfileStore(store)
         activeProfile = profile
         selectedProfileID = profile.id
@@ -4628,10 +4647,10 @@ private struct MenuBarView: View {
                 Spacer()
                 if model.canControlMenuProcessing {
                     if model.retryPlayback != nil {
-                        Label(localized("Needs attention"), systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary)
+                        Label(localized("Needs attention"), systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
                     } else {
-                        Toggle(localized("Equalizer"), isOn: $model.menuProcessingEnabled)
+                        Toggle(localized("Profile EQ"), isOn: $model.menuProcessingEnabled)
                             .toggleStyle(.switch)
                             .accessibilityHint(
                                 Text(localized("Starts or stops system audio processing for the active profile")))
@@ -4655,10 +4674,10 @@ private struct MenuBarView: View {
                 }
                 .accessibilityElement(children: .combine)
                 GridRow {
-                    Text(localized("Profile"))
+                    Text(localized("Active Profile"))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
-                    Picker(localized("Profile"), selection: $model.activeProfileID) {
+                    Picker(localized("Active Profile"), selection: $model.activeProfileID) {
                         ForEach(model.profileStore.profiles) { profile in
                             Text(profile.name).tag(profile.id)
                         }
@@ -4675,6 +4694,10 @@ private struct MenuBarView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if case .permissionDenied(let settingsError) = model.onboardingAudioCaptureState {
+                Button(localized("Open Privacy Settings")) { model.openPrivacySettingsForOnboarding() }
+                if let settingsError { Text(settingsError).font(.callout) }
+            }
             if let playback = model.retryPlayback {
                 if playback == .muted {
                     Label(localized("Output is muted"), systemImage: "speaker.slash")
@@ -4682,9 +4705,10 @@ private struct MenuBarView: View {
                 }
                 HStack {
                     Button(localized("Retry Audio Engine")) { model.retryAudioEngine() }
-                    Button(playback == .muted ? localized("Restore Playback") : localized("Turn Off Equalizer")) {
+                    Button(playback == .muted ? localized("Play Without EQ") : localized("Turn Off Equalizer")) {
                         model.stop()
                     }
+                    .buttonStyle(.borderedProminent)
                 }
             }
 
@@ -4712,21 +4736,15 @@ private struct MenuBarView: View {
                 }
                 .keyboardShortcut(",", modifiers: .command)
                 Spacer()
-                Menu {
-                    Button(localized("About GlassEQ")) {
-                        dismiss()
-                        model.requestAboutPresentation()
-                    }
-                    Divider()
-                    Button(localized("Quit GlassEQ")) { model.requestQuit() }
-                } label: {
-                    Label(localized("More Options"), systemImage: "ellipsis.circle")
+                Button(localized("About")) {
+                    dismiss()
+                    model.requestAboutPresentation()
                 }
-                .labelStyle(.iconOnly)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .accessibilityLabel(Text(localized("More Options")))
-                .help(localized("More Options"))
+                .buttonStyle(.borderless)
+                .accessibilityLabel(Text(localized("About GlassEQ")))
+                Button(localized("Quit")) { model.requestQuit() }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(Text(localized("Quit GlassEQ")))
             }
         }
         .padding(16)

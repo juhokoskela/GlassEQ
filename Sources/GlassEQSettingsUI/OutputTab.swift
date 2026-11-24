@@ -45,13 +45,13 @@ struct OutputTab: View {
                     if snapshot.aggregateBuffer.mode == .automatic,
                         snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize
                     {
-                        Button(localized("Retry \(snapshot.aggregateBuffer.defaultFrameSize) Frames")) {
+                        Button(localized("Try \(snapshot.aggregateBuffer.defaultFrameSize) Frames Again")) {
                             controller.retryAutomaticAggregateBuffer()
                         }
                     } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
                         snapshot.currentOutputBufferFrameSize > fixedFrameSize
                     {
-                        Button(localized("Retry \(fixedFrameSize) Frames")) {
+                        Button(localized("Try \(fixedFrameSize) Frames Again")) {
                             controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
                         }
                     }
@@ -102,21 +102,34 @@ struct OutputTab: View {
                 }
             }
 
-            Section(localized("Profiles")) {
-                LabeledContent(localized("Assigned to This Output"), value: mappedProfileName)
-                LabeledContent(localized("Fallback Profile"), value: fallbackProfileName)
-                if controller.canAssignDraftToOutput || canSetFallback {
-                    LabeledContent(controller.draftProfile.name) {
-                        if controller.canAssignDraftToOutput {
-                            Button(localized("Use for This Output")) { controller.useDraftForCurrentOutput() }
-                        }
-                        if canSetFallback {
-                            Button(localized("Set as Fallback")) { controller.setFallbackToDraft() }
-                        }
-                    }
-                    .disabled(controller.isEditingLocked)
+            Section {
+                let outputUID = snapshot.currentOutputUID
+                Picker(
+                    localized("Profile for This Output"),
+                    selection: Binding(
+                        get: { snapshot.currentOutputMappedProfileID },
+                        set: { controller.setOutputAssignment(outputUID: outputUID, profileID: $0) }
+                    )
+                ) {
+                    Text(localized("Fallback (\(fallbackProfileName))")).tag(nil as UUID?)
+                    Divider()
+                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
                 }
+                .disabled(outputUID.isEmpty)
+                Picker(
+                    localized("Fallback Profile"),
+                    selection: Binding(
+                        get: { snapshot.fallbackProfileID }, set: controller.setFallbackProfile
+                    )
+                ) {
+                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(profile.id) }
+                }
+            } header: {
+                Text(localized("Profiles"))
+            } footer: {
+                Text(localized("GlassEQ loads the fallback when you connect an output without an assigned profile."))
             }
+            .disabled(controller.isEditingLocked)
 
             Section {
                 LabeledContent(localized("Status"), value: statusSummary)
@@ -220,21 +233,8 @@ struct OutputTab: View {
         }
     }
 
-    private var canSetFallback: Bool {
-        controller.draftProfile.id != snapshot.fallbackProfileID || controller.hasUnsavedDraft
-    }
-
     private var fallbackProfileName: String {
         snapshot.profiles.first { $0.id == snapshot.fallbackProfileID }?.name ?? localized("Unavailable")
-    }
-
-    private var mappedProfileName: String {
-        guard let profileID = snapshot.currentOutputMappedProfileID,
-            let profile = snapshot.profiles.first(where: { $0.id == profileID })
-        else {
-            return localized("Use Fallback")
-        }
-        return profile.name
     }
 
     private var diagnostics: SettingsAudioDiagnosticsDTO {
@@ -280,7 +280,7 @@ func outputBufferExplanation(
     }
     if aggregateBuffer.mode == .automatic {
         return localized(
-            "Automatic starts at \(aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions. It is currently \(aggregateBuffer.automaticFrameSize) frames."
+            "Automatic starts at \(aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions."
         )
     }
     if let fixedFrameSize = aggregateBuffer.mode.fixedFrameSize,
