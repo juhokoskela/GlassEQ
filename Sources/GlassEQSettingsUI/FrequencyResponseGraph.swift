@@ -32,6 +32,36 @@ struct PlotScale {
         let fraction = 1 - ((magnitudeDB - range.lowerBound) / (range.upperBound - range.lowerBound))
         return rect.minY + rect.height * fraction
     }
+
+    // Core Graphics expands dashes before clipping. Trim each segment just outside the plot
+    // so deep notches keep their visible slopes without generating offscreen dashes.
+    func curvePath(for points: [FrequencyResponsePoint]) -> Path {
+        let band = rect.minY - 3...rect.maxY + 3
+        func endpoint(_ point: CGPoint, toward other: CGPoint) -> CGPoint {
+            let y = min(max(point.y, band.lowerBound), band.upperBound)
+            guard y != point.y else { return point }
+            let fraction = (y - point.y) / (other.y - point.y)
+            return CGPoint(x: point.x + (other.x - point.x) * fraction, y: y)
+        }
+
+        var path = Path()
+        var previous: CGPoint?
+        var lastEnd: CGPoint?
+        for sample in points {
+            let point = CGPoint(x: x(for: sample.frequency), y: y(for: sample.magnitudeDB))
+            defer { previous = point }
+            guard let previous, point.x.isFinite, point.y.isFinite, previous.x.isFinite, previous.y.isFinite,
+                max(previous.y, point.y) >= band.lowerBound, min(previous.y, point.y) <= band.upperBound
+            else { continue }
+            let start = endpoint(previous, toward: point)
+            let end = endpoint(point, toward: previous)
+            if lastEnd != start { path.move(to: start) }
+            path.addLine(to: end)
+            lastEnd = end
+        }
+        return path
+    }
+
 }
 
 struct FrequencyResponseGraph: View {
@@ -60,12 +90,7 @@ struct FrequencyResponseGraph: View {
         _ points: [FrequencyResponsePoint], color: Color, dashed: Bool = false, context: GraphicsContext,
         scale: PlotScale
     ) {
-        guard let first = points.first else { return }
-        var path = Path()
-        path.move(to: CGPoint(x: scale.x(for: first.frequency), y: scale.y(for: first.magnitudeDB)))
-        for point in points.dropFirst() {
-            path.addLine(to: CGPoint(x: scale.x(for: point.frequency), y: scale.y(for: point.magnitudeDB)))
-        }
+        let path = scale.curvePath(for: points)
         context.stroke(
             path, with: .color(color), style: StrokeStyle(lineWidth: 2.5, lineJoin: .round, dash: dashed ? [6, 3] : []))
     }

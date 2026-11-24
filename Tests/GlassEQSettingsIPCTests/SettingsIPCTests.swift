@@ -10,6 +10,23 @@ import Testing
 @Suite
 struct SettingsIPCTests {
     @Test
+    func dashedResponseBoundsOffscreenSegmentsAndPreservesCrossings() {
+        let scale = PlotScale(bounds: CGRect(x: 0, y: 0, width: 500, height: 160), maximumFrequency: 20_000)
+        let path = scale.curvePath(for: [
+            .init(frequency: 100, magnitudeDB: 0), .init(frequency: 1_000, magnitudeDB: -6_466),
+            .init(frequency: 2_000, magnitudeDB: -6_466), .init(frequency: 4_000, magnitudeDB: 0),
+        ])
+        let bounds = path.boundingRect
+        #expect(abs(bounds.minY - scale.y(for: 0)) < 0.001)
+        #expect(abs(bounds.maxY - (scale.rect.maxY + 3)) < 0.001)
+        #expect(!path.isEmpty)
+        #expect(
+            scale.curvePath(for: [
+                .init(frequency: 20, magnitudeDB: -90), .init(frequency: 100, magnitudeDB: -120),
+            ]).isEmpty)
+    }
+
+    @Test
     func fileImportChoiceClearsExistingSelectionOnlyAfterFailure() {
         let failure = SettingsFileImportChoice(
             selection: nil,
@@ -523,13 +540,14 @@ struct SettingsIPCTests {
         #expect(controller.hasUnsavedDraft)
     }
 
-    @Test
+    @Test(arguments: [false, true])
     @MainActor
-    func duplicatingASavedProfileKeepsUnappliedEditsUntilTheUserSwitches() async {
+    func duplicatingASavedProfileKeepsUnappliedEditsUntilTheUserSwitches(selectDuringCommand: Bool) async {
         let original = EQProfile.flatParametric
         let copy = EQProfile(name: "Saved Copy", mode: .parametric, filters: [])
         var initial = SettingsSnapshotDTO.disconnected
-        initial.profiles = [original]
+        let other = EQProfile(name: "Other", mode: .parametric, filters: [])
+        initial.profiles = [original, other]
         initial.selectedProfileID = original.id
         initial.draftProfile = original
         var reply = initial
@@ -540,9 +558,14 @@ struct SettingsIPCTests {
         let controller = SettingsController(model: client.makeModel(snapshot: initial))
         controller.draftProfile.preampDB = -4
 
+        if selectDuringCommand { client.onPerform = { controller.requestSelection(other.id) } }
         await controller.dispatch(.duplicateProfile(original.id))
 
-        #expect(controller.pendingSelection == copy.id)
+        #expect(controller.pendingSelection == (selectDuringCommand ? other.id : copy.id))
+        controller.isImportSheetPresented = true
+        #expect(!controller.isDiscardSelectionPresented)
+        controller.isImportSheetPresented = false
+        #expect(controller.isDiscardSelectionPresented)
         #expect(controller.draftProfile.id == original.id)
         #expect(controller.draftProfile.preampDB == -4)
         controller.pendingSelection = nil
@@ -659,6 +682,17 @@ struct SettingsIPCTests {
         #expect(controller.draftProfile.preampDB == -4.5)
         #expect(controller.hasUnsavedDraft)
         #expect(model.commandErrorMessage == "Command failed")
+    }
+
+    @Test
+    @MainActor
+    func importSheetOwnsItsCommandErrors() async {
+        let model = GlassEQSettingsViewModel(client: FailingSettingsCommandClient())
+        let controller = SettingsController(model: model)
+        #expect(await controller.importParsedProfile(controller.draftProfile) == "Command failed")
+        #expect(model.commandErrorMessage == nil)
+        #expect(await controller.chooseImportFiles(.single).errorMessage == "Command failed")
+        #expect(model.commandErrorMessage == nil)
     }
 
     @Test

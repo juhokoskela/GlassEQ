@@ -1126,14 +1126,14 @@ extension GlassEQAppModel {
             try apply(profile: profile)
 
         case let .useProfileForCurrentOutput(profile, outputUID):
-            try validateAssignmentOutput(outputUID)
+            try await validateAssignmentOutput(outputUID)
             try useForCurrentOutput(profile: profile)
 
         case let .setOutputAssignment(outputUID, profileID):
-            try setOutputAssignment(outputUID: outputUID, profileID: profileID)
+            try await setOutputAssignment(outputUID: outputUID, profileID: profileID)
 
         case .setFallbackProfile(let id):
-            try setFallback(profile: savedProfile(id))
+            try setFallbackProfile(id)
 
         case let .importProfile(format, name, text):
             let imported = try await importProfile(format: format, name: name, text: text)
@@ -1187,7 +1187,7 @@ extension GlassEQAppModel {
             try retryAutomaticAggregateBuffer()
 
         case .playWithoutEQ:
-            if retryPlayback == .muted { stop() }
+            stop()
 
         case .retryAudioEngine:
             retryAudioEngine()

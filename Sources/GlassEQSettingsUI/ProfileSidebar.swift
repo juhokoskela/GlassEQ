@@ -2,7 +2,7 @@ import GlassEQCore
 import SwiftUI
 
 struct ProfileSidebar: View {
-    var controller: SettingsController
+    @Bindable var controller: SettingsController
 
     var body: some View {
         let isReadOnly = controller.isEditingLocked
@@ -37,9 +37,7 @@ struct ProfileSidebar: View {
         }
         .alert(
             localized("Discard unapplied changes?"),
-            isPresented: Binding(
-                get: { controller.pendingSelection != nil }, set: { if !$0 { controller.pendingSelection = nil } }
-            ), presenting: controller.pendingSelection
+            isPresented: $controller.isDiscardSelectionPresented, presenting: controller.pendingSelection
         ) { id in
             Button(localized("Keep Editing"), role: .cancel) {}
             Button(localized("Discard Changes"), role: .destructive) { controller.selectProfile(id) }

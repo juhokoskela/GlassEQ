@@ -403,7 +403,9 @@ struct HeadroomRow: View {
             } else if attenuation == nil {
                 localized("Required headroom exceeds the profile limit")
             } else if profile.channelMode == .stereo, let attenuation {
-                localized("Reduce both channels by \(localizedDecibels(attenuation))")
+                localized(
+                    "Reduce both channels by \(localizedDecimal(attenuation, minimumFractionDigits: 1, maximumFractionDigits: 1)) dB"
+                )
             } else {
                 localized("Recommend \(localizedDecibels(recommendedPreampDB))")
             }

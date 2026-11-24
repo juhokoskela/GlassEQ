@@ -768,6 +768,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public init(
         statusMessage: String? = nil,
         isRunning: Bool? = nil,
+        offersPlaybackHandback: Bool? = nil,
         programmeComparison: EQProgrammeComparisonSnapshot? = nil,
         selectedProfileID: UUID? = nil,
         draftProfile: EQProfile? = nil,
@@ -783,6 +784,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     ) {
         self.statusMessage = statusMessage
         self.isRunning = isRunning
+        self.offersPlaybackHandback = offersPlaybackHandback
         self.programmeComparison = programmeComparison
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile

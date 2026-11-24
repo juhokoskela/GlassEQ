@@ -324,7 +324,13 @@ protocol DefaultOutputLookingUp: Sendable {
     func defaultOutputDevice() throws -> AudioOutputDevice
 }
 
+extension DefaultOutputLookingUp {
+    @concurrent
+    func readDefaultOutput() async -> AudioOutputDevice? { try? defaultOutputDevice() }
+}
+
 struct CoreAudioDefaultOutputLookup: DefaultOutputLookingUp {
+
     func defaultOutputDevice() throws -> AudioOutputDevice {
         try CoreAudioDeviceQuery.defaultOutputDevice()
     }
@@ -613,6 +619,7 @@ final class GlassEQAppModel {
     private var lastHandledDefaultOutput: AudioOutputDevice?
     private var wakeReconnectAttempts = 0
     private var observerCallbackGeneration = 0
+    private var assignmentGeneration = 0
     private var outputChangeGeneration = 0
     private var engineStartGeneration = 0
     private var pendingEngineStartOutput: AudioOutputDevice?
@@ -1096,7 +1103,7 @@ final class GlassEQAppModel {
         return isRunning ? localized("GlassEQ active") : localized("GlassEQ stopped")
     }
 
-    var canControlMenuProcessing: Bool { hasStartedAudio && processingIsLicensed }
+    var canControlMenuProcessing: Bool { (hasStartedAudio || isRunning) && processingIsLicensed }
 
     var menuProcessingEnabled: Bool {
         get { processingIntent != .stopped && !activeProfileIsBypassed }
@@ -1107,12 +1114,10 @@ final class GlassEQAppModel {
     }
 
     var needsMenuRecovery: Bool {
+        guard lifecycleState == .stopped, processingIsLicensed, licenseStopTask == nil else { return false }
         if retryPlayback != nil { return true }
-        guard lifecycleState == .stopped, processingIntent == .requested else { return false }
-        switch onboardingAudioCaptureState {
-        case .failed, .permissionDenied: return true
-        default: return false
-        }
+        guard processingIntent == .requested else { return false }
+        return onboardingAudioCaptureState.isFailure
     }
 
     var menuStatusDetail: String? {
@@ -1136,7 +1141,9 @@ final class GlassEQAppModel {
 
     func supportSnapshot() -> SettingsSnapshot {
         if isRunning { engineMetrics = engine.snapshotMetrics() }
-        return settingsSnapshot()
+        var snapshot = settingsSnapshot()
+        snapshot.currentOutputUID = currentOutputUID
+        return snapshot
     }
 
     func settingsSnapshot() -> SettingsSnapshot {
@@ -1240,13 +1247,10 @@ final class GlassEQAppModel {
             health = .recovering
         } else if isRunning {
             health = .stable
-        } else if retryPlayback != nil {
-            health = .needsAttention
         } else {
-            switch onboardingAudioCaptureState {
-            case .failed, .permissionDenied: health = .needsAttention
-            default: health = .stopped
-            }
+            health =
+                lifecycleState == .stopped && (retryPlayback != nil || onboardingAudioCaptureState.isFailure)
+                ? .needsAttention : .stopped
         }
         let latency = diagnosticsLatencyMetadata
         let processingSampleRate = processingSampleRateForSettings()
@@ -1953,31 +1957,35 @@ final class GlassEQAppModel {
         return profile
     }
 
-    func validateAssignmentOutput(_ outputUID: String) throws {
-        guard !processingWasStopped, !outputUID.isEmpty, outputUID == currentOutputUID,
-            try defaultOutputLookup.defaultOutputDevice().uid == outputUID
+    func validateAssignmentOutput(_ outputUID: String) async throws {
+        assignmentGeneration &+= 1
+        let generation = assignmentGeneration
+        let output = await defaultOutputLookup.readDefaultOutput()
+        try Task.checkCancellation()
+        guard generation == assignmentGeneration, acceptsSettingsCommands else { throw CancellationError() }
+        guard !processingWasStopped, lifecycleState != .sleeping, lifecycleState != .terminating,
+            !outputUID.isEmpty, outputUID == currentOutputUID, let output, output.uid == outputUID,
+            let lastHandledDefaultOutput,
+            output.matchesRenderRoute(lastHandledDefaultOutput)
         else {
             throw SettingsCommandFailure(
                 message: localized("The output changed. Choose a profile for the current output."))
         }
     }
 
-    func setOutputAssignment(outputUID: String, profileID: UUID?) throws {
-        try validateAssignmentOutput(outputUID)
+    func setOutputAssignment(outputUID: String, profileID: UUID?) async throws {
+        try await validateAssignmentOutput(outputUID)
         let profile = try savedProfile(profileID ?? profileStore.fallbackProfileID)
         try useForCurrentOutput(profile: profile, useFallback: profileID == nil)
     }
 
     func useForCurrentOutput(profile: EQProfile, useFallback: Bool = false) throws {
         try ensureProfileStoreWritable()
-        try ensureCompatibleWithCurrentOutput(profile)
+        if !profile.isBypassed { try ensureCompatibleWithCurrentOutput(profile) }
         var store = profileStore
         upsertProfile(profile, in: &store)
-        guard !currentOutputUID.isEmpty else {
-            try ProfilePersistence.validateForCommit(store)
-            return
-        }
-
+        let needsProcessingUpdate =
+            activeProfile != profile || !isRunning || engineStartTask != nil || programmeComparison.isActive
         let rollback = profileRollback()
         store.outputMappings.removeAll { $0.outputDeviceUID == currentOutputUID }
         if !useFallback {
@@ -1989,7 +1997,7 @@ final class GlassEQAppModel {
         activeProfile = profile
         selectedProfileID = profile.id
         draftProfile = profile
-        synchronizeActiveProfileProcessing(rollback: rollback)
+        if needsProcessingUpdate { synchronizeActiveProfileProcessing(rollback: rollback) }
         notifyModelDidChange()
     }
 
@@ -2057,15 +2065,13 @@ final class GlassEQAppModel {
         return true
     }
 
-    func setFallback(profile: EQProfile) throws {
+    func setFallbackProfile(_ id: UUID) throws {
         try ensureProfileStoreWritable()
+        _ = try savedProfile(id)
+        guard profileStore.fallbackProfileID != id else { return }
         var store = profileStore
-        upsertProfile(profile, in: &store)
-        store.fallbackProfileID = profile.id
+        store.fallbackProfileID = id
         try commitProfileStore(store)
-        selectedProfileID = profile.id
-        draftProfile = profile
-        statusMessage = localized("Fallback profile set to \(profile.name)")
         notifyModelDidChange()
     }
 
@@ -2960,11 +2966,7 @@ final class GlassEQAppModel {
     var retryPlayback: RetryPlayback? {
         guard lifecycleState == .stopped, processingIsLicensed, licenseStopTask == nil else { return nil }
         if case .awaitingRetry(_, .handedBack) = processingIntent { return .handedBack }
-        guard engineIsHoldingMute else { return nil }
-        switch onboardingAudioCaptureState {
-        case .failed, .permissionDenied: return .muted
-        default: return nil
-        }
+        return engineIsHoldingMute && onboardingAudioCaptureState.isFailure ? .muted : nil
     }
     var processingWasStopped: Bool { hasStartedAudio && processingIntent == .stopped }
 
@@ -3911,7 +3913,7 @@ final class GlassEQAppModel {
         return localized("Library added.")
     }
 
-    private func commitProfileStore(_ store: ProfileStore) throws {
+    func commitProfileStore(_ store: ProfileStore) throws {
         let prepared = try ProfilePersistence.PreparedSave(store)
         profileStore = store
         saveStore(prepared: prepared)

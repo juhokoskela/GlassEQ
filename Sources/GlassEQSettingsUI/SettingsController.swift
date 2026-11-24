@@ -36,7 +36,10 @@ struct EditorContextID: Hashable {
 final class SettingsController {
     let model: GlassEQSettingsViewModel
     var draftProfile: EQProfile {
-        didSet { refreshAnalyses() }
+        didSet {
+            updateDirtyState()
+            refreshAnalyses()
+        }
     }
     var selectedProfileID: UUID
     var pendingSelection: UUID?
@@ -51,7 +54,8 @@ final class SettingsController {
 
     // The stored copy of the selected profile as of the last reconciled snapshot. Comparing the
     // draft against it separates local edits from stored changes that arrived from the app.
-    private var storedProfile: EQProfile
+    private var storedProfile: EQProfile { didSet { updateDirtyState() } }
+    private(set) var hasUnsavedDraft = false
     private var pendingNewProfileImportRoute: ProfileImportRoute?
 
     let analysisCache = EQAnalysisCache()
@@ -65,14 +69,16 @@ final class SettingsController {
         storedProfile =
             snapshot.profiles.first(where: { $0.id == snapshot.selectedProfileID })
             ?? snapshot.draftProfile
+        updateDirtyState()
     }
 
     var snapshot: SettingsSnapshot {
         model.snapshot
     }
 
-    var hasUnsavedDraft: Bool {
-        draftProfile != storedProfile
+    private func updateDirtyState() {
+        let dirty = draftProfile != storedProfile
+        if hasUnsavedDraft != dirty { hasUnsavedDraft = dirty }
     }
 
     var canAssignDraftToOutput: Bool {
@@ -151,6 +157,11 @@ final class SettingsController {
                 editChannel = .left
             }
         }
+    }
+
+    var isDiscardSelectionPresented: Bool {
+        get { pendingSelection != nil && !isImportSheetPresented && !isNewProfileSheetPresented }
+        set { if !newValue { pendingSelection = nil } }
     }
 
     var isDeletionConfirmationPresented: Bool {
@@ -235,6 +246,7 @@ final class SettingsController {
     }
 
     func setFallbackProfile(_ id: UUID) {
+        guard id != snapshot.fallbackProfileID, !isEditingLocked else { return }
         perform(.setFallbackProfile(id))
     }
 
@@ -320,10 +332,15 @@ final class SettingsController {
         presentImport(route)
     }
 
+    private func takeCommandError() -> String? {
+        defer { model.commandErrorMessage = nil }
+        return model.commandErrorMessage
+    }
+
     func importProfile(format: ImportFormat, name: String, text: String) async -> String? {
         let response = await dispatch(.importProfile(format: format, name: name, text: text))
         guard response?.importSucceeded == true else {
-            return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
+            return takeCommandError() ?? localized("GlassEQ could not import this profile.")
         }
         return nil
     }
@@ -331,7 +348,7 @@ final class SettingsController {
     func importParsedProfile(_ profile: EQProfile) async -> String? {
         let response = await dispatch(.importParsedProfile(profile))
         guard response?.importSucceeded == true else {
-            return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
+            return takeCommandError() ?? localized("GlassEQ could not import this profile.")
         }
         return nil
     }
@@ -392,7 +409,7 @@ final class SettingsController {
         let response = await model.chooseImportFiles(mode: mode)
         return SettingsFileImportChoice(
             selection: response?.fileImportSelection,
-            errorMessage: response == nil ? model.commandErrorMessage : nil
+            errorMessage: response == nil ? takeCommandError() : nil
         )
     }
 
@@ -451,24 +468,6 @@ final class SettingsController {
             ?? latest.draftProfile
     }
 
-    // A command the user dispatched may intentionally move the selection (create, duplicate,
-    // delete). That is adopted unless the user changed the selection or draft while the command
-    // was in flight, in which case the local state wins as with any other snapshot.
-    private func reconcileAfterCommand(dispatchedSelection: UUID, dispatchedDraft: EQProfile, replacingLibrary: Bool) {
-        guard selectedProfileID == dispatchedSelection, draftProfile == dispatchedDraft else {
-            reconcileWithSnapshot()
-            return
-        }
-        if !replacingLibrary, hasUnsavedDraft,
-            let saved = snapshot.profiles.first(where: { $0.id == selectedProfileID }), saved != dispatchedDraft
-        {
-            reconcileWithSnapshot()
-            requestSelection(snapshot.selectedProfileID)
-            return
-        }
-        adoptSnapshotSelection()
-    }
-
     private func perform(_ command: SettingsCommand) {
         Task { @MainActor in
             await dispatch(command)
@@ -483,16 +482,19 @@ final class SettingsController {
         guard let response else {
             return nil
         }
+        guard selectedProfileID == dispatchedSelection, draftProfile == dispatchedDraft else {
+            reconcileWithSnapshot()
+            return response
+        }
         switch command {
+        case .createProfile, .duplicateProfile, .importProfile, .importParsedProfile:
+            reconcileWithSnapshot()
+            if pendingSelection == nil { requestSelection(snapshot.selectedProfileID) }
         case .deleteProfile(let id) where id != dispatchedSelection:
             reconcileWithSnapshot()
-        case .createProfile, .duplicateProfile, .deleteProfile,
-            .applyProfile, .useProfileForCurrentOutput,
-            .importProfile, .importParsedProfile, .resetUnsupportedProfileStore, .applyLibraryImport(.replace):
-            reconcileAfterCommand(
-                dispatchedSelection: dispatchedSelection,
-                dispatchedDraft: dispatchedDraft, replacingLibrary: command == .applyLibraryImport(.replace)
-            )
+        case .deleteProfile, .applyProfile, .useProfileForCurrentOutput,
+            .resetUnsupportedProfileStore, .applyLibraryImport(.replace):
+            adoptSnapshotSelection()
         default:
             break
         }

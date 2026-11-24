@@ -113,7 +113,7 @@ struct OutputTab: View {
                         set: { controller.setOutputAssignment(outputUID: outputUID, profileID: $0) }
                     )
                 ) {
-                    Text(localized("Fallback (\(fallbackProfileName))")).tag(nil as UUID?)
+                    Text(localized("Use Fallback")).tag(nil as UUID?)
                     Divider()
                     ForEach(snapshot.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
                 }
@@ -129,7 +129,9 @@ struct OutputTab: View {
             } header: {
                 Text(localized("Profiles"))
             } footer: {
-                Text(localized("GlassEQ loads the fallback when you connect an output without an assigned profile."))
+                Text(
+                    localized(
+                        "A new fallback takes effect the next time GlassEQ starts or reconnects an unassigned output."))
             }
             .disabled(controller.isEditingLocked)
 
@@ -239,10 +241,6 @@ struct OutputTab: View {
                 Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
             }
         }
-    }
-
-    private var fallbackProfileName: String {
-        snapshot.profiles.first { $0.id == snapshot.fallbackProfileID }?.name ?? localized("Unavailable")
     }
 
     private var diagnostics: SettingsAudioDiagnosticsDTO {

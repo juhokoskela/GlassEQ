@@ -3145,7 +3145,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(await waitUntil { model.isRunning })
         var saved = active
         saved.preampDB = -9
-        try model.setFallback(profile: saved)
+        try storeEditedProfile(saved, in: model)
         #expect(!model.settingsSnapshot().activeProfileMatchesLibrary)
         #expect(await model.flushStoreBeforeQuit())
         let timestamp = Date(timeIntervalSince1970: 1_000_000)
@@ -3170,6 +3170,7 @@ struct GlassEQAppModelLifecycleTests {
         model.start()
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.settingsSnapshot().offersPlaybackHandback })
+        _ = try await model.performSettingsCommand(.retryAudioEngine)
         _ = try await model.performSettingsCommand(.playWithoutEQ)
         try #require(await waitUntil { !engine.holdsProcessingMute })
         #expect(model.processingWasStopped)
@@ -3181,17 +3182,36 @@ struct GlassEQAppModelLifecycleTests {
         let first = makeProfile(name: "First")
         let second = makeProfile(name: "Second")
         let output = makeOutput()
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
         let observers = FakeDefaultOutputObserverFactory()
         let store = ProfileStore(profiles: [first, second], fallbackProfileID: first.id)
         let model = makeModel(
-            store: store, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
+            store: store, engine: engine, lookup: lookup, observers: observers, outputDelay: .zero)
         model.start()
-        defer { model.stop() }
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.isRunning })
+        _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: first.id))
+        #expect(model.currentOutputMappedProfileID == first.id)
+        _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: nil))
+        #expect(model.currentOutputMappedProfileID == nil)
+        #expect(engine.updateDSPCalls.isEmpty)
         _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: second.id))
         #expect(model.currentOutputMappedProfileID == second.id)
         #expect(model.activeProfile == second)
+        var changedFormat = output
+        changedFormat.nominalSampleRate = output.nominalSampleRate == 48_000 ? 44_100 : 48_000
+        lookup.result = .success(changedFormat)
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: nil))
+        }
+        #expect(model.currentOutputMappedProfileID == second.id)
+        lookup.result = .failure(AudioDeviceAvailabilityError.noDefaultOutput)
+        await #expect(throws: SettingsCommandFailure.self) {
+            _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: nil))
+        }
+        #expect(model.currentOutputMappedProfileID == second.id)
+        lookup.result = .success(output)
         await #expect(throws: SettingsCommandFailure.self) {
             _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: "previous", profileID: nil))
         }
@@ -3203,10 +3223,13 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.currentOutputMappedProfileID == nil)
         #expect(model.activeProfile == first)
         _ = try await model.performSettingsCommand(.setFallbackProfile(second.id))
+        #expect(model.selectedProfileID == first.id)
+        #expect(model.activeProfile == first)
         #expect(model.profileStore.fallbackProfileID == second.id)
         #expect(model.profileStore.profiles == store.profiles)
         model.stop()
         #expect(model.settingsSnapshot().currentOutputUID.isEmpty)
+        #expect(model.supportSnapshot().currentOutputUID == output.uid)
         await #expect(throws: SettingsCommandFailure.self) {
             _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: first.id))
         }
@@ -3731,7 +3754,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil { engine.updateCalls.count == 1 }
         #expect(engine.waitUntilUpdateIsBlocked(for: attempted.id, timeout: .now() + 1))
 
-        try model.setFallback(profile: laterSaved)
+        try storeEditedProfile(laterSaved, in: model)
         engine.unblockUpdate(for: attempted.id)
 
         await waitUntil { model.statusMessage.contains("not applied") }
@@ -3778,7 +3801,7 @@ struct GlassEQAppModelLifecycleTests {
         try model.apply(profile: requested)
         await waitUntil { engine.updateCalls.count == 1 }
         #expect(engine.waitUntilUpdateIsBlocked(for: requested.id, timeout: .now() + 1))
-        try model.setFallback(profile: requested)
+        try model.setFallbackProfile(requested.id)
         engine.unblockUpdate(for: requested.id)
         await waitUntil { model.statusMessage.contains("not applied") }
 
@@ -3853,6 +3876,31 @@ struct GlassEQAppModelLifecycleTests {
             return
         }
         #expect(source.samples == [1, 0.25, -0.125])
+    }
+
+    @Test
+    func clearingAssignmentCanLoadBypassedFallbackAtAnotherSampleRate() async throws {
+        var fallback = makeImpulseResponseProfile(name: "Bypassed IR", sampleRate: 44_100)
+        fallback.isBypassed = true
+        let mapped = makeProfile(name: "Mapped")
+        let output = makeOutput(nominalSampleRate: 48_000)
+        let store = ProfileStore(
+            profiles: [fallback, mapped],
+            outputMappings: [OutputDeviceProfileMapping(outputDeviceUID: output.uid, profileID: mapped.id)],
+            fallbackProfileID: fallback.id)
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: store, engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers,
+            outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: nil))
+        #expect(model.currentOutputMappedProfileID == nil)
+        #expect(model.activeProfile == fallback)
+        #expect(await waitUntil { !engine.holdsProcessingMute && !model.isRunning })
+        model.stop()
     }
 
     @Test
@@ -5390,6 +5438,14 @@ struct GlassEQAppModelLifecycleTests {
 }
 
 @MainActor
+private func storeEditedProfile(_ profile: EQProfile, in model: GlassEQAppModel) throws {
+    var store = model.profileStore
+    let index = try #require(store.profiles.firstIndex { $0.id == profile.id })
+    store.profiles[index] = profile
+    try model.commitProfileStore(store)
+}
+
+@MainActor
 private func makeModel(
     store: ProfileStore? = nil,
     storeURL: URL = FileManager.default.temporaryDirectory
@@ -6683,6 +6739,7 @@ struct LicenseEnforcementTests {
         model.start()
         await settleAsyncWork()
 
+        #expect(!model.needsMenuRecovery)
         #expect(engine.startCalls.isEmpty)
         #expect(observers.observers.isEmpty)
         #expect(model.lifecycleState == .stopped)
