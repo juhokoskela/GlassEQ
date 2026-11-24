@@ -1944,6 +1944,7 @@ final class GlassEQAppModel {
             try commitProfileStore(store)
             activeProfile = profile
         }
+        assignmentGeneration &+= 1
         selectedProfileID = activeProfile.id
         draftProfile = activeProfile
         synchronizeActiveProfileProcessing(rollback: rollback)
@@ -1957,12 +1958,17 @@ final class GlassEQAppModel {
         return profile
     }
 
-    func validateAssignmentOutput(_ outputUID: String) async throws {
+    private func withCurrentOutput(_ outputUID: String, assign: () throws -> Void) async throws {
         assignmentGeneration &+= 1
         let generation = assignmentGeneration
         let output = await defaultOutputLookup.readDefaultOutput()
         try Task.checkCancellation()
-        guard generation == assignmentGeneration, acceptsSettingsCommands else { throw CancellationError() }
+        guard acceptsSettingsCommands else {
+            throw SettingsCommandFailure(message: localized("GlassEQ is shutting down."))
+        }
+        guard generation == assignmentGeneration else {
+            throw SettingsCommandFailure(message: localized("A newer profile change replaced this assignment."))
+        }
         guard !processingWasStopped, lifecycleState != .sleeping, lifecycleState != .terminating,
             !outputUID.isEmpty, outputUID == currentOutputUID, let output, output.uid == outputUID,
             let lastHandledDefaultOutput,
@@ -1971,12 +1977,25 @@ final class GlassEQAppModel {
             throw SettingsCommandFailure(
                 message: localized("The output changed. Choose a profile for the current output."))
         }
+        try assign()
+    }
+
+    func assignEditedProfile(_ profile: EQProfile, to outputUID: String) async throws {
+        let original = try savedProfile(profile.id)
+        try await withCurrentOutput(outputUID) {
+            guard try savedProfile(profile.id) == original else {
+                throw SettingsCommandFailure(
+                    message: localized("The saved profile changed. Review it before assigning it."))
+            }
+            try useForCurrentOutput(profile: profile)
+        }
     }
 
     func setOutputAssignment(outputUID: String, profileID: UUID?) async throws {
-        try await validateAssignmentOutput(outputUID)
-        let profile = try savedProfile(profileID ?? profileStore.fallbackProfileID)
-        try useForCurrentOutput(profile: profile, useFallback: profileID == nil)
+        try await withCurrentOutput(outputUID) {
+            let profile = try savedProfile(profileID ?? profileStore.fallbackProfileID)
+            try useForCurrentOutput(profile: profile, useFallback: profileID == nil)
+        }
     }
 
     func useForCurrentOutput(profile: EQProfile, useFallback: Bool = false) throws {

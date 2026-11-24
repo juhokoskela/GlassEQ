@@ -3177,6 +3177,49 @@ struct GlassEQAppModelLifecycleTests {
         #expect(!model.settingsSnapshot().offersPlaybackHandback)
     }
 
+    @Test(arguments: [false, true])
+    func delayedAssignmentYieldsToANewerProfileCommand(applyEdit: Bool) async throws {
+        let first = makeProfile(name: "First")
+        let second = makeProfile(name: "Second")
+        let output = makeOutput()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfileStore(profiles: [first, second], fallbackProfileID: first.id),
+            lookup: lookup, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+
+        let gate = FakeStartBlocker()
+        lookup.blockNextLookup(gate)
+        defer { gate.unblock() }
+        var draft = first
+        draft.preampDB = -3
+        let pending = Task {
+            try await model.performSettingsCommand(.useProfileForCurrentOutput(draft, outputUID: output.uid))
+        }
+        try #require(await waitUntil { gate.waitUntilEntered(timeout: .now()) })
+        if applyEdit {
+            var newer = first
+            newer.preampDB = -6
+            _ = try await model.performSettingsCommand(.applyProfile(newer))
+        } else {
+            _ = try await model.performSettingsCommand(
+                .setOutputAssignment(outputUID: output.uid, profileID: second.id))
+        }
+        gate.unblock()
+        await #expect(throws: SettingsCommandFailure.self) { try await pending.value }
+        if applyEdit {
+            #expect(model.activeProfile.preampDB == -6)
+            #expect(try model.savedProfile(first.id).preampDB == -6)
+            #expect(model.currentOutputMappedProfileID == nil)
+        } else {
+            #expect(model.activeProfile == second)
+            #expect(model.currentOutputMappedProfileID == second.id)
+        }
+    }
+
     @Test
     func outputAssignmentUsesSavedProfilesAndCanReturnToFallback() async throws {
         let first = makeProfile(name: "First")
@@ -5951,6 +5994,7 @@ private final class SleepingSettingsHelperLauncher: SettingsHelperLaunching {
 private final class FakeDefaultOutputLookup: DefaultOutputLookingUp, @unchecked Sendable {
     private let lock = NSLock()
     private var _defaultOutputCalls = 0
+    private var nextLookupGate: FakeStartBlocker?
     private var _result: Result<AudioOutputDevice, Error>
 
     private(set) var defaultOutputCalls: Int {
@@ -5967,11 +6011,17 @@ private final class FakeDefaultOutputLookup: DefaultOutputLookingUp, @unchecked 
         self._result = result
     }
 
+    func blockNextLookup(_ gate: FakeStartBlocker) {
+        withLock { nextLookupGate = gate }
+    }
+
     func defaultOutputDevice() throws -> AudioOutputDevice {
-        let result = withLock {
+        let (result, gate) = withLock {
             _defaultOutputCalls += 1
-            return _result
+            defer { nextLookupGate = nil }
+            return (_result, nextLookupGate)
         }
+        gate?.waitUntilUnblocked()
         return try result.get()
     }
 

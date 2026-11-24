@@ -1126,8 +1126,7 @@ extension GlassEQAppModel {
             try apply(profile: profile)
 
         case let .useProfileForCurrentOutput(profile, outputUID):
-            try await validateAssignmentOutput(outputUID)
-            try useForCurrentOutput(profile: profile)
+            try await assignEditedProfile(profile, to: outputUID)
 
         case let .setOutputAssignment(outputUID, profileID):
             try await setOutputAssignment(outputUID: outputUID, profileID: profileID)
