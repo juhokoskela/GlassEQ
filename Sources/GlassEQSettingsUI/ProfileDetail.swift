@@ -13,12 +13,22 @@ struct ProfileDetail: View {
             switch controller.tab {
             case .editor:
                 EditorTab(controller: controller)
+                    .navigationTitle($controller.draftName)
+                    .navigationSubtitle(subtitle)
             case .output:
                 OutputTab(controller: controller)
+                    .navigationTitle(localized("Output"))
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity)
         .safeAreaInset(edge: .top, spacing: 0) {
+            if controller.tab == .editor && controller.snapshot.offersPlaybackHandback {
+                PlaybackRecoveryActions(controller: controller)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+            }
             if controller.isProfileStoreProtected {
                 ProfileStoreProtectionBanner(
                     protection: controller.snapshot.profileStoreProtection,
@@ -27,12 +37,10 @@ struct ProfileDetail: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if controller.tab == .editor {
+            if controller.tab == .editor || controller.hasUnsavedDraft || controller.isComparisonInProgress {
                 ApplyBar(controller: controller)
             }
         }
-        .navigationTitle($controller.draftName)
-        .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker(localized("Section"), selection: $controller.tab) {
@@ -44,10 +52,11 @@ struct ProfileDetail: View {
                 .accessibilityHint(Text(localized("Switches between editor and output details")))
             }
             ToolbarItem {
-                Button(localized("Import"), systemImage: "square.and.arrow.down") {
+                Button(localized("Import Profile"), systemImage: "square.and.arrow.down") {
                     controller.presentImport(.text)
                 }
                 .disabled(isReadOnly)
+                .help(localized("Import Profile"))
                 .accessibilityHint(Text(localized("Opens guided profile import")))
             }
         }
@@ -59,7 +68,11 @@ struct ProfileDetail: View {
         let snapshot = controller.snapshot
         let id = controller.draftProfile.id
         var parts = [controller.draftProfile.mode.title]
-        if id == snapshot.activeProfileID {
+        if snapshot.equalizer == .off {
+            parts.append(localized("Equalizer off"))
+        } else if snapshot.equalizer.needsRecoveryAction && !snapshot.offersPlaybackHandback {
+            parts.append(localized("Equalizer needs attention"))
+        } else if id == snapshot.activeProfileID && !snapshot.offersPlaybackHandback {
             parts.append(snapshot.isRunning ? localized("Playing now") : localized("Active"))
         }
         if id == snapshot.currentOutputMappedProfileID {

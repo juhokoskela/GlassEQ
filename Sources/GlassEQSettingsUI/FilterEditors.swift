@@ -30,8 +30,7 @@ struct MagnitudeCurveEditor: View {
                                     title: localized("Frequency"),
                                     value: $point.frequency,
                                     range: ProfilePersistence.frequencyRange,
-                                    display: point.frequency.frequencyLabel,
-                                    width: 72
+                                    display: point.frequency.frequencyLabel
                                 )
                                 Slider(value: $point.quantizedGainDB, in: -24...12)
                                     .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
@@ -40,8 +39,7 @@ struct MagnitudeCurveEditor: View {
                                     title: localized("Gain"),
                                     value: $point.gainDB,
                                     range: ProfilePersistence.gainRange,
-                                    display: point.gainDB.dbLabel,
-                                    width: 60
+                                    display: point.gainDB.dbLabel
                                 )
                                 Button(role: .destructive) {
                                     points.removeAll { $0.id == point.id }
@@ -145,19 +143,16 @@ private struct GraphicFilterRow: View {
                 value: $filter.gainDB,
                 range: ProfilePersistence.gainRange,
                 display: filter.gainDB.dbLabel,
-                width: 56,
                 valueID: filter.id
             )
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(localized("Graphic filter row")))
-        .accessibilityValue(Text(localized("\(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel)")))
+        .accessibilityElement(children: .contain)
     }
 }
 
 struct ParametricFilterEditor: View {
     @Binding var filters: [EQFilter]
-    @State private var selectedFilterID: UUID?
+    @Binding var selectedFilterID: UUID?
     @State private var showsColumns = false
 
     var body: some View {
@@ -165,38 +160,40 @@ struct ParametricFilterEditor: View {
             showsColumns
             ? AnyLayout(HStackLayout(alignment: .top, spacing: 24))
             : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
-        Section(localized("Filters")) {
+        Section {
             layout {
-                VStack(alignment: .leading, spacing: 8) {
-                    FilterListHeader()
-                    VStack(spacing: 4) {
-                        ForEach(filters.indices, id: \.self) { index in
-                            let filter = filters[index]
-                            CompactFilterRow(
-                                filter: filter,
-                                isSelected: filter.id == effectiveSelectedFilterID
-                            ) {
-                                selectedFilterID = filter.id
-                            }
-                        }
+                Table(
+                    filters, selection: Binding(get: { effectiveSelectedFilterID }, set: { selectedFilterID = $0 })
+                ) {
+                    TableColumn(localized("Type")) { filter in
+                        Text(filter.kind.title)
+                            .foregroundStyle(filter.isEnabled ? .primary : .secondary)
+                            .strikethrough(!filter.isEnabled)
+                            .accessibilityValue(
+                                Text(filter.isEnabled ? localized("Enabled") : localized("Disabled")))
                     }
-                    Button(localized("Add Filter"), systemImage: "plus") {
-                        let filter = EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)
-                        filters.append(filter)
-                        selectedFilterID = filter.id
+                    .width(min: 63, ideal: 77)
+                    TableColumn(localized("Freq")) { Text($0.frequency.frequencyLabel) }
+                        .width(min: 48, ideal: 58)
+                    TableColumn(localized("Gain")) { filter in
+                        Text(filter.kind.usesGain ? filter.gainDB.dbLabel : "—")
                     }
-                    .accessibilityHint(Text(localized("Adds a new parametric filter and selects it")))
+                    .width(min: 48, ideal: 58)
+                    TableColumn(localized("Q")) { filter in
+                        Text(localizedDecimal(filter.q, minimumFractionDigits: 2, maximumFractionDigits: 2))
+                    }
+                    .width(min: 30, ideal: 36)
                 }
+                .onDeleteCommand(perform: deleteSelectedFilter)
+                .monospacedDigit()
+                .accessibilityLabel(Text(localized("Filters")))
+                .frame(height: min(210, CGFloat(filters.count) * 26 + 34))
                 .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
 
                 if let index = selectedFilterIndex {
                     ParametricFilterInspector(
                         filter: $filters[index],
-                        onDelete: {
-                            let id = filters[index].id
-                            filters.removeAll { $0.id == id }
-                            selectedFilterID = filters.first?.id
-                        }
+                        onDelete: deleteSelectedFilter
                     )
                     .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
                 } else {
@@ -211,7 +208,24 @@ struct ParametricFilterEditor: View {
                 showsColumns = $0
             }
             .padding(.vertical, 4)
+        } header: {
+            HStack {
+                Text(localized("Filters"))
+                Spacer()
+                Button(localized("Add Filter"), systemImage: "plus") {
+                    let filter = EQFilter(kind: .peak, frequency: 1_000, gainDB: 0, q: 1)
+                    filters.append(filter)
+                    selectedFilterID = filter.id
+                }
+                .accessibilityHint(Text(localized("Adds a new parametric filter and selects it")))
+            }
         }
+    }
+
+    private func deleteSelectedFilter() {
+        guard let index = selectedFilterIndex else { return }
+        filters.remove(at: index)
+        selectedFilterID = filters.isEmpty ? nil : filters[min(index, filters.count - 1)].id
     }
 
     private var effectiveSelectedFilterID: UUID? {
@@ -231,75 +245,8 @@ struct ParametricFilterEditor: View {
     }
 }
 
-struct FilterListHeader: View {
-    var body: some View {
-        HStack {
-            Color.clear
-                .frame(width: 20, height: 0)
-            Text(localized("Type"))
-                .frame(width: 54, alignment: .leading)
-            Text(localized("Freq"))
-                .frame(width: 64, alignment: .trailing)
-            Text(localized("Gain"))
-                .frame(width: 64, alignment: .trailing)
-            Text(localized("Q"))
-                .frame(width: 46, alignment: .trailing)
-            Spacer()
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 10)
-    }
-}
-
-struct CompactFilterRow: View {
-    var filter: EQFilter
-    var isSelected: Bool
-    var onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack {
-                Image(systemName: filter.isEnabled ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(filter.isEnabled ? Color.accentColor : Color.secondary)
-                    .frame(width: 20)
-                Text(filter.kind.shortTitle)
-                    .frame(width: 54, alignment: .leading)
-                Text(filter.frequency.frequencyLabel)
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 64, alignment: .trailing)
-                Text(filter.gainDB.dbLabel)
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 64, alignment: .trailing)
-                Text(qLabel)
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 46, alignment: .trailing)
-                Spacer()
-            }
-            .font(.caption)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
-            .background(isSelected ? Color.accentColor.opacity(0.25) : Color.clear, in: .rect(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel(Text(localized("Filter \(filter.kind.title)")))
-        .accessibilityValue(Text(accessibilityValue))
-        .accessibilityHint(Text(localized("Selects this filter for editing")))
-    }
-
-    private var qLabel: String {
-        localizedDecimal(filter.q, minimumFractionDigits: 2, maximumFractionDigits: 2)
-    }
-
-    private var accessibilityValue: String {
-        let state = filter.isEnabled ? localized("Enabled") : localized("Disabled")
-        let selection = isSelected ? localized("Selected") : localized("Not selected")
-        return localized(
-            "\(state), \(selection), \(filter.frequency.frequencyLabel), \(filter.gainDB.dbLabel), Q \(qLabel)")
-    }
+private extension FilterKind {
+    var usesGain: Bool { self != .highPass && self != .lowPass }
 }
 
 struct ParametricFilterInspector: View {
@@ -307,16 +254,20 @@ struct ParametricFilterInspector: View {
     var onDelete: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 Text(localized("Selected Filter"))
                     .font(.headline)
+                Spacer()
+                Text(localized("Enabled"))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 Toggle(localized("Enabled"), isOn: $filter.isEnabled)
+                    .labelsHidden()
                     .toggleStyle(.switch)
                     .accessibilityLabel(Text(localized("Filter enabled")))
                     .accessibilityValue(Text(filter.isEnabled ? localized("On") : localized("Off")))
                     .accessibilityHint(Text(localized("Includes or bypasses this filter")))
-                Spacer()
                 Button(role: .destructive) {
                     onDelete()
                 } label: {
@@ -326,6 +277,7 @@ struct ParametricFilterInspector: View {
                 .accessibilityLabel(Text(localized("Delete filter")))
                 .accessibilityHint(Text(localized("Removes the selected filter")))
             }
+            .frame(height: 28)
 
             LabeledContent(localized("Type")) {
                 Picker(localized("Type"), selection: $filter.kind) {
@@ -358,6 +310,7 @@ struct ParametricFilterInspector: View {
                 suffix: "dB",
                 valueID: filter.id
             )
+            .disabled(!filter.kind.usesGain)
             SliderRow(
                 title: localized("Q"),
                 value: $filter.q,
@@ -365,6 +318,7 @@ struct ParametricFilterInspector: View {
                 validationRange: ProfilePersistence.qRange,
                 step: 0.01,
                 suffix: "",
+                scale: .logarithmic,
                 valueID: filter.id
             )
         }

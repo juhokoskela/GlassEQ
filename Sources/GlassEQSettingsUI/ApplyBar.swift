@@ -13,13 +13,11 @@ struct ApplyBar: View {
                 Text(programmeComparison.isReady ? localized("Volume matched") : localized("Matching volume…"))
                     .foregroundStyle(.secondary)
                     .font(.caption.weight(.medium))
-            } else {
-                Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved"))
+            } else if hasUnsavedDraft {
+                Text(localized("Unapplied changes"))
                     .foregroundStyle(.secondary)
                     .font(.caption.weight(.medium))
-                    .accessibilityLabel(Text(localized("Profile edit state")))
-                    .accessibilityValue(
-                        Text(hasUnsavedDraft ? localized("Unsaved changes") : localized("All changes saved")))
+
             }
             HStack(spacing: 8) {
                 if programmeComparison.isActive {
@@ -45,29 +43,27 @@ struct ApplyBar: View {
                     .disabled(isReadOnly || !controller.snapshot.isRunning)
                     .help(localized("Compare the current filters with filters off at a matched volume."))
 
-                    Divider()
-                        .frame(height: 20)
-                        .padding(.horizontal, 4)
-
-                    Button(localized("Revert")) {
-                        controller.revertDraft()
+                    if hasUnsavedDraft {
+                        Button(localized("Revert")) { controller.revertDraft() }
                     }
-                    .disabled(!hasUnsavedDraft)
 
-                    Button(localized("Use for This Output")) {
-                        controller.useDraftForCurrentOutput()
+                    if controller.canAssignDraftToOutput {
+                        Button(
+                            hasUnsavedDraft ? localized("Save and Assign to Output") : localized("Use for This Output")
+                        ) {
+                            controller.useDraftForCurrentOutput()
+                        }
+                        .disabled(isReadOnly)
+                        .help(localized("Maps the selected profile to the current output device"))
                     }
-                    .disabled(isReadOnly || !controller.hasCurrentOutput)
-                    .accessibilityHint(
-                        Text(
-                            controller.hasCurrentOutput
-                                ? localized("Maps the selected profile to the current output device")
-                                : localized("No current output is available")))
                 }
 
                 Spacer(minLength: 0)
 
-                Button(localized("Apply")) {
+                Button(
+                    !hasUnsavedDraft && controller.draftProfile.id != controller.snapshot.activeProfileID
+                        ? localized("Activate Profile") : localized("Apply")
+                ) {
                     controller.applyDraft()
                 }
                 .keyboardShortcut(.return, modifiers: .command)

@@ -1,8 +1,7 @@
 @_spi(GlassEQSettingsUI) import GlassEQCore
 import SwiftUI
 
-// Maps frequency (log scale) and magnitude onto the graph's plot area. Shared by the Canvas grid
-// and the curve shapes so they line up.
+// Maps logarithmic frequency and gain onto the same plot area for the grid and curves.
 struct PlotScale {
     static let insets = EdgeInsets(top: 15, leading: 42, bottom: 21, trailing: 34)
     static let magnitudeRange = -24.0...12.0
@@ -33,47 +32,87 @@ struct PlotScale {
         let fraction = 1 - ((magnitudeDB - range.lowerBound) / (range.upperBound - range.lowerBound))
         return rect.minY + rect.height * fraction
     }
+
+    // Core Graphics expands dashes before clipping. Trim each segment just outside the plot
+    // so deep notches keep their visible slopes without generating offscreen dashes.
+    func curvePath(for points: [FrequencyResponsePoint]) -> Path {
+        let band = rect.minY - 3...rect.maxY + 3
+        func endpoint(_ point: CGPoint, toward other: CGPoint) -> CGPoint {
+            let y = min(max(point.y, band.lowerBound), band.upperBound)
+            guard y != point.y else { return point }
+            let fraction = (y - point.y) / (other.y - point.y)
+            return CGPoint(x: point.x + (other.x - point.x) * fraction, y: y)
+        }
+
+        var path = Path()
+        var previous: CGPoint?
+        var lastEnd: CGPoint?
+        for sample in points {
+            let point = CGPoint(x: x(for: sample.frequency), y: y(for: sample.magnitudeDB))
+            defer { previous = point }
+            guard let previous, point.x.isFinite, point.y.isFinite, previous.x.isFinite, previous.y.isFinite,
+                max(previous.y, point.y) >= band.lowerBound, min(previous.y, point.y) <= band.upperBound
+            else { continue }
+            let start = endpoint(previous, toward: point)
+            let end = endpoint(point, toward: previous)
+            if lastEnd != start { path.move(to: start) }
+            path.addLine(to: end)
+            lastEnd = end
+        }
+        return path
+    }
+
 }
 
 struct FrequencyResponseGraph: View {
+    private static let magnitudeTicks = [-24.0, -18, -12, -6, 0, 6, 12]
     var analysis: EQAnalysisSnapshot
+    var selectedFrequency: Double?
 
     var body: some View {
         Canvas { context, size in
             let bounds = CGRect(origin: .zero, size: size)
             let scale = PlotScale(bounds: bounds, maximumFrequency: analysis.maximumUsableFrequency)
-            context.fill(Path(bounds), with: .color(Color(nsColor: .controlBackgroundColor).opacity(0.55)))
             drawGrid(context: context, scale: scale)
             drawAxisLabels(context: context, scale: scale, bounds: bounds)
-        }
-        .overlay {
-            ZStack {
-                switch analysis.channelMode {
-                case .linked:
-                    curve(analysis.linkedPoints, color: .accentColor)
-                case .stereo:
-                    curve(analysis.leftPoints, color: .blue)
-                    curve(analysis.rightPoints, color: .orange)
-                }
+            context.clip(to: Path(scale.rect))
+            if let selectedFrequency, (PlotScale.minimumFrequency...scale.maximumFrequency).contains(selectedFrequency)
+            {
+                let x = scale.x(for: selectedFrequency)
+                var marker = Path()
+                marker.move(to: CGPoint(x: x, y: scale.rect.minY))
+                marker.addLine(to: CGPoint(x: x, y: scale.rect.maxY))
+                context.stroke(marker, with: .color(.accentColor), style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
+            }
+            switch analysis.channelMode {
+            case .linked:
+                drawCurve(analysis.linkedPoints, color: .accentColor, context: context, scale: scale)
+            case .stereo:
+                drawCurve(
+                    analysis.leftPoints, color: .blue, context: context,
+                    scale: scale)
+                drawCurve(
+                    analysis.rightPoints, color: .orange, dashed: true,
+                    context: context, scale: scale)
             }
         }
-        .clipShape(.rect(cornerRadius: 14))
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isImage)
     }
 
-    private func curve(_ points: [FrequencyResponsePoint], color: Color) -> some View {
-        ResponseCurveShape(
-            frequencies: points.map(\.frequency),
-            magnitudes: points.map(\.magnitudeDB),
-            maximumFrequency: analysis.maximumUsableFrequency
-        )
-        .stroke(color, style: StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+    private func drawCurve(
+        _ points: [FrequencyResponsePoint], color: Color, dashed: Bool = false, context: GraphicsContext,
+        scale: PlotScale
+    ) {
+        let path = scale.curvePath(for: points)
+        context.stroke(
+            path, with: .color(color), style: StrokeStyle(lineWidth: 2.5, lineJoin: .round, dash: dashed ? [6, 3] : []))
     }
 
     private func drawGrid(context: GraphicsContext, scale: PlotScale) {
         let rect = scale.rect
         var path = Path()
-        for db in [-24.0, -12.0, -6.0, 0.0, 6.0, 12.0] {
+        for db in Self.magnitudeTicks {
             let y = scale.y(for: db)
             path.move(to: CGPoint(x: rect.minX, y: y))
             path.addLine(to: CGPoint(x: rect.maxX, y: y))
@@ -93,13 +132,13 @@ struct FrequencyResponseGraph: View {
     }
 
     private func drawAxisLabels(context: GraphicsContext, scale: PlotScale, bounds: CGRect) {
-        for db in [12.0, 6.0, 0.0, -6.0, -12.0, -24.0] {
+        for db in Self.magnitudeTicks {
             context.draw(
                 Text(db.dbAxisLabel)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary),
-                at: CGPoint(x: bounds.minX + 17, y: scale.y(for: db)),
-                anchor: .center
+                at: CGPoint(x: scale.rect.minX - 4, y: scale.y(for: db)),
+                anchor: .trailing
             )
         }
 
@@ -131,34 +170,5 @@ struct FrequencyResponseGraph: View {
             return frequency.frequencyLabel
         }
         return frequency.axisFrequencyLabel
-    }
-}
-
-struct ResponseCurveShape: Shape {
-    var frequencies: [Double]
-    var magnitudes: [Double]
-    var maximumFrequency: Double
-
-    func path(in rect: CGRect) -> Path {
-        let count = min(frequencies.count, magnitudes.count)
-        guard count > 1 else {
-            return Path()
-        }
-        let scale = PlotScale(bounds: rect, maximumFrequency: maximumFrequency)
-        let range = PlotScale.magnitudeRange
-        var path = Path()
-        for index in 0..<count {
-            let magnitude = min(max(magnitudes[index], range.lowerBound), range.upperBound)
-            let position = CGPoint(
-                x: scale.x(for: frequencies[index]),
-                y: scale.y(for: magnitude)
-            )
-            if index == 0 {
-                path.move(to: position)
-            } else {
-                path.addLine(to: position)
-            }
-        }
-        return path
     }
 }

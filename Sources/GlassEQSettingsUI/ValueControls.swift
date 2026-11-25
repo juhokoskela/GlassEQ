@@ -25,8 +25,13 @@ struct SliderRow: View {
     var valueID: UUID?
 
     var body: some View {
-        LabeledContent(title) {
+        HStack(spacing: 8) {
+            Text(title)
+                .fixedSize()
+                .frame(minWidth: 64, alignment: .leading)
             Slider(value: sliderValue, in: sliderRange)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel(Text(title))
                 .accessibilityValue(Text(label))
                 .accessibilityHint(Text(localized("Adjusts \(title.lowercased())")))
@@ -38,6 +43,7 @@ struct SliderRow: View {
                 valueID: valueID
             )
         }
+        .accessibilityElement(children: .contain)
     }
 
     private var sliderValue: Binding<Double> {
@@ -82,7 +88,6 @@ struct EditableValueText: View {
     @Binding var value: Double
     var range: ClosedRange<Double>
     var display: String
-    var width: CGFloat = 64
     var valueID: UUID?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -97,6 +102,7 @@ struct EditableValueText: View {
             if isEditing {
                 TextField(title, text: $editText)
                     .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
                     .font(.caption.monospacedDigit())
                     .multilineTextAlignment(.trailing)
                     .focused($isFocused)
@@ -106,7 +112,9 @@ struct EditableValueText: View {
                     .onSubmit(commit)
                     .onExitCommand(perform: cancel)
                     .onChange(of: editText) { _, text in
-                        updateValue(from: text)
+                        if let number = parseEditableNumber(text), range.contains(number) {
+                            updateValue(from: text)
+                        }
                     }
                     .onChange(of: value) { _, newValue in
                         guard isEditing,
@@ -135,14 +143,15 @@ struct EditableValueText: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .contentShape(.rect)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help(localized("Click to type a value"))
+                .accessibilityLabel(Text(localized("\(title) value")))
+                .accessibilityValue(Text(display))
+                .accessibilityHint(Text(localized("Enter an exact value")))
             }
         }
-        .frame(width: width)
-        .accessibilityLabel(Text(localized("\(title) value")))
-        .accessibilityValue(Text(display))
-        .accessibilityHint(Text(localized("Edits \(title.lowercased()) as text")))
+        .frame(width: 80)
         .onChange(of: context) {
             if isEditing { finishEditing() }
         }

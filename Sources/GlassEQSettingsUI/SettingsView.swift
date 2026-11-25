@@ -1,4 +1,3 @@
-import AppKit
 import GlassEQSettingsIPC
 import SwiftUI
 
@@ -50,16 +49,21 @@ public struct SettingsView: View {
                 onChooseImportFiles: controller.chooseImportFiles
             )
         }
-        .overlay(alignment: .bottom) {
-            if let message = controller.model.commandErrorMessage {
-                Text(message)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.macOSSystemRed)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 8))
-                    .padding()
-            }
+        .dismissalConfirmationDialog(localized("Discard unapplied changes?"), shouldPresent: controller.hasUnsavedDraft)
+        {
+            Button(localized("Discard Changes"), role: .destructive) {}
+            Button(localized("Keep Editing"), role: .cancel) {}
+        }
+        .alert(
+            localized("GlassEQ Settings"),
+            isPresented: Binding(
+                get: { controller.model.commandErrorMessage != nil },
+                set: { if !$0 { controller.model.commandErrorMessage = nil } }
+            )
+        ) {
+            Button(localized("OK")) {}
+        } message: {
+            Text(controller.model.commandErrorMessage ?? "")
         }
         .onChange(of: controller.model.profileSnapshotRevision) {
             controller.reconcileWithSnapshot()

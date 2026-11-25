@@ -2,33 +2,46 @@ import GlassEQCore
 import SwiftUI
 
 struct ProfileSidebar: View {
-    var controller: SettingsController
+    @Bindable var controller: SettingsController
 
     var body: some View {
         let isReadOnly = controller.isEditingLocked
         let selectedProfileID = controller.selectedProfileID
         let canDeleteSelectedProfile = controller.canDeleteProfile(selectedProfileID)
-        List(controller.snapshot.profiles, selection: selection) { profile in
-            ProfileRow(
-                profile: profile,
-                isSelected: profile.id == selectedProfileID,
-                isActive: profile.id == controller.snapshot.activeProfileID
-            )
-            .contextMenu {
-                Button(localized("Duplicate")) {
-                    controller.duplicateProfile(profile.id)
+        List(selection: selection) {
+            Section(localized("Profiles")) {
+                ForEach(controller.snapshot.profiles) { profile in
+                    ProfileRow(
+                        profile: profile,
+                        isSelected: profile.id == selectedProfileID,
+                        isActive: profile.id == controller.snapshot.activeProfileID,
+                        isRunning: controller.snapshot.isRunning
+                    )
+                    .tag(profile.id)
+                    .contextMenu {
+                        Button(localized("Duplicate Saved Profile")) {
+                            controller.duplicateProfile(profile.id)
+                        }
+                        .disabled(isReadOnly)
+                        Button(localized("Use for This Output")) {
+                            controller.assignProfileToCurrentOutput(profile.id)
+                        }
+                        .disabled(isReadOnly || !controller.hasCurrentOutput)
+                        Divider()
+                        Button(localized("Delete…"), role: .destructive) {
+                            controller.requestProfileDeletion(profile.id)
+                        }
+                        .disabled(!controller.canDeleteProfile(profile.id))
+                    }
                 }
-                .disabled(isReadOnly)
-                Button(localized("Use for This Output")) {
-                    controller.assignProfileToCurrentOutput(profile.id)
-                }
-                .disabled(isReadOnly || !controller.hasCurrentOutput)
-                Divider()
-                Button(localized("Delete…"), role: .destructive) {
-                    controller.requestProfileDeletion(profile.id)
-                }
-                .disabled(!controller.canDeleteProfile(profile.id))
             }
+        }
+        .alert(
+            localized("Discard unapplied changes?"),
+            isPresented: $controller.isDiscardSelectionPresented, presenting: controller.pendingSelection
+        ) { id in
+            Button(localized("Keep Editing"), role: .cancel) {}
+            Button(localized("Discard Changes"), role: .destructive) { controller.selectProfile(id) }
         }
         .listStyle(.sidebar)
         .disabled(controller.isComparisonInProgress)
@@ -52,10 +65,10 @@ struct ProfileSidebar: View {
                     IconButtonLabel(systemImage: "plus.square.on.square")
                 }
                 .buttonStyle(.borderless)
-                .help(localized("Duplicate profile"))
+                .help(localized("Duplicate Saved Profile"))
                 .disabled(isReadOnly)
-                .accessibilityLabel(Text(localized("Duplicate profile")))
-                .accessibilityHint(Text(localized("Copies the selected profile")))
+                .accessibilityLabel(Text(localized("Duplicate Saved Profile")))
+                .accessibilityHint(Text(localized("Copies the saved version of the selected profile")))
 
                 Button(role: .destructive) {
                     controller.requestProfileDeletion(selectedProfileID)
@@ -89,9 +102,7 @@ struct ProfileSidebar: View {
         Binding(
             get: { controller.selectedProfileID },
             set: { id in
-                if let id {
-                    controller.selectProfile(id)
-                }
+                if let id { controller.requestSelection(id) }
             }
         )
     }
@@ -101,6 +112,7 @@ private struct ProfileRow: View {
     var profile: EQProfile
     var isSelected: Bool
     var isActive: Bool
+    var isRunning: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -119,10 +131,11 @@ private struct ProfileRow: View {
             }
             Spacer(minLength: 6)
             if isActive {
-                Image(systemName: profile.isBypassed ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                Image(systemName: isRunning ? "speaker.wave.2.fill" : "checkmark.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel(Text(profile.isBypassed ? localized("Active, bypassed") : localized("Active")))
+                    .accessibilityLabel(
+                        Text(isRunning ? localized("Playing now") : localized("Active profile")))
             }
         }
         .padding(.vertical, 2)
@@ -151,9 +164,6 @@ private struct ProfileRow: View {
         }
         if profile.channelMode == .stereo {
             parts.append(localized("L/R"))
-        }
-        if profile.isBypassed {
-            parts.append(localized("bypassed"))
         }
         return parts.joined(separator: " · ")
     }

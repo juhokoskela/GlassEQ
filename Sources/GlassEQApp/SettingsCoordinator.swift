@@ -527,6 +527,13 @@ final class SettingsCoordinator: NSObject {
             patch.statusMessage = snapshot.statusMessage
             didPatch = true
         }
+        if previous.equalizer != snapshot.equalizer
+            || previous.offersPlaybackHandback != snapshot.offersPlaybackHandback
+        {
+            patch.equalizer = snapshot.equalizer
+            patch.offersPlaybackHandback = snapshot.offersPlaybackHandback
+            didPatch = true
+        }
         if previous.isRunning != snapshot.isRunning {
             patch.isRunning = snapshot.isRunning
             didPatch = true
@@ -1121,11 +1128,14 @@ extension GlassEQAppModel {
         case .applyProfile(let profile):
             try apply(profile: profile)
 
-        case .useProfileForCurrentOutput(let profile):
-            try useForCurrentOutput(profile: profile)
+        case let .useProfileForCurrentOutput(profile, outputUID):
+            try await assignEditedProfile(profile, to: outputUID)
 
-        case .setFallback(let profile):
-            try setFallback(profile: profile)
+        case let .setOutputAssignment(outputUID, profileID):
+            try await setOutputAssignment(outputUID: outputUID, profileID: profileID)
+
+        case .setFallbackProfile(let id):
+            try setFallbackProfile(id)
 
         case let .importProfile(format, name, text):
             let imported = try await importProfile(format: format, name: name, text: text)
@@ -1177,6 +1187,12 @@ extension GlassEQAppModel {
 
         case .retryAutomaticAggregateBuffer:
             try retryAutomaticAggregateBuffer()
+
+        case .playWithoutEQ:
+            playWithoutEQ()
+
+        case .setEqualizerEnabled(let enabled):
+            menuProcessingEnabled = enabled
 
         case .retryAudioEngine:
             retryAudioEngine()

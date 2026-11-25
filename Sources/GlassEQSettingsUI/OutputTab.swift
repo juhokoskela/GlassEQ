@@ -29,97 +29,158 @@ struct OutputTab: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent(localized("Current Output"), value: snapshot.currentOutputName)
-
-                LabeledContent(localized("Audio Buffer")) {
-                    Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
-                        Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
-                        Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
-                        Text(localized("32 frames")).tag(SettingsAggregateBufferMode.frames32)
-                        Text(localized("64 frames")).tag(SettingsAggregateBufferMode.frames64)
-                        Text(localized("128 frames")).tag(SettingsAggregateBufferMode.frames128)
-                    }
-                    .labelsHidden()
-                    .disabled(!snapshot.aggregateBuffer.isAvailable)
-
-                    if snapshot.aggregateBuffer.mode == .automatic,
-                        snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize
-                    {
-                        Button(localized("Retry \(snapshot.aggregateBuffer.defaultFrameSize) Frames")) {
-                            controller.retryAutomaticAggregateBuffer()
-                        }
-                    } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
-                        snapshot.currentOutputBufferFrameSize > fixedFrameSize
-                    {
-                        Button(localized("Retry \(fixedFrameSize) Frames")) {
-                            controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
-                        }
-                    }
-                }
-
-                if shouldShowMacOS27BluetoothBufferNotice(
-                    route: diagnostics.route,
-                    operatingSystemMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-                ) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(localized("macOS 27 Bluetooth audio"), systemImage: "info.circle")
-                            .fontWeight(.semibold)
-                        Text(
-                            localized(
-                                "macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."
-                            )
+                if snapshot.offersPlaybackHandback || snapshot.equalizer.needsRecoveryAction {
+                    PlaybackRecoveryActions(controller: controller)
+                } else if snapshot.equalizer != .unavailable {
+                    Toggle(
+                        localized("Equalizer"),
+                        isOn: Binding(
+                            get: { snapshot.equalizer == .on }, set: controller.setEqualizerEnabled
                         )
-                        .foregroundStyle(.secondary)
-                    }
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityElement(children: .combine)
+                    )
+                    .toggleStyle(.switch)
+                    .accessibilityHint(Text(localized("Turns equalization on or off for all outputs and profiles")))
                 }
-
-                if snapshot.aggregateBuffer.defaultFrameSize > 16 {
-                    DisclosureGroup {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(
-                                localized(
-                                    "Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."
-                                ))
-                            Text(localized("On AirPods Pro, adjusting volume using the stems avoided the issue."))
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    } label: {
-                        Text(localized("Why a larger buffer?"))
-                    }
-                }
-            } footer: {
-                Text(
-                    outputBufferExplanation(
-                        aggregateBuffer: snapshot.aggregateBuffer,
-                        currentFrameSize: snapshot.currentOutputBufferFrameSize
-                    ))
+                LabeledContent(
+                    snapshot.currentOutputUID.isEmpty ? localized("Last Known Output") : localized("Current Output"),
+                    value: snapshot.currentOutputName)
             }
 
-            Section(localized("Profile Mapping")) {
-                LabeledContent(localized("Mapped Profile"), value: mappedProfileName)
-                LabeledContent(controller.draftProfile.name) {
-                    Button(localized("Use for This Output")) {
-                        controller.useDraftForCurrentOutput()
-                    }
-                    .disabled(controller.isProfileStoreProtected || !controller.hasCurrentOutput)
+            Section {
+                let outputUID = snapshot.currentOutputUID
+                Picker(
+                    localized("Profile for This Output"),
+                    selection: Binding(
+                        get: { snapshot.currentOutputMappedProfileID },
+                        set: { controller.setOutputAssignment(outputUID: outputUID, profileID: $0) }
+                    )
+                ) {
+                    Text(localized("Use Fallback")).tag(nil as UUID?)
+                    Divider()
+                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
+                }
+                .disabled(outputUID.isEmpty)
+                Picker(
+                    localized("Fallback Profile"),
+                    selection: Binding(
+                        get: { snapshot.fallbackProfileID }, set: controller.setFallbackProfile
+                    )
+                ) {
+                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(profile.id) }
+                }
+            } header: {
+                Text(localized("Profiles"))
+            } footer: {
+                Text(
+                    localized(
+                        "A new fallback takes effect the next time GlassEQ starts or reconnects an unassigned output."))
+            }
+            .disabled(controller.isEditingLocked)
 
-                    Button(localized("Set as Fallback")) {
-                        controller.setFallbackToDraft()
+            if snapshot.isRunning {
+                Section {
+                    LabeledContent(localized("Audio Buffer")) {
+                        Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
+                            Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
+                            Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
+                            Text(localized("32 frames")).tag(SettingsAggregateBufferMode.frames32)
+                            Text(localized("64 frames")).tag(SettingsAggregateBufferMode.frames64)
+                            Text(localized("128 frames")).tag(SettingsAggregateBufferMode.frames128)
+                        }
+                        .labelsHidden()
+
+                        if snapshot.aggregateBuffer.mode == .automatic,
+                            snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize
+                        {
+                            Button(localized("Try \(snapshot.aggregateBuffer.defaultFrameSize) Frames Again")) {
+                                controller.retryAutomaticAggregateBuffer()
+                            }
+                        } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
+                            snapshot.currentOutputBufferFrameSize > fixedFrameSize
+                        {
+                            Button(localized("Try \(fixedFrameSize) Frames Again")) {
+                                controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
+                            }
+                        }
                     }
-                    .disabled(controller.isProfileStoreProtected)
+
+                    .disabled(!snapshot.aggregateBuffer.isAvailable)
+
+                    if shouldShowMacOS27BluetoothBufferNotice(
+                        route: diagnostics.route,
+                        operatingSystemMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+                    ) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(localized("macOS 27 Bluetooth audio"), systemImage: "info.circle")
+                                .fontWeight(.semibold)
+                            Text(
+                                localized(
+                                    "macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."
+                                )
+                            )
+                            .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityElement(children: .combine)
+                    }
+
+                    if snapshot.aggregateBuffer.defaultFrameSize > 16 {
+                        DisclosureGroup {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(
+                                    localized(
+                                        "Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."
+                                    ))
+                                Text(localized("On AirPods Pro, adjusting volume using the stems avoided the issue."))
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        } label: {
+                            Text(localized("Why a larger buffer?"))
+                        }
+                    }
+                } footer: {
+                    if snapshot.isRunning || snapshot.aggregateBuffer.isAvailable {
+                        Text(
+                            outputBufferExplanation(
+                                aggregateBuffer: snapshot.aggregateBuffer,
+                                currentFrameSize: snapshot.currentOutputBufferFrameSize
+                            ))
+                    }
+                }
+            }
+
+            Section {
+                LabeledContent(localized("Status"), value: statusSummary)
+                if snapshot.isRunning {
+                    LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
+                    LabeledContent(localized("Buffer"), value: bufferSummary)
+                    LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
+                    LabeledContent(
+                        localized("Underrun Events"),
+                        value: snapshot.metrics.playbackUnderrunEvents == 0
+                            ? localized("None")
+                            : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
+                    )
+                }
+            } header: {
+                Text(localized("Engine Status"))
+            } footer: {
+                if (snapshot.equalizer != .off || diagnostics.status.health != .stopped)
+                    && !snapshot.offersPlaybackHandback
+                    && !snapshot.equalizer.needsRecoveryAction
+                {
+                    Text(snapshot.statusMessage)
                 }
             }
 
             Section {
                 HStack {
-                    Button(localized("Export…")) { controller.exportLibrary() }
+                    Button(localized("Export Library…")) { controller.exportLibrary() }
                         .disabled(!snapshot.profileStoreProtection.canExportLibrary)
-                    Button(localized("Import…")) { controller.chooseLibraryBackup() }
+                    Button(localized("Import Backup…")) { controller.chooseLibraryBackup() }
                         .disabled(controller.isEditingLocked)
                     Button(localized("Show Backups in Finder")) { controller.showLibraryBackups() }
                 }
@@ -128,31 +189,6 @@ struct OutputTab: View {
                 Text(localized("Profile Library"))
             } footer: {
                 if let message = controller.libraryMessage { Text(message) }
-            }
-
-            Section {
-                LabeledContent(localized("Status"), value: statusSummary)
-                LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
-                LabeledContent(localized("Buffer"), value: bufferSummary)
-                LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
-                LabeledContent(
-                    localized("Underrun Events"),
-                    value: snapshot.metrics.playbackUnderrunEvents == 0
-                        ? localized("None")
-                        : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
-                )
-                HStack {
-                    Button(localized("Retry Audio Engine")) {
-                        controller.retryAudioEngine()
-                    }
-                    Button(localized("Open Privacy Settings")) {
-                        controller.openPrivacySettings()
-                    }
-                }
-            } header: {
-                Text(localized("Engine Status"))
-            } footer: {
-                Text(snapshot.statusMessage)
             }
 
             Section {
@@ -213,15 +249,6 @@ struct OutputTab: View {
         }
     }
 
-    private var mappedProfileName: String {
-        guard let profileID = snapshot.currentOutputMappedProfileID,
-            let profile = snapshot.profiles.first(where: { $0.id == profileID })
-        else {
-            return localized("Fallback")
-        }
-        return profile.name
-    }
-
     private var diagnostics: SettingsAudioDiagnosticsDTO {
         snapshot.metrics.diagnostics
     }
@@ -229,7 +256,7 @@ struct OutputTab: View {
     private var statusSummary: String {
         switch diagnostics.status.health {
         case .stopped:
-            return localized("Stopped")
+            return snapshot.equalizer == .off ? localized("Equalizer off") : localized("Stopped")
         case .stable:
             return diagnostics.status.isUsingSaferBuffer
                 ? localized("Stable, using safer buffer")
@@ -249,6 +276,43 @@ struct OutputTab: View {
     }
 }
 
+struct PlaybackRecoveryActions: View {
+    var controller: SettingsController
+
+    var body: some View {
+        let snapshot = controller.snapshot
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text(
+                    snapshot.offersPlaybackHandback
+                        ? localized("Output is muted") : localized("Equalizer needs attention")
+                )
+                .fontWeight(.semibold)
+            } icon: {
+                Image(systemName: snapshot.offersPlaybackHandback ? "speaker.slash" : "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+            Text(snapshot.statusMessage)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
+                if snapshot.offersPlaybackHandback {
+                    if snapshot.equalizer == .permissionDenied { privacyButton }
+                    Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button(localized("Turn Off Equalizer")) { controller.playWithoutEQ() }
+                    if snapshot.equalizer == .permissionDenied { privacyButton.buttonStyle(.borderedProminent) }
+                }
+            }
+        }
+    }
+
+    private var privacyButton: some View {
+        Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+    }
+}
+
 func shouldShowMacOS27BluetoothBufferNotice(
     route: SettingsAudioRouteDTO,
     operatingSystemMajorVersion: Int
@@ -265,7 +329,7 @@ func outputBufferExplanation(
     }
     if aggregateBuffer.mode == .automatic {
         return localized(
-            "Automatic starts at \(aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions. It is currently \(aggregateBuffer.automaticFrameSize) frames."
+            "Automatic starts at \(aggregateBuffer.defaultFrameSize) frames for this output and increases the buffer after repeated interruptions."
         )
     }
     if let fixedFrameSize = aggregateBuffer.mode.fixedFrameSize,

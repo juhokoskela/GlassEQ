@@ -36,9 +36,13 @@ struct EditorContextID: Hashable {
 final class SettingsController {
     let model: GlassEQSettingsViewModel
     var draftProfile: EQProfile {
-        didSet { refreshAnalyses() }
+        didSet {
+            updateDirtyState()
+            refreshAnalyses()
+        }
     }
     var selectedProfileID: UUID
+    var pendingSelection: UUID?
     var tab = EditorSection.editor
     var editChannel = EQEditChannel.left
     var isImportSheetPresented = false
@@ -50,7 +54,8 @@ final class SettingsController {
 
     // The stored copy of the selected profile as of the last reconciled snapshot. Comparing the
     // draft against it separates local edits from stored changes that arrived from the app.
-    private var storedProfile: EQProfile
+    private var storedProfile: EQProfile { didSet { updateDirtyState() } }
+    private(set) var hasUnsavedDraft = false
     private var pendingNewProfileImportRoute: ProfileImportRoute?
 
     let analysisCache = EQAnalysisCache()
@@ -64,14 +69,20 @@ final class SettingsController {
         storedProfile =
             snapshot.profiles.first(where: { $0.id == snapshot.selectedProfileID })
             ?? snapshot.draftProfile
+        updateDirtyState()
     }
 
     var snapshot: SettingsSnapshot {
         model.snapshot
     }
 
-    var hasUnsavedDraft: Bool {
-        draftProfile != storedProfile
+    private func updateDirtyState() {
+        let dirty = draftProfile != storedProfile
+        if hasUnsavedDraft != dirty { hasUnsavedDraft = dirty }
+    }
+
+    var canAssignDraftToOutput: Bool {
+        hasCurrentOutput && draftProfile.id != snapshot.currentOutputMappedProfileID
     }
 
     var canApplyDraft: Bool {
@@ -148,6 +159,11 @@ final class SettingsController {
         }
     }
 
+    var isDiscardSelectionPresented: Bool {
+        get { pendingSelection != nil && !isImportSheetPresented && !isNewProfileSheetPresented }
+        set { if !newValue { pendingSelection = nil } }
+    }
+
     var isDeletionConfirmationPresented: Bool {
         get {
             profilePendingDeletion != nil
@@ -181,6 +197,17 @@ final class SettingsController {
         !isStartingProgrammeComparison && settingsCanDeleteProfile(snapshot, id: id)
     }
 
+    func requestSelection(_ id: UUID) {
+        guard !isComparisonInProgress else { return }
+        tab = .editor
+        guard selectedProfileID != id else { return }
+        if hasUnsavedDraft {
+            pendingSelection = id
+        } else {
+            selectProfile(id)
+        }
+    }
+
     func selectProfile(_ id: UUID) {
         guard !isComparisonInProgress,
             let profile = snapshot.profiles.first(where: { $0.id == id })
@@ -210,12 +237,25 @@ final class SettingsController {
         draftEditGeneration &+= 1
     }
 
-    func useDraftForCurrentOutput() {
-        perform(.useProfileForCurrentOutput(draftProfile))
+    func setEqualizerEnabled(_ enabled: Bool) {
+        perform(.setEqualizerEnabled(enabled))
     }
 
-    func setFallbackToDraft() {
-        perform(.setFallback(draftProfile))
+    func useDraftForCurrentOutput() {
+        if hasUnsavedDraft {
+            perform(.useProfileForCurrentOutput(draftProfile, outputUID: snapshot.currentOutputUID))
+        } else {
+            assignProfileToCurrentOutput(draftProfile.id)
+        }
+    }
+
+    func setOutputAssignment(outputUID: String, profileID: UUID?) {
+        perform(.setOutputAssignment(outputUID: outputUID, profileID: profileID))
+    }
+
+    func setFallbackProfile(_ id: UUID) {
+        guard id != snapshot.fallbackProfileID, !isEditingLocked else { return }
+        perform(.setFallbackProfile(id))
     }
 
     func startProgrammeComparison() {
@@ -242,6 +282,8 @@ final class SettingsController {
     func retryAutomaticAggregateBuffer() {
         perform(.retryAutomaticAggregateBuffer)
     }
+
+    func playWithoutEQ() { perform(.playWithoutEQ) }
 
     func retryAudioEngine() {
         perform(.retryAudioEngine)
@@ -278,10 +320,7 @@ final class SettingsController {
     }
 
     func assignProfileToCurrentOutput(_ id: UUID) {
-        guard let profile = snapshot.profiles.first(where: { $0.id == id }) else {
-            return
-        }
-        perform(.useProfileForCurrentOutput(profile))
+        setOutputAssignment(outputUID: snapshot.currentOutputUID, profileID: id)
     }
 
     func presentImport(_ route: ProfileImportRoute) {
@@ -301,10 +340,15 @@ final class SettingsController {
         presentImport(route)
     }
 
+    private func takeCommandError() -> String? {
+        defer { model.commandErrorMessage = nil }
+        return model.commandErrorMessage
+    }
+
     func importProfile(format: ImportFormat, name: String, text: String) async -> String? {
         let response = await dispatch(.importProfile(format: format, name: name, text: text))
         guard response?.importSucceeded == true else {
-            return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
+            return takeCommandError() ?? localized("GlassEQ could not import this profile.")
         }
         return nil
     }
@@ -312,7 +356,7 @@ final class SettingsController {
     func importParsedProfile(_ profile: EQProfile) async -> String? {
         let response = await dispatch(.importParsedProfile(profile))
         guard response?.importSucceeded == true else {
-            return model.commandErrorMessage ?? localized("GlassEQ could not import this profile.")
+            return takeCommandError() ?? localized("GlassEQ could not import this profile.")
         }
         return nil
     }
@@ -373,7 +417,7 @@ final class SettingsController {
         let response = await model.chooseImportFiles(mode: mode)
         return SettingsFileImportChoice(
             selection: response?.fileImportSelection,
-            errorMessage: response == nil ? model.commandErrorMessage : nil
+            errorMessage: response == nil ? takeCommandError() : nil
         )
     }
 
@@ -428,17 +472,6 @@ final class SettingsController {
             ?? latest.draftProfile
     }
 
-    // A command the user dispatched may intentionally move the selection (create, duplicate,
-    // delete). That is adopted unless the user changed the selection or draft while the command
-    // was in flight, in which case the local state wins as with any other snapshot.
-    private func reconcileAfterCommand(dispatchedSelection: UUID, dispatchedDraft: EQProfile) {
-        guard selectedProfileID == dispatchedSelection, draftProfile == dispatchedDraft else {
-            reconcileWithSnapshot()
-            return
-        }
-        adoptSnapshotSelection()
-    }
-
     private func perform(_ command: SettingsCommand) {
         Task { @MainActor in
             await dispatch(command)
@@ -453,14 +486,19 @@ final class SettingsController {
         guard let response else {
             return nil
         }
+        guard selectedProfileID == dispatchedSelection, draftProfile == dispatchedDraft else {
+            reconcileWithSnapshot()
+            return response
+        }
         switch command {
-        case .createProfile, .duplicateProfile, .deleteProfile,
-            .applyProfile, .useProfileForCurrentOutput, .setFallback,
-            .importProfile, .importParsedProfile, .resetUnsupportedProfileStore, .applyLibraryImport(.replace):
-            reconcileAfterCommand(
-                dispatchedSelection: dispatchedSelection,
-                dispatchedDraft: dispatchedDraft
-            )
+        case .createProfile, .duplicateProfile, .importProfile, .importParsedProfile:
+            reconcileWithSnapshot()
+            if pendingSelection == nil { requestSelection(snapshot.selectedProfileID) }
+        case .deleteProfile(let id) where id != dispatchedSelection:
+            reconcileWithSnapshot()
+        case .deleteProfile, .applyProfile, .useProfileForCurrentOutput,
+            .resetUnsupportedProfileStore, .applyLibraryImport(.replace):
+            adoptSnapshotSelection()
         default:
             break
         }

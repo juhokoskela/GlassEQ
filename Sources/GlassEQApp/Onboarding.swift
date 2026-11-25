@@ -136,6 +136,13 @@ enum OnboardingAudioCaptureState: Equatable {
     case permissionDenied(settingsError: String?)
     case failed(message: String)
     case bypassed
+
+    var isFailure: Bool {
+        switch self {
+        case .permissionDenied, .failed: true
+        default: false
+        }
+    }
 }
 
 struct OnboardingView: View {

@@ -45,6 +45,8 @@ public final class GlassEQSettingsViewModel {
         if let statusMessage = patch.statusMessage {
             snapshot.statusMessage = statusMessage
         }
+        if let equalizer = patch.equalizer { snapshot.equalizer = equalizer }
+        if let handback = patch.offersPlaybackHandback { snapshot.offersPlaybackHandback = handback }
         if let isRunning = patch.isRunning {
             snapshot.isRunning = isRunning
         }

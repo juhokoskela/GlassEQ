@@ -218,18 +218,4 @@ extension FilterKind {
         }
     }
 
-    var shortTitle: String {
-        switch self {
-        case .peak:
-            localized("Peak")
-        case .lowShelf:
-            localized("Low")
-        case .highShelf:
-            localized("High")
-        case .highPass:
-            "HP"
-        case .lowPass:
-            "LP"
-        }
-    }
 }

@@ -10,6 +10,35 @@ import Testing
 @Suite
 struct SettingsIPCTests {
     @Test
+    func graphReadoutFollowsTheDrawnLogFrequencySegment() {
+        let points = [
+            FrequencyResponsePoint(frequency: 100, magnitudeDB: -6),
+            FrequencyResponsePoint(frequency: 400, magnitudeDB: 2),
+        ]
+        #expect(EQAnalysisSnapshot.plottedGain(at: 100, in: points) == -6)
+        #expect(EQAnalysisSnapshot.plottedGain(at: 200, in: points) == -2)
+        #expect(EQAnalysisSnapshot.plottedGain(at: 400, in: points) == 2)
+        #expect(EQAnalysisSnapshot.plottedGain(at: 500, in: points) == nil)
+    }
+
+    @Test
+    func dashedResponseBoundsOffscreenSegmentsAndPreservesCrossings() {
+        let scale = PlotScale(bounds: CGRect(x: 0, y: 0, width: 500, height: 160), maximumFrequency: 20_000)
+        let path = scale.curvePath(for: [
+            .init(frequency: 100, magnitudeDB: 0), .init(frequency: 1_000, magnitudeDB: -6_466),
+            .init(frequency: 2_000, magnitudeDB: -6_466), .init(frequency: 4_000, magnitudeDB: 0),
+        ])
+        let bounds = path.boundingRect
+        #expect(abs(bounds.minY - scale.y(for: 0)) < 0.001)
+        #expect(abs(bounds.maxY - (scale.rect.maxY + 3)) < 0.001)
+        #expect(!path.isEmpty)
+        #expect(
+            scale.curvePath(for: [
+                .init(frequency: 20, magnitudeDB: -90), .init(frequency: 100, magnitudeDB: -120),
+            ]).isEmpty)
+    }
+
+    @Test
     func fileImportChoiceClearsExistingSelectionOnlyAfterFailure() {
         let failure = SettingsFileImportChoice(
             selection: nil,
@@ -332,6 +361,57 @@ struct SettingsIPCTests {
 
     @Test(arguments: [false, true])
     @MainActor
+    func editorSendsProfileContentsOnlyWhenSavingAnEditedAssignment(edited: Bool) async {
+        var snapshot = SettingsSnapshotDTO.disconnected
+        let saved = EQProfile(name: "Speakers", mode: .parametric, filters: [])
+        snapshot.profiles = [saved]
+        snapshot.selectedProfileID = saved.id
+        snapshot.draftProfile = saved
+        snapshot.currentOutputUID = "speakers"
+        let client = ScriptedSettingsCommandClient()
+        let controller = SettingsController(model: client.makeModel(snapshot: snapshot))
+        if edited { controller.draftProfile.preampDB = -3 }
+        let expected: SettingsCommand =
+            edited
+            ? .useProfileForCurrentOutput(controller.draftProfile, outputUID: "speakers")
+            : .setOutputAssignment(outputUID: "speakers", profileID: saved.id)
+        await withCheckedContinuation { sent in
+            client.onPerform = { sent.resume() }
+            controller.useDraftForCurrentOutput()
+        }
+        #expect(client.commands == [expected])
+    }
+
+    @Test
+    @MainActor
+    func editorOffersAssignmentOnlyWhenTheMappingWouldChange() {
+        let profile = EQProfile.flatParametric
+        var snapshot = SettingsSnapshotDTO.disconnected
+        snapshot.profiles = [profile]
+        snapshot.currentOutputUID = "speakers"
+        snapshot.selectedProfileID = profile.id
+        snapshot.draftProfile = profile
+        snapshot.activeProfileID = profile.id
+        snapshot.currentOutputMappedProfileID = profile.id
+        let model = GlassEQSettingsViewModel(snapshot: snapshot)
+        let controller = SettingsController(model: model)
+        #expect(!controller.canAssignDraftToOutput)
+        controller.draftProfile.preampDB = -3
+        #expect(!controller.canAssignDraftToOutput)
+        controller.revertDraft()
+        snapshot.activeProfileID = UUID()
+        model.accept(snapshot: snapshot)
+        #expect(!controller.canAssignDraftToOutput)
+        snapshot.currentOutputMappedProfileID = nil
+        model.accept(snapshot: snapshot)
+        #expect(controller.canAssignDraftToOutput)
+        snapshot.currentOutputUID = ""
+        model.accept(snapshot: snapshot)
+        #expect(!controller.canAssignDraftToOutput)
+    }
+
+    @Test(arguments: [false, true])
+    @MainActor
     func compareLocksTheCurrentDraftBeforeDispatching(comparisonStarted: Bool) async {
         let first = EQProfile(name: "First", mode: .parametric, filters: [])
         let second = EQProfile(name: "Second", mode: .parametric, filters: [])
@@ -498,6 +578,59 @@ struct SettingsIPCTests {
         #expect(controller.hasUnsavedDraft)
     }
 
+    @Test(arguments: [false, true])
+    @MainActor
+    func duplicatingASavedProfileKeepsUnappliedEditsUntilTheUserSwitches(selectDuringCommand: Bool) async {
+        let original = EQProfile.flatParametric
+        let copy = EQProfile(name: "Saved Copy", mode: .parametric, filters: [])
+        var initial = SettingsSnapshotDTO.disconnected
+        let other = EQProfile(name: "Other", mode: .parametric, filters: [])
+        initial.profiles = [original, other]
+        initial.selectedProfileID = original.id
+        initial.draftProfile = original
+        var reply = initial
+        reply.profiles.append(copy)
+        reply.selectedProfileID = copy.id
+        reply.draftProfile = copy
+        let client = ScriptedSettingsCommandClient(publishing: reply)
+        let controller = SettingsController(model: client.makeModel(snapshot: initial))
+        controller.draftProfile.preampDB = -4
+
+        if selectDuringCommand { client.onPerform = { controller.requestSelection(other.id) } }
+        await controller.dispatch(.duplicateProfile(original.id))
+
+        #expect(controller.pendingSelection == (selectDuringCommand ? other.id : copy.id))
+        controller.isImportSheetPresented = true
+        #expect(!controller.isDiscardSelectionPresented)
+        controller.isImportSheetPresented = false
+        #expect(controller.isDiscardSelectionPresented)
+        #expect(controller.draftProfile.id == original.id)
+        #expect(controller.draftProfile.preampDB == -4)
+        controller.pendingSelection = nil
+        #expect(controller.hasUnsavedDraft)
+    }
+
+    @Test
+    @MainActor
+    func stoppingPlaybackPreservesLocalFilterEdits() {
+        let profile = EQProfile.flatParametric
+        var initial = SettingsSnapshotDTO.disconnected
+        initial.profiles = [profile]
+        initial.selectedProfileID = profile.id
+        initial.draftProfile = profile
+        let model = GlassEQSettingsViewModel(snapshot: initial)
+        let controller = SettingsController(model: model)
+        controller.draftProfile.preampDB = -4
+        initial.isRunning = false
+        initial.statusMessage = "Equalizer is off"
+        model.accept(snapshot: initial)
+        controller.reconcileWithSnapshot()
+
+        #expect(!controller.snapshot.isRunning)
+        #expect(controller.draftProfile.preampDB == -4)
+        #expect(controller.hasUnsavedDraft)
+    }
+
     @Test
     @MainActor
     func commandSnapshotAdoptsIntentionalSelectionChangeWhenLocalDraftIsUnchanged() async {
@@ -588,6 +721,17 @@ struct SettingsIPCTests {
         #expect(controller.draftProfile.preampDB == -4.5)
         #expect(controller.hasUnsavedDraft)
         #expect(model.commandErrorMessage == "Command failed")
+    }
+
+    @Test
+    @MainActor
+    func importSheetOwnsItsCommandErrors() async {
+        let model = GlassEQSettingsViewModel(client: FailingSettingsCommandClient())
+        let controller = SettingsController(model: model)
+        #expect(await controller.importParsedProfile(controller.draftProfile) == "Command failed")
+        #expect(model.commandErrorMessage == nil)
+        #expect(await controller.chooseImportFiles(.single).errorMessage == "Command failed")
+        #expect(model.commandErrorMessage == nil)
     }
 
     @Test
