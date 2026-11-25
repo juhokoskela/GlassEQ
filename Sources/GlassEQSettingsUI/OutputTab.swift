@@ -30,7 +30,7 @@ struct OutputTab: View {
         Form {
             Section {
                 if snapshot.offersPlaybackHandback || snapshot.equalizer.needsRecoveryAction {
-                    recoveryActions
+                    PlaybackRecoveryActions(controller: controller)
                 } else if snapshot.equalizer != .unavailable {
                     Toggle(
                         localized("Equalizer"),
@@ -77,93 +77,100 @@ struct OutputTab: View {
             }
             .disabled(controller.isEditingLocked)
 
-            Section {
-                LabeledContent(localized("Audio Buffer")) {
-                    Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
-                        Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
-                        Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
-                        Text(localized("32 frames")).tag(SettingsAggregateBufferMode.frames32)
-                        Text(localized("64 frames")).tag(SettingsAggregateBufferMode.frames64)
-                        Text(localized("128 frames")).tag(SettingsAggregateBufferMode.frames128)
+            if snapshot.isRunning {
+                Section {
+                    LabeledContent(localized("Audio Buffer")) {
+                        Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
+                            Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
+                            Text(localized("16 frames")).tag(SettingsAggregateBufferMode.frames16)
+                            Text(localized("32 frames")).tag(SettingsAggregateBufferMode.frames32)
+                            Text(localized("64 frames")).tag(SettingsAggregateBufferMode.frames64)
+                            Text(localized("128 frames")).tag(SettingsAggregateBufferMode.frames128)
+                        }
+                        .labelsHidden()
+
+                        if snapshot.aggregateBuffer.mode == .automatic,
+                            snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize
+                        {
+                            Button(localized("Try \(snapshot.aggregateBuffer.defaultFrameSize) Frames Again")) {
+                                controller.retryAutomaticAggregateBuffer()
+                            }
+                        } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
+                            snapshot.currentOutputBufferFrameSize > fixedFrameSize
+                        {
+                            Button(localized("Try \(fixedFrameSize) Frames Again")) {
+                                controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
+                            }
+                        }
                     }
-                    .labelsHidden()
+
                     .disabled(!snapshot.aggregateBuffer.isAvailable)
 
-                    if snapshot.aggregateBuffer.mode == .automatic,
-                        snapshot.aggregateBuffer.automaticFrameSize > snapshot.aggregateBuffer.defaultFrameSize
-                    {
-                        Button(localized("Try \(snapshot.aggregateBuffer.defaultFrameSize) Frames Again")) {
-                            controller.retryAutomaticAggregateBuffer()
-                        }
-                    } else if let fixedFrameSize = snapshot.aggregateBuffer.mode.fixedFrameSize,
-                        snapshot.currentOutputBufferFrameSize > fixedFrameSize
-                    {
-                        Button(localized("Try \(fixedFrameSize) Frames Again")) {
-                            controller.setAggregateBufferMode(snapshot.aggregateBuffer.mode)
-                        }
-                    }
-                }
-
-                if shouldShowMacOS27BluetoothBufferNotice(
-                    route: diagnostics.route,
-                    operatingSystemMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
-                ) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(localized("macOS 27 Bluetooth audio"), systemImage: "info.circle")
-                            .fontWeight(.semibold)
-                        Text(
-                            localized(
-                                "macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."
-                            )
-                        )
-                        .foregroundStyle(.secondary)
-                    }
-                    .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityElement(children: .combine)
-                }
-
-                if snapshot.aggregateBuffer.defaultFrameSize > 16 {
-                    DisclosureGroup {
-                        VStack(alignment: .leading, spacing: 8) {
+                    if shouldShowMacOS27BluetoothBufferNotice(
+                        route: diagnostics.route,
+                        operatingSystemMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+                    ) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(localized("macOS 27 Bluetooth audio"), systemImage: "info.circle")
+                                .fontWeight(.semibold)
                             Text(
                                 localized(
-                                    "Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."
-                                ))
-                            Text(localized("On AirPods Pro, adjusting volume using the stems avoided the issue."))
+                                    "macOS 27 may use a 256-frame buffer for Bluetooth audio even when a smaller size is selected. Retrying may not lower it."
+                                )
+                            )
+                            .foregroundStyle(.secondary)
                         }
                         .font(.caption)
-                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    } label: {
-                        Text(localized("Why a larger buffer?"))
+                        .accessibilityElement(children: .combine)
                     }
-                }
-            } footer: {
-                if snapshot.isRunning || snapshot.aggregateBuffer.isAvailable {
-                    Text(
-                        outputBufferExplanation(
-                            aggregateBuffer: snapshot.aggregateBuffer,
-                            currentFrameSize: snapshot.currentOutputBufferFrameSize
-                        ))
+
+                    if snapshot.aggregateBuffer.defaultFrameSize > 16 {
+                        DisclosureGroup {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(
+                                    localized(
+                                        "Changing Bluetooth volume from your Mac can briefly delay audio processing. A larger buffer helps absorb those delays."
+                                    ))
+                                Text(localized("On AirPods Pro, adjusting volume using the stems avoided the issue."))
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        } label: {
+                            Text(localized("Why a larger buffer?"))
+                        }
+                    }
+                } footer: {
+                    if snapshot.isRunning || snapshot.aggregateBuffer.isAvailable {
+                        Text(
+                            outputBufferExplanation(
+                                aggregateBuffer: snapshot.aggregateBuffer,
+                                currentFrameSize: snapshot.currentOutputBufferFrameSize
+                            ))
+                    }
                 }
             }
 
             Section {
                 LabeledContent(localized("Status"), value: statusSummary)
-                LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
-                LabeledContent(localized("Buffer"), value: bufferSummary)
-                LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
-                LabeledContent(
-                    localized("Underrun Events"),
-                    value: snapshot.metrics.playbackUnderrunEvents == 0
-                        ? localized("None")
-                        : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
-                )
+                if snapshot.isRunning {
+                    LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
+                    LabeledContent(localized("Buffer"), value: bufferSummary)
+                    LabeledContent(localized("Added Latency"), value: outputAddedLatencyLabel(snapshot))
+                    LabeledContent(
+                        localized("Underrun Events"),
+                        value: snapshot.metrics.playbackUnderrunEvents == 0
+                            ? localized("None")
+                            : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
+                    )
+                }
             } header: {
                 Text(localized("Engine Status"))
             } footer: {
-                if !snapshot.offersPlaybackHandback && !snapshot.equalizer.needsRecoveryAction {
+                if snapshot.equalizer != .off && !snapshot.offersPlaybackHandback
+                    && !snapshot.equalizer.needsRecoveryAction
+                {
                     Text(snapshot.statusMessage)
                 }
             }
@@ -241,28 +248,6 @@ struct OutputTab: View {
         }
     }
 
-    private var recoveryActions: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(
-                snapshot.offersPlaybackHandback ? localized("Output is muted") : localized("Equalizer needs attention"),
-                systemImage: snapshot.offersPlaybackHandback ? "speaker.slash" : "exclamationmark.triangle"
-            )
-            .fontWeight(.semibold)
-            Text(snapshot.statusMessage)
-                .foregroundStyle(.secondary)
-            HStack {
-                if snapshot.offersPlaybackHandback {
-                    Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
-                        .buttonStyle(.borderedProminent)
-                }
-                Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
-                if snapshot.equalizer == .permissionDenied {
-                    Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
-                }
-            }
-        }
-    }
-
     private var diagnostics: SettingsAudioDiagnosticsDTO {
         snapshot.metrics.diagnostics
     }
@@ -287,6 +272,34 @@ struct OutputTab: View {
             aggregateBuffer: snapshot.aggregateBuffer,
             currentFrameSize: snapshot.currentOutputBufferFrameSize
         )
+    }
+}
+
+struct PlaybackRecoveryActions: View {
+    var controller: SettingsController
+
+    var body: some View {
+        let snapshot = controller.snapshot
+        VStack(alignment: .leading, spacing: 8) {
+            Label(
+                snapshot.offersPlaybackHandback ? localized("Output is muted") : localized("Equalizer needs attention"),
+                systemImage: snapshot.offersPlaybackHandback ? "speaker.slash" : "exclamationmark.triangle"
+            )
+            .fontWeight(.semibold)
+            .foregroundStyle(.orange)
+            Text(snapshot.statusMessage)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
+                if snapshot.equalizer == .permissionDenied {
+                    Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+                }
+                if snapshot.offersPlaybackHandback {
+                    Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
     }
 }
 

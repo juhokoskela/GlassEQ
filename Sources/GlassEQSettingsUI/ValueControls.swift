@@ -30,6 +30,8 @@ struct SliderRow: View {
                 .fixedSize()
                 .frame(minWidth: 64, alignment: .leading)
             Slider(value: sliderValue, in: sliderRange)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
                 .accessibilityLabel(Text(title))
                 .accessibilityValue(Text(label))
                 .accessibilityHint(Text(localized("Adjusts \(title.lowercased())")))

@@ -22,6 +22,13 @@ struct ProfileDetail: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity)
         .safeAreaInset(edge: .top, spacing: 0) {
+            if controller.tab == .editor && controller.snapshot.offersPlaybackHandback {
+                PlaybackRecoveryActions(controller: controller)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(.bar)
+            }
             if controller.isProfileStoreProtected {
                 ProfileStoreProtectionBanner(
                     protection: controller.snapshot.profileStoreProtection,
