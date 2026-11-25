@@ -347,6 +347,29 @@ struct SettingsIPCTests {
         #expect(!controller.canApplyDraft)
     }
 
+    @Test(arguments: [false, true])
+    @MainActor
+    func editorSendsProfileContentsOnlyWhenSavingAnEditedAssignment(edited: Bool) async {
+        var snapshot = SettingsSnapshotDTO.disconnected
+        let saved = EQProfile(name: "Speakers", mode: .parametric, filters: [])
+        snapshot.profiles = [saved]
+        snapshot.selectedProfileID = saved.id
+        snapshot.draftProfile = saved
+        snapshot.currentOutputUID = "speakers"
+        let client = ScriptedSettingsCommandClient()
+        let controller = SettingsController(model: client.makeModel(snapshot: snapshot))
+        if edited { controller.draftProfile.preampDB = -3 }
+        let expected: SettingsCommand =
+            edited
+            ? .useProfileForCurrentOutput(controller.draftProfile, outputUID: "speakers")
+            : .setOutputAssignment(outputUID: "speakers", profileID: saved.id)
+        await withCheckedContinuation { sent in
+            client.onPerform = { sent.resume() }
+            controller.useDraftForCurrentOutput()
+        }
+        #expect(client.commands == [expected])
+    }
+
     @Test
     @MainActor
     func outputAssignmentRemainsAvailableForEditedOrInactiveProfiles() {

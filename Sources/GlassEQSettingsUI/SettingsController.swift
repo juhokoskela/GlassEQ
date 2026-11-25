@@ -238,7 +238,11 @@ final class SettingsController {
     }
 
     func useDraftForCurrentOutput() {
-        perform(.useProfileForCurrentOutput(draftProfile, outputUID: snapshot.currentOutputUID))
+        if hasUnsavedDraft {
+            perform(.useProfileForCurrentOutput(draftProfile, outputUID: snapshot.currentOutputUID))
+        } else {
+            assignProfileToCurrentOutput(draftProfile.id)
+        }
     }
 
     func setOutputAssignment(outputUID: String, profileID: UUID?) {
