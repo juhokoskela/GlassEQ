@@ -1961,20 +1961,20 @@ struct GlassEQAppModelLifecycleTests {
         observers.observers[0].emit(.success(old))
         try #require(await waitUntil { model.onboardingAudioCaptureState == .bypassed })
         model.handleWillSleep()
-        lookup.result = .failure(TestAudioError.defaultOutputUnavailable)
+        lookup.result = .success(new)
         model.handleDidWake()
         try #require(await waitUntil { observers.observers.count == 2 })
         let wakeObserver = observers.observers[1]
         for attempt in 1...12 {
             try #require(await waitUntil { wakeObserver.startCalls.count == attempt })
-            wakeObserver.emit(lookup.result)
+            wakeObserver.emit(.failure(TestAudioError.defaultOutputUnavailable))
         }
         try #require(await waitUntil { model.lifecycleState == .stopped })
         #expect(model.settingsSnapshot().metrics.diagnostics.status.health == .needsAttention)
         #expect(model.retryPlayback == nil)
         #expect(!engine.holdsProcessingMute)
         #expect(engine.stopCallCount == engine.handbackCount)
-        lookup.result = .success(new)
+        #expect(model.activeProfile.id == bypassed.id)
         observers.observers[1].emit(.success(new))
         try #require(await waitUntil { model.activeProfile == enabled })
         #expect(!model.isRunning)

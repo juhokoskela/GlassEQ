@@ -2569,6 +2569,11 @@ final class GlassEQAppModel {
         else {
             return
         }
+        if isGloballyBypassed, lifecycleState == .waking, case .failure = result {
+            // A fresh device lookup cannot confirm that the observer attached its device listeners.
+            handleDefaultOutputChange(result)
+            return
+        }
         if processingIntent.awaitsRetry {
             if case .success(let output) = result {
                 refreshCurrentOutputMetadata(from: output)
