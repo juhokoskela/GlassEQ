@@ -322,6 +322,7 @@ private enum LicensingBootstrap {
 
 protocol DefaultOutputLookingUp: Sendable {
     func defaultOutputDevice() throws -> AudioOutputDevice
+    @concurrent func readDefaultOutput() async -> AudioOutputDevice?
 }
 
 extension DefaultOutputLookingUp {

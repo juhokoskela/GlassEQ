@@ -3191,15 +3191,16 @@ struct GlassEQAppModelLifecycleTests {
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.isRunning })
 
-        let gate = FakeStartBlocker()
+        let gate = OutputSettlementGate()
+        gate.hold()
         lookup.blockNextLookup(gate)
-        defer { gate.unblock() }
+        defer { gate.release() }
         var draft = first
         draft.preampDB = -3
         let pending = Task {
             try await model.performSettingsCommand(.useProfileForCurrentOutput(draft, outputUID: output.uid))
         }
-        try #require(await waitUntil { gate.waitUntilEntered(timeout: .now()) })
+        try #require(await waitUntil { gate.waitCount > 0 })
         if applyEdit {
             var newer = first
             newer.preampDB = -6
@@ -3208,7 +3209,7 @@ struct GlassEQAppModelLifecycleTests {
             _ = try await model.performSettingsCommand(
                 .setOutputAssignment(outputUID: output.uid, profileID: second.id))
         }
-        gate.unblock()
+        gate.release()
         await #expect(throws: SettingsCommandFailure.self) { try await pending.value }
         if applyEdit {
             #expect(model.activeProfile.preampDB == -6)
@@ -5994,7 +5995,7 @@ private final class SleepingSettingsHelperLauncher: SettingsHelperLaunching {
 private final class FakeDefaultOutputLookup: DefaultOutputLookingUp, @unchecked Sendable {
     private let lock = NSLock()
     private var _defaultOutputCalls = 0
-    private var nextLookupGate: FakeStartBlocker?
+    private var nextLookupGate: OutputSettlementGate?
     private var _result: Result<AudioOutputDevice, Error>
 
     private(set) var defaultOutputCalls: Int {
@@ -6011,17 +6012,25 @@ private final class FakeDefaultOutputLookup: DefaultOutputLookingUp, @unchecked 
         self._result = result
     }
 
-    func blockNextLookup(_ gate: FakeStartBlocker) {
+    func blockNextLookup(_ gate: OutputSettlementGate) {
         withLock { nextLookupGate = gate }
     }
 
-    func defaultOutputDevice() throws -> AudioOutputDevice {
-        let (result, gate) = withLock {
-            _defaultOutputCalls += 1
+    @concurrent
+    func readDefaultOutput() async -> AudioOutputDevice? {
+        let gate = withLock {
             defer { nextLookupGate = nil }
-            return (_result, nextLookupGate)
+            return nextLookupGate
         }
-        gate?.waitUntilUnblocked()
+        if let gate { await gate.sleep(for: .zero) }
+        return try? defaultOutputDevice()
+    }
+
+    func defaultOutputDevice() throws -> AudioOutputDevice {
+        let result = withLock {
+            _defaultOutputCalls += 1
+            return _result
+        }
         return try result.get()
     }
 
