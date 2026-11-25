@@ -4734,8 +4734,11 @@ private struct MenuBarView: View {
                 Spacer()
                 if model.canControlMenuProcessing {
                     if model.needsMenuRecovery {
-                        Label(localized("Needs attention"), systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                        Label {
+                            Text(localized("Needs attention"))
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
                     } else {
                         Toggle(localized("Equalizer"), isOn: $model.menuProcessingEnabled)
                             .toggleStyle(.switch)
@@ -4751,7 +4754,12 @@ private struct MenuBarView: View {
             }
 
             if model.retryPlayback == .muted {
-                Label(localized("Output is muted"), systemImage: "speaker.slash").font(.headline)
+                Label {
+                    Text(localized("Output is muted"))
+                } icon: {
+                    Image(systemName: "speaker.slash").foregroundStyle(.orange)
+                }
+                .font(.headline)
             }
             Divider()
 
