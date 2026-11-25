@@ -3843,7 +3843,15 @@ final class GlassEQAppModel {
             return
         }
         guard wakeReconnectAttempts < WakeReconnectPolicy.maximumAttempts else {
-            suspendUntilRetry(status)
+            if isGloballyBypassed {
+                invalidatePendingOutputChange()
+                lifecycleState = .stopped
+                onboardingAudioCaptureState = .failed(message: status)
+                statusMessage = status
+                notifyModelDidChange()
+            } else {
+                suspendUntilRetry(status)
+            }
             return
         }
 
@@ -4521,15 +4529,7 @@ final class GlassEQAppModel {
             notifyModelDidChange()
             return
         }
-        if isGloballyBypassed {
-            lifecycleState = .stopped
-            onboardingAudioCaptureState = .bypassed
-            statusMessage = localized("Equalizer is off")
-            startObserver(sendInitialValue: true)
-            notifyModelDidChange()
-        } else {
-            beginAudioReconnect()
-        }
+        beginAudioReconnect()
     }
 
     private func beginAudioReconnect() {

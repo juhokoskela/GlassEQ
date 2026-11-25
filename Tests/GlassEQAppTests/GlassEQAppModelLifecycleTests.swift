@@ -1965,9 +1965,12 @@ struct GlassEQAppModelLifecycleTests {
         model.handleDidWake()
         try #require(await waitUntil { observers.observers.count == 2 })
         let wakeObserver = observers.observers[1]
-        wakeObserver.emit(lookup.result)
-        try #require(await waitUntil { model.statusMessage.contains("Default output unavailable") })
-        #expect(model.lifecycleState == .stopped)
+        for attempt in 1...12 {
+            try #require(await waitUntil { wakeObserver.startCalls.count == attempt })
+            wakeObserver.emit(lookup.result)
+        }
+        try #require(await waitUntil { model.lifecycleState == .stopped })
+        #expect(model.settingsSnapshot().metrics.diagnostics.status.health == .needsAttention)
         #expect(model.retryPlayback == nil)
         #expect(!engine.holdsProcessingMute)
         #expect(engine.stopCallCount == engine.handbackCount)
@@ -1975,6 +1978,26 @@ struct GlassEQAppModelLifecycleTests {
         observers.observers[1].emit(.success(new))
         try #require(await waitUntil { model.activeProfile == enabled })
         #expect(!model.isRunning)
+        #expect(engine.startCalls.isEmpty)
+        model.stop()
+    }
+
+    @Test
+    func bypassedWakeRetriesListenerRegistrationWithoutAcquiringCapture() async throws {
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory(startError: TestAudioError.defaultOutputUnavailable)
+        let model = makeModel(engine: engine, observers: observers, outputDelay: .zero, wakeDelay: .zero)
+        model.setBypass(true)
+        model.handleWillSleep()
+        model.handleDidWake()
+        try #require(
+            await waitUntil {
+                observers.observers.count == 2 && observers.observers[1].startCalls.count == 12
+                    && model.lifecycleState == .stopped
+            })
+        #expect(model.isGloballyBypassed)
+        #expect(!engine.holdsProcessingMute)
+        #expect(engine.stopCallCount == engine.handbackCount)
         #expect(engine.startCalls.isEmpty)
         model.stop()
     }

@@ -168,7 +168,8 @@ struct OutputTab: View {
             } header: {
                 Text(localized("Engine Status"))
             } footer: {
-                if snapshot.equalizer != .off && !snapshot.offersPlaybackHandback
+                if (snapshot.equalizer != .off || diagnostics.status.health != .stopped)
+                    && !snapshot.offersPlaybackHandback
                     && !snapshot.equalizer.needsRecoveryAction
                 {
                     Text(snapshot.statusMessage)
@@ -281,12 +282,16 @@ struct PlaybackRecoveryActions: View {
     var body: some View {
         let snapshot = controller.snapshot
         VStack(alignment: .leading, spacing: 8) {
-            Label(
-                snapshot.offersPlaybackHandback ? localized("Output is muted") : localized("Equalizer needs attention"),
-                systemImage: snapshot.offersPlaybackHandback ? "speaker.slash" : "exclamationmark.triangle"
-            )
-            .fontWeight(.semibold)
-            .foregroundStyle(.orange)
+            Label {
+                Text(
+                    snapshot.offersPlaybackHandback
+                        ? localized("Output is muted") : localized("Equalizer needs attention")
+                )
+                .fontWeight(.semibold)
+            } icon: {
+                Image(systemName: snapshot.offersPlaybackHandback ? "speaker.slash" : "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
             Text(snapshot.statusMessage)
                 .foregroundStyle(.secondary)
             HStack {
