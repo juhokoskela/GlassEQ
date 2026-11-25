@@ -296,15 +296,20 @@ struct PlaybackRecoveryActions: View {
                 .foregroundStyle(.secondary)
             HStack {
                 Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
-                if snapshot.equalizer == .permissionDenied {
-                    Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
-                }
                 if snapshot.offersPlaybackHandback {
+                    if snapshot.equalizer == .permissionDenied { privacyButton }
                     Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
                         .buttonStyle(.borderedProminent)
+                } else {
+                    Button(localized("Turn Off Equalizer")) { controller.playWithoutEQ() }
+                    if snapshot.equalizer == .permissionDenied { privacyButton.buttonStyle(.borderedProminent) }
                 }
             }
         }
+    }
+
+    private var privacyButton: some View {
+        Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
     }
 }
 
