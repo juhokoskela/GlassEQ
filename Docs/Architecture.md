@@ -23,7 +23,7 @@ GlassEQ holds output muted through callback qualification and probation. Before 
 
 Nominal-rate and stream-format notifications bypass ordinary coalescing. The app suspends the renderer during format settlement. Replacement taps must publish the selected rate before startup can succeed.
 
-On an explicit stop or profile bypass, GlassEQ stops the graph and destroys its taps immediately so direct system playback can resume.
+The Equalizer switch controls every output. Turning it off releases capture and restores direct system playback. The app keeps following the macOS output while bypassed, so profiles and assignments can change before processing resumes. The menu and Settings share this switch. Its value is stored in local preferences and excluded from portable profile libraries. On upgrade, the first observed output supplies the initial switch state from its previously saved profile. Importing a library never changes the switch.
 
 Teardown retains ownership of every IOProc, private aggregate, and process tap until Core Audio confirms that it was destroyed or reports that the object is already gone. A failed destruction is kept in a cleanup ledger, retried automatically with bounded backoff, and checked again before another route starts. Tap destruction is attempted independently so direct playback can recover even when a related aggregate or IOProc still needs cleanup. Unresolved handles remain retained for later retry instead of being forgotten while a live callback still owns its runtime.
 

@@ -527,7 +527,10 @@ final class SettingsCoordinator: NSObject {
             patch.statusMessage = snapshot.statusMessage
             didPatch = true
         }
-        if previous.offersPlaybackHandback != snapshot.offersPlaybackHandback {
+        if previous.equalizer != snapshot.equalizer
+            || previous.offersPlaybackHandback != snapshot.offersPlaybackHandback
+        {
+            patch.equalizer = snapshot.equalizer
             patch.offersPlaybackHandback = snapshot.offersPlaybackHandback
             didPatch = true
         }
@@ -1186,7 +1189,10 @@ extension GlassEQAppModel {
             try retryAutomaticAggregateBuffer()
 
         case .playWithoutEQ:
-            stop()
+            playWithoutEQ()
+
+        case .setEqualizerEnabled(let enabled):
+            menuProcessingEnabled = enabled
 
         case .retryAudioEngine:
             retryAudioEngine()

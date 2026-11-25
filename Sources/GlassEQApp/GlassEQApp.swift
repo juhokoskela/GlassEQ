@@ -21,6 +21,7 @@ struct GlassEQApp: App {
     // A first launch waits for the onboarding permission step before touching Core Audio, so the
     // system audio capture prompt appears after GlassEQ has explained it.
     @State private var model = GlassEQAppModel(
+        bypassDefaults: .standard,
         autoStart: OnboardingState.isComplete,
         licensing: LicensingBootstrap.makeSource()
     )
@@ -30,23 +31,27 @@ struct GlassEQApp: App {
             MenuBarView(model: model)
                 .frame(width: 340)
         } label: {
-            Image(systemName: model.isRunning ? "slider.horizontal.3" : "slider.horizontal.2.gobackward")
-                .accessibilityLabel(Text(model.menuBarAccessibilityLabel))
-                .accessibilityValue(Text(model.statusMessage))
-                .accessibilityHint(Text(localized("Opens GlassEQ controls")))
-                // The menu bar label is the only view that exists for the whole process lifetime,
-                // so it hosts the side-effect views that turn model requests into window openings.
-                .background {
-                    WindowPresenter(
-                        generation: model.inProcessSettingsPresentationGeneration,
-                        windowID: GlassEQWindowID.inProcessSettings
-                    )
-                    WindowPresenter(generation: model.aboutPresentationGeneration, windowID: GlassEQWindowID.about)
-                    WindowPresenter(
-                        generation: model.onboardingPresentationGeneration,
-                        windowID: GlassEQWindowID.onboarding
-                    )
-                }
+            Image(
+                systemName: model.needsMenuRecovery
+                    ? "exclamationmark.triangle"
+                    : (model.isRunning ? "slider.horizontal.3" : "slider.horizontal.2.gobackward")
+            )
+            .accessibilityLabel(Text(model.menuBarAccessibilityLabel))
+            .accessibilityValue(Text(model.statusMessage))
+            .accessibilityHint(Text(localized("Opens GlassEQ controls")))
+            // The menu bar label is the only view that exists for the whole process lifetime,
+            // so it hosts the side-effect views that turn model requests into window openings.
+            .background {
+                WindowPresenter(
+                    generation: model.inProcessSettingsPresentationGeneration,
+                    windowID: GlassEQWindowID.inProcessSettings
+                )
+                WindowPresenter(generation: model.aboutPresentationGeneration, windowID: GlassEQWindowID.about)
+                WindowPresenter(
+                    generation: model.onboardingPresentationGeneration,
+                    windowID: GlassEQWindowID.onboarding
+                )
+            }
         }
         .menuBarExtraStyle(.window)
 
@@ -569,11 +574,13 @@ final class GlassEQAppModel {
     var activeProfile: EQProfile {
         didSet {
             activeProfileName = activeProfile.name
-            activeProfileIsBypassed = activeProfile.isBypassed
         }
     }
     private(set) var activeProfileName: String
-    private(set) var activeProfileIsBypassed: Bool
+    private(set) var isGloballyBypassed: Bool
+    private var legacyBypassedProfileIDs: Set<UUID>?
+    private let bypassDefaults: UserDefaults?
+    private static let bypassKey = "equalizer.isBypassed"
     var activeProfileID: UUID {
         get { activeProfile.id }
         set { activateProfile(newValue) }
@@ -943,6 +950,7 @@ final class GlassEQAppModel {
         engine: any AudioEngineControlling = SystemTapAudioEngine(),
         defaultOutputLookup: any DefaultOutputLookingUp = CoreAudioDefaultOutputLookup(),
         observerFactory: any DefaultOutputObservingMaking = CoreAudioDefaultOutputObserverFactory(),
+        bypassDefaults: UserDefaults? = nil,
         autoStart: Bool = true,
         installLifecycleObservers shouldInstallLifecycleObservers: Bool = true,
         registerAppDelegate: Bool = true,
@@ -966,7 +974,7 @@ final class GlassEQAppModel {
         licenseOperationCancellationGrace: Duration = .seconds(3)
     ) {
         let loadResult: ProfileStoreLoadResult?
-        let loadedStore: ProfileStore
+        var loadedStore: ProfileStore
         if let providedStore {
             loadResult = nil
             loadedStore = providedStore
@@ -988,11 +996,16 @@ final class GlassEQAppModel {
         case nil, .missingStore, .loaded, .repairedReferences, .repairedInvalidStore, .recoveredDefaults:
             persistenceMode = .normal
         }
+        self.bypassDefaults = bypassDefaults
+        let savedBypass = bypassDefaults?.object(forKey: Self.bypassKey) as? Bool
+        let legacyIDs = Set(loadedStore.profiles.lazy.filter(\.isBypassed).map(\.id))
+        self.legacyBypassedProfileIDs = savedBypass == nil && !legacyIDs.isEmpty ? legacyIDs : nil
+        self.isGloballyBypassed = savedBypass ?? legacyIDs.contains(loadedStore.fallbackProfileID)
+        loadedStore.clearLegacyBypass()
         let initialProfile = loadedStore.profile(forOutputUID: nil)
         self.profileStore = loadedStore
         self.activeProfile = initialProfile
         self.activeProfileName = initialProfile.name
-        self.activeProfileIsBypassed = initialProfile.isBypassed
         self.selectedProfileID = initialProfile.id
         self.draftProfile = initialProfile
         self.engine = engine
@@ -1098,7 +1111,7 @@ final class GlassEQAppModel {
 
     var menuBarAccessibilityLabel: String {
         if retryPlayback == .muted { return localized("GlassEQ, output is muted") }
-        if activeProfile.isBypassed {
+        if isGloballyBypassed {
             return localized("GlassEQ disabled")
         }
         return isRunning ? localized("GlassEQ active") : localized("GlassEQ stopped")
@@ -1107,11 +1120,20 @@ final class GlassEQAppModel {
     var canControlMenuProcessing: Bool { (hasStartedAudio || isRunning) && processingIsLicensed }
 
     var menuProcessingEnabled: Bool {
-        get { processingIntent != .stopped && !activeProfileIsBypassed }
+        get { processingIntent != .stopped && !isGloballyBypassed }
         set {
             guard newValue != menuProcessingEnabled else { return }
             toggleMenuProcessing()
         }
+    }
+
+    private var settingsEqualizerState: SettingsEqualizerState {
+        guard canControlMenuProcessing else { return .unavailable }
+        if needsMenuRecovery {
+            if case .permissionDenied = onboardingAudioCaptureState { return .permissionDenied }
+            return .needsRecovery
+        }
+        return menuProcessingEnabled ? .on : .off
     }
 
     var needsMenuRecovery: Bool {
@@ -1168,6 +1190,7 @@ final class GlassEQAppModel {
             metrics: settingsMetricsSnapshot(),
             isRunning: isRunning,
             offersPlaybackHandback: retryPlayback == .muted,
+            equalizer: settingsEqualizerState,
             programmeComparison: programmeComparison,
             profileStoreProtection: profileStoreProtectionSnapshot()
         )
@@ -1934,8 +1957,10 @@ final class GlassEQAppModel {
     }
 
     func apply(profile: EQProfile) throws {
+        var profile = profile
+        profile.isBypassed = false
         try ensureProfileStoreWritable()
-        try ensureCompatibleWithCurrentOutput(profile)
+        if !isGloballyBypassed { try ensureCompatibleWithCurrentOutput(profile) }
         let rollback = profileRollback()
         if let saved = profileStore.profiles.first(where: { $0.id == profile.id }), saved == profile {
             activeProfile = saved
@@ -2000,8 +2025,10 @@ final class GlassEQAppModel {
     }
 
     func useForCurrentOutput(profile: EQProfile, useFallback: Bool = false) throws {
+        var profile = profile
+        profile.isBypassed = false
         try ensureProfileStoreWritable()
-        if !profile.isBypassed { try ensureCompatibleWithCurrentOutput(profile) }
+        if !isGloballyBypassed { try ensureCompatibleWithCurrentOutput(profile) }
         var store = profileStore
         upsertProfile(profile, in: &store)
         let needsProcessingUpdate =
@@ -2021,36 +2048,52 @@ final class GlassEQAppModel {
         notifyModelDidChange()
     }
 
-    func setBypass(_ isBypassed: Bool) {
-        if isBypassed && profilePersistenceMode.isProtected {
-            stop()
+    func setBypass(_ bypass: Bool) {
+        guard lifecycleState != .terminating, processingIsLicensed, licenseStopTask == nil else { return }
+        if bypass && (processingIntent.awaitsRetry || profilePersistenceMode.isProtected) {
+            playWithoutEQ()
             return
         }
-        do {
-            try ensureProfileStoreWritable()
-            if !isBypassed {
+        if !bypass && !processingWasStopped {
+            do {
                 try ensureCompatibleWithCurrentOutput(activeProfile)
+            } catch {
+                reportProfileActionFailure(error)
+                return
             }
-        } catch {
-            reportProfileActionFailure(error)
-            return
         }
-        let rollback = profileRollback()
-        var profile = activeProfile
-        profile.isBypassed = isBypassed
-        var store = profileStore
-        upsertProfile(profile, in: &store)
-        do {
-            try commitProfileStore(store)
-            activeProfile = profile
-            if draftProfile.id == profile.id {
-                draftProfile = profile
+        recordGlobalBypass(bypass)
+        if bypass {
+            processingIntent = .requested
+            if outputChangeTask != nil {
+                // Complete the pending route lookup, but hand playback back immediately.
+                pendingOutputTransitionAction = .stopped
+                clearProgrammeComparisonSession()
+                invalidatePendingEngineStart()
+                scheduleEngineStop(updateMetrics: true)
+                lifecycleState = .stopped
+                onboardingAudioCaptureState = .bypassed
+                statusMessage = disabledStatus(outputName: currentOutputName)
+            } else {
+                disableActiveProfileProcessing(updateMetrics: true, onboardingState: .bypassed)
             }
-            synchronizeActiveProfileProcessing(rollback: rollback)
-            notifyModelDidChange()
-        } catch {
-            reportProfileActionFailure(error)
+        } else if processingWasStopped || !hasStartedAudio {
+            start()
+        } else {
+            synchronizeActiveProfileProcessing()
         }
+        notifyModelDidChange()
+    }
+
+    private func recordGlobalBypass(_ bypass: Bool) {
+        legacyBypassedProfileIDs = nil
+        isGloballyBypassed = bypass
+        bypassDefaults?.set(bypass, forKey: Self.bypassKey)
+    }
+
+    func playWithoutEQ() {
+        recordGlobalBypass(true)
+        stop()
     }
 
     func importProfile(format: ImportFormat, name: String, text: String) async throws -> Bool {
@@ -2264,6 +2307,7 @@ final class GlassEQAppModel {
         try ensureProfileStoreWritable()
         var profile = profile
         profile.id = UUID()
+        profile.isBypassed = false
         profile.name = uniqueProfileName(name)
         var store = profileStore
         store.profiles.append(profile)
@@ -2546,11 +2590,13 @@ final class GlassEQAppModel {
         outputChangeGeneration += 1
         let generation = outputChangeGeneration
         outputChangeTask?.cancel()
-        let shouldStopEngine = shouldStopEngineForSettlingOutputChange(
-            result,
-            reason: reason
-        )
-        let shouldMuteOutput = shouldMuteForSettlingOutputChange(result)
+        let shouldStopEngine =
+            !isGloballyBypassed
+            && shouldStopEngineForSettlingOutputChange(
+                result,
+                reason: reason
+            )
+        let shouldMuteOutput = !isGloballyBypassed && shouldMuteForSettlingOutputChange(result)
         if shouldStopEngine, pendingOutputTransitionAction != .stopped {
             suspendForOutputSettlement()
         } else if shouldMuteOutput, pendingOutputTransitionAction == .none {
@@ -2699,10 +2745,13 @@ final class GlassEQAppModel {
             lastHandledDefaultOutput = output
             refreshCurrentOutputMetadata(from: output)
             activeProfile = profileStore.profile(forOutputUID: output.uid)
+            if let legacyBypassedProfileIDs {
+                recordGlobalBypass(legacyBypassedProfileIDs.contains(activeProfile.id))
+            }
             selectedProfileID = activeProfile.id
             draftProfile = activeProfile
 
-            if activeProfile.isBypassed {
+            if isGloballyBypassed {
                 disableActiveProfileProcessing(
                     updateMetrics: false,
                     onboardingState: .bypassed
@@ -2731,7 +2780,7 @@ final class GlassEQAppModel {
                 return
             }
             invalidatePendingEngineStart()
-            if !activeProfile.isBypassed { scheduleRendererSuspension() }
+            if !isGloballyBypassed { scheduleRendererSuspension() }
             lifecycleState = .stopped
             statusMessage = localized("Default output unavailable: \(error.localizedDescription)")
             onboardingAudioCaptureState = .failed(message: statusMessage)
@@ -2747,6 +2796,7 @@ final class GlassEQAppModel {
         }
         // Every tap start passes through here, so this alone guarantees a non-permitting license
         // never starts the tap. The earlier gates exist to leave coherent status behind.
+        guard !isGloballyBypassed else { return }
         guard processingIsLicensed else {
             blockProcessingForLicense()
             return
@@ -2893,7 +2943,7 @@ final class GlassEQAppModel {
 
         guard !processingWasStopped else { return }
         if processingIntent.awaitsRetry {
-            if activeProfile.isBypassed { stop() }
+            if isGloballyBypassed { stop() }
             return
         }
 
@@ -2906,7 +2956,7 @@ final class GlassEQAppModel {
             return
         }
 
-        guard !activeProfile.isBypassed else {
+        guard !isGloballyBypassed else {
             disableActiveProfileProcessing(
                 updateMetrics: true,
                 onboardingState: .bypassed
@@ -2991,15 +3041,7 @@ final class GlassEQAppModel {
     var processingWasStopped: Bool { hasStartedAudio && processingIntent == .stopped }
 
     func toggleMenuProcessing() {
-        if processingWasStopped {
-            if activeProfile.isBypassed { setBypass(false) }
-            start()
-        } else if processingIntent.awaitsRetry || (engine.holdsProcessingMute && !isRunning && !activeProfileIsBypassed)
-        {
-            stop()
-        } else {
-            setBypass(!activeProfileIsBypassed)
-        }
+        setBypass(menuProcessingEnabled)
     }
 
     private var engineStateNeedsStop: Bool {
@@ -3259,8 +3301,7 @@ final class GlassEQAppModel {
         else {
             return
         }
-        if lifecycleState == .stopped, processingIntent.needsProtection, !activeProfile.isBypassed, processingIsLicensed
-        {
+        if lifecycleState == .stopped, processingIntent.needsProtection, !isGloballyBypassed, processingIsLicensed {
             scheduleRendererSuspension()
         } else {
             scheduleEngineStop(updateMetrics: lifecycleState == .stopped)
@@ -3833,6 +3874,8 @@ final class GlassEQAppModel {
         -> SettingsLibraryImportPreviewDTO
     {
         try ensureProfileStoreWritable()
+        var backup = backup
+        backup.profileStore.clearLegacyBypass()
         let pending = try await PendingLibraryImport.prepare(
             backup, filename: filename, current: makeLibraryBackup().profileStore, generation: saveGeneration)
         try Task.checkCancellation()
@@ -4098,7 +4141,7 @@ final class GlassEQAppModel {
             return
         }
         onboardingAudioCaptureState = .pending
-        guard !activeProfile.isBypassed else {
+        guard !isGloballyBypassed else {
             synchronizeActiveProfileProcessing()
             notifyModelDidChange()
             return
@@ -4445,7 +4488,7 @@ final class GlassEQAppModel {
         }
 
         preserveFailedStartForRetry()
-        let keepMute = processingIntent.needsProtection && processingIsLicensed && !activeProfile.isBypassed
+        let keepMute = processingIntent.needsProtection && processingIsLicensed && !isGloballyBypassed
         invalidatePendingOutputChange()
         invalidatePendingEngineStart()
         stopObserver()
@@ -4688,10 +4731,10 @@ private struct MenuBarView: View {
                         Label(localized("Needs attention"), systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
                     } else {
-                        Toggle(localized("Profile EQ"), isOn: $model.menuProcessingEnabled)
+                        Toggle(localized("Equalizer"), isOn: $model.menuProcessingEnabled)
                             .toggleStyle(.switch)
                             .accessibilityHint(
-                                Text(localized("Starts or stops system audio processing for the active profile")))
+                                Text(localized("Turns equalization on or off for all outputs and profiles")))
                     }
                 } else {
                     Button(localized("Open Setup Guide")) {
@@ -4715,18 +4758,18 @@ private struct MenuBarView: View {
                 }
                 .accessibilityElement(children: .combine)
                 GridRow {
-                    Text(localized("Active Profile"))
+                    Text(localized("Profile"))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                     Picker(localized("Active Profile"), selection: $model.activeProfileID) {
                         ForEach(model.profileStore.profiles) { profile in
-                            Text(profile.isBypassed ? localized("\(profile.name) (bypassed)") : profile.name).tag(
-                                profile.id)
+                            Text(profile.name).tag(profile.id)
                         }
                     }
                     .labelsHidden()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityHint(Text(localized("Switches the profile that is processing audio")))
+                    .disabled(model.retryPlayback == .muted)
+                    .accessibilityHint(Text(localized("Selects the profile to use on this output")))
                 }
             }
 
@@ -4746,7 +4789,7 @@ private struct MenuBarView: View {
                     Button(
                         model.retryPlayback == .muted ? localized("Play Without EQ") : localized("Turn Off Equalizer")
                     ) {
-                        model.stop()
+                        model.playWithoutEQ()
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -4763,7 +4806,7 @@ private struct MenuBarView: View {
                 Button(localized("Test render watchdog")) {
                     model.simulateRenderStallForTesting()
                 }
-                .disabled(!model.isRunning || model.activeProfileIsBypassed)
+                .disabled(!model.isRunning || model.isGloballyBypassed)
                 .accessibilityHint(Text(localized("Freezes render progress metrics without stopping audio")))
             #endif
 
@@ -4784,9 +4827,18 @@ private struct MenuBarView: View {
                 .accessibilityLabel(Text(localized("About GlassEQ")))
                 Button(localized("Quit")) { model.requestQuit() }
                     .buttonStyle(.borderless)
+                    .keyboardShortcut("q", modifiers: .command)
                     .accessibilityLabel(Text(localized("Quit GlassEQ")))
             }
         }
         .padding(16)
+    }
+}
+
+private extension ProfileStore {
+    mutating func clearLegacyBypass() {
+        for index in profiles.indices where profiles[index].isBypassed {
+            profiles[index].isBypassed = false
+        }
     }
 }

@@ -67,6 +67,8 @@ struct PlotScale {
 struct FrequencyResponseGraph: View {
     private static let magnitudeTicks = [-24.0, -18, -12, -6, 0, 6, 12]
     var analysis: EQAnalysisSnapshot
+    var channel: EQProfileChannel
+    var selectedFrequency: Double?
 
     var body: some View {
         Canvas { context, size in
@@ -75,12 +77,24 @@ struct FrequencyResponseGraph: View {
             drawGrid(context: context, scale: scale)
             drawAxisLabels(context: context, scale: scale, bounds: bounds)
             context.clip(to: Path(scale.rect))
+            if let selectedFrequency, (PlotScale.minimumFrequency...scale.maximumFrequency).contains(selectedFrequency)
+            {
+                let x = scale.x(for: selectedFrequency)
+                var marker = Path()
+                marker.move(to: CGPoint(x: x, y: scale.rect.minY))
+                marker.addLine(to: CGPoint(x: x, y: scale.rect.maxY))
+                context.stroke(marker, with: .color(.primary.opacity(0.55)), lineWidth: 1)
+            }
             switch analysis.channelMode {
             case .linked:
                 drawCurve(analysis.linkedPoints, color: .accentColor, context: context, scale: scale)
             case .stereo:
-                drawCurve(analysis.leftPoints, color: .blue, context: context, scale: scale)
-                drawCurve(analysis.rightPoints, color: .orange, dashed: true, context: context, scale: scale)
+                drawCurve(
+                    analysis.leftPoints, color: .blue.opacity(channel == .right ? 0.6 : 1), context: context,
+                    scale: scale)
+                drawCurve(
+                    analysis.rightPoints, color: .orange.opacity(channel == .left ? 0.65 : 1), dashed: true,
+                    context: context, scale: scale)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -123,8 +137,8 @@ struct FrequencyResponseGraph: View {
                 Text(db.dbAxisLabel)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary),
-                at: CGPoint(x: bounds.minX + 17, y: scale.y(for: db)),
-                anchor: .center
+                at: CGPoint(x: scale.rect.minX - 4, y: scale.y(for: db)),
+                anchor: .trailing
             )
         }
 

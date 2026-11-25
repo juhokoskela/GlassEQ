@@ -129,10 +129,10 @@ private struct ProfileRow: View {
             }
             Spacer(minLength: 6)
             if isActive {
-                Image(systemName: profile.isBypassed ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel(Text(profile.isBypassed ? localized("Active, bypassed") : localized("Active")))
+                    .accessibilityLabel(Text(localized("Active profile")))
             }
         }
         .padding(.vertical, 2)
@@ -161,9 +161,6 @@ private struct ProfileRow: View {
         }
         if profile.channelMode == .stereo {
             parts.append(localized("L/R"))
-        }
-        if profile.isBypassed {
-            parts.append(localized("bypassed"))
         }
         return parts.joined(separator: " · ")
     }

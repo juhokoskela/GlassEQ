@@ -155,7 +155,7 @@ private struct GraphicFilterRow: View {
 
 struct ParametricFilterEditor: View {
     @Binding var filters: [EQFilter]
-    @State private var selectedFilterID: UUID?
+    @Binding var selectedFilterID: UUID?
     @State private var showsColumns = false
 
     var body: some View {
@@ -187,6 +187,7 @@ struct ParametricFilterEditor: View {
                     }
                     .width(min: 30, ideal: 36)
                 }
+                .onDeleteCommand(perform: deleteSelectedFilter)
                 .monospacedDigit()
                 .accessibilityLabel(Text(localized("Filters")))
                 .frame(height: min(210, CGFloat(filters.count) * 26 + 34))
@@ -195,11 +196,7 @@ struct ParametricFilterEditor: View {
                 if let index = selectedFilterIndex {
                     ParametricFilterInspector(
                         filter: $filters[index],
-                        onDelete: {
-                            let id = filters[index].id
-                            filters.removeAll { $0.id == id }
-                            selectedFilterID = filters.first?.id
-                        }
+                        onDelete: deleteSelectedFilter
                     )
                     .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
                 } else {
@@ -226,6 +223,12 @@ struct ParametricFilterEditor: View {
                 .accessibilityHint(Text(localized("Adds a new parametric filter and selects it")))
             }
         }
+    }
+
+    private func deleteSelectedFilter() {
+        guard let index = selectedFilterIndex else { return }
+        filters.remove(at: index)
+        selectedFilterID = filters.isEmpty ? nil : filters[min(index, filters.count - 1)].id
     }
 
     private var effectiveSelectedFilterID: UUID? {
@@ -318,6 +321,7 @@ struct ParametricFilterInspector: View {
                 validationRange: ProfilePersistence.qRange,
                 step: 0.01,
                 suffix: "",
+                scale: .logarithmic,
                 valueID: filter.id
             )
         }

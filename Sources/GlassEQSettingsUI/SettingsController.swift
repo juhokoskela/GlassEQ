@@ -82,7 +82,7 @@ final class SettingsController {
     }
 
     var canAssignDraftToOutput: Bool {
-        hasCurrentOutput && (draftProfile.id != snapshot.currentOutputMappedProfileID || canApplyDraft)
+        hasCurrentOutput && draftProfile.id != snapshot.currentOutputMappedProfileID
     }
 
     var canApplyDraft: Bool {
@@ -235,6 +235,10 @@ final class SettingsController {
         guard !isComparisonInProgress else { return }
         draftProfile = storedProfile
         draftEditGeneration &+= 1
+    }
+
+    func setEqualizerEnabled(_ enabled: Bool) {
+        perform(.setEqualizerEnabled(enabled))
     }
 
     func useDraftForCurrentOutput() {
@@ -453,10 +457,6 @@ final class SettingsController {
         }
         if !hasUnsavedDraft {
             draftProfile = latestStored
-        } else if draftProfile.isBypassed == storedProfile.isBypassed
-            && draftProfile.isBypassed != latestStored.isBypassed
-        {
-            draftProfile.isBypassed = latestStored.isBypassed
         } else {
             refreshAnalyses()
         }

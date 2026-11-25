@@ -752,6 +752,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
     public var statusMessage: String?
     public var isRunning: Bool?
     public var offersPlaybackHandback: Bool?
+    public var equalizer: SettingsEqualizerState?
     public var programmeComparison: EQProgrammeComparisonSnapshot?
     public var selectedProfileID: UUID?
     public var draftProfile: EQProfile?
@@ -769,6 +770,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         statusMessage: String? = nil,
         isRunning: Bool? = nil,
         offersPlaybackHandback: Bool? = nil,
+        equalizer: SettingsEqualizerState? = nil,
         programmeComparison: EQProgrammeComparisonSnapshot? = nil,
         selectedProfileID: UUID? = nil,
         draftProfile: EQProfile? = nil,
@@ -785,6 +787,7 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.statusMessage = statusMessage
         self.isRunning = isRunning
         self.offersPlaybackHandback = offersPlaybackHandback
+        self.equalizer = equalizer
         self.programmeComparison = programmeComparison
         self.selectedProfileID = selectedProfileID
         self.draftProfile = draftProfile
@@ -798,6 +801,12 @@ public struct SettingsSnapshotPatchDTO: Codable, Equatable, Sendable {
         self.aggregateBuffer = aggregateBuffer
         self.profileStoreProtection = profileStoreProtection
     }
+}
+
+public enum SettingsEqualizerState: String, Codable, Equatable, Sendable {
+    case unavailable, off, on, needsRecovery, permissionDenied
+
+    public var needsRecoveryAction: Bool { self == .needsRecovery || self == .permissionDenied }
 }
 
 public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
@@ -820,6 +829,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
     public var metrics: SettingsAudioMetricsDTO
     public var isRunning: Bool
     public var offersPlaybackHandback: Bool
+    public var equalizer: SettingsEqualizerState
     public var programmeComparison: EQProgrammeComparisonSnapshot
     public var profileStoreProtection: SettingsProfileStoreProtectionDTO
 
@@ -842,7 +852,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         case statusMessage
         case metrics
         case isRunning
-        case offersPlaybackHandback
+        case offersPlaybackHandback, equalizer
         case programmeComparison
         case profileStoreProtection
     }
@@ -867,6 +877,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         metrics: SettingsAudioMetricsDTO,
         isRunning: Bool,
         offersPlaybackHandback: Bool = false,
+        equalizer: SettingsEqualizerState = .unavailable,
         programmeComparison: EQProgrammeComparisonSnapshot = EQProgrammeComparisonSnapshot(),
         profileStoreProtection: SettingsProfileStoreProtectionDTO = .unprotected
     ) {
@@ -889,6 +900,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
         self.metrics = metrics
         self.isRunning = isRunning
         self.offersPlaybackHandback = offersPlaybackHandback
+        self.equalizer = equalizer
         self.programmeComparison = programmeComparison
         self.profileStoreProtection = profileStoreProtection
     }
@@ -927,6 +939,7 @@ public struct SettingsSnapshotDTO: Codable, Equatable, Sendable {
             metrics: try container.decode(SettingsAudioMetricsDTO.self, forKey: .metrics),
             isRunning: try container.decodeIfPresent(Bool.self, forKey: .isRunning) ?? false,
             offersPlaybackHandback: try container.decodeIfPresent(Bool.self, forKey: .offersPlaybackHandback) ?? false,
+            equalizer: try container.decodeIfPresent(SettingsEqualizerState.self, forKey: .equalizer) ?? .unavailable,
             programmeComparison: try container.decodeIfPresent(
                 EQProgrammeComparisonSnapshot.self,
                 forKey: .programmeComparison
@@ -1043,6 +1056,7 @@ public enum SettingsCommand: Codable, Equatable, Sendable {
     case setAggregateBufferMode(SettingsAggregateBufferMode)
     case retryAutomaticAggregateBuffer
     case retryAudioEngine
+    case setEqualizerEnabled(Bool)
     case playWithoutEQ
     case openPrivacySettings
     case startMetricsPolling

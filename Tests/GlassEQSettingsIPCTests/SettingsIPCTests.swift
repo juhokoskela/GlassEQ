@@ -372,7 +372,7 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
-    func outputAssignmentRemainsAvailableForEditedOrInactiveProfiles() {
+    func editorOffersAssignmentOnlyWhenTheMappingWouldChange() {
         let profile = EQProfile.flatParametric
         var snapshot = SettingsSnapshotDTO.disconnected
         snapshot.profiles = [profile]
@@ -385,9 +385,12 @@ struct SettingsIPCTests {
         let controller = SettingsController(model: model)
         #expect(!controller.canAssignDraftToOutput)
         controller.draftProfile.preampDB = -3
-        #expect(controller.canAssignDraftToOutput)
+        #expect(!controller.canAssignDraftToOutput)
         controller.revertDraft()
         snapshot.activeProfileID = UUID()
+        model.accept(snapshot: snapshot)
+        #expect(!controller.canAssignDraftToOutput)
+        snapshot.currentOutputMappedProfileID = nil
         model.accept(snapshot: snapshot)
         #expect(controller.canAssignDraftToOutput)
         snapshot.currentOutputUID = ""
@@ -597,7 +600,7 @@ struct SettingsIPCTests {
 
     @Test
     @MainActor
-    func externalBypassChangePreservesLocalFilterEdits() {
+    func stoppingPlaybackPreservesLocalFilterEdits() {
         let profile = EQProfile.flatParametric
         var initial = SettingsSnapshotDTO.disconnected
         initial.profiles = [profile]
@@ -606,11 +609,12 @@ struct SettingsIPCTests {
         let model = GlassEQSettingsViewModel(snapshot: initial)
         let controller = SettingsController(model: model)
         controller.draftProfile.preampDB = -4
-        initial.profiles[0].isBypassed = true
+        initial.isRunning = false
+        initial.statusMessage = "Equalizer is off"
         model.accept(snapshot: initial)
         controller.reconcileWithSnapshot()
 
-        #expect(controller.draftProfile.isBypassed)
+        #expect(!controller.snapshot.isRunning)
         #expect(controller.draftProfile.preampDB == -4)
         #expect(controller.hasUnsavedDraft)
     }

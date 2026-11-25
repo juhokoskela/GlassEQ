@@ -40,7 +40,7 @@ struct ApplyBar: View {
                     Button(localized("Compare")) {
                         controller.startProgrammeComparison()
                     }
-                    .disabled(isReadOnly || !controller.snapshot.isRunning || controller.draftProfile.isBypassed)
+                    .disabled(isReadOnly || !controller.snapshot.isRunning)
                     .help(localized("Compare the current filters with filters off at a matched volume."))
 
                     if hasUnsavedDraft {

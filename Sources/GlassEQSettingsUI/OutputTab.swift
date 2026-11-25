@@ -29,10 +29,54 @@ struct OutputTab: View {
     var body: some View {
         Form {
             Section {
+                if snapshot.equalizer != .unavailable {
+                    Toggle(
+                        localized("Equalizer"),
+                        isOn: Binding(
+                            get: { snapshot.equalizer != .off }, set: controller.setEqualizerEnabled
+                        )
+                    )
+                    .toggleStyle(.switch)
+                    .accessibilityHint(Text(localized("Turns equalization on or off for all outputs and profiles")))
+                }
                 LabeledContent(
                     snapshot.currentOutputUID.isEmpty ? localized("Last Known Output") : localized("Current Output"),
                     value: snapshot.currentOutputName)
 
+            }
+
+            Section {
+                let outputUID = snapshot.currentOutputUID
+                Picker(
+                    localized("Profile for This Output"),
+                    selection: Binding(
+                        get: { snapshot.currentOutputMappedProfileID },
+                        set: { controller.setOutputAssignment(outputUID: outputUID, profileID: $0) }
+                    )
+                ) {
+                    Text(localized("Use Fallback")).tag(nil as UUID?)
+                    Divider()
+                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
+                }
+                .disabled(outputUID.isEmpty)
+                Picker(
+                    localized("Fallback Profile"),
+                    selection: Binding(
+                        get: { snapshot.fallbackProfileID }, set: controller.setFallbackProfile
+                    )
+                ) {
+                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(profile.id) }
+                }
+            } header: {
+                Text(localized("Profiles"))
+            } footer: {
+                Text(
+                    localized(
+                        "A new fallback takes effect the next time GlassEQ starts or reconnects an unassigned output."))
+            }
+            .disabled(controller.isEditingLocked)
+
+            Section {
                 LabeledContent(localized("Audio Buffer")) {
                     Picker(localized("Audio Buffer"), selection: $controller.aggregateBufferMode) {
                         Text(localized("Automatic")).tag(SettingsAggregateBufferMode.automatic)
@@ -105,37 +149,6 @@ struct OutputTab: View {
             }
 
             Section {
-                let outputUID = snapshot.currentOutputUID
-                Picker(
-                    localized("Profile for This Output"),
-                    selection: Binding(
-                        get: { snapshot.currentOutputMappedProfileID },
-                        set: { controller.setOutputAssignment(outputUID: outputUID, profileID: $0) }
-                    )
-                ) {
-                    Text(localized("Use Fallback")).tag(nil as UUID?)
-                    Divider()
-                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
-                }
-                .disabled(outputUID.isEmpty)
-                Picker(
-                    localized("Fallback Profile"),
-                    selection: Binding(
-                        get: { snapshot.fallbackProfileID }, set: controller.setFallbackProfile
-                    )
-                ) {
-                    ForEach(snapshot.profiles) { profile in Text(profile.name).tag(profile.id) }
-                }
-            } header: {
-                Text(localized("Profiles"))
-            } footer: {
-                Text(
-                    localized(
-                        "A new fallback takes effect the next time GlassEQ starts or reconnects an unassigned output."))
-            }
-            .disabled(controller.isEditingLocked)
-
-            Section {
                 LabeledContent(localized("Status"), value: statusSummary)
                 LabeledContent(localized("Active Profile"), value: snapshot.activeProfileName)
                 LabeledContent(localized("Buffer"), value: bufferSummary)
@@ -146,10 +159,8 @@ struct OutputTab: View {
                         ? localized("None")
                         : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
                 )
-                if !snapshot.isRunning {
+                if snapshot.equalizer.needsRecoveryAction || snapshot.offersPlaybackHandback {
                     recoveryActions
-                } else {
-                    DisclosureGroup(localized("Troubleshooting")) { recoveryActions }
                 }
             } header: {
                 Text(localized("Engine Status"))
@@ -235,10 +246,13 @@ struct OutputTab: View {
             if snapshot.offersPlaybackHandback {
                 Label(localized("Output is muted"), systemImage: "speaker.slash")
                 Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
+                    .buttonStyle(.borderedProminent)
             }
             HStack {
                 Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
-                Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+                if snapshot.equalizer == .permissionDenied {
+                    Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
+                }
             }
         }
     }

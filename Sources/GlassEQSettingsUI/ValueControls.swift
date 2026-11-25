@@ -107,7 +107,9 @@ struct EditableValueText: View {
                     .onSubmit(commit)
                     .onExitCommand(perform: cancel)
                     .onChange(of: editText) { _, text in
-                        updateValue(from: text)
+                        if let number = parseEditableNumber(text), range.contains(number) {
+                            updateValue(from: text)
+                        }
                     }
                     .onChange(of: value) { _, newValue in
                         guard isEditing,
@@ -136,14 +138,15 @@ struct EditableValueText: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .contentShape(.rect)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .help(localized("Click to type a value"))
+                .accessibilityLabel(Text(localized("\(title) value")))
+                .accessibilityValue(Text(display))
+                .accessibilityHint(Text(localized("Enter an exact value")))
             }
         }
         .frame(width: width)
-        .accessibilityLabel(Text(localized("\(title) value")))
-        .accessibilityValue(Text(display))
-        .accessibilityHint(Text(localized("Edits \(title.lowercased()) as text")))
         .onChange(of: context) {
             if isEditing { finishEditing() }
         }

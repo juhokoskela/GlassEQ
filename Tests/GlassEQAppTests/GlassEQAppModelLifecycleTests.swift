@@ -1627,7 +1627,8 @@ struct GlassEQAppModelLifecycleTests {
         #expect(engine.startCalls.isEmpty)
         #expect(engine.stopCallCount == 0)
         #expect(!model.isRunning)
-        #expect(model.activeProfile.isBypassed)
+        #expect(model.isGloballyBypassed)
+        #expect(!model.activeProfile.isBypassed)
     }
 
     @Test
@@ -1792,7 +1793,61 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func bypassDuringUIDSettlementKeepsTheDestinationProtected() async throws {
+    func globalSwitchSurvivesProfileEditsRouteChangesAndRelaunch() async throws {
+        let suite = "GlassEQTests.globalBypass." + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let first = makeProfile(name: "Speakers")
+        var second = makeProfile(name: "Headphones")
+        let speakers = makeOutput(uid: "speakers")
+        let headphones = makeOutput(uid: "headphones", id: 302)
+        let store = ProfileStore(
+            profiles: [first, second],
+            outputMappings: [
+                OutputDeviceProfileMapping(outputDeviceUID: headphones.uid, profileID: second.id)
+            ], fallbackProfileID: first.id)
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let lookup = FakeDefaultOutputLookup(.success(speakers))
+        let model = makeModel(
+            store: store, bypassDefaults: preferences, engine: engine,
+            lookup: lookup, observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(speakers))
+        try #require(await waitUntil { model.isRunning })
+        _ = try await model.performSettingsCommand(.setEqualizerEnabled(false))
+        try #require(await waitUntil { !engine.holdsProcessingMute })
+        #expect(model.settingsSnapshot().equalizer == .off)
+        #expect(model.profileStore == store)
+        second.preampDB = -4
+        try model.apply(profile: second)
+        lookup.result = .success(headphones)
+        observers.observers[0].emit(.success(headphones))
+        try #require(await waitUntil { model.currentOutputUID == headphones.uid })
+        #expect(model.activeProfile == second)
+        #expect(engine.startCalls.count == 1)
+        #expect(!model.menuProcessingEnabled)
+        model.stop()
+
+        let nextEngine = FakeAudioEngine()
+        let nextObservers = FakeDefaultOutputObserverFactory()
+        let reopened = makeModel(
+            store: model.profileStore, bypassDefaults: preferences, engine: nextEngine,
+            lookup: lookup, observers: nextObservers, outputDelay: .zero)
+        reopened.start()
+        nextObservers.observers[0].emit(.success(headphones))
+        try #require(await waitUntil { reopened.currentOutputUID == headphones.uid })
+        #expect(reopened.settingsSnapshot().equalizer == .off)
+        #expect(nextEngine.startCalls.isEmpty)
+        reopened.menuProcessingEnabled = true
+        try #require(await waitUntil { reopened.isRunning })
+        #expect(reopened.settingsSnapshot().equalizer == .on)
+        #expect(nextEngine.startCalls.last?.profile == second)
+        reopened.stop()
+    }
+
+    @Test
+    func globalBypassDuringUIDSettlementReleasesPlaybackAndFollowsTheDestination() async throws {
         let first = makeOutput(uid: "first", name: "First")
         let second = makeOutput(uid: "second", name: "Second", id: 301)
         let profile = makeProfile(name: "Original")
@@ -1820,10 +1875,11 @@ struct GlassEQAppModelLifecycleTests {
         try #require(await waitUntil { settlement.waitCount == 1 && engine.muteOutputCallCount == 1 })
         model.setBypass(true)
         settlement.release()
-        try #require(await waitUntil { model.isRunning && model.currentOutputUID == second.uid })
-        #expect(engine.startCalls.last?.profile == mapped)
-        #expect(engine.handbackCount == 0)
-        #expect(model.profileStore.profile(forOutputUID: first.uid).isBypassed)
+        try #require(await waitUntil { model.currentOutputUID == second.uid && !engine.holdsProcessingMute })
+        #expect(!model.isRunning)
+        #expect(model.activeProfile == mapped)
+        #expect(model.isGloballyBypassed)
+        #expect(model.profileStore == store)
         model.stop()
     }
 
@@ -1853,8 +1909,9 @@ struct GlassEQAppModelLifecycleTests {
         model.handleDidWake()
         try #require(await waitUntil { observers.observers.count == 2 })
         observers.observers[1].emit(.success(new))
-        try #require(await waitUntil { model.isRunning })
-        #expect(engine.startCalls.map(\.profile) == [enabled])
+        try #require(await waitUntil { model.activeProfile == enabled })
+        #expect(!model.isRunning)
+        #expect(engine.startCalls.isEmpty)
         model.stop()
     }
 
@@ -1917,13 +1974,15 @@ struct GlassEQAppModelLifecycleTests {
                 engine.events == [
                     "start:\(initialOutput.uid)",
                     "stop",
+                    "stop",
                     "start:\(changedOutput.uid)",
                 ])
         } else {
             await waitUntil {
                 model.currentOutputSampleRate == changedOutput.nominalSampleRate
             }
-            #expect(model.activeProfile.isBypassed)
+            #expect(model.isGloballyBypassed)
+            #expect(!model.activeProfile.isBypassed)
             #expect(model.lifecycleState == .stopped)
             #expect(engine.startCalls.map(\.output) == [initialOutput])
             await waitUntil { !engine.holdsProcessingMute }
@@ -2953,7 +3012,8 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(model.lifecycleState == .stopped)
         #expect(model.activeProfile.id == mapped.id)
-        #expect(model.activeProfile.isBypassed)
+        #expect(model.isGloballyBypassed)
+        #expect(!model.activeProfile.isBypassed)
         #expect(engine.updateCalls.isEmpty)
         #expect(engine.updateDSPCalls.isEmpty)
         #expect(model.profileStore.profile(forOutputUID: output.uid).id == mapped.id)
@@ -3311,7 +3371,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func bypassAfterSelectingDifferentDraftOnlyTogglesActiveProfileAndStopsEngine() async {
+    func globalBypassPreservesTheSelectedDraftAndStopsEngine() async {
         let active = makeProfile(name: "Active")
         let draft = makeProfile(name: "Draft")
         let output = makeOutput(uid: "bypass-output", name: "Bypass Output")
@@ -3333,11 +3393,12 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         #expect(model.activeProfile.id == active.id)
-        #expect(model.activeProfile.isBypassed)
+        #expect(model.isGloballyBypassed)
+        #expect(!model.activeProfile.isBypassed)
         #expect(model.selectedProfileID == draft.id)
         #expect(model.draftProfile.id == draft.id)
         #expect(!model.draftProfile.isBypassed)
-        #expect(model.profileStore.profiles.first { $0.id == active.id }?.isBypassed == true)
+        #expect(model.profileStore == store)
         #expect(model.profileStore.profiles.first { $0.id == draft.id }?.isBypassed == false)
         #expect(engine.updateDSPCalls.isEmpty)
         #expect(engine.stopCallCount == 1)
@@ -3346,7 +3407,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func bypassMirrorsDraftWhenSelectedProfileIsActiveProfileAndStopsEngine() async {
+    func globalBypassPreservesTheActiveProfileAndStopsEngine() async {
         let active = makeProfile(name: "Active")
         let output = makeOutput(uid: "active-bypass-output", name: "Active Bypass Output")
         let store = ProfileStore(profiles: [active], fallbackProfileID: active.id)
@@ -3366,10 +3427,11 @@ struct GlassEQAppModelLifecycleTests {
         }
 
         #expect(model.activeProfile.id == active.id)
-        #expect(model.activeProfile.isBypassed)
+        #expect(model.isGloballyBypassed)
+        #expect(!model.activeProfile.isBypassed)
         #expect(model.draftProfile.id == active.id)
-        #expect(model.draftProfile.isBypassed)
-        #expect(model.profileStore.profiles.first { $0.id == active.id }?.isBypassed == true)
+        #expect(!model.draftProfile.isBypassed)
+        #expect(model.profileStore == store)
         #expect(engine.updateDSPCalls.isEmpty)
         #expect(engine.stopCallCount == 1)
         #expect(!model.isRunning)
@@ -3923,7 +3985,7 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
-    func clearingAssignmentCanLoadBypassedFallbackAtAnotherSampleRate() async throws {
+    func globallyBypassedOutputCanAssignAnIncompatibleFallbackUntilEnabled() async throws {
         var fallback = makeImpulseResponseProfile(name: "Bypassed IR", sampleRate: 44_100)
         fallback.isBypassed = true
         let mapped = makeProfile(name: "Mapped")
@@ -3940,9 +4002,14 @@ struct GlassEQAppModelLifecycleTests {
         model.start()
         observers.observers[0].emit(.success(output))
         try #require(await waitUntil { model.isRunning })
+        #expect(!model.isGloballyBypassed)
+        model.setBypass(true)
         _ = try await model.performSettingsCommand(.setOutputAssignment(outputUID: output.uid, profileID: nil))
         #expect(model.currentOutputMappedProfileID == nil)
-        #expect(model.activeProfile == fallback)
+        #expect(model.activeProfile.id == fallback.id)
+        #expect(!model.activeProfile.isBypassed)
+        model.setBypass(false)
+        #expect(model.isGloballyBypassed)
         #expect(await waitUntil { !engine.holdsProcessingMute && !model.isRunning })
         model.stop()
     }
@@ -5492,6 +5559,7 @@ private func storeEditedProfile(_ profile: EQProfile, in model: GlassEQAppModel)
 @MainActor
 private func makeModel(
     store: ProfileStore? = nil,
+    bypassDefaults: UserDefaults? = nil,
     storeURL: URL = FileManager.default.temporaryDirectory
         .appendingPathComponent("GlassEQAppTests-\(UUID().uuidString).json"),
     engine: FakeAudioEngine = FakeAudioEngine(),
@@ -5523,6 +5591,7 @@ private func makeModel(
         engine: engine,
         defaultOutputLookup: lookup,
         observerFactory: observers,
+        bypassDefaults: bypassDefaults,
         autoStart: autoStart,
         installLifecycleObservers: false,
         registerAppDelegate: false,

@@ -202,10 +202,13 @@ private extension EQChannelMode {
 struct EditorTab: View {
     @Bindable var controller: SettingsController
     @State private var confirmsLink = false
+    @State private var selectedFilterID: UUID?
 
     var body: some View {
         let draftProfile = controller.draftProfile
         let channel = controller.editedChannel
+        let filters = draftProfile[channel: channel].filters
+        let selectedFilter = filters.first { $0.id == selectedFilterID } ?? filters.first
         Form {
             // Everything except the A/B controls locks while a comparison is running, so the
             // comparison can still be stopped.
@@ -238,22 +241,22 @@ struct EditorTab: View {
                         suffix: "dB"
                     )
 
-                    Toggle(localized("Bypass When Applied"), isOn: $controller.draftProfile.isBypassed)
-                        .toggleStyle(.switch)
-                        .accessibilityHint(Text(localized("Turns equalizer processing off without changing settings")))
-
                     EditorHeadroomRow(controller: controller)
                 }
 
                 EditorResponseSection(
                     profile: draftProfile,
                     sampleRate: controller.analysisSampleRate,
-                    cache: controller.analysisCache
+                    cache: controller.analysisCache,
+                    channel: channel,
+                    selectedFrequency: draftProfile.mode == .parametric ? selectedFilter?.frequency : nil
                 )
 
                 switch draftProfile.mode {
                 case .parametric:
-                    ParametricFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
+                    ParametricFilterEditor(
+                        filters: $controller.draftProfile[channel: channel].filters, selectedFilterID: $selectedFilterID
+                    )
                 case .graphic10, .graphic31:
                     GraphicFilterEditor(filters: $controller.draftProfile[channel: channel].filters)
                         .id(draftProfile.mode)
@@ -340,6 +343,8 @@ private struct EditorResponseSection: View {
     var profile: EQProfile
     var sampleRate: Double
     var cache: EQAnalysisCache
+    var channel: EQProfileChannel
+    var selectedFrequency: Double?
 
     var body: some View {
         let analysis = cache.analysis(for: profile, sampleRate: sampleRate)
@@ -347,7 +352,7 @@ private struct EditorResponseSection: View {
             // The most recent analysis stays on screen while a newer one computes. Swapping
             // in a placeholder on every slider tick would flicker and break the curve animation.
             if let analysis {
-                FrequencyResponseGraph(analysis: analysis)
+                FrequencyResponseGraph(analysis: analysis, channel: channel, selectedFrequency: selectedFrequency)
                     .frame(height: 140)
                     .accessibilityLabel(Text(localized("Frequency response graph")))
                     .accessibilityValue(Text(analysis.accessibilitySummary))
