@@ -581,6 +581,7 @@ final class GlassEQAppModel {
     private var legacyBypassedProfileIDs: Set<UUID>?
     private let bypassDefaults: UserDefaults?
     private static let bypassKey = "equalizer.isBypassed"
+    private static let legacyBypassIDsKey = "equalizer.pendingLegacyBypassIDs"
     var activeProfileID: UUID {
         get { activeProfile.id }
         set { activateProfile(newValue) }
@@ -998,7 +999,16 @@ final class GlassEQAppModel {
         }
         self.bypassDefaults = bypassDefaults
         let savedBypass = bypassDefaults?.object(forKey: Self.bypassKey) as? Bool
-        let legacyIDs = Set(loadedStore.profiles.lazy.filter(\.isBypassed).map(\.id))
+        var legacyIDs = Set(loadedStore.profiles.lazy.filter(\.isBypassed).map(\.id))
+        if savedBypass == nil {
+            // The store can be flushed before the first route arrives, including while unlicensed.
+            if let pending = bypassDefaults?.stringArray(forKey: Self.legacyBypassIDsKey) {
+                legacyIDs.formUnion(pending.compactMap(UUID.init(uuidString:)))
+            }
+            if !legacyIDs.isEmpty {
+                bypassDefaults?.set(legacyIDs.map(\.uuidString), forKey: Self.legacyBypassIDsKey)
+            }
+        }
         self.legacyBypassedProfileIDs = savedBypass == nil && !legacyIDs.isEmpty ? legacyIDs : nil
         self.isGloballyBypassed = savedBypass ?? legacyIDs.contains(loadedStore.fallbackProfileID)
         loadedStore.clearLegacyBypass()
@@ -2064,6 +2074,8 @@ final class GlassEQAppModel {
         recordGlobalBypass(bypass)
         if bypass {
             processingIntent = .requested
+            let wasWaking = lifecycleState == .waking
+            if wasWaking { invalidatePendingOutputChange() }
             if outputChangeTask != nil {
                 // Complete the pending route lookup, but hand playback back immediately.
                 pendingOutputTransitionAction = .stopped
@@ -2076,7 +2088,7 @@ final class GlassEQAppModel {
             } else {
                 disableActiveProfileProcessing(updateMetrics: true, onboardingState: .bypassed)
             }
-            if observer == nil { startObserver(sendInitialValue: true) }
+            if wasWaking || observer == nil { startObserver(sendInitialValue: true) }
         } else if processingWasStopped || !hasStartedAudio {
             start()
         } else {
@@ -2089,6 +2101,7 @@ final class GlassEQAppModel {
         legacyBypassedProfileIDs = nil
         isGloballyBypassed = bypass
         bypassDefaults?.set(bypass, forKey: Self.bypassKey)
+        bypassDefaults?.removeObject(forKey: Self.legacyBypassIDsKey)
     }
 
     func playWithoutEQ() {
@@ -4508,7 +4521,15 @@ final class GlassEQAppModel {
             notifyModelDidChange()
             return
         }
-        beginAudioReconnect()
+        if isGloballyBypassed {
+            lifecycleState = .stopped
+            onboardingAudioCaptureState = .bypassed
+            statusMessage = localized("Equalizer is off")
+            startObserver(sendInitialValue: true)
+            notifyModelDidChange()
+        } else {
+            beginAudioReconnect()
+        }
     }
 
     private func beginAudioReconnect() {

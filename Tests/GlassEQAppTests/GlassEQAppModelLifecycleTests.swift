@@ -1884,6 +1884,62 @@ struct GlassEQAppModelLifecycleTests {
     }
 
     @Test
+    func migrationSurvivesQuittingBeforeObservingTheMappedOutput() async throws {
+        let suite = "GlassEQTests.pendingBypass." + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let fallback = makeProfile(name: "Fallback")
+        var mapped = makeProfile(name: "Speakers")
+        mapped.isBypassed = true
+        let output = makeOutput(uid: "legacy-speakers")
+        let store = ProfileStore(
+            profiles: [fallback, mapped],
+            outputMappings: [OutputDeviceProfileMapping(outputDeviceUID: output.uid, profileID: mapped.id)],
+            fallbackProfileID: fallback.id)
+        let first = makeModel(store: store, bypassDefaults: preferences, storeURL: url)
+        try #require(await first.flushStoreBeforeQuit())
+        let engine = FakeAudioEngine()
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            store: ProfilePersistence.load(from: url).store, bypassDefaults: preferences, storeURL: url,
+            engine: engine, lookup: FakeDefaultOutputLookup(.success(output)), observers: observers, outputDelay: .zero)
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.currentOutputUID == output.uid })
+        #expect(model.isGloballyBypassed)
+        #expect(engine.startCalls.isEmpty)
+        model.stop()
+    }
+
+    @Test
+    func turningOffDuringWakeRetryStillAllowsAnImmediateRestart() async throws {
+        let output = makeOutput(uid: "wake-switch")
+        let engine = FakeAudioEngine()
+        let lookup = FakeDefaultOutputLookup(.success(output))
+        let observers = FakeDefaultOutputObserverFactory()
+        let model = makeModel(
+            engine: engine, lookup: lookup, observers: observers,
+            outputDelay: .zero, wakeDelay: .milliseconds(100))
+        model.start()
+        observers.observers[0].emit(.success(output))
+        try #require(await waitUntil { model.isRunning })
+        model.handleWillSleep()
+        model.handleDidWake()
+        try #require(await waitUntil { observers.observers.count == 2 })
+        lookup.result = .failure(TestAudioError.defaultOutputUnavailable)
+        observers.observers[1].emit(lookup.result)
+        try #require(await waitUntil { model.statusMessage.contains("Waiting for audio output after wake") })
+        model.setBypass(true)
+        try #require(await waitUntil { !engine.holdsProcessingMute })
+        lookup.result = .success(output)
+        model.setBypass(false)
+        try #require(await waitUntil { model.isRunning })
+        model.stop()
+    }
+
+    @Test
     func wakingFromABypassedOutputObservesTheNewMapping() async throws {
         let old = makeOutput(uid: "bypassed", name: "Bypassed")
         let new = makeOutput(uid: "enabled", name: "Enabled")
@@ -1905,9 +1961,17 @@ struct GlassEQAppModelLifecycleTests {
         observers.observers[0].emit(.success(old))
         try #require(await waitUntil { model.onboardingAudioCaptureState == .bypassed })
         model.handleWillSleep()
-        lookup.result = .success(new)
+        lookup.result = .failure(TestAudioError.defaultOutputUnavailable)
         model.handleDidWake()
         try #require(await waitUntil { observers.observers.count == 2 })
+        let wakeObserver = observers.observers[1]
+        wakeObserver.emit(lookup.result)
+        try #require(await waitUntil { model.statusMessage.contains("Default output unavailable") })
+        #expect(model.lifecycleState == .stopped)
+        #expect(model.retryPlayback == nil)
+        #expect(!engine.holdsProcessingMute)
+        #expect(engine.stopCallCount == engine.handbackCount)
+        lookup.result = .success(new)
         observers.observers[1].emit(.success(new))
         try #require(await waitUntil { model.activeProfile == enabled })
         #expect(!model.isRunning)
