@@ -248,7 +248,6 @@ struct EditorTab: View {
                     profile: draftProfile,
                     sampleRate: controller.analysisSampleRate,
                     cache: controller.analysisCache,
-                    channel: channel,
                     selectedFrequency: draftProfile.mode == .parametric ? selectedFilter?.frequency : nil
                 )
 
@@ -343,7 +342,6 @@ private struct EditorResponseSection: View {
     var profile: EQProfile
     var sampleRate: Double
     var cache: EQAnalysisCache
-    var channel: EQProfileChannel
     var selectedFrequency: Double?
 
     var body: some View {
@@ -352,15 +350,23 @@ private struct EditorResponseSection: View {
             // The most recent analysis stays on screen while a newer one computes. Swapping
             // in a placeholder on every slider tick would flicker and break the curve animation.
             if let analysis {
-                FrequencyResponseGraph(analysis: analysis, channel: channel, selectedFrequency: selectedFrequency)
-                    .frame(height: 140)
+                let readout = selectedFrequency.flatMap { analysis.readout(at: $0) }
+                FrequencyResponseGraph(analysis: analysis, selectedFrequency: selectedFrequency)
+                    .frame(height: readout == nil ? 140 : 126)
                     .accessibilityLabel(Text(localized("Frequency response graph")))
-                    .accessibilityValue(Text(analysis.accessibilitySummary))
+                    .accessibilityValue(
+                        Text([readout, analysis.accessibilitySummary].compactMap { $0 }.joined(separator: ". "))
+                    )
                     .accessibilityHint(
                         Text(
                             localized(
                                 "Shows the estimated gain curve from 20 Hz to \(localizedFrequency(analysis.maximumUsableFrequency))"
                             )))
+                if let readout {
+                    Text(readout)
+                        .font(.caption.monospacedDigit())
+                        .accessibilityHidden(true)
+                }
                 if analysis.hasOffScaleResponse {
                     Text(localized("Part of the response is outside the displayed dB range."))
                         .font(.caption)

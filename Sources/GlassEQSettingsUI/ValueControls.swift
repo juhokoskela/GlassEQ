@@ -25,7 +25,10 @@ struct SliderRow: View {
     var valueID: UUID?
 
     var body: some View {
-        LabeledContent(title) {
+        HStack(spacing: 8) {
+            Text(title)
+                .fixedSize()
+                .frame(minWidth: 64, alignment: .leading)
             Slider(value: sliderValue, in: sliderRange)
                 .accessibilityLabel(Text(title))
                 .accessibilityValue(Text(label))
@@ -83,7 +86,6 @@ struct EditableValueText: View {
     @Binding var value: Double
     var range: ClosedRange<Double>
     var display: String
-    var width: CGFloat = 64
     var valueID: UUID?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -98,6 +100,7 @@ struct EditableValueText: View {
             if isEditing {
                 TextField(title, text: $editText)
                     .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
                     .font(.caption.monospacedDigit())
                     .multilineTextAlignment(.trailing)
                     .focused($isFocused)
@@ -146,7 +149,7 @@ struct EditableValueText: View {
                 .accessibilityHint(Text(localized("Enter an exact value")))
             }
         }
-        .frame(width: width)
+        .frame(width: 80)
         .onChange(of: context) {
             if isEditing { finishEditing() }
         }

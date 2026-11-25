@@ -30,8 +30,7 @@ struct MagnitudeCurveEditor: View {
                                     title: localized("Frequency"),
                                     value: $point.frequency,
                                     range: ProfilePersistence.frequencyRange,
-                                    display: point.frequency.frequencyLabel,
-                                    width: 72
+                                    display: point.frequency.frequencyLabel
                                 )
                                 Slider(value: $point.quantizedGainDB, in: -24...12)
                                     .accessibilityLabel(Text(localized("Gain at \(point.frequency.frequencyLabel)")))
@@ -40,8 +39,7 @@ struct MagnitudeCurveEditor: View {
                                     title: localized("Gain"),
                                     value: $point.gainDB,
                                     range: ProfilePersistence.gainRange,
-                                    display: point.gainDB.dbLabel,
-                                    width: 60
+                                    display: point.gainDB.dbLabel
                                 )
                                 Button(role: .destructive) {
                                     points.removeAll { $0.id == point.id }
@@ -145,7 +143,6 @@ private struct GraphicFilterRow: View {
                 value: $filter.gainDB,
                 range: ProfilePersistence.gainRange,
                 display: filter.gainDB.dbLabel,
-                width: 56,
                 valueID: filter.id
             )
         }

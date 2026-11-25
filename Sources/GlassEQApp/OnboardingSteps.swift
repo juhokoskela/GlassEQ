@@ -410,7 +410,7 @@ private struct OnboardingAudioCaptureStatus: View {
             }
         case .bypassed:
             VStack(spacing: 10) {
-                Label(localized("Audio processing is off for the active profile."), systemImage: "pause.circle.fill")
+                Label(localized("Equalizer is off"), systemImage: "pause.circle.fill")
                     .foregroundStyle(.secondary)
                     .font(.body.weight(.medium))
                 Text(localized("Continue setup, then turn processing on from the menu bar or Settings."))

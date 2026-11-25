@@ -306,6 +306,33 @@ struct EQAnalysisSnapshot: Equatable, Sendable {
         }
     }
 
+    func readout(at frequency: Double) -> String? {
+        switch channelMode {
+        case .linked:
+            guard let gain = Self.plottedGain(at: frequency, in: linkedPoints) else { return nil }
+            return localized("At \(localizedFrequency(frequency)): \(localizedDecibels(gain))")
+        case .stereo:
+            guard let left = Self.plottedGain(at: frequency, in: leftPoints),
+                let right = Self.plottedGain(at: frequency, in: rightPoints)
+            else { return nil }
+            return localized(
+                "At \(localizedFrequency(frequency)): Left \(localizedDecibels(left)), Right \(localizedDecibels(right))"
+            )
+        }
+    }
+
+    // The displayed response is piecewise linear in dB on a logarithmic frequency axis.
+    static func plottedGain(at frequency: Double, in points: [FrequencyResponsePoint]) -> Double? {
+        guard let first = points.first, frequency >= first.frequency,
+            let index = points.firstIndex(where: { $0.frequency >= frequency })
+        else { return nil }
+        let high = points[index]
+        guard high.frequency != frequency, index > 0 else { return high.magnitudeDB }
+        let low = points[index - 1]
+        let fraction = log(frequency / low.frequency) / log(high.frequency / low.frequency)
+        return low.magnitudeDB + fraction * (high.magnitudeDB - low.magnitudeDB)
+    }
+
     var accessibilitySummary: String {
         let preamp = recommendedPreampDB.map { localizedDecibels($0) } ?? localized("Analyzing…")
         let curveSummary: String

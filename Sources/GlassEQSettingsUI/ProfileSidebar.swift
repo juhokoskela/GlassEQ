@@ -14,7 +14,8 @@ struct ProfileSidebar: View {
                     ProfileRow(
                         profile: profile,
                         isSelected: profile.id == selectedProfileID,
-                        isActive: profile.id == controller.snapshot.activeProfileID
+                        isActive: profile.id == controller.snapshot.activeProfileID,
+                        isRunning: controller.snapshot.isRunning
                     )
                     .tag(profile.id)
                     .contextMenu {
@@ -111,6 +112,7 @@ private struct ProfileRow: View {
     var profile: EQProfile
     var isSelected: Bool
     var isActive: Bool
+    var isRunning: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -129,10 +131,11 @@ private struct ProfileRow: View {
             }
             Spacer(minLength: 6)
             if isActive {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: isRunning ? "speaker.wave.2.fill" : "checkmark.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel(Text(localized("Active profile")))
+                    .accessibilityLabel(
+                        Text(isRunning ? localized("Playing now") : localized("Active profile")))
             }
         }
         .padding(.vertical, 2)

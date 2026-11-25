@@ -29,11 +29,13 @@ struct OutputTab: View {
     var body: some View {
         Form {
             Section {
-                if snapshot.equalizer != .unavailable {
+                if snapshot.offersPlaybackHandback || snapshot.equalizer.needsRecoveryAction {
+                    recoveryActions
+                } else if snapshot.equalizer != .unavailable {
                     Toggle(
                         localized("Equalizer"),
                         isOn: Binding(
-                            get: { snapshot.equalizer != .off }, set: controller.setEqualizerEnabled
+                            get: { snapshot.equalizer == .on }, set: controller.setEqualizerEnabled
                         )
                     )
                     .toggleStyle(.switch)
@@ -42,7 +44,6 @@ struct OutputTab: View {
                 LabeledContent(
                     snapshot.currentOutputUID.isEmpty ? localized("Last Known Output") : localized("Current Output"),
                     value: snapshot.currentOutputName)
-
             }
 
             Section {
@@ -159,13 +160,12 @@ struct OutputTab: View {
                         ? localized("None")
                         : localizedInteger(snapshot.metrics.playbackUnderrunEvents)
                 )
-                if snapshot.equalizer.needsRecoveryAction || snapshot.offersPlaybackHandback {
-                    recoveryActions
-                }
             } header: {
                 Text(localized("Engine Status"))
             } footer: {
-                Text(snapshot.statusMessage)
+                if !snapshot.offersPlaybackHandback && !snapshot.equalizer.needsRecoveryAction {
+                    Text(snapshot.statusMessage)
+                }
             }
 
             Section {
@@ -243,12 +243,18 @@ struct OutputTab: View {
 
     private var recoveryActions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if snapshot.offersPlaybackHandback {
-                Label(localized("Output is muted"), systemImage: "speaker.slash")
-                Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
-                    .buttonStyle(.borderedProminent)
-            }
+            Label(
+                snapshot.offersPlaybackHandback ? localized("Output is muted") : localized("Equalizer needs attention"),
+                systemImage: snapshot.offersPlaybackHandback ? "speaker.slash" : "exclamationmark.triangle"
+            )
+            .fontWeight(.semibold)
+            Text(snapshot.statusMessage)
+                .foregroundStyle(.secondary)
             HStack {
+                if snapshot.offersPlaybackHandback {
+                    Button(localized("Play Without EQ")) { controller.playWithoutEQ() }
+                        .buttonStyle(.borderedProminent)
+                }
                 Button(localized("Retry Audio Engine")) { controller.retryAudioEngine() }
                 if snapshot.equalizer == .permissionDenied {
                     Button(localized("Open Privacy Settings")) { controller.openPrivacySettings() }
@@ -264,7 +270,7 @@ struct OutputTab: View {
     private var statusSummary: String {
         switch diagnostics.status.health {
         case .stopped:
-            return localized("Stopped")
+            return snapshot.equalizer == .off ? localized("Equalizer off") : localized("Stopped")
         case .stable:
             return diagnostics.status.isUsingSaferBuffer
                 ? localized("Stable, using safer buffer")

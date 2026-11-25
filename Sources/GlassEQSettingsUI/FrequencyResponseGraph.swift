@@ -67,7 +67,6 @@ struct PlotScale {
 struct FrequencyResponseGraph: View {
     private static let magnitudeTicks = [-24.0, -18, -12, -6, 0, 6, 12]
     var analysis: EQAnalysisSnapshot
-    var channel: EQProfileChannel
     var selectedFrequency: Double?
 
     var body: some View {
@@ -83,21 +82,22 @@ struct FrequencyResponseGraph: View {
                 var marker = Path()
                 marker.move(to: CGPoint(x: x, y: scale.rect.minY))
                 marker.addLine(to: CGPoint(x: x, y: scale.rect.maxY))
-                context.stroke(marker, with: .color(.primary.opacity(0.55)), lineWidth: 1)
+                context.stroke(marker, with: .color(.accentColor), style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
             }
             switch analysis.channelMode {
             case .linked:
                 drawCurve(analysis.linkedPoints, color: .accentColor, context: context, scale: scale)
             case .stereo:
                 drawCurve(
-                    analysis.leftPoints, color: .blue.opacity(channel == .right ? 0.6 : 1), context: context,
+                    analysis.leftPoints, color: .blue, context: context,
                     scale: scale)
                 drawCurve(
-                    analysis.rightPoints, color: .orange.opacity(channel == .left ? 0.65 : 1), dashed: true,
+                    analysis.rightPoints, color: .orange, dashed: true,
                     context: context, scale: scale)
             }
         }
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isImage)
     }
 
     private func drawCurve(

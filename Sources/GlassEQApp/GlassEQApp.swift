@@ -1072,6 +1072,7 @@ final class GlassEQAppModel {
         if shouldInstallLifecycleObservers {
             installLifecycleObservers()
         }
+        if isGloballyBypassed { statusMessage = localized("Equalizer is off") }
         if let loadResult {
             if let loadStatusMessage = Self.profileStoreLoadStatusMessage(loadResult.status) {
                 statusMessage = loadStatusMessage
@@ -1137,7 +1138,9 @@ final class GlassEQAppModel {
     }
 
     var needsMenuRecovery: Bool {
-        guard lifecycleState == .stopped, processingIsLicensed, licenseStopTask == nil else { return false }
+        guard !isGloballyBypassed, lifecycleState == .stopped, processingIsLicensed, licenseStopTask == nil else {
+            return false
+        }
         if retryPlayback != nil { return true }
         guard processingIntent == .requested else { return false }
         return onboardingAudioCaptureState.isFailure
@@ -2050,10 +2053,6 @@ final class GlassEQAppModel {
 
     func setBypass(_ bypass: Bool) {
         guard lifecycleState != .terminating, processingIsLicensed, licenseStopTask == nil else { return }
-        if bypass && (processingIntent.awaitsRetry || profilePersistenceMode.isProtected) {
-            playWithoutEQ()
-            return
-        }
         if !bypass && !processingWasStopped {
             do {
                 try ensureCompatibleWithCurrentOutput(activeProfile)
@@ -2073,10 +2072,11 @@ final class GlassEQAppModel {
                 scheduleEngineStop(updateMetrics: true)
                 lifecycleState = .stopped
                 onboardingAudioCaptureState = .bypassed
-                statusMessage = disabledStatus(outputName: currentOutputName)
+                statusMessage = localized("Equalizer is off")
             } else {
                 disableActiveProfileProcessing(updateMetrics: true, onboardingState: .bypassed)
             }
+            if observer == nil { startObserver(sendInitialValue: true) }
         } else if processingWasStopped || !hasStartedAudio {
             start()
         } else {
@@ -2092,8 +2092,12 @@ final class GlassEQAppModel {
     }
 
     func playWithoutEQ() {
-        recordGlobalBypass(true)
-        stop()
+        if processingIsLicensed, licenseStopTask == nil {
+            setBypass(true)
+        } else {
+            recordGlobalBypass(true)
+            stop()
+        }
     }
 
     func importProfile(format: ImportFormat, name: String, text: String) async throws -> Bool {
@@ -2941,11 +2945,7 @@ final class GlassEQAppModel {
             return
         }
 
-        guard !processingWasStopped else { return }
-        if processingIntent.awaitsRetry {
-            if isGloballyBypassed { stop() }
-            return
-        }
+        guard !processingWasStopped, !isGloballyBypassed, !processingIntent.awaitsRetry else { return }
 
         guard pendingOutputTransitionAction != .stopped else {
             return
@@ -2953,14 +2953,6 @@ final class GlassEQAppModel {
 
         guard processingIsLicensed else {
             blockProcessingForLicense()
-            return
-        }
-
-        guard !isGloballyBypassed else {
-            disableActiveProfileProcessing(
-                updateMetrics: true,
-                onboardingState: .bypassed
-            )
             return
         }
 
@@ -3029,7 +3021,7 @@ final class GlassEQAppModel {
         lifecycleState = .stopped
         onboardingAudioCaptureState = onboardingState
         wakeReconnectAttempts = 0
-        statusMessage = disabledStatus(outputName: currentOutputName)
+        statusMessage = localized("Equalizer is off")
     }
 
     private(set) var engineIsHoldingMute = false
@@ -4120,7 +4112,7 @@ final class GlassEQAppModel {
     }
 
     func retryAudioEngine() {
-        guard lifecycleState != .terminating,
+        guard !isGloballyBypassed, lifecycleState != .terminating,
             lifecycleState != .sleeping,
             pendingOutputTransitionAction == .none,
             licenseStopTask == nil
@@ -4141,11 +4133,6 @@ final class GlassEQAppModel {
             return
         }
         onboardingAudioCaptureState = .pending
-        guard !isGloballyBypassed else {
-            synchronizeActiveProfileProcessing()
-            notifyModelDidChange()
-            return
-        }
         guard lifecycleState != .waking else {
             requestWakeReconnectAttempt()
             return
@@ -4246,13 +4233,6 @@ final class GlassEQAppModel {
             return localized("Processing \(profileName)")
         }
         return localized("Processing \(outputName) with \(profileName)")
-    }
-
-    private func disabledStatus(outputName: String) -> String {
-        guard !outputName.isEmpty, outputName != noOutputName else {
-            return localized("Audio processing disabled")
-        }
-        return localized("Audio processing disabled for \(outputName)")
     }
 
     func startMetricsPolling() {
@@ -4761,15 +4741,20 @@ private struct MenuBarView: View {
                     Text(localized("Profile"))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
-                    Picker(localized("Active Profile"), selection: $model.activeProfileID) {
-                        ForEach(model.profileStore.profiles) { profile in
-                            Text(profile.name).tag(profile.id)
+                    if model.retryPlayback == .muted {
+                        Text(model.activeProfileName)
+                            .accessibilityLabel(Text(localized("Profile")))
+                            .accessibilityValue(Text(model.activeProfileName))
+                    } else {
+                        Picker(localized("Active Profile"), selection: $model.activeProfileID) {
+                            ForEach(model.profileStore.profiles) { profile in
+                                Text(profile.name).tag(profile.id)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityHint(Text(localized("Selects the profile to use on this output")))
                     }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .disabled(model.retryPlayback == .muted)
-                    .accessibilityHint(Text(localized("Selects the profile to use on this output")))
                 }
             }
 

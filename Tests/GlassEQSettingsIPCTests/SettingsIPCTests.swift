@@ -10,6 +10,18 @@ import Testing
 @Suite
 struct SettingsIPCTests {
     @Test
+    func graphReadoutFollowsTheDrawnLogFrequencySegment() {
+        let points = [
+            FrequencyResponsePoint(frequency: 100, magnitudeDB: -6),
+            FrequencyResponsePoint(frequency: 400, magnitudeDB: 2),
+        ]
+        #expect(EQAnalysisSnapshot.plottedGain(at: 100, in: points) == -6)
+        #expect(EQAnalysisSnapshot.plottedGain(at: 200, in: points) == -2)
+        #expect(EQAnalysisSnapshot.plottedGain(at: 400, in: points) == 2)
+        #expect(EQAnalysisSnapshot.plottedGain(at: 500, in: points) == nil)
+    }
+
+    @Test
     func dashedResponseBoundsOffscreenSegmentsAndPreservesCrossings() {
         let scale = PlotScale(bounds: CGRect(x: 0, y: 0, width: 500, height: 160), maximumFrequency: 20_000)
         let path = scale.curvePath(for: [

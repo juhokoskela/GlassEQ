@@ -61,7 +61,13 @@ struct ProfileDetail: View {
         let snapshot = controller.snapshot
         let id = controller.draftProfile.id
         var parts = [controller.draftProfile.mode.title]
-        if id == snapshot.activeProfileID {
+        if snapshot.offersPlaybackHandback {
+            parts.append(localized("Output is muted"))
+        } else if snapshot.equalizer == .off {
+            parts.append(localized("Equalizer off"))
+        } else if snapshot.equalizer.needsRecoveryAction {
+            parts.append(localized("Equalizer needs attention"))
+        } else if id == snapshot.activeProfileID {
             parts.append(snapshot.isRunning ? localized("Playing now") : localized("Active"))
         }
         if id == snapshot.currentOutputMappedProfileID {

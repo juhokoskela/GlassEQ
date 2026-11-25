@@ -1420,7 +1420,7 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(response.snapshot == nil)
         let snapshot = model.settingsSnapshot()
-        #expect(snapshot.statusMessage == localized("Audio processing disabled"))
+        #expect(snapshot.statusMessage == localized("Equalizer is off"))
         #expect(snapshot.activeProfileID == disabled.id)
         #expect(engine.startCalls.isEmpty)
         #expect(engine.updateCalls.isEmpty)
@@ -1621,7 +1621,7 @@ struct GlassEQAppModelLifecycleTests {
         await waitUntil {
             model.activeProfile.id == disabled.id
                 && model.lifecycleState == .stopped
-                && model.statusMessage == localized("Audio processing disabled for \(output.name)")
+                && model.statusMessage == localized("Equalizer is off")
         }
 
         #expect(engine.startCalls.isEmpty)
@@ -3025,7 +3025,7 @@ struct GlassEQAppModelLifecycleTests {
 
         #expect(!model.isRunning)
         #expect(model.lifecycleState == .stopped)
-        #expect(model.statusMessage == localized("Audio processing disabled for \(output.name)"))
+        #expect(model.statusMessage == localized("Equalizer is off"))
     }
 
     @Test
@@ -3233,7 +3233,9 @@ struct GlassEQAppModelLifecycleTests {
         _ = try await model.performSettingsCommand(.retryAudioEngine)
         _ = try await model.performSettingsCommand(.playWithoutEQ)
         try #require(await waitUntil { !engine.holdsProcessingMute })
-        #expect(model.processingWasStopped)
+        #expect(model.isGloballyBypassed)
+        #expect(model.settingsSnapshot().equalizer == .off)
+        #expect(model.settingsSnapshot().currentOutputUID == output.uid)
         #expect(!model.settingsSnapshot().offersPlaybackHandback)
     }
 
@@ -3532,7 +3534,7 @@ struct GlassEQAppModelLifecycleTests {
         #expect(model.canControlMenuProcessing)
         #expect(model.menuProcessingEnabled)
         model.menuProcessingEnabled = false
-        try #require(await waitUntil { model.processingWasStopped && engine.handbackCount > 0 })
+        try #require(await waitUntil { model.isGloballyBypassed && engine.handbackCount > 0 })
         #expect(!model.menuProcessingEnabled)
         #expect(!engine.holdsProcessingMute)
         model.menuProcessingEnabled = true
@@ -7174,7 +7176,7 @@ struct LicenseEnforcementTests {
             model.stop()
         } else {
             model.toggleMenuProcessing()
-            #expect(model.processingWasStopped)
+            #expect(model.isGloballyBypassed)
             #expect(model.retryPlayback == nil)
             #expect(!engine.holdsProcessingMute)
         }
